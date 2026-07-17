@@ -1,14 +1,95 @@
 # nwire control protocol v1
 
-`POST /v1/auth` carries an `AuthRequest` JSON object. Its signature is made
-over `nwire-auth-v1\0` followed by each field as a 4-byte big-endian length and
-UTF-8 bytes: public key, WireGuard public key, timestamp, nonce, OS, arch,
-hostname, username, client version, then sorted extra-map key/value pairs.
-The server accepts timestamps within two minutes and rejects previously seen
-nonces. `GET /v1/info` advertises the protocol version; `POST /v1/disconnect`
-requires `Authorization: Bearer <token>`.
+This is the implemented control-plane protocol. It authenticates a client and
+returns tunnel grants; it does not currently establish WireGuard or forward
+TCP traffic.
 
-The response's tunnel list is an authorization grant, never a request to dial
-an arbitrary target. WireGuard transport and WebSocket encapsulation are
-reserved for the next transport milestone; this repository does not claim
-interoperability for either until they are implemented.
+## Endpoints
+
+The reference server currently serves plain HTTP.
+
+| Method and path | Authentication | Result |
+| --- | --- | --- |
+| `GET /v1/info` | None | Protocol version and capabilities |
+| `POST /v1/auth` | SSH request signature | New session and grants |
+| `POST /v1/renew` | Bearer token | Replacement session and grants |
+| `POST /v1/disconnect` | Bearer token | Deletes a session |
+
+`GET /v1/info` returns `{"version":1,"capabilities":["ssh-auth","tcp"]}`.
+The `tcp` capability is advertised metadata, not evidence that forwarding is
+implemented.
+
+## Authentication request
+
+`POST /v1/auth` accepts a JSON request no larger than 1 MiB:
+
+```json
+{
+  "version": 1,
+  "public_key": "ssh-ed25519 AAAA...",
+  "wireguard_public_key": "",
+  "timestamp": "2026-07-17T12:00:00Z",
+  "nonce": "base64url-random-value",
+  "client_info": {
+    "os": "darwin",
+    "arch": "arm64",
+    "hostname": "laptop",
+    "username": "alice",
+    "client_version": "dev",
+    "extra": {"example": "value"}
+  },
+  "signature": "base64-encoded-ssh-signature"
+}
+```
+
+`public_key` is OpenSSH `authorized_keys` text. The timestamp must be RFC 3339
+and within two minutes of the server clock. A non-empty nonce is accepted only
+once; accepted nonces are remembered for five minutes. The key must be in the
+configured authorized-key directory.
+
+### Signing payload
+
+The signature is over binary data, never a JSON serialization:
+
+1. Write ASCII `nwire-auth-v1` followed by a zero byte.
+2. For each string below, write its byte length as an unsigned 32-bit
+   big-endian integer followed by its UTF-8 bytes.
+
+The strings are, in order: `public_key`, `wireguard_public_key`, `timestamp`,
+`nonce`, `client_info.os`, `client_info.arch`, `client_info.hostname`,
+`client_info.username`, and `client_info.client_version`. Append each
+`client_info.extra` key and value after that, sorted lexicographically by key.
+No field may exceed 1 MiB.
+
+## Successful response
+
+Authentication and renewal return `200 OK` with:
+
+```json
+{
+  "session_id": "...",
+  "token": "...",
+  "ttl_seconds": 900,
+  "tunnels": [{"name":"reports", "virtual_port":18080, "target_hint":"reports.internal:8080"}],
+  "udp_endpoint": ""
+}
+```
+
+`token` is a bearer credential. `target_hint` comes from server configuration;
+it is not a request to dial arbitrary targets. `udp_endpoint` mirrors
+`network.advertised_endpoint`, but no UDP transport is implemented yet.
+
+Errors are JSON objects of the form `{"error":"message"}`. Malformed input
+returns `400`; authentication or session failures return `401`; an authorizer
+denial returns `403`.
+
+## Renewal and disconnect
+
+`POST /v1/renew` requires `Authorization: Bearer TOKEN` and a body with
+`client_info`. It runs the authorizer again against the old session's tunnels,
+invalidates the old token, and returns a replacement response. `POST
+/v1/disconnect` needs the same header, has no body, and returns `204 No
+Content` after deletion.
+
+Sessions expire after their configured TTL when they are used. The current
+implementation has no background session reaper.
