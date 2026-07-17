@@ -1,0 +1,8 @@
+services:
+  nwire-server:
+    build: .
+    command: ["--config", "/etc/nwire/nwire.yaml"]
+    ports: ["8443:8443"]
+    volumes:
+      - ./nwire.yaml:/etc/nwire/nwire.yaml:ro
+      - ./keys:/etc/nwire/keys:ro

@@ -1,0 +1,13 @@
+listen:
+  https: ":8443"
+auth:
+  authorized_keys_dir: /etc/nwire/keys
+  session_ttl: 15m
+network:
+  tunnel_cidr: 100.64.0.0/16
+tunnels:
+  - name: example
+    target: example:8080
+    description: Example service
+    virtual_port: 18080
+    allow: ["*"]
