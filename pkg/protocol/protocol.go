@@ -33,7 +33,8 @@ type AuthResponse struct {
 	SessionID, Token, TunnelIP, ServerPublicKey string   `json:"session_id"`
 	TTLSeconds                                  int      `json:"ttl_seconds"`
 	Tunnels                                     []Tunnel `json:"tunnels"`
-	UDP, WebSocket                              string   `json:"udp_endpoint,omitempty"`
+	UDP                                         string   `json:"udp_endpoint,omitempty"`
+	WebSocket                                   string   `json:"websocket_endpoint,omitempty"`
 }
 type RenewRequest struct {
 	Info ClientInfo `json:"client_info"`

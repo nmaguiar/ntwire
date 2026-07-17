@@ -1,14 +1,9 @@
 # nwire
 
-nwire is a Go bootstrap for a WireGuard multi-tunnel service. It currently
-implements the **control plane**: SSH-key authentication, signed and
-replay-protected requests, YAML tunnel grants, session tokens, and optional
-authorization hooks.
-
-It does **not** yet implement WireGuard transport, local TCP listeners, or
-proxying to configured targets. `nwire list` can authenticate and show the
-tunnels a client is allowed to use, but it cannot make those tunnels reachable.
-See [PLAN.md](PLAN.md) for the broader design and roadmap.
+nwire is a userspace WireGuard multi-tunnel service. SSH keys authenticate a
+session, then a per-session WireGuard peer and gVisor netstack forward only
+the YAML-granted TCP targets to local `127.0.0.1` listeners. No host network
+interface or elevated privilege is needed.
 
 For a code-backed checklist of roadmap gaps, see
 [docs/PLAN-GAPS.md](docs/PLAN-GAPS.md).
@@ -17,10 +12,10 @@ For a code-backed checklist of roadmap gaps, see
 
 | Available | Not implemented yet |
 | --- | --- |
-| Ed25519 key generation and SSH request signing | WireGuard, WebSocket, and TCP data plane |
-| HTTP control API and session tokens | TLS serving and certificate handling |
-| Timestamp and nonce replay protection | Persistent client connections and local listeners |
-| YAML tunnel ACLs and YAML-file hot reload | Web UI, client status, and container/Kubernetes workflow |
+| Ed25519 key generation and SSH request signing | WebSocket fallback |
+| HTTPS control API, WireGuard netstack, and TCP forwarding | TOFU and client status UI |
+| Timestamp/nonce replay protection, rate limits, and session reaping | Automatic renewal and persistent client configuration |
+| YAML/key-directory hot reload and Compose/Kubernetes base manifests | Full end-to-end deployment smoke coverage |
 | Optional webhook or executable authorization hook | |
 
 ## Quick start

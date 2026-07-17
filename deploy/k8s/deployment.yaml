@@ -7,9 +7,15 @@ spec:
   template:
     metadata: {labels: {app: nwire-server}}
     spec:
+      volumes:
+        - name: config
+          configMap: {name: nwire-config}
+        - name: keys
+          secret: {secretName: nwire-authorized-keys}
       containers:
         - name: server
           image: ghcr.io/nmaguiar/nwire-server:latest
           args: [--config, /etc/nwire/nwire.yaml]
           securityContext: {runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false}
-          ports: [{containerPort: 8443, name: https}]
+          ports: [{containerPort: 8443, name: https}, {containerPort: 51820, name: wireguard, protocol: UDP}]
+          volumeMounts: [{name: config, mountPath: /etc/nwire/nwire.yaml, subPath: nwire.yaml, readOnly: true}, {name: keys, mountPath: /etc/nwire/keys, readOnly: true}]

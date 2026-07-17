@@ -14,7 +14,8 @@ type Config struct {
 		KeyFile  string `yaml:"key_file"`
 	} `yaml:"tls"`
 	Listen struct {
-		HTTPS string `yaml:"https"`
+		HTTPS     string `yaml:"https"`
+		WireGuard string `yaml:"wireguard"`
 	} `yaml:"listen"`
 	Auth struct {
 		AuthorizedKeysDir string        `yaml:"authorized_keys_dir"`
@@ -53,6 +54,9 @@ func LoadConfig(path string) (Config, error) {
 	if c.Listen.HTTPS == "" {
 		c.Listen.HTTPS = ":8443"
 	}
+	if c.Listen.WireGuard == "" {
+		c.Listen.WireGuard = ":51820"
+	}
 	if c.Auth.SessionTTL == 0 {
 		c.Auth.SessionTTL = 15 * time.Minute
 	}
@@ -77,6 +81,9 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("duplicate tunnel %q", t.Name)
 		}
 		seen[t.Name] = true
+		if t.VirtualPort < 1 || t.VirtualPort > 65535 {
+			return c, fmt.Errorf("tunnel %q requires virtual_port in 1..65535", t.Name)
+		}
 	}
 	return c, nil
 }

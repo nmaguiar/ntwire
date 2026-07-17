@@ -22,6 +22,7 @@ type AuthorizationResult struct {
 	AllowedTunnels any    `json:"allowed_tunnels"`
 	TTLSeconds     int    `json:"ttl_seconds"`
 	Reason         string `json:"reason"`
+	RiskScore      int    `json:"risk_score"`
 }
 
 func Authorize(ctx context.Context, c AuthorizerConfig, in AuthorizationInput) (AuthorizationResult, error) {

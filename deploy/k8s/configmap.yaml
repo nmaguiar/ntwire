@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: nwire-config}
+data:
+  nwire.yaml: |
+    listen: {https: ":8443", wireguard: ":51820"}
+    auth: {authorized_keys_dir: /etc/nwire/keys, session_ttl: 15m}
+    network: {tunnel_cidr: 100.64.0.0/16, advertised_endpoint: "nwire-server:51820"}
+    tunnels: []

@@ -17,6 +17,12 @@ func WatchConfig(path string, s *Server, log *slog.Logger) (*fsnotify.Watcher, e
 		w.Close()
 		return nil, err
 	}
+	// Keys are independently watched so revocation takes effect without a YAML
+	// touch. Watching the directory also handles Kubernetes projected volumes.
+	if err = w.Add(s.Config.Auth.AuthorizedKeysDir); err != nil {
+		w.Close()
+		return nil, err
+	}
 	go func() {
 		for {
 			select {
@@ -24,7 +30,7 @@ func WatchConfig(path string, s *Server, log *slog.Logger) (*fsnotify.Watcher, e
 				if !ok {
 					return
 				}
-				if filepath.Clean(e.Name) != filepath.Clean(path) {
+				if filepath.Clean(e.Name) != filepath.Clean(path) && filepath.Dir(filepath.Clean(e.Name)) != filepath.Clean(s.Config.Auth.AuthorizedKeysDir) {
 					continue
 				}
 				if e.Has(fsnotify.Write | fsnotify.Create | fsnotify.Rename) {

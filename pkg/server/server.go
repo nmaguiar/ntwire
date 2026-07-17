@@ -7,6 +7,7 @@ import (
 	"github.com/nmaguiar/nwire/pkg/protocol"
 	"github.com/nmaguiar/nwire/pkg/sshkey"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,13 +22,15 @@ type Server struct {
 	nonces   map[string]time.Time
 	mu       sync.Mutex
 	log      *slog.Logger
+	data     *dataPlane
+	rates    map[string]*rateState
 }
 
 func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	return &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l}
+	return &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}}
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -41,6 +44,10 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, map[string]any{"version": protocol.Version, "capabilities": []string{"ssh-auth", "tcp"}})
 }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
+	if !s.allowSource(r.RemoteAddr) {
+		fail(w, http.StatusTooManyRequests, "too many authentication attempts")
+		return
+	}
 	var a protocol.AuthRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
 		fail(w, 400, "invalid request")
@@ -60,6 +67,10 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "unknown public key")
 		return
 	}
+	if s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountFingerprint(sshkey.Fingerprint(key)) >= s.Config.Auth.MaxSessionsPerKey {
+		fail(w, 429, "maximum sessions for key reached")
+		return
+	}
 	p, err := protocol.SigningPayload(a)
 	if err != nil || sshkey.Verify(key, p, a.Signature) != nil {
 		fail(w, 401, "invalid signature")
@@ -67,7 +78,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	}
 	fp := sshkey.Fingerprint(key)
 	grants := s.grants(fp, comment)
-	grants, ttl, err := s.authorize(r, fp, comment, a.Info, grants)
+	grants, ttl, err := s.authorize(r, fp, comment, "", a.Info, grants)
 	if err != nil {
 		s.log.Warn("authorization denied", "fingerprint", fp, "error", err)
 		fail(w, 403, "authorization denied")
@@ -77,9 +88,28 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	for _, t := range grants {
 		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, TargetHint: t.Target})
 	}
-	session := s.sessions.Create(fp, v, ttl)
+	tunnelIP := ""
+	serverKey := ""
+	if s.data != nil {
+		if a.WireGuardPublicKey == "" {
+			fail(w, 400, "wireguard_public_key is required")
+			return
+		}
+		tunnelIP, err = s.allocateIP()
+		if err != nil {
+			fail(w, 503, err.Error())
+			return
+		}
+		if err = s.addPeer(a.WireGuardPublicKey, tunnelIP); err != nil {
+			fail(w, 400, "invalid wireguard key")
+			return
+		}
+		serverKey = s.data.stack.PublicKey()
+	}
+	session := s.sessions.Create(fp, a.WireGuardPublicKey, tunnelIP, v, ttl)
 	s.log.Info("authentication allowed", "fingerprint", fp, "session", session.ID)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint})
+	s.audit("auth_allowed", session, "", 0)
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint})
 }
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -101,7 +131,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	grants, ttl, err := s.authorize(r, old.Fingerprint, "", body.Info, grants)
+	grants, ttl, err := s.authorize(r, old.Fingerprint, "", old.ID, body.Info, grants)
 	if err != nil {
 		s.sessions.Delete(t)
 		fail(w, 403, "authorization denied")
@@ -112,16 +142,23 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, TargetHint: g.Target})
 	}
 	s.sessions.Delete(t)
-	n := s.sessions.Create(old.Fingerprint, v, ttl)
+	s.dropSession(old)
+	n := s.sessions.Create(old.Fingerprint, old.WireGuardPublicKey, old.TunnelIP, v, ttl)
+	if old.WireGuardPublicKey != "" {
+		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
+	}
 	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if _, ok := s.sessions.Get(t); !ok {
+	old, ok := s.sessions.Get(t)
+	if !ok {
 		fail(w, 401, "invalid session")
 		return
 	}
 	s.sessions.Delete(t)
+	s.dropSession(old)
+	s.audit("session_disconnected", old, "", 0)
 	w.WriteHeader(http.StatusNoContent)
 }
 func (s *Server) useNonce(n string) bool {
@@ -163,6 +200,26 @@ func (s *Server) authorized(k interface{ Marshal() []byte }) bool {
 	}
 	return false
 }
+func (s *Server) authorizedFingerprint(fp string) bool {
+	entries, err := os.ReadDir(s.Config.Auth.AuthorizedKeysDir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		b, er := os.ReadFile(filepath.Join(s.Config.Auth.AuthorizedKeysDir, e.Name()))
+		if er != nil {
+			continue
+		}
+		p, _, er := sshkey.ParsePublic(b)
+		if er == nil && subtle.ConstantTimeCompare([]byte(fp), []byte(sshkey.Fingerprint(p))) == 1 {
+			return true
+		}
+	}
+	return false
+}
 func (s *Server) grants(fp, comment string) []TunnelConfig {
 	var out []TunnelConfig
 	for _, t := range s.Config.Tunnels {
@@ -175,7 +232,7 @@ func (s *Server) grants(fp, comment string) []TunnelConfig {
 	}
 	return out
 }
-func (s *Server) authorize(r *http.Request, fp, comment string, info protocol.ClientInfo, grants []TunnelConfig) ([]TunnelConfig, time.Duration, error) {
+func (s *Server) authorize(r *http.Request, fp, comment, sessionID string, info protocol.ClientInfo, grants []TunnelConfig) ([]TunnelConfig, time.Duration, error) {
 	names := make([]string, len(grants))
 	for i, g := range grants {
 		names[i] = g.Name
@@ -184,7 +241,7 @@ func (s *Server) authorize(r *http.Request, fp, comment string, info protocol.Cl
 	for k, v := range info.Extra {
 		extra[k] = v
 	}
-	result, err := Authorize(r.Context(), s.Config.Authorizer, AuthorizationInput{SourceIP: r.RemoteAddr, KeyFingerprint: fp, KeyComment: comment, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now()})
+	result, err := Authorize(r.Context(), s.Config.Authorizer, AuthorizationInput{SourceIP: r.RemoteAddr, KeyFingerprint: fp, KeyComment: comment, SessionID: sessionID, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now()})
 	if err != nil || !result.Allow {
 		return nil, 0, fmt.Errorf("%v", err)
 	}
@@ -221,7 +278,52 @@ func (s *Server) Reload(c Config) {
 	c.TLS = s.Config.TLS
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
 	s.Config = c
+	for _, v := range s.sessions.All() {
+		if !s.authorizedFingerprint(v.Fingerprint) {
+			s.sessions.Delete(v.Token)
+			s.dropSession(v)
+			continue
+		}
+		allowed := map[string]bool{}
+		for _, g := range s.grants(v.Fingerprint, "") {
+			allowed[g.Name] = true
+		}
+		kept := v.Tunnels[:0]
+		for _, t := range v.Tunnels {
+			if allowed[t.Name] {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) != len(v.Tunnels) {
+			s.sessions.Delete(v.Token)
+			s.dropSession(v)
+		}
+	}
 	s.log.Info("configuration reloaded")
+}
+
+type rateState struct {
+	n     int
+	since time.Time
+}
+
+func (s *Server) allowSource(remote string) bool {
+	host, _, _ := net.SplitHostPort(remote)
+	if host == "" {
+		host = remote
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.rates[host]
+	if v == nil || time.Since(v.since) > time.Minute {
+		s.rates[host] = &rateState{n: 1, since: time.Now()}
+		return true
+	}
+	v.n++
+	return v.n <= 20
+}
+func (s *Server) audit(event string, session Session, reason string, risk int) {
+	s.log.Info("audit", "event", event, "session_id", session.ID, "fingerprint", session.Fingerprint, "reason", reason, "risk_score", risk)
 }
 func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
