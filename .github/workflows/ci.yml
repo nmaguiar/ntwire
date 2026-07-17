@@ -1,16 +1,54 @@
 name: CI
+
 on: [push, pull_request]
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: {go-version: stable}
+        with:
+          go-version: stable
       - run: go test ./...
-      - run: GOOS=linux GOARCH=amd64 go build ./cmd/...
-      - run: GOOS=linux GOARCH=arm64 go build ./cmd/...
-      - run: GOOS=darwin GOARCH=amd64 go build ./cmd/...
-      - run: GOOS=darwin GOARCH=arm64 go build ./cmd/...
-      - run: GOOS=windows GOARCH=amd64 go build ./cmd/...
-      - run: GOOS=windows GOARCH=arm64 go build ./cmd/...
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+          - os: windows
+            arch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build binaries
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          suffix=""
+          if [ "$GOOS" = windows ]; then suffix=.exe; fi
+          go build -o "dist/nwire${suffix}" ./cmd/nwire
+          go build -o "dist/nwire-server${suffix}" ./cmd/nwire-server
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nwire-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/
+          if-no-files-found: error
