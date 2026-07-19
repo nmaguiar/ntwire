@@ -8,6 +8,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// DefaultIdentityFile returns the first conventional OpenSSH identity file
+// present in ~/.ssh. The same home-relative location is used on every
+// supported platform, including Windows.
+//
+// An explicit -i flag or identity_file setting always takes precedence.
+func DefaultIdentityFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return defaultIdentityFile(home)
+}
+
+func defaultIdentityFile(home string) string {
+	for _, name := range []string{
+		"id_rsa",
+		"id_ecdsa",
+		"id_ecdsa_sk",
+		"id_ed25519",
+		"id_ed25519_sk",
+		"id_xmss",
+		"id_dsa",
+	} {
+		path := filepath.Join(home, ".ssh", name)
+		info, err := os.Stat(path)
+		if err == nil && info.Mode().IsRegular() {
+			return path
+		}
+	}
+	return ""
+}
+
 // Settings is the optional persistent configuration stored at
 // ~/.nwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {

@@ -102,8 +102,14 @@ func connect(args []string) {
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
+	if *key == "" {
+		*key = client.DefaultIdentityFile()
+	}
 	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nwire connect -i key [--port name=15432] https://server:8443")
+		fmt.Fprintln(os.Stderr, "usage: nwire connect [-i key] [--port name=15432] https://server:8443")
+		if *key == "" {
+			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
+		}
 		os.Exit(2)
 	}
 	ports := map[string]int{}
@@ -173,8 +179,14 @@ func list(args []string) {
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
+	if *key == "" {
+		*key = client.DefaultIdentityFile()
+	}
 	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nwire list -i key https://server:8443")
+		fmt.Fprintln(os.Stderr, "usage: nwire list [-i key] https://server:8443")
+		if *key == "" {
+			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
+		}
 		os.Exit(2)
 	}
 	info, err := collectedInfo(*collect)
