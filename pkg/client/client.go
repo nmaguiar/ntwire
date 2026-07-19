@@ -26,6 +26,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -207,7 +208,7 @@ func authenticate(h *http.Client, url, keyPath string, info protocol.ClientInfo,
 type Connection struct {
 	Response       protocol.AuthResponse
 	Stack          *wgnet.Stack
-	listeners      []net.Listener
+	tunnels        []*localTunnel
 	LocalAddresses []string
 	token, base    string
 	mu             sync.Mutex
@@ -219,6 +220,32 @@ type Connection struct {
 	UIURL          string
 	statusFile     string
 	keyPath        string
+}
+
+// TunnelStats is the traffic observed by a local listener for one tunnel.
+// BytesToTunnel flow from the local application to the remote virtual port;
+// BytesFromTunnel flow in the opposite direction.
+type TunnelStats struct {
+	BytesToTunnel   uint64 `json:"bytes_to_tunnel"`
+	BytesFromTunnel uint64 `json:"bytes_from_tunnel"`
+	Connections     uint64 `json:"connections"`
+	Active          int64  `json:"active_connections"`
+}
+
+type localTunnel struct {
+	name        string
+	virtualPort int
+	listener    net.Listener
+	localAddr   string
+	target      string
+	toTunnel    atomic.Uint64
+	fromTunnel  atomic.Uint64
+	connections atomic.Uint64
+	active      atomic.Int64
+}
+
+func (t *localTunnel) stats() TunnelStats {
+	return TunnelStats{BytesToTunnel: t.toTunnel.Load(), BytesFromTunnel: t.fromTunnel.Load(), Connections: t.connections.Load(), Active: t.active.Load()}
 }
 
 func Connect(url, keyPath string, info protocol.ClientInfo, ports map[string]int) (*Connection, error) {
@@ -272,26 +299,98 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	c := &Connection{Response: r, Stack: st, token: r.Token, base: strings.TrimRight(url, "/"), info: info, http: h, ports: options.Ports, stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath}
 	for _, t := range r.Tunnels {
 		p := options.Ports[t.Name]
+		if p < 0 || p > 65535 {
+			c.Close()
+			return nil, fmt.Errorf("invalid local port for tunnel %q", t.Name)
+		}
 		addr := net.JoinHostPort("127.0.0.1", fmt.Sprint(p))
 		l, e := net.Listen("tcp", addr)
 		if e != nil {
 			c.Close()
 			return nil, e
 		}
-		c.listeners = append(c.listeners, l)
+		target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
+		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, localAddr: l.Addr().String(), target: target}
+		c.tunnels = append(c.tunnels, lt)
 		c.LocalAddresses = append(c.LocalAddresses, l.Addr().String())
-		go c.forward(l, net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort)))
+		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
 		openBrowser(c.UIURL)
 	}
-	if err := writeStatus(c.statusFile, Status{PID: os.Getpid(), Server: c.base, UIURL: c.UIURL, LocalAddresses: c.LocalAddresses}); err != nil {
+	if err := c.writeCurrentStatus(); err != nil {
 		c.Close()
 		return nil, err
 	}
 	return c, nil
+}
+
+// ReplacePort atomically switches a tunnel to a new loopback listener. Existing
+// connections continue on the old listener while new connections use the port.
+func (c *Connection) ReplacePort(name string, port int) (string, error) {
+	if name == "" || port < 1 || port > 65535 {
+		return "", fmt.Errorf("invalid tunnel name or local port")
+	}
+	c.mu.Lock()
+	var tunnel *localTunnel
+	for _, t := range c.tunnels {
+		if t.name == name {
+			tunnel = t
+			break
+		}
+	}
+	if tunnel == nil || c.Stack == nil {
+		c.mu.Unlock()
+		return "", fmt.Errorf("unknown or disconnected tunnel %q", name)
+	}
+	if _, currentPort, err := net.SplitHostPort(tunnel.localAddr); err == nil && currentPort == fmt.Sprint(port) {
+		addr := tunnel.localAddr
+		c.mu.Unlock()
+		return addr, nil
+	}
+	c.mu.Unlock()
+
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	if c.Stack == nil {
+		c.mu.Unlock()
+		_ = l.Close()
+		return "", fmt.Errorf("connection is closed")
+	}
+	// Re-check that the tunnel still exists after binding the new port.
+	var index = -1
+	for i, t := range c.tunnels {
+		if t == tunnel {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		c.mu.Unlock()
+		_ = l.Close()
+		return "", fmt.Errorf("unknown tunnel %q", name)
+	}
+	old := tunnel.listener
+	tunnel.listener, tunnel.localAddr = l, l.Addr().String()
+	c.LocalAddresses[index] = tunnel.localAddr
+	addr := tunnel.localAddr
+	c.mu.Unlock()
+	_ = old.Close()
+	go c.forward(tunnel, l, tunnel.target)
+	_ = c.writeCurrentStatus()
+	return addr, nil
+}
+
+func (c *Connection) writeCurrentStatus() error {
+	c.mu.Lock()
+	s := Status{PID: os.Getpid(), Server: c.base, UIURL: c.UIURL, LocalAddresses: append([]string(nil), c.LocalAddresses...)}
+	c.mu.Unlock()
+	return writeStatus(c.statusFile, s)
 }
 
 func (c *Connection) renewLoop() {
@@ -395,9 +494,36 @@ func (c *Connection) startWebUI() {
 			http.NotFound(w, r)
 			return
 		}
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		_ = json.NewEncoder(w).Encode(map[string]any{"connected": c.Stack != nil, "tunnels": c.Response.Tunnels, "local_addresses": c.LocalAddresses, "ttl_seconds": c.Response.TTLSeconds})
+		_ = json.NewEncoder(w).Encode(c.webStatus())
+	})
+	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPut {
+			w.Header().Set("Allow", http.MethodPut)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, "/tunnels/")
+		if name == "" || strings.Contains(name, "/") {
+			http.Error(w, "invalid tunnel name", http.StatusBadRequest)
+			return
+		}
+		var in struct {
+			LocalPort int `json:"local_port"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		address, err := c.ReplacePort(name, in.LocalPort)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"local_address": address})
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
@@ -415,6 +541,28 @@ func (c *Connection) startWebUI() {
 	go func() { _ = c.ui.Serve(l) }()
 }
 
+type webTunnel struct {
+	Name         string      `json:"name"`
+	VirtualPort  int         `json:"virtual_port"`
+	Description  string      `json:"description"`
+	LocalAddress string      `json:"local_address"`
+	Stats        TunnelStats `json:"stats"`
+}
+
+func (c *Connection) webStatus() map[string]any {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tunnels := make([]webTunnel, 0, len(c.tunnels))
+	for i, t := range c.tunnels {
+		wt := webTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats()}
+		if i < len(c.Response.Tunnels) {
+			wt.Description = c.Response.Tunnels[i].Description
+		}
+		tunnels = append(tunnels, wt)
+	}
+	return map[string]any{"connected": c.Stack != nil, "tunnels": tunnels, "ttl_seconds": c.Response.TTLSeconds}
+}
+
 func openBrowser(url string) {
 	var command string
 	var args []string
@@ -430,14 +578,17 @@ func openBrowser(url string) {
 		return
 	}
 }
-func (c *Connection) forward(l net.Listener, target string) {
+func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target string) {
 	for {
-		in, e := l.Accept()
+		in, e := listener.Accept()
 		if e != nil {
 			return
 		}
 		go func() {
 			defer in.Close()
+			tunnel.connections.Add(1)
+			tunnel.active.Add(1)
+			defer tunnel.active.Add(-1)
 			c.mu.Lock()
 			stack := c.Stack
 			c.mu.Unlock()
@@ -449,8 +600,9 @@ func (c *Connection) forward(l net.Listener, target string) {
 				return
 			}
 			defer out.Close()
-			go io.Copy(out, in)
-			io.Copy(in, out)
+			go func() { n, _ := io.Copy(out, in); tunnel.toTunnel.Add(uint64(n)) }()
+			n, _ := io.Copy(in, out)
+			tunnel.fromTunnel.Add(uint64(n))
 		}()
 	}
 }
@@ -469,10 +621,10 @@ func (c *Connection) Close() {
 			}
 		}
 	}
-	for _, l := range c.listeners {
-		_ = l.Close()
+	for _, t := range c.tunnels {
+		_ = t.listener.Close()
 	}
-	c.listeners = nil
+	c.tunnels = nil
 	select {
 	case <-c.stop:
 	default:

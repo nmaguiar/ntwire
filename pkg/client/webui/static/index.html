@@ -1,5 +1,14 @@
-<!doctype html><meta charset="utf-8"><title>nwire status</title><style>body{font:16px system-ui;margin:3rem;max-width:50rem}code{background:#eee;padding:.2rem}li{margin:.5rem 0}</style><h1>nwire</h1><div id="app">Loading connection status…</div><script>
-const app=document.getElementById('app'), token=new URLSearchParams(location.search).get('token');
-async function refresh(){try{const r=await fetch('/status?token='+encodeURIComponent(token));if(!r.ok)throw Error();const s=await r.json();app.innerHTML='<p>'+(s.connected?'Connected':'Disconnected')+'</p><ul>'+s.tunnels.map((t,i)=>'<li><b>'+t.name+'</b> <code>'+s.local_addresses[i]+'</code></li>').join('')+'</ul>'}catch{app.textContent='Connection status is unavailable.'}}
+<!doctype html>
+<meta charset="utf-8">
+<title>nwire status</title>
+<style>
+body{font:16px system-ui;margin:3rem;max-width:58rem}code{background:#eee;padding:.2rem}li{margin:1rem 0}.stats{color:#555;font-size:.9rem;margin:.35rem 0}input{width:7rem;margin-left:.5rem}button{margin-left:.35rem}#message{min-height:1.4em;color:#a33}
+</style>
+<h1>nwire</h1><div id="app">Loading connection status…</div><p id="message" role="status"></p>
+<script>
+const app=document.getElementById('app'),message=document.getElementById('message'),token=new URLSearchParams(location.search).get('token');
+function bytes(n){const u=['B','KiB','MiB','GiB','TiB'];let i=0;while(n>=1024&&i<u.length-1){n/=1024;i++}return n.toFixed(i?1:0)+' '+u[i]}
+function item(t){const li=document.createElement('li'),title=document.createElement('b'),addr=document.createElement('code'),form=document.createElement('form'),input=document.createElement('input'),button=document.createElement('button'),stats=document.createElement('div');title.textContent=t.name+' ';addr.textContent=t.local_address;stats.className='stats';stats.textContent='to tunnel: '+bytes(t.stats.bytes_to_tunnel)+' · from tunnel: '+bytes(t.stats.bytes_from_tunnel)+' · connections: '+t.stats.connections+' ('+t.stats.active_connections+' active)';input.type='number';input.min='1';input.max='65535';input.value=t.local_address.split(':').pop();button.textContent='Replace port';form.append('Local port ',input,button);form.addEventListener('submit',async e=>{e.preventDefault();message.textContent='';button.disabled=true;try{const r=await fetch('/tunnels/'+encodeURIComponent(t.name)+'?token='+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({local_port:Number(input.value)})});if(!r.ok)throw Error(await r.text());message.textContent='Local port replaced.';await refresh()}catch(e){message.textContent='Could not replace port: '+e.message}finally{button.disabled=false}});li.append(title,addr,stats,form);return li}
+async function refresh(){try{const r=await fetch('/status?token='+encodeURIComponent(token));if(!r.ok)throw Error();const s=await r.json();app.replaceChildren();const state=document.createElement('p');state.textContent=s.connected?'Connected':'Disconnected';const list=document.createElement('ul');s.tunnels.forEach(t=>list.append(item(t)));app.append(state,list)}catch{app.textContent='Connection status is unavailable.'}}
 refresh();setInterval(refresh,5000);
 </script>
