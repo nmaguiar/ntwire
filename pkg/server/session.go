@@ -29,7 +29,9 @@ type Sessions struct {
 func NewSessions() *Sessions { return &Sessions{byToken: map[string]Session{}} }
 func token() string {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("session: crypto/rand unavailable: " + err.Error())
+	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 

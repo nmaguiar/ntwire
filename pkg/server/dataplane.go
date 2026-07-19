@@ -17,9 +17,16 @@ type dataPlane struct {
 	serverIP  netip.Addr
 	mu        sync.Mutex
 	next      uint32
-	listeners []net.Listener
+	listeners map[string]*tunnelListener // keyed by tunnel name
 	stop      chan struct{}
 	ws        *wstransport.Hybrid
+}
+
+// tunnelListener pairs a live listener with the tunnel config it was opened
+// for, so a reload can detect a changed target/virtual_port and recycle it.
+type tunnelListener struct {
+	listener net.Listener
+	config   TunnelConfig
 }
 
 // StartDataPlane starts an unprivileged WireGuard UDP endpoint and TCP
@@ -39,7 +46,7 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws}
+	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws, listeners: map[string]*tunnelListener{}}
 	s.data = d
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {
@@ -47,7 +54,7 @@ func (s *Server) StartDataPlane() error {
 			return err
 		}
 	}
-	go s.reapLoop()
+	go s.reapLoop(d)
 	return nil
 }
 func portOf(address string) (int, error) {
@@ -64,7 +71,9 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 	if err != nil {
 		return err
 	}
-	d.listeners = append(d.listeners, l)
+	d.mu.Lock()
+	d.listeners[tunnel.Name] = &tunnelListener{listener: l, config: tunnel}
+	d.mu.Unlock()
 	go func() {
 		for {
 			c, e := l.Accept()
@@ -75,6 +84,48 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 		}
 	}()
 	return nil
+}
+
+// reloadTunnels reconciles the live listener set against the newly loaded
+// tunnel configuration: listeners for removed tunnels, or tunnels whose
+// target or virtual_port changed, are closed; listeners for added or
+// changed tunnels are opened. Unchanged tunnels keep their listener and any
+// in-flight connections untouched. A connection already accepted on a
+// changed tunnel keeps proxying to its original target until it closes;
+// only new connections observe the new target.
+func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
+	if s.data == nil {
+		return
+	}
+	d := s.data
+	wanted := make(map[string]TunnelConfig, len(newTunnels))
+	for _, t := range newTunnels {
+		wanted[t.Name] = t
+	}
+	d.mu.Lock()
+	var toClose []*tunnelListener
+	var toOpen []TunnelConfig
+	for name, tl := range d.listeners {
+		nt, ok := wanted[name]
+		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target {
+			toClose = append(toClose, tl)
+			delete(d.listeners, name)
+		}
+	}
+	for name, nt := range wanted {
+		if _, exists := d.listeners[name]; !exists {
+			toOpen = append(toOpen, nt)
+		}
+	}
+	d.mu.Unlock()
+	for _, tl := range toClose {
+		_ = tl.listener.Close()
+	}
+	for _, nt := range toOpen {
+		if err := s.listenTunnel(d, nt); err != nil {
+			s.log.Warn("failed to open tunnel listener on reload", "tunnel", nt.Name, "error", err)
+		}
+	}
 }
 func (s *Server) proxy(t TunnelConfig, in net.Conn) {
 	defer in.Close()
@@ -139,11 +190,14 @@ func (s *Server) dropSession(v Session) {
 	if s.data != nil && v.WireGuardPublicKey != "" {
 		_ = s.data.stack.RemovePeer(v.WireGuardPublicKey)
 	}
-	if s.data != nil && s.data.ws != nil {
-		s.data.ws.WebSocket.CloseSession(v.ID)
+	if s.data != nil && s.data.ws != nil && v.WireGuardPublicKey != "" {
+		s.data.ws.WebSocket.CloseSession(v.WireGuardPublicKey)
 	}
 }
-func (s *Server) reapLoop() {
+
+// reapLoop takes d explicitly (rather than reading s.data on each iteration)
+// so it never races with Close() nilling s.data out from under it.
+func (s *Server) reapLoop(d *dataPlane) {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
@@ -153,7 +207,7 @@ func (s *Server) reapLoop() {
 				s.dropSession(v)
 				s.audit("session_expired", v, "", 0)
 			}
-		case <-s.data.stop:
+		case <-d.stop:
 			return
 		}
 	}
@@ -163,9 +217,11 @@ func (s *Server) Close() {
 		return
 	}
 	close(s.data.stop)
-	for _, l := range s.data.listeners {
-		_ = l.Close()
+	s.data.mu.Lock()
+	for _, tl := range s.data.listeners {
+		_ = tl.listener.Close()
 	}
+	s.data.mu.Unlock()
 	_ = s.data.stack.Close()
 	s.data = nil
 }

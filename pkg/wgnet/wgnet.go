@@ -135,4 +135,12 @@ func (s *Stack) Listen(network, address string) (net.Listener, error) {
 	}
 	return s.Net.ListenTCP(a)
 }
-func (s *Stack) Close() error { s.device.Close(); return s.tun.Close() }
+
+// Close tears the device down. It deliberately does not also close s.tun:
+// wireguard-go's Device.Close already closes the tun.Device it was built
+// with, so closing it again here would double-close the netstack tun's
+// internal channels and panic.
+func (s *Stack) Close() error {
+	s.device.Close()
+	return nil
+}

@@ -156,3 +156,15 @@ func TestInfoHandler(t *testing.T) {
 		t.Fatalf("capabilities missing ssh-auth: %+v", out["capabilities"])
 	}
 }
+
+func TestAllowSourcePrunesStaleEntries(t *testing.T) {
+	s := New(Config{}, nil)
+	s.rates["198.51.100.1"] = &rateState{n: 20, since: time.Now().Add(-2 * time.Minute)}
+
+	if !s.allowSource("198.51.100.2:12345") {
+		t.Fatal("a fresh source should be allowed")
+	}
+	if _, ok := s.rates["198.51.100.1"]; ok {
+		t.Fatal("a rate entry older than the window should have been pruned")
+	}
+}

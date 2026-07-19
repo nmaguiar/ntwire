@@ -20,14 +20,15 @@ import (
 )
 
 type Server struct {
-	Config   Config
-	sessions *Sessions
-	nonces   map[string]time.Time
-	mu       sync.Mutex
-	log      *slog.Logger
-	data     *dataPlane
-	rates    map[string]*rateState
-	oidc     *oidcauth.Verifiers
+	Config     Config
+	sessions   *Sessions
+	nonces     map[string]time.Time
+	mu         sync.Mutex
+	log        *slog.Logger
+	data       *dataPlane
+	rates      map[string]*rateState
+	oidc       *oidcauth.Verifiers
+	tlsManager *TLSManager
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -39,6 +40,15 @@ func New(c Config, l *slog.Logger) *Server {
 		s.oidc = newVerifiers(c, l)
 	}
 	return s
+}
+
+// SetTLSManager attaches the TLS certificate manager whose Config() the
+// caller is serving with, so a later Reload picks up a cert/key file change
+// (e.g. a renewed certificate) without restarting the listener.
+func (s *Server) SetTLSManager(m *TLSManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tlsManager = m
 }
 func newVerifiers(c Config, l *slog.Logger) *oidcauth.Verifiers {
 	cfgs := make([]oidcauth.IssuerConfig, 0, len(c.Auth.OIDC.Issuers))
@@ -229,7 +239,11 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid session", http.StatusUnauthorized)
 		return
 	}
-	if err := s.data.ws.WebSocket.ServeHTTP(w, r, v.ID); err != nil {
+	// Keyed by WireGuardPublicKey, not session ID: the key is stable across a
+	// renewal (which mints a new session ID) so the fallback connection the
+	// client opened once at Connect time keeps working after renewal instead
+	// of being torn down (see dropSession / renew).
+	if err := s.data.ws.WebSocket.ServeHTTP(w, r, v.WireGuardPublicKey); err != nil {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}
 }
@@ -258,6 +272,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}, body.Info, grants)
 	if err != nil {
 		s.sessions.Delete(t)
+		s.dropSession(old)
 		fail(w, 403, "authorization denied")
 		return
 	}
@@ -266,7 +281,11 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, TargetHint: g.Target})
 	}
 	s.sessions.Delete(t)
-	s.dropSession(old)
+	// Deliberately not dropSession here: WireGuardPublicKey and TunnelIP carry
+	// over unchanged into the renewed session below, and both the WireGuard
+	// device peer and the WebSocket fallback connection are keyed by that
+	// public key (not the session ID/token that just changed), so they stay
+	// valid across renewal without being torn down and reopened.
 	n := s.sessions.Create(CreateParams{
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
@@ -421,8 +440,11 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 		AuthMethod: ac.Method, Identity: ac.Identity, Issuer: ac.Issuer, Groups: ac.Groups,
 		SessionID: ac.SessionID, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now(),
 	})
-	if err != nil || !result.Allow {
-		return nil, 0, fmt.Errorf("%v", err)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !result.Allow {
+		return nil, 0, fmt.Errorf("authorizer denied")
 	}
 	if result.AllowedTunnels != "*" {
 		allowed := map[string]bool{}
@@ -448,8 +470,12 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 	return grants, ttl, nil
 }
 
-// Reload safely replaces only runtime configuration. Listener and TLS changes
-// are intentionally ignored until restart.
+// Reload safely replaces runtime configuration. Tunnel additions, removals,
+// and target/virtual_port changes take effect immediately by recycling the
+// affected data-plane listeners, and an explicit TLS cert_file/key_file pair
+// is re-read from disk so a renewed certificate is served without a
+// restart. Listener address, cert_file/key_file *paths*, and tunnel-CIDR
+// changes are intentionally ignored until restart.
 func (s *Server) Reload(c Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -461,6 +487,12 @@ func (s *Server) Reload(c Config) {
 	if !reflect.DeepEqual(oldIssuers, c.Auth.OIDC.Issuers) {
 		s.oidc = newVerifiers(c, s.log)
 	}
+	if s.tlsManager != nil {
+		if err := s.tlsManager.Reload(); err != nil {
+			s.log.Warn("TLS certificate reload failed, keeping previous certificate", "error", err)
+		}
+	}
+	s.reloadTunnels(c.Tunnels)
 	validIssuers := map[string]bool{}
 	for _, iss := range c.Auth.OIDC.Issuers {
 		validIssuers[iss.Name] = true
@@ -494,7 +526,7 @@ func (s *Server) Reload(c Config) {
 }
 
 func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {
-	kept := v.Tunnels[:0]
+	kept := make([]protocol.Tunnel, 0, len(v.Tunnels))
 	for _, t := range v.Tunnels {
 		if allowed[t.Name] {
 			kept = append(kept, t)
@@ -525,6 +557,12 @@ func (s *Server) allowSource(remote string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
+	for k, v := range s.rates {
+		if now.Sub(v.since) > time.Minute {
+			delete(s.rates, k)
+		}
+	}
 	v := s.rates[host]
 	if v == nil || time.Since(v.since) > time.Minute {
 		s.rates[host] = &rateState{n: 1, since: time.Now()}
