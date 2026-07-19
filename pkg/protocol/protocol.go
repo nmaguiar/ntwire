@@ -28,6 +28,34 @@ type AuthRequest struct {
 	Info               ClientInfo `json:"client_info"`
 	Signature          string     `json:"signature"`
 }
+
+// OIDCAuthRequest authenticates with an ID token instead of an SSH signature.
+// There is no nonce: the ID token carries its own exp/iat, and the existing
+// per-source-IP rate limit bounds replay of a still-valid token.
+type OIDCAuthRequest struct {
+	Version            int        `json:"version"`
+	IssuerName         string     `json:"issuer_name"`
+	IDToken            string     `json:"id_token"`
+	WireGuardPublicKey string     `json:"wireguard_public_key"`
+	Timestamp          string     `json:"timestamp"`
+	Info               ClientInfo `json:"client_info"`
+}
+
+// OIDCIssuerInfo advertises an issuer to clients so they can run the login
+// flow with zero local configuration.
+type OIDCIssuerInfo struct {
+	Name        string   `json:"name"`
+	Issuer      string   `json:"issuer"`
+	ClientID    string   `json:"client_id"`
+	Scopes      []string `json:"scopes,omitempty"`
+	GroupsClaim string   `json:"groups_claim,omitempty"`
+}
+
+type InfoResponse struct {
+	Version      int              `json:"version"`
+	Capabilities []string         `json:"capabilities"`
+	OIDCIssuers  []OIDCIssuerInfo `json:"oidc_issuers,omitempty"`
+}
 type Tunnel struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`

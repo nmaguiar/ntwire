@@ -4,6 +4,18 @@ metadata: {name: ntwire-config}
 data:
   ntwire.yaml: |
     listen: {https: ":8443", wireguard: ":51820"}
-    auth: {authorized_keys_dir: /etc/ntwire/keys, session_ttl: 15m}
+    auth:
+      authorized_keys_dir: /etc/ntwire/keys
+      session_ttl: 15m
+      # SSO (OIDC) as a parallel authentication method — see
+      # docs/SECURITY.md and deploy/OIDC-SETUP.md before enabling.
+      # oidc:
+      #   issuers:
+      #     - name: entra
+      #       issuer: https://login.microsoftonline.com/<tenant-id>/v2.0
+      #       client_id: <application-client-id>
+      #       scopes: [openid, email, profile]
+      #       groups_claim: groups
+      #       require_verified_email: true
     network: {tunnel_cidr: 100.64.0.0/16, advertised_endpoint: "ntwire-server:51820"}
     tunnels: []

@@ -15,6 +15,10 @@ type AuthorizationInput struct {
 	SourceIP       string            `json:"source_ip"`
 	KeyFingerprint string            `json:"key_fingerprint"`
 	KeyComment     string            `json:"key_comment"`
+	AuthMethod     string            `json:"auth_method"` // "ssh" or "oidc"
+	Identity       string            `json:"identity,omitempty"`
+	Issuer         string            `json:"issuer,omitempty"`
+	Groups         []string          `json:"groups,omitempty"`
 	SessionID      string            `json:"session_id"`
 	ClientInfo     map[string]string `json:"client_info"`
 	GrantedTunnels []string          `json:"granted_tunnels_by_yaml"`

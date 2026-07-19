@@ -3,6 +3,16 @@ listen:
   wireguard: ":51820"
 auth:
   authorized_keys_dir: /etc/ntwire/keys
+  # SSO (OIDC) as a parallel authentication method — see
+  # docs/SECURITY.md and deploy/OIDC-SETUP.md before enabling.
+  # oidc:
+  #   issuers:
+  #     - name: google
+  #       issuer: https://accounts.google.com
+  #       client_id: 1234-abc.apps.googleusercontent.com
+  #       scopes: [openid, email, profile]
+  #       # groups_claim: groups
+  #       require_verified_email: true
   session_ttl: 15m
 network:
   tunnel_cidr: 100.64.0.0/16
