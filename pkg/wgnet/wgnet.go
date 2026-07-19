@@ -7,6 +7,7 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
@@ -56,7 +57,7 @@ func New(c Config) (*Stack, error) {
 			return nil, err
 		}
 	}
-	raw, err := base64.StdEncoding.DecodeString(key.Private)
+	raw, err := decodeKey(key.Private)
 	if err != nil {
 		return nil, fmt.Errorf("invalid WireGuard private key: %w", err)
 	}
@@ -74,7 +75,9 @@ func New(c Config) (*Stack, error) {
 		bind = conn.NewStdNetBind()
 	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
-	lines := "private_key=" + key.Private + "\n"
+	// nwire carries WireGuard keys as Base64, while WireGuard's IPC protocol
+	// requires their 32-byte values encoded as hexadecimal.
+	lines := "private_key=" + hex.EncodeToString(raw) + "\n"
 	if c.ListenPort > 0 {
 		lines += "listen_port=" + strconv.Itoa(c.ListenPort) + "\n"
 	}
@@ -90,10 +93,11 @@ func New(c Config) (*Stack, error) {
 }
 func (s *Stack) PublicKey() string { return s.key.Public }
 func (s *Stack) AddPeer(e Endpoint) error {
-	if _, err := base64.StdEncoding.DecodeString(e.PublicKey); err != nil {
+	public, err := decodeKey(e.PublicKey)
+	if err != nil {
 		return fmt.Errorf("invalid peer public key: %w", err)
 	}
-	lines := "public_key=" + e.PublicKey + "\nreplace_allowed_ips=true\n"
+	lines := "public_key=" + hex.EncodeToString(public) + "\nreplace_allowed_ips=true\n"
 	// Address is an allowed CIDR, optionally followed by @host:port endpoint.
 	parts := strings.SplitN(e.Address, "@", 2)
 	if parts[0] != "" {
@@ -103,6 +107,17 @@ func (s *Stack) AddPeer(e Endpoint) error {
 		lines += "endpoint=" + parts[1] + "\n"
 	}
 	return s.device.IpcSet(lines)
+}
+
+func decodeKey(encoded string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	if len(key) != 32 {
+		return nil, fmt.Errorf("expected 32 bytes, got %d", len(key))
+	}
+	return key, nil
 }
 func (s *Stack) RemovePeer(publicKey string) error {
 	return s.device.IpcSet("public_key=" + publicKey + "\nremove=true\n")
