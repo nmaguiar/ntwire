@@ -50,6 +50,8 @@ type Settings struct {
 	Insecure     bool           `yaml:"insecure"`
 	NoBrowser    bool           `yaml:"no_browser"`
 	CollectExec  string         `yaml:"collect_exec"`
+	SSO          bool           `yaml:"sso"`
+	Provider     string         `yaml:"provider"`
 }
 
 func DefaultConfigFile() string {

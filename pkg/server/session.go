@@ -8,10 +8,18 @@ import (
 	"time"
 )
 
+// Session identifies a principal by (Method, Identity): for SSH, Identity is
+// the key fingerprint (mirrored in Fingerprint for existing callers); for
+// OIDC, Identity is the verified email and Issuer/Groups are also populated.
 type Session struct {
-	ID, Token, Fingerprint, WireGuardPublicKey, TunnelIP string
-	Tunnels                                              []protocol.Tunnel
-	Expires                                              time.Time
+	ID, Token                                 string
+	Method                                    string // "ssh" or "oidc"
+	Identity                                  string
+	Fingerprint, WireGuardPublicKey, TunnelIP string
+	Issuer                                    string
+	Groups                                    []string
+	Tunnels                                   []protocol.Tunnel
+	Expires                                   time.Time
 }
 type Sessions struct {
 	mu      sync.Mutex
@@ -24,10 +32,30 @@ func token() string {
 	_, _ = rand.Read(b)
 	return base64.RawURLEncoding.EncodeToString(b)
 }
-func (s *Sessions) Create(fp, wgKey, tunnelIP string, ts []protocol.Tunnel, ttl time.Duration) Session {
+
+// CreateParams describes a new session. Method-specific fields
+// (Fingerprint / Issuer+Groups) are left zero for the other method.
+type CreateParams struct {
+	Method                       string
+	Identity                     string
+	Fingerprint                  string
+	Issuer                       string
+	Groups                       []string
+	WireGuardPublicKey, TunnelIP string
+	Tunnels                      []protocol.Tunnel
+	TTL                          time.Duration
+}
+
+func (s *Sessions) Create(p CreateParams) Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	v := Session{ID: token(), Token: token(), Fingerprint: fp, WireGuardPublicKey: wgKey, TunnelIP: tunnelIP, Tunnels: ts, Expires: time.Now().Add(ttl)}
+	v := Session{
+		ID: token(), Token: token(),
+		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
+		Issuer: p.Issuer, Groups: p.Groups,
+		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
+		Tunnels: p.Tunnels, Expires: time.Now().Add(p.TTL),
+	}
 	s.byToken[v.Token] = v
 	return v
 }
@@ -42,7 +70,10 @@ func (s *Sessions) Get(t string) (Session, bool) {
 	return v, true
 }
 func (s *Sessions) Delete(t string) { s.mu.Lock(); defer s.mu.Unlock(); delete(s.byToken, t) }
-func (s *Sessions) CountFingerprint(fp string) int {
+
+// CountIdentity counts live sessions for one principal, scoped by method so
+// an SSH fingerprint and an OIDC email can never collide in the count.
+func (s *Sessions) CountIdentity(method, identity string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -52,7 +83,7 @@ func (s *Sessions) CountFingerprint(fp string) int {
 			delete(s.byToken, k)
 			continue
 		}
-		if v.Fingerprint == fp {
+		if v.Method == method && v.Identity == identity {
 			n++
 		}
 	}

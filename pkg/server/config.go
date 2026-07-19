@@ -19,6 +19,7 @@ type Config struct {
 	} `yaml:"listen"`
 	Auth struct {
 		AuthorizedKeysDir string        `yaml:"authorized_keys_dir"`
+		OIDC              OIDCConfig    `yaml:"oidc"`
 		SessionTTL        time.Duration `yaml:"session_ttl"`
 		MaxSessionsPerKey int           `yaml:"max_sessions_per_key"`
 	} `yaml:"auth"`
@@ -29,6 +30,22 @@ type Config struct {
 	Authorizer AuthorizerConfig `yaml:"authorizer"`
 	Tunnels    []TunnelConfig   `yaml:"tunnels"`
 }
+type OIDCConfig struct {
+	Issuers []OIDCIssuerConfig `yaml:"issuers"`
+}
+type OIDCIssuerConfig struct {
+	Name                 string   `yaml:"name"`
+	Issuer               string   `yaml:"issuer"`
+	ClientID             string   `yaml:"client_id"`
+	Scopes               []string `yaml:"scopes"`
+	GroupsClaim          string   `yaml:"groups_claim"`
+	RequireVerifiedEmail *bool    `yaml:"require_verified_email"`
+}
+
+func (c OIDCIssuerConfig) RequireVerified() bool {
+	return c.RequireVerifiedEmail == nil || *c.RequireVerifiedEmail
+}
+
 type AuthorizerConfig struct {
 	WebhookURL string        `yaml:"webhook_url"`
 	Exec       string        `yaml:"exec"`
@@ -63,8 +80,22 @@ func LoadConfig(path string) (Config, error) {
 	if c.Authorizer.Timeout == 0 {
 		c.Authorizer.Timeout = 5 * time.Second
 	}
-	if c.Auth.AuthorizedKeysDir == "" {
-		return c, fmt.Errorf("auth.authorized_keys_dir is required")
+	if c.Auth.AuthorizedKeysDir == "" && len(c.Auth.OIDC.Issuers) == 0 {
+		return c, fmt.Errorf("at least one of auth.authorized_keys_dir or auth.oidc.issuers is required")
+	}
+	seenIssuers := map[string]bool{}
+	for i := range c.Auth.OIDC.Issuers {
+		iss := &c.Auth.OIDC.Issuers[i]
+		if iss.Name == "" || iss.Issuer == "" || iss.ClientID == "" {
+			return c, fmt.Errorf("auth.oidc.issuers require name, issuer, and client_id")
+		}
+		if seenIssuers[iss.Name] {
+			return c, fmt.Errorf("duplicate oidc issuer %q", iss.Name)
+		}
+		seenIssuers[iss.Name] = true
+		if len(iss.Scopes) == 0 {
+			iss.Scopes = []string{"openid", "email", "profile"}
+		}
 	}
 	if c.Network.TunnelCIDR == "" {
 		c.Network.TunnelCIDR = "100.64.0.0/16"

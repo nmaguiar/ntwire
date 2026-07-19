@@ -43,12 +43,37 @@ func main() {
 		disconnect(os.Args[2:])
 	case "port":
 		port(os.Args[2:])
+	case "logout":
+		logout(os.Args[2:])
 	default:
 		usage()
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ntwire <keygen|list|connect|status|disconnect|port|version>")
+	fmt.Fprintln(os.Stderr, "usage: ntwire <keygen|list|connect|status|disconnect|port|logout|version>")
+}
+
+// logout clears cached SSO tokens for a server, so the next authentication
+// reopens the browser (or device flow) instead of silently refreshing.
+func logout(args []string) {
+	settings, configPath := settingsFor(args)
+	fs := flag.NewFlagSet("logout", flag.ExitOnError)
+	fs.String("config", configPath, "persistent client configuration")
+	cache := fs.String("token-cache", "", "token cache file")
+	fs.Parse(args)
+	server := settings.Server
+	if fs.NArg() == 1 {
+		server = fs.Arg(0)
+	}
+	if server == "" || fs.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "usage: ntwire logout https://server:8443")
+		os.Exit(2)
+	}
+	if err := client.Logout(*cache, server); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	fmt.Println("logged out of", server)
 }
 
 // port replaces the local loopback port for a running tunnel. The connect
@@ -155,7 +180,10 @@ func connect(args []string) {
 	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
 	insecure := fs.Bool("insecure", settings.Insecure, "skip TLS certificate verification")
 	known := fs.String("known-servers", "", "known servers file")
-	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open the local status UI in a browser")
+	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open a browser (local status UI, and SSO login falls back to the device flow)")
+	sso := fs.Bool("sso", settings.SSO, "use SSO (OIDC) authentication instead of an SSH key")
+	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
+	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	websocket := fs.Bool("websocket", false, "use the WebSocket WireGuard transport")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
 	mappings := multiFlag{}
@@ -165,14 +193,11 @@ func connect(args []string) {
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
-	if *key == "" {
+	if *key == "" && !*sso {
 		*key = client.DefaultIdentityFile()
 	}
-	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire connect [-i key] [--port name=15432] https://server:8443")
-		if *key == "" {
-			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
-		}
+	if server == "" || fs.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "usage: ntwire connect [-i key | --sso] [--port name=15432] https://server:8443")
 		os.Exit(2)
 	}
 	ports := map[string]int{}
@@ -197,7 +222,10 @@ func connect(args []string) {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(2)
 	}
-	o := client.Options{Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket}
+	o := client.Options{
+		Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket,
+		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
+	}
 	c, e := client.ConnectWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {
@@ -236,20 +264,21 @@ func list(args []string) {
 	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
 	insecure := fs.Bool("insecure", settings.Insecure, "skip TLS certificate verification")
 	known := fs.String("known-servers", "", "known servers file")
+	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open a browser; SSO login falls back to the device flow")
+	sso := fs.Bool("sso", settings.SSO, "use SSO (OIDC) authentication instead of an SSH key")
+	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
+	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
 	fs.Parse(args)
 	server := settings.Server
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
-	if *key == "" {
+	if *key == "" && !*sso {
 		*key = client.DefaultIdentityFile()
 	}
-	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire list [-i key] https://server:8443")
-		if *key == "" {
-			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
-		}
+	if server == "" || fs.NArg() > 1 {
+		fmt.Fprintln(os.Stderr, "usage: ntwire list [-i key | --sso] https://server:8443")
 		os.Exit(2)
 	}
 	info, err := collectedInfo(*collect)
@@ -257,7 +286,10 @@ func list(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	o := client.Options{CAFile: *ca, Insecure: *insecure, KnownServersFile: *known}
+	o := client.Options{
+		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
+		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
+	}
 	r, err := client.AuthenticateWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(err, &unknown) {
