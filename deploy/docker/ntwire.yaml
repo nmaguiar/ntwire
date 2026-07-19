@@ -2,7 +2,7 @@ listen:
   https: ":8443"
   wireguard: ":51820"
 auth:
-  authorized_keys_dir: /etc/nwire/keys
+  authorized_keys_dir: /etc/ntwire/keys
   session_ttl: 15m
 network:
   tunnel_cidr: 100.64.0.0/16

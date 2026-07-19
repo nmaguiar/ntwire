@@ -58,7 +58,7 @@ func SigningPayload(r AuthRequest) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported protocol version %d", r.Version)
 	}
 	var b bytes.Buffer
-	b.WriteString("nwire-auth-v1\x00")
+	b.WriteString("ntwire-auth-v1\x00")
 	fields := []string{r.PublicKey, r.WireGuardPublicKey, r.Timestamp, r.Nonce, r.Info.OS, r.Info.Arch, r.Info.Hostname, r.Info.Username, r.Info.ClientVersion}
 	keys := make([]string, 0, len(r.Info.Extra))
 	for k := range r.Info.Extra {

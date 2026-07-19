@@ -33,11 +33,11 @@ func TestGeneratedKeySignsAndParses(t *testing.T) {
 	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
 		t.Fatal(err)
 	}
-	sig, err := SignFile(path, []byte("nwire"))
+	sig, err := SignFile(path, []byte("ntwire"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = Verify(parsed, []byte("nwire"), sig); err != nil {
+	if err = Verify(parsed, []byte("ntwire"), sig); err != nil {
 		t.Fatal(err)
 	}
 }

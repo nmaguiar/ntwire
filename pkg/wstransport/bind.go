@@ -79,7 +79,7 @@ func NewClient(url string, client *http.Client, header http.Header) *Bind {
 }
 
 // NewServer creates a bind whose ServeHTTP method attaches authenticated
-// WebSocket connections. The id is usually the nwire session ID.
+// WebSocket connections. The id is usually the ntwire session ID.
 func NewServer() *Bind { return &Bind{} }
 
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {

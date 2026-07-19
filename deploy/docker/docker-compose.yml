@@ -1,13 +1,13 @@
 services:
-  nwire-server:
+  ntwire-server:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
-    command: ["--config", "/etc/nwire/nwire.yaml"]
+    command: ["--config", "/etc/ntwire/ntwire.yaml"]
     ports: ["8443:8443", "51820:51820/udp"]
     volumes:
-      - ./nwire.yaml:/etc/nwire/nwire.yaml:ro
-      - ./keys:/etc/nwire/keys:ro
+      - ./ntwire.yaml:/etc/ntwire/ntwire.yaml:ro
+      - ./keys:/etc/ntwire/keys:ro
   echo:
     image: hashicorp/http-echo:1.0
-    command: ["-listen=:8080", "-text=nwire-ok"]
+    command: ["-listen=:8080", "-text=ntwire-ok"]

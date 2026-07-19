@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/nmaguiar/nwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
 func TestTrustServerPersistsPin(t *testing.T) {

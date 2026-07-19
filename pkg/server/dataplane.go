@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nmaguiar/nwire/pkg/wgnet"
-	"github.com/nmaguiar/nwire/pkg/wstransport"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 type dataPlane struct {

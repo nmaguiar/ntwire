@@ -9,9 +9,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/nmaguiar/nwire/pkg/client"
-	"github.com/nmaguiar/nwire/pkg/protocol"
-	"github.com/nmaguiar/nwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"golang.org/x/crypto/ssh"
 	"net/http"
 	"net/url"
@@ -48,7 +48,7 @@ func main() {
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: nwire <keygen|list|connect|status|disconnect|port|version>")
+	fmt.Fprintln(os.Stderr, "usage: ntwire <keygen|list|connect|status|disconnect|port|version>")
 }
 
 // port replaces the local loopback port for a running tunnel. The connect
@@ -58,7 +58,7 @@ func port(args []string) {
 	path := fs.String("status-file", "", "local status file")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: nwire port [--status-file path] name=local-port")
+		fmt.Fprintln(os.Stderr, "usage: ntwire port [--status-file path] name=local-port")
 		os.Exit(2)
 	}
 	parts := strings.SplitN(fs.Arg(0), "=", 2)
@@ -169,7 +169,7 @@ func connect(args []string) {
 		*key = client.DefaultIdentityFile()
 	}
 	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nwire connect [-i key] [--port name=15432] https://server:8443")
+		fmt.Fprintln(os.Stderr, "usage: ntwire connect [-i key] [--port name=15432] https://server:8443")
 		if *key == "" {
 			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
 		}
@@ -246,7 +246,7 @@ func list(args []string) {
 		*key = client.DefaultIdentityFile()
 	}
 	if *key == "" || server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: nwire list [-i key] https://server:8443")
+		fmt.Fprintln(os.Stderr, "usage: ntwire list [-i key] https://server:8443")
 		if *key == "" {
 			fmt.Fprintln(os.Stderr, "no SSH private key specified or found in ~/.ssh")
 		}
@@ -323,7 +323,7 @@ func trustPrompt(e *client.UnknownCertificateError, path string) bool {
 }
 func keygen(args []string) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	out := fs.String("o", "nwire_ed25519", "private key output")
+	out := fs.String("o", "ntwire_ed25519", "private key output")
 	fs.Parse(args)
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

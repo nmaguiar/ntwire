@@ -1,4 +1,4 @@
-# nwire control protocol v1
+# ntwire control protocol v1
 
 This is the implemented control-plane protocol. It authenticates a client and
 returns tunnel grants and the values needed to establish a WireGuard netstack
@@ -51,7 +51,7 @@ configured authorized-key directory.
 
 The signature is over binary data, never a JSON serialization:
 
-1. Write ASCII `nwire-auth-v1` followed by a zero byte.
+1. Write ASCII `ntwire-auth-v1` followed by a zero byte.
 2. For each string below, write its byte length as an unsigned 32-bit
    big-endian integer followed by its UTF-8 bytes.
 

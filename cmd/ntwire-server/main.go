@@ -2,7 +2,7 @@ package main
 
 import (
 	"flag"
-	"github.com/nmaguiar/nwire/pkg/server"
+	"github.com/nmaguiar/ntwire/pkg/server"
 	"log/slog"
 	"net/http"
 	"os"
@@ -11,7 +11,7 @@ import (
 )
 
 func main() {
-	config := flag.String("config", "nwire.yaml", "server configuration file")
+	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	flag.Parse()
 	c, err := server.LoadConfig(*config)
 	if err != nil {
@@ -45,7 +45,7 @@ func main() {
 		os.Exit(2)
 	}
 	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 10e9}
-	slog.Info("nwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard)
+	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard)
 	if err = h.ListenAndServeTLS("", ""); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)

@@ -1,8 +1,8 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
-metadata: {name: nwire-server}
+metadata: {name: ntwire-server}
 spec:
-  podSelector: {matchLabels: {app: nwire-server}}
+  podSelector: {matchLabels: {app: ntwire-server}}
   policyTypes: [Ingress, Egress]
   ingress:
     - ports: [{protocol: TCP, port: 8443}, {protocol: UDP, port: 51820}]

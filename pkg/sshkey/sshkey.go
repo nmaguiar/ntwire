@@ -1,4 +1,4 @@
-// Package sshkey parses authorized_keys material and signs nwire challenges.
+// Package sshkey parses authorized_keys material and signs ntwire challenges.
 package sshkey
 
 import (

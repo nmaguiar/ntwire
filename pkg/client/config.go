@@ -41,7 +41,7 @@ func defaultIdentityFile(home string) string {
 }
 
 // Settings is the optional persistent configuration stored at
-// ~/.nwire/config.yaml. Command-line flags take precedence over these values.
+// ~/.ntwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {
 	Server       string         `yaml:"server"`
 	IdentityFile string         `yaml:"identity_file"`
@@ -57,7 +57,7 @@ func DefaultConfigFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(h, ".nwire", "config.yaml")
+	return filepath.Join(h, ".ntwire", "config.yaml")
 }
 
 // LoadSettings treats a missing configuration file as an empty configuration.

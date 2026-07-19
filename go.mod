@@ -1,4 +1,4 @@
-module github.com/nmaguiar/nwire
+module github.com/nmaguiar/ntwire
 
 go 1.26.0
 

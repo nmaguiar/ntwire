@@ -1,6 +1,6 @@
-# nwire
+# ntwire
 
-nwire is a userspace WireGuard multi-tunnel service. SSH keys authenticate a
+ntwire is a userspace WireGuard multi-tunnel service. SSH keys authenticate a
 session, then a per-session WireGuard peer and gVisor netstack forward only
 the YAML-granted TCP targets to local `127.0.0.1` listeners. No host network
 interface or elevated privilege is needed.
@@ -23,25 +23,25 @@ plane. The client asks to pin the default self-signed certificate on first use.
 Requirements: Go 1.26 or later.
 
 ```sh
-git clone https://github.com/nmaguiar/nwire.git
-cd nwire
+git clone https://github.com/nmaguiar/ntwire.git
+cd ntwire
 go test ./...
-go build -o bin/nwire ./cmd/nwire
-go build -o bin/nwire-server ./cmd/nwire-server
+go build -o bin/ntwire ./cmd/ntwire
+go build -o bin/ntwire-server ./cmd/ntwire-server
 
-mkdir -p .local/nwire/keys
-./bin/nwire keygen -o .local/nwire/id_ed25519
-cp .local/nwire/id_ed25519.pub .local/nwire/keys/local.pub
+mkdir -p .local/ntwire/keys
+./bin/ntwire keygen -o .local/ntwire/id_ed25519
+cp .local/ntwire/id_ed25519.pub .local/ntwire/keys/local.pub
 ```
 
-Create `.local/nwire/nwire.yaml`:
+Create `.local/ntwire/ntwire.yaml`:
 
 ```yaml
 listen:
   https: "127.0.0.1:8443"
   wireguard: "127.0.0.1:51820"
 auth:
-  authorized_keys_dir: .local/nwire/keys
+  authorized_keys_dir: .local/ntwire/keys
   session_ttl: 15m
 network:
   tunnel_cidr: 100.64.0.0/16
@@ -57,13 +57,13 @@ tunnels:
 Start the server in one terminal:
 
 ```sh
-./bin/nwire-server --config .local/nwire/nwire.yaml
+./bin/ntwire-server --config .local/ntwire/ntwire.yaml
 ```
 
 In another terminal, authenticate and print the authorized grants:
 
 ```sh
-./bin/nwire connect -i .local/nwire/id_ed25519 https://127.0.0.1:8443
+./bin/ntwire connect -i .local/ntwire/id_ed25519 https://127.0.0.1:8443
 ```
 
 The output contains a `demo-http` row and loopback listener. Connections to it
@@ -73,19 +73,19 @@ are forwarded to the configured target through WireGuard.
 
 | Command | Current behavior |
 | --- | --- |
-| `nwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `nwire_ed25519`. |
-| `nwire list [-i key] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`. Do not add a trailing `/` to `URL`. |
-| `nwire connect [-i key] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`; `--websocket` selects fallback transport. |
-| `nwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
-| `nwire version` | Prints the build version (`dev` for an ordinary source build). |
+| `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `ntwire_ed25519`. |
+| `ntwire list [-i key] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`. Do not add a trailing `/` to `URL`. |
+| `ntwire connect [-i key] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`; `--websocket` selects fallback transport. |
+| `ntwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
+| `ntwire version` | Prints the build version (`dev` for an ordinary source build). |
 
 Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of
-a self-signed server prompts to store its fingerprint in `~/.nwire/known_servers`.
+a self-signed server prompts to store its fingerprint in `~/.ntwire/known_servers`.
 
 ## Server configuration
 
-Run `nwire-server --config path/to/nwire.yaml`; the default path is
-`nwire.yaml`. `auth.authorized_keys_dir` is required. The following is the
+Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
+`ntwire.yaml`. `auth.authorized_keys_dir` is required. The following is the
 complete currently parsed configuration:
 
 ```yaml
@@ -95,7 +95,7 @@ tls:
   cert_file: ""                         # empty generates a self-signed certificate
   key_file: ""
 auth:
-  authorized_keys_dir: /etc/nwire/keys  # required; one public key per file
+  authorized_keys_dir: /etc/ntwire/keys  # required; one public key per file
   session_ttl: 15m                       # default: 15m
   max_sessions_per_key: 5
 network:
@@ -183,8 +183,8 @@ before `docker compose up --build`; the `example` tunnel forwards to the echo
 service. Kubernetes manifests mount config and keys and expose both protocols.
 
 The matching client image is built from `deploy/docker/Dockerfile.client` and
-is published as `ghcr.io/nmaguiar/nwire-client`. It keeps certificate pins and
-local status in `/home/nonroot/.nwire`; mount a named volume there to preserve
+is published as `ghcr.io/nmaguiar/ntwire-client`. It keeps certificate pins and
+local status in `/home/nonroot/.ntwire`; mount a named volume there to preserve
 that state. The image runs as an unprivileged user. When bind-mounting a host
 private key, run it as your host UID and bind-mount a host-owned state
 directory as shown below. Use `--insecure` only for a disposable development
@@ -192,13 +192,13 @@ server; for an interactive first connection, omit it so the client can pin the
 server certificate.
 
 ```sh
-docker build -f deploy/docker/Dockerfile.client -t nwire-client .
-mkdir -p .local/nwire/client-state
+docker build -f deploy/docker/Dockerfile.client -t ntwire-client .
+mkdir -p .local/ntwire/client-state
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
-  -v "$PWD/.local/nwire/id_ed25519:/keys/id_ed25519:ro" \
-  -v "$PWD/.local/nwire/client-state:/home/nonroot/.nwire" \
-  nwire-client connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
+  -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
+  -v "$PWD/.local/ntwire/client-state:/home/nonroot/.ntwire" \
+  ntwire-client connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
 ```
 
 ## Security

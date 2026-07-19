@@ -30,7 +30,7 @@ func TLSConfig(c Config) (*tls.Config, error) {
 	if e != nil {
 		return nil, e
 	}
-	t := x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "nwire"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().AddDate(1, 0, 0), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}}
+	t := x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "ntwire"}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().AddDate(1, 0, 0), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, DNSNames: []string{"localhost"}}
 	b, e := x509.CreateCertificate(rand.Reader, &t, &t, &key.PublicKey, key)
 	if e != nil {
 		return nil, e

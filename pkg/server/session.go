@@ -3,7 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"github.com/nmaguiar/nwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"sync"
 	"time"
 )

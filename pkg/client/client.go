@@ -1,4 +1,4 @@
-// Package client implements the HTTPS authentication side of nwire.
+// Package client implements the HTTPS authentication side of ntwire.
 package client
 
 import (
@@ -11,11 +11,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/nmaguiar/nwire/pkg/client/webui"
-	"github.com/nmaguiar/nwire/pkg/protocol"
-	"github.com/nmaguiar/nwire/pkg/sshkey"
-	"github.com/nmaguiar/nwire/pkg/wgnet"
-	"github.com/nmaguiar/nwire/pkg/wstransport"
+	"github.com/nmaguiar/ntwire/pkg/client/webui"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"io"
 	"net"
 	"net/http"
@@ -89,7 +89,7 @@ func defaultKnownServersFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(h, ".nwire", "known_servers")
+	return filepath.Join(h, ".ntwire", "known_servers")
 }
 
 type knownServers struct {

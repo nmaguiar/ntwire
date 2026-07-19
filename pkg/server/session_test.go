@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/nmaguiar/nwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"testing"
 	"time"
 )

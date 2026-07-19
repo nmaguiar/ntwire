@@ -75,7 +75,7 @@ func New(c Config) (*Stack, error) {
 		bind = conn.NewStdNetBind()
 	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
-	// nwire carries WireGuard keys as Base64, while WireGuard's IPC protocol
+	// ntwire carries WireGuard keys as Base64, while WireGuard's IPC protocol
 	// requires their 32-byte values encoded as hexadecimal.
 	lines := "private_key=" + hex.EncodeToString(raw) + "\n"
 	if c.ListenPort > 0 {

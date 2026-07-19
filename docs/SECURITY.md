@@ -2,7 +2,7 @@
 
 ## Current boundary
 
-nwire protects control-plane requests with TLS and data-plane traffic with
+ntwire protects control-plane requests with TLS and data-plane traffic with
 WireGuard. The server can use configured TLS files or an in-memory self-signed
 certificate; clients pin the latter on first use. TCP forwarding is limited to
 YAML-granted targets. Where UDP is blocked, WireGuard datagrams can use the
@@ -24,7 +24,7 @@ token-authenticated WebSocket fallback on the HTTPS endpoint.
 ## Operator guidance
 
 - Never commit or log private keys, bearer tokens, request bodies, or hook
-  output without redaction. `nwire keygen` writes private keys with mode 0600.
+  output without redaction. `ntwire keygen` writes private keys with mode 0600.
 - Restrict writes to the authorized-key directory. Every readable file in it
   is considered a candidate public key.
 - Prefer explicit fingerprint or key-comment `allow` entries over `"*"`.

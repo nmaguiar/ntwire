@@ -23,7 +23,7 @@ func DefaultStatusFile() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(h, ".nwire", "status.json")
+	return filepath.Join(h, ".ntwire", "status.json")
 }
 
 func ReadStatus(path string) (Status, error) {
@@ -39,7 +39,7 @@ func ReadStatus(path string) (Status, error) {
 		return Status{}, err
 	}
 	if s.PID < 1 {
-		return Status{}, errors.New("invalid nwire status file")
+		return Status{}, errors.New("invalid ntwire status file")
 	}
 	return s, nil
 }

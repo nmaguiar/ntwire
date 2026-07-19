@@ -1,13 +1,13 @@
 version: 2
 builds:
-  - id: nwire
-    main: ./cmd/nwire
-    binary: nwire
+  - id: ntwire
+    main: ./cmd/ntwire
+    binary: ntwire
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-  - id: nwire-server
-    main: ./cmd/nwire-server
-    binary: nwire-server
+  - id: ntwire-server
+    main: ./cmd/ntwire-server
+    binary: ntwire-server
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 archives:
