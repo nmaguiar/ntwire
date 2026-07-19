@@ -10,7 +10,7 @@ needed.
 
 | Available | Operational limit |
 | --- | --- |
-| Ed25519 key generation, SSH request signing, and TOFU | Listener, TLS, and tunnel-CIDR changes require a restart. |
+| Ed25519 key generation, SSH request signing, and TOFU | Listener address and tunnel-CIDR changes require a restart; tunnel additions/removals/repoints and an explicit TLS cert/key file pair reload live. |
 | SSO login (Auth Code + PKCE, with an OAuth device-flow fallback) against any generic OIDC issuer | ntwire-server never becomes an OAuth client; it only verifies ID tokens against the issuer's JWKS. |
 | HTTPS control API, WireGuard netstack, TCP forwarding, and WebSocket transport | |
 | Session renewal, rate limits, reaping, persistent configuration, and status UI | |
@@ -164,12 +164,29 @@ requests built to include one; prefer fingerprints for SSH grants.
 
 The server watches the configuration file's directory (and, when set, the
 authorized-keys directory). Writing, replacing, or renaming the file reloads
-runtime configuration. The listener address, TLS fields, and tunnel CIDR stay
-unchanged until restart. Existing sessions are re-evaluated against their
-authentication method — SSH sessions against authorized keys, OIDC sessions
-against the configured issuers — and current YAML grants; sessions that lose
-access are terminated. Changing `auth.oidc.issuers` rebuilds OIDC verification
-in the background without dropping unrelated sessions.
+runtime configuration; sending `SIGHUP` does the same. The listener address
+and tunnel CIDR stay unchanged until restart. Existing sessions are
+re-evaluated against their authentication method — SSH sessions against
+authorized keys, OIDC sessions against the configured issuers — and current
+YAML grants; sessions that lose access are terminated. Changing
+`auth.oidc.issuers` rebuilds OIDC verification in the background without
+dropping unrelated sessions.
+
+Adding, removing, or changing a tunnel's `target` takes effect immediately on
+the server, on the same virtual port, so an already-connected client picks it
+up transparently: the affected data-plane listener is recycled without a
+restart, and a session keeps its existing grant across the change. A
+connection already in flight keeps proxying to its original target until it
+closes; only new connections observe the new one. Changing a tunnel's
+`virtual_port` also recycles the server-side listener immediately, but an
+already-connected client resolved that port once at connect time and will not
+pick up the new one until it reconnects (`ntwire connect` again, or
+`ntwire logout` for an SSO session that should stop auto-reauthenticating);
+new connections after the reload use the new port right away. When
+`tls.cert_file`/`tls.key_file` are set, the files are re-read from disk on
+every reload, so a renewed certificate is served without a restart — an
+in-memory self-signed certificate is never regenerated this way, since that
+would invalidate every client's TOFU pin.
 
 ## Authorization hooks
 

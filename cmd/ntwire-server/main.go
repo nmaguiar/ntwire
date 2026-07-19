@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -18,7 +19,13 @@ func main() {
 		slog.Error("configuration error", "error", err)
 		os.Exit(2)
 	}
+	tlsManager, err := server.NewTLSManager(c)
+	if err != nil {
+		slog.Error("TLS configuration error", "error", err)
+		os.Exit(2)
+	}
 	s := server.New(c, slog.Default())
+	s.SetTLSManager(tlsManager)
 	if err = s.StartDataPlane(); err != nil {
 		slog.Error("data plane error", "error", err)
 		os.Exit(2)
@@ -39,12 +46,11 @@ func main() {
 			s.Reload(next)
 		}
 	}()
-	tlsConfig, err := server.TLSConfig(c)
-	if err != nil {
-		slog.Error("TLS configuration error", "error", err)
-		os.Exit(2)
-	}
-	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsConfig, ReadHeaderTimeout: 10e9}
+	// IdleTimeout only bounds idle keep-alive connections between requests; it
+	// does not apply once /v1/wg's WebSocket has hijacked the connection, so
+	// long-running data-plane sessions are unaffected. ReadTimeout/WriteTimeout
+	// are deliberately not set: they would also cut off that hijacked stream.
+	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsManager.Config(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard)
 	if err = h.ListenAndServeTLS("", ""); err != nil {
 		slog.Error("server stopped", "error", err)
