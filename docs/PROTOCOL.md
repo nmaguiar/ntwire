@@ -10,14 +10,37 @@ The reference server serves HTTPS.
 
 | Method and path | Authentication | Result |
 | --- | --- | --- |
-| `GET /v1/info` | None | Protocol version and capabilities |
+| `GET /v1/info` | None | Protocol version, capabilities, and OIDC issuers |
 | `POST /v1/auth` | SSH request signature | New session and grants |
+| `POST /v1/auth/oidc` | Verified OIDC ID token | New session and grants |
 | `POST /v1/renew` | Bearer token | Replacement session and grants |
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 
-`GET /v1/info` returns `{"version":1,"capabilities":["ssh-auth","tcp"]}`.
-The `tcp` capability indicates TCP tunnel forwarding support.
+`GET /v1/info` returns:
+
+```json
+{
+  "version": 1,
+  "capabilities": ["ssh-auth", "oidc-auth", "tcp"],
+  "oidc_issuers": [
+    {
+      "name": "google",
+      "issuer": "https://accounts.google.com",
+      "client_id": "1234-abc.apps.googleusercontent.com",
+      "scopes": ["openid", "email", "profile"],
+      "groups_claim": ""
+    }
+  ]
+}
+```
+
+`ssh-auth` and `oidc-auth` are present only when the corresponding
+`auth.authorized_keys_dir` / `auth.oidc.issuers` configuration is set; at
+least one is always present. The `tcp` capability indicates TCP tunnel
+forwarding support. `oidc_issuers` is omitted (or empty) when `oidc-auth` is
+absent, and lets a client run the login flow with zero local configuration:
+discovery, scopes, and `client_id` all come from the server.
 
 ## Authentication request
 
@@ -61,9 +84,39 @@ The strings are, in order: `public_key`, `wireguard_public_key`, `timestamp`,
 `client_info.extra` key and value after that, sorted lexicographically by key.
 No field may exceed 1 MiB.
 
+## OIDC authentication request
+
+`POST /v1/auth/oidc` accepts a JSON request no larger than 1 MiB:
+
+```json
+{
+  "version": 1,
+  "issuer_name": "google",
+  "id_token": "eyJhbGciOi...",
+  "wireguard_public_key": "",
+  "timestamp": "2026-07-17T12:00:00Z",
+  "client_info": {"os": "darwin", "arch": "arm64"}
+}
+```
+
+`issuer_name` selects one of the issuers advertised by `/v1/info`. There is no
+signature and no nonce cache: unlike the SSH request, the ID token is not a
+value the client can forge, and it carries its own `exp`/`iat`, which bound
+replay on their own. `timestamp` still must be RFC 3339 and within two minutes
+of the server clock, as an extra freshness check, and the existing
+per-source-IP rate limit applies identically to both auth endpoints.
+
+The server verifies `id_token`'s signature against the issuer's JWKS (fetched
+and cached via OIDC discovery), checks `aud` equals the issuer's configured
+`client_id`, checks expiry, and — unless `require_verified_email: false` — the
+`email_verified` claim. The resulting identity is the token's `email` claim;
+`groups_claim`, when configured, supplies the `group:` values used for grant
+matching. A failure at any step returns `401`.
+
 ## Successful response
 
-Authentication and renewal return `200 OK` with:
+SSH authentication, OIDC authentication, and renewal all return `200 OK` with
+the same shape:
 
 ```json
 {
@@ -89,9 +142,43 @@ denial returns `403`.
 
 `POST /v1/renew` requires `Authorization: Bearer TOKEN` and a body with
 `client_info`. It runs the authorizer again against the old session's tunnels,
-invalidates the old token, and returns a replacement response. `POST
+invalidates the old token, and returns a replacement response — for an OIDC
+session this reuses the identity/issuer/groups established at authentication
+time; it does not re-verify an ID token or require a fresh one, since renewal
+is bound to the opaque session token, not the ID token's own expiry. `POST
 /v1/disconnect` needs the same header, has no body, and returns `204 No
 Content` after deletion.
 
 The server reaps expired sessions in the background and removes their
 WireGuard peers.
+
+## Grant matching and the SSH/OIDC namespace
+
+A tunnel's `allow` list is matched against the authenticated request's
+*method*, never against raw strings alone: an SSH request is compared only to
+fingerprint and `authorized_keys`-comment entries, and an OIDC request only to
+exact-email, `@domain`, and `group:` entries. `"*"` matches either method.
+
+This means an SSH key commented `alice@corp.com` and an OIDC identity
+`alice@corp.com` can appear in the same `allow` list without one being able to
+satisfy the other's grant — the SSH request is never compared against the
+email-shaped entry as an email, and the OIDC request is never compared against
+it as a comment. There is no code path where a party who controls one identity
+can be granted access intended for the other.
+
+In practice, the reference client never sends a key comment (a private key
+file carries none), so comment-based SSH grants only work against requests
+built to include one; prefer fingerprints for SSH `allow` entries.
+
+## Authorizer hook additions for OIDC
+
+The authorizer hook input (`POST` body or stdin JSON, see the README's
+"Authorization hooks" section) gains:
+
+| Field | SSH | OIDC |
+| --- | --- | --- |
+| `auth_method` | `"ssh"` | `"oidc"` |
+| `key_fingerprint` / `key_comment` | populated | empty |
+| `identity` | empty | verified email |
+| `issuer` | empty | configured issuer name |
+| `groups` | empty | from `groups_claim`, if configured |

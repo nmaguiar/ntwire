@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
+	"github.com/nmaguiar/ntwire/pkg/oidcclient"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -74,6 +75,21 @@ type Options struct {
 	NoWebUI          bool
 	StatusFile       string
 	UseWebSocket     bool
+
+	// SSO forces OIDC authentication even when an SSH key is available.
+	// Without it, an SSH key (found or given via -i) is preferred; SSO is
+	// only the default when no key is available and the server advertises
+	// oidc-auth.
+	SSO bool
+	// Provider selects an oidc issuer by name; required only when the
+	// server advertises more than one.
+	Provider string
+	// NoBrowser skips opening the system browser for SSO login (falling
+	// back to the OAuth device flow) in addition to its existing meaning of
+	// not opening the local status UI.
+	NoBrowser bool
+	// TokenCacheFile overrides ~/.ntwire/tokens.json.
+	TokenCacheFile string
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
@@ -162,6 +178,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 }
 
 func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (protocol.AuthResponse, error) {
+	url = strings.TrimRight(url, "/")
 	k, err := wgnet.GenerateKey()
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -170,9 +187,149 @@ func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, opti
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	return authenticate(h, url, keyPath, info, k.Public)
+	res, err := authenticateAny(h, url, keyPath, info, k.Public, options, "", "")
+	return res.response, err
 }
-func authenticate(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string) (protocol.AuthResponse, error) {
+
+// authResult remembers which method (and, for OIDC, which issuer) a session
+// was established with, so reconnect can redo the same choice deterministically
+// instead of re-deciding (and potentially picking a different issuer).
+type authResult struct {
+	response protocol.AuthResponse
+	method   string // "ssh" or "oidc"
+	issuer   string // oidc only
+}
+
+func fetchInfo(h *http.Client, base string) (protocol.InfoResponse, error) {
+	resp, err := h.Get(base + "/v1/info")
+	if err != nil {
+		return protocol.InfoResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return protocol.InfoResponse{}, fmt.Errorf("fetching server info: %s", resp.Status)
+	}
+	var out protocol.InfoResponse
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
+}
+
+func selectIssuer(info protocol.InfoResponse, name string) (protocol.OIDCIssuerInfo, error) {
+	if len(info.OIDCIssuers) == 0 {
+		return protocol.OIDCIssuerInfo{}, fmt.Errorf("server does not advertise any SSO issuers")
+	}
+	if name != "" {
+		for _, iss := range info.OIDCIssuers {
+			if iss.Name == name {
+				return iss, nil
+			}
+		}
+		return protocol.OIDCIssuerInfo{}, fmt.Errorf("server does not advertise SSO issuer %q", name)
+	}
+	if len(info.OIDCIssuers) == 1 {
+		return info.OIDCIssuers[0], nil
+	}
+	names := make([]string, len(info.OIDCIssuers))
+	for i, iss := range info.OIDCIssuers {
+		names[i] = iss.Name
+	}
+	return protocol.OIDCIssuerInfo{}, fmt.Errorf("server advertises multiple SSO issuers %v; select one with --provider", names)
+}
+
+// decideMethod picks SSH or OIDC when neither was pinned by a prior
+// authentication on this connection. An SSH key (found or given via -i) is
+// preferred; SSO is only the default when no key is available.
+func decideMethod(o Options, keyPath string, info protocol.InfoResponse) (method string, issuer protocol.OIDCIssuerInfo, err error) {
+	if o.SSO {
+		iss, err := selectIssuer(info, o.Provider)
+		return "oidc", iss, err
+	}
+	if keyPath != "" {
+		return "ssh", protocol.OIDCIssuerInfo{}, nil
+	}
+	if len(info.OIDCIssuers) > 0 {
+		iss, err := selectIssuer(info, o.Provider)
+		return "oidc", iss, err
+	}
+	return "", protocol.OIDCIssuerInfo{}, fmt.Errorf("no SSH private key available and the server does not support SSO")
+}
+
+// authenticateAny authenticates by SSH or OIDC. When pinnedMethod is "ssh" it
+// skips the /v1/info round trip entirely, keeping the common SSH path at its
+// original cost; pinnedMethod/pinnedIssuer let reconnect redo the exact
+// method a session started with instead of re-deciding.
+func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientInfo, wgPublic string, o Options, pinnedMethod, pinnedIssuer string) (authResult, error) {
+	if pinnedMethod == "ssh" {
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic)
+		return authResult{response: r, method: "ssh"}, err
+	}
+	serverInfo, err := fetchInfo(h, base)
+	if err != nil {
+		return authResult{}, err
+	}
+	method, issuerName := pinnedMethod, pinnedIssuer
+	if method == "" {
+		m, iss, err := decideMethod(o, keyPath, serverInfo)
+		if err != nil {
+			return authResult{}, err
+		}
+		method, issuerName = m, iss.Name
+	}
+	switch method {
+	case "ssh":
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic)
+		return authResult{response: r, method: "ssh"}, err
+	case "oidc":
+		iss, err := selectIssuer(serverInfo, issuerName)
+		if err != nil {
+			return authResult{}, err
+		}
+		r, err := authenticateOIDC(h, base, iss, info, wgPublic, o)
+		return authResult{response: r, method: "oidc", issuer: iss.Name}, err
+	default:
+		return authResult{}, fmt.Errorf("unknown authentication method %q", method)
+	}
+}
+
+func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInfo, info protocol.ClientInfo, wgPublic string, o Options) (protocol.AuthResponse, error) {
+	cache, err := oidcclient.OpenCache(o.TokenCacheFile)
+	if err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	tok, err := oidcclient.TokensForIssuer(context.Background(), cache, base, issuer, oidcclient.ForIssuerOptions{NoBrowser: o.NoBrowser})
+	if err != nil {
+		return protocol.AuthResponse{}, fmt.Errorf("sso login: %w", err)
+	}
+	r := protocol.OIDCAuthRequest{
+		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
+		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
+	}
+	b, _ := json.Marshal(r)
+	resp, err := h.Post(base+"/v1/auth/oidc", "application/json", bytes.NewReader(b))
+	if err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return protocol.AuthResponse{}, fmt.Errorf("authentication failed: %s", resp.Status)
+	}
+	var out protocol.AuthResponse
+	err = json.NewDecoder(resp.Body).Decode(&out)
+	return out, err
+}
+
+// Logout clears any cached SSO tokens for serverURL, so the next
+// authentication reopens the browser (or device flow) instead of silently
+// refreshing.
+func Logout(tokenCacheFile, serverURL string) error {
+	cache, err := oidcclient.OpenCache(tokenCacheFile)
+	if err != nil {
+		return err
+	}
+	return cache.DeleteServer(strings.TrimRight(serverURL, "/"))
+}
+
+func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string) (protocol.AuthResponse, error) {
 	pub, err := sshkey.PublicFromPrivate(keyPath)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -220,6 +377,8 @@ type Connection struct {
 	UIURL          string
 	statusFile     string
 	keyPath        string
+	options        Options
+	method, issuer string // remembers how this session authenticated, for reconnect
 }
 
 // TunnelStats is the traffic observed by a local listener for one tunnel.
@@ -253,6 +412,7 @@ func Connect(url, keyPath string, info protocol.ClientInfo, ports map[string]int
 }
 
 func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (*Connection, error) {
+	url = strings.TrimRight(url, "/")
 	key, err := wgnet.GenerateKey()
 	if err != nil {
 		return nil, err
@@ -261,10 +421,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, err
 	}
-	r, err := authenticate(h, url, keyPath, info, key.Public)
+	auth, err := authenticateAny(h, url, keyPath, info, key.Public, options, "", "")
 	if err != nil {
 		return nil, err
 	}
+	r := auth.response
 	clientIP, err := netip.ParseAddr(r.TunnelIP)
 	if err != nil {
 		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
@@ -296,7 +457,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		st.Close()
 		return nil, err
 	}
-	c := &Connection{Response: r, Stack: st, token: r.Token, base: strings.TrimRight(url, "/"), info: info, http: h, ports: options.Ports, stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath}
+	c := &Connection{
+		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
+		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
+		options: options, method: auth.method, issuer: auth.issuer,
+	}
 	for _, t := range r.Tunnels {
 		p := options.Ports[t.Name]
 		if p < 0 || p > 65535 {
@@ -435,14 +600,16 @@ func (c *Connection) reconnect() error {
 		return fmt.Errorf("connection is closed")
 	}
 	public := c.Stack.PublicKey()
+	method, issuer := c.method, c.issuer
 	c.mu.Unlock()
-	r, err := authenticate(c.http, c.base, c.keyPath, c.info, public)
+	auth, err := authenticateAny(c.http, c.base, c.keyPath, c.info, public, c.options, method, issuer)
 	if err != nil {
 		return err
 	}
 	c.mu.Lock()
-	c.Response = r
-	c.token = r.Token
+	c.Response = auth.response
+	c.token = auth.response.Token
+	c.method, c.issuer = auth.method, auth.issuer
 	c.mu.Unlock()
 	return nil
 }

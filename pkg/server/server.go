@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/oidcauth"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -25,25 +27,49 @@ type Server struct {
 	log      *slog.Logger
 	data     *dataPlane
 	rates    map[string]*rateState
+	oidc     *oidcauth.Verifiers
 }
 
 func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	return &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}}
+	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}}
+	if len(c.Auth.OIDC.Issuers) > 0 {
+		s.oidc = newVerifiers(c, l)
+	}
+	return s
+}
+func newVerifiers(c Config, l *slog.Logger) *oidcauth.Verifiers {
+	cfgs := make([]oidcauth.IssuerConfig, 0, len(c.Auth.OIDC.Issuers))
+	for _, iss := range c.Auth.OIDC.Issuers {
+		cfgs = append(cfgs, oidcauth.IssuerConfig{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, GroupsClaim: iss.GroupsClaim, RequireVerifiedEmail: iss.RequireVerified()})
+	}
+	return oidcauth.NewVerifiers(cfgs, l)
 }
 func (s *Server) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/info", s.info)
 	m.HandleFunc("POST /v1/auth", s.auth)
+	m.HandleFunc("POST /v1/auth/oidc", s.authOIDC)
 	m.HandleFunc("POST /v1/renew", s.renew)
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	return m
 }
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
-	write(w, http.StatusOK, map[string]any{"version": protocol.Version, "capabilities": []string{"ssh-auth", "tcp"}})
+	caps := []string{"tcp"}
+	var issuers []protocol.OIDCIssuerInfo
+	if s.Config.Auth.AuthorizedKeysDir != "" {
+		caps = append(caps, "ssh-auth")
+	}
+	if len(s.Config.Auth.OIDC.Issuers) > 0 {
+		caps = append(caps, "oidc-auth")
+		for _, iss := range s.Config.Auth.OIDC.Issuers {
+			issuers = append(issuers, protocol.OIDCIssuerInfo{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, Scopes: iss.Scopes, GroupsClaim: iss.GroupsClaim})
+		}
+	}
+	write(w, http.StatusOK, protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers})
 }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSource(r.RemoteAddr) {
@@ -69,20 +95,89 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "unknown public key")
 		return
 	}
-	if s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountFingerprint(sshkey.Fingerprint(key)) >= s.Config.Auth.MaxSessionsPerKey {
-		fail(w, 429, "maximum sessions for key reached")
-		return
-	}
 	p, err := protocol.SigningPayload(a)
 	if err != nil || sshkey.Verify(key, p, a.Signature) != nil {
 		fail(w, 401, "invalid signature")
 		return
 	}
 	fp := sshkey.Fingerprint(key)
-	grants := s.grants(fp, comment)
-	grants, ttl, err := s.authorize(r, fp, comment, "", a.Info, grants)
+	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
+	s.establishSession(w, r, sessionRequest{
+		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info,
+	}, grants)
+}
+
+// authOIDC authenticates with a verified ID token in place of an SSH
+// signature. There is no nonce cache: the ID token's own exp/iat bound
+// replay, and allowSource rate-limits repeated attempts per source IP.
+func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
+	if !s.allowSource(r.RemoteAddr) {
+		fail(w, http.StatusTooManyRequests, "too many authentication attempts")
+		return
+	}
+	var a protocol.OIDCAuthRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
+		fail(w, 400, "invalid request")
+		return
+	}
+	if a.Version != protocol.Version {
+		fail(w, 400, "unsupported protocol version")
+		return
+	}
+	at, err := protocol.ParseTimestamp(a.Timestamp)
+	if err != nil || time.Since(at) > 2*time.Minute || time.Until(at) > 2*time.Minute {
+		fail(w, 401, "timestamp outside permitted window")
+		return
+	}
+	s.mu.Lock()
+	verifiers := s.oidc
+	s.mu.Unlock()
+	if verifiers == nil {
+		fail(w, 400, "oidc authentication is not configured")
+		return
+	}
+	identity, err := verifiers.Verify(r.Context(), a.IssuerName, a.IDToken)
 	if err != nil {
-		s.log.Warn("authorization denied", "fingerprint", fp, "error", err)
+		s.log.Warn("oidc verification failed", "issuer", a.IssuerName, "error", err)
+		fail(w, 401, "invalid id token")
+		return
+	}
+	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
+	s.establishSession(w, r, sessionRequest{
+		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info,
+	}, grants)
+}
+
+// sessionRequest carries the method-specific fields establishSession needs
+// once a request has already been authenticated (SSH signature verified, or
+// OIDC ID token verified).
+type sessionRequest struct {
+	Method             string
+	Identity           string
+	Fingerprint        string   // ssh only
+	Comment            string   // ssh only
+	Issuer             string   // oidc only
+	Groups             []string // oidc only
+	WireGuardPublicKey string
+	Info               protocol.ClientInfo
+}
+
+// establishSession is the common tail shared by SSH and OIDC authentication:
+// session cap check, authorizer hook, IP allocation, WireGuard peer add, and
+// session creation.
+func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) {
+	if s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
+		fail(w, 429, "maximum sessions for key reached")
+		return
+	}
+	grants, ttl, err := s.authorize(r, authContext{
+		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Comment: req.Comment,
+		Issuer: req.Issuer, Groups: req.Groups,
+	}, req.Info, grants)
+	if err != nil {
+		s.log.Warn("authorization denied", "identity", req.Identity, "method", req.Method, "error", err)
 		fail(w, 403, "authorization denied")
 		return
 	}
@@ -93,7 +188,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	tunnelIP := ""
 	serverKey := ""
 	if s.data != nil {
-		if a.WireGuardPublicKey == "" {
+		if req.WireGuardPublicKey == "" {
 			fail(w, 400, "wireguard_public_key is required")
 			return
 		}
@@ -102,14 +197,17 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 			fail(w, 503, err.Error())
 			return
 		}
-		if err = s.addPeer(a.WireGuardPublicKey, tunnelIP); err != nil {
+		if err = s.addPeer(req.WireGuardPublicKey, tunnelIP); err != nil {
 			fail(w, 400, "invalid wireguard key")
 			return
 		}
 		serverKey = s.data.stack.PublicKey()
 	}
-	session := s.sessions.Create(fp, a.WireGuardPublicKey, tunnelIP, v, ttl)
-	s.log.Info("authentication allowed", "fingerprint", fp, "session", session.ID)
+	session := s.sessions.Create(CreateParams{
+		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
+		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
+	})
+	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.audit("auth_allowed", session, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r)})
 }
@@ -155,7 +253,9 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	grants, ttl, err := s.authorize(r, old.Fingerprint, "", old.ID, body.Info, grants)
+	grants, ttl, err := s.authorize(r, authContext{
+		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups, SessionID: old.ID,
+	}, body.Info, grants)
 	if err != nil {
 		s.sessions.Delete(t)
 		fail(w, 403, "authorization denied")
@@ -167,7 +267,10 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.Delete(t)
 	s.dropSession(old)
-	n := s.sessions.Create(old.Fingerprint, old.WireGuardPublicKey, old.TunnelIP, v, ttl)
+	n := s.sessions.Create(CreateParams{
+		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
+		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
+	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
@@ -244,11 +347,46 @@ func (s *Server) authorizedFingerprint(fp string) bool {
 	}
 	return false
 }
-func (s *Server) grants(fp, comment string) []TunnelConfig {
+
+// grantSubject is the principal a tunnel's allow list is matched against.
+// Matching stays scoped to Method so an SSH key comment can never be
+// confused for an OIDC email, and vice versa (see docs/PROTOCOL.md).
+type grantSubject struct {
+	Method      string // "ssh" or "oidc"
+	Fingerprint string
+	Comment     string
+	Email       string
+	Domain      string // includes the leading "@"
+	Groups      []string
+}
+
+func matchesAllow(sub grantSubject, entry string) bool {
+	if entry == "*" {
+		return true
+	}
+	switch sub.Method {
+	case "ssh":
+		return entry == sub.Fingerprint || (sub.Comment != "" && entry == sub.Comment)
+	case "oidc":
+		if entry == sub.Email || (sub.Domain != "" && entry == sub.Domain) {
+			return true
+		}
+		if group, ok := strings.CutPrefix(entry, "group:"); ok {
+			for _, g := range sub.Groups {
+				if g == group {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) grants(sub grantSubject) []TunnelConfig {
 	var out []TunnelConfig
 	for _, t := range s.Config.Tunnels {
 		for _, a := range t.Allow {
-			if a == "*" || a == fp || a == comment {
+			if matchesAllow(sub, a) {
 				out = append(out, t)
 				break
 			}
@@ -256,7 +394,20 @@ func (s *Server) grants(fp, comment string) []TunnelConfig {
 	}
 	return out
 }
-func (s *Server) authorize(r *http.Request, fp, comment, sessionID string, info protocol.ClientInfo, grants []TunnelConfig) ([]TunnelConfig, time.Duration, error) {
+
+// authContext carries the identity fields authorize() forwards to the
+// authorizer hook; method-specific fields are zero for the other method.
+type authContext struct {
+	Method      string
+	Identity    string
+	Fingerprint string
+	Comment     string
+	Issuer      string
+	Groups      []string
+	SessionID   string
+}
+
+func (s *Server) authorize(r *http.Request, ac authContext, info protocol.ClientInfo, grants []TunnelConfig) ([]TunnelConfig, time.Duration, error) {
 	names := make([]string, len(grants))
 	for i, g := range grants {
 		names[i] = g.Name
@@ -265,7 +416,11 @@ func (s *Server) authorize(r *http.Request, fp, comment, sessionID string, info 
 	for k, v := range info.Extra {
 		extra[k] = v
 	}
-	result, err := Authorize(r.Context(), s.Config.Authorizer, AuthorizationInput{SourceIP: r.RemoteAddr, KeyFingerprint: fp, KeyComment: comment, SessionID: sessionID, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now()})
+	result, err := Authorize(r.Context(), s.Config.Authorizer, AuthorizationInput{
+		SourceIP: r.RemoteAddr, KeyFingerprint: ac.Fingerprint, KeyComment: ac.Comment,
+		AuthMethod: ac.Method, Identity: ac.Identity, Issuer: ac.Issuer, Groups: ac.Groups,
+		SessionID: ac.SessionID, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now(),
+	})
 	if err != nil || !result.Allow {
 		return nil, 0, fmt.Errorf("%v", err)
 	}
@@ -301,29 +456,61 @@ func (s *Server) Reload(c Config) {
 	c.Listen = s.Config.Listen
 	c.TLS = s.Config.TLS
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
+	oldIssuers := s.Config.Auth.OIDC.Issuers
 	s.Config = c
+	if !reflect.DeepEqual(oldIssuers, c.Auth.OIDC.Issuers) {
+		s.oidc = newVerifiers(c, s.log)
+	}
+	validIssuers := map[string]bool{}
+	for _, iss := range c.Auth.OIDC.Issuers {
+		validIssuers[iss.Name] = true
+	}
 	for _, v := range s.sessions.All() {
+		if v.Method == "oidc" {
+			if !validIssuers[v.Issuer] {
+				s.sessions.Delete(v.Token)
+				s.dropSession(v)
+				continue
+			}
+			allowed := map[string]bool{}
+			for _, g := range s.grants(grantSubject{Method: "oidc", Email: v.Identity, Domain: emailDomain(v.Identity), Groups: v.Groups}) {
+				allowed[g.Name] = true
+			}
+			s.reconcileTunnels(v, allowed)
+			continue
+		}
 		if !s.authorizedFingerprint(v.Fingerprint) {
 			s.sessions.Delete(v.Token)
 			s.dropSession(v)
 			continue
 		}
 		allowed := map[string]bool{}
-		for _, g := range s.grants(v.Fingerprint, "") {
+		for _, g := range s.grants(grantSubject{Method: "ssh", Fingerprint: v.Fingerprint}) {
 			allowed[g.Name] = true
 		}
-		kept := v.Tunnels[:0]
-		for _, t := range v.Tunnels {
-			if allowed[t.Name] {
-				kept = append(kept, t)
-			}
-		}
-		if len(kept) != len(v.Tunnels) {
-			s.sessions.Delete(v.Token)
-			s.dropSession(v)
-		}
+		s.reconcileTunnels(v, allowed)
 	}
 	s.log.Info("configuration reloaded")
+}
+
+func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {
+	kept := v.Tunnels[:0]
+	for _, t := range v.Tunnels {
+		if allowed[t.Name] {
+			kept = append(kept, t)
+		}
+	}
+	if len(kept) != len(v.Tunnels) {
+		s.sessions.Delete(v.Token)
+		s.dropSession(v)
+	}
+}
+
+func emailDomain(email string) string {
+	if i := strings.LastIndex(email, "@"); i >= 0 {
+		return email[i:]
+	}
+	return ""
 }
 
 type rateState struct {
