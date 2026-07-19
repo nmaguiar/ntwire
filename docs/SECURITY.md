@@ -5,7 +5,8 @@
 nwire protects control-plane requests with TLS and data-plane traffic with
 WireGuard. The server can use configured TLS files or an in-memory self-signed
 certificate; clients pin the latter on first use. TCP forwarding is limited to
-YAML-granted targets. WebSocket fallback is not implemented.
+YAML-granted targets. Where UDP is blocked, WireGuard datagrams can use the
+token-authenticated WebSocket fallback on the HTTPS endpoint.
 
 ## Implemented protections
 
@@ -17,6 +18,8 @@ YAML-granted targets. WebSocket fallback is not implemented.
 - YAML ACLs limit keys to configured tunnels. Optional hooks fail closed and
   can only narrow YAML grants or shorten a session TTL.
 - Session tokens are random bearer credentials and expire when checked.
+- The WebSocket fallback requires the session bearer token and accepts only
+  bounded binary WireGuard datagrams.
 
 ## Operator guidance
 
@@ -28,6 +31,3 @@ YAML-granted targets. WebSocket fallback is not implemented.
 - Synchronize server clocks; drift over two minutes rejects valid clients.
 - Treat authorizer endpoints and executables as part of the access-control
   boundary: they receive key identity and client metadata.
-
-The future data-plane design in [PLAN.md](../PLAN.md) is not a security claim
-about the currently available code.

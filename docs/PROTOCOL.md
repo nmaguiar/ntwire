@@ -17,8 +17,7 @@ The reference server serves HTTPS.
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 
 `GET /v1/info` returns `{"version":1,"capabilities":["ssh-auth","tcp"]}`.
-The `tcp` capability is advertised metadata, not evidence that forwarding is
-implemented.
+The `tcp` capability indicates TCP tunnel forwarding support.
 
 ## Authentication request
 

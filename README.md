@@ -5,14 +5,11 @@ session, then a per-session WireGuard peer and gVisor netstack forward only
 the YAML-granted TCP targets to local `127.0.0.1` listeners. No host network
 interface or elevated privilege is needed.
 
-For a code-backed checklist of roadmap gaps, see
-[docs/PLAN-GAPS.md](docs/PLAN-GAPS.md).
-
 ## What works today
 
-| Available | Not implemented yet |
+| Available | Operational limit |
 | --- | --- |
-| Ed25519 key generation, SSH request signing, and TOFU | Listener/TLS/CIDR changes require a restart |
+| Ed25519 key generation, SSH request signing, and TOFU | Listener, TLS, and tunnel-CIDR changes require a restart. |
 | HTTPS control API, WireGuard netstack, TCP forwarding, and WebSocket transport | |
 | Session renewal, rate limits, reaping, persistent configuration, and status UI | |
 | YAML/key-directory hot reload and Compose/Kubernetes deployment assets | |
@@ -125,8 +122,9 @@ be unique and each tunnel requires `name` and `target`.
 
 The server watches the configuration file's directory. Writing, replacing, or
 renaming the file reloads runtime configuration. The listener address, TLS
-fields, and tunnel CIDR stay unchanged until restart; existing sessions are
-not retroactively re-evaluated.
+fields, and tunnel CIDR stay unchanged until restart. Existing sessions are
+re-evaluated against authorized keys and YAML grants; sessions that lose access
+are terminated.
 
 ## Authorization hooks
 
@@ -166,6 +164,7 @@ session TTL.
 | `POST /v1/auth` | Validates a signed SSH-key request and creates a session. |
 | `POST /v1/renew` | Re-authorizes a bearer-token session and replaces its token. |
 | `POST /v1/disconnect` | Deletes a bearer-token session and returns `204 No Content`. |
+| `GET /v1/wg` | Carries WireGuard datagrams over token-authenticated WebSocket messages. |
 
 Use `Authorization: Bearer TOKEN` for bearer-token endpoints. The signing
 format and response schemas are specified in [docs/PROTOCOL.md](docs/PROTOCOL.md).
@@ -187,8 +186,8 @@ service. Kubernetes manifests mount config and keys and expose both protocols.
 Keep private keys, session tokens, and signatures out of logs and source
 control. The protocol uses canonical signed payloads, timestamp validation,
 nonce replay protection, and constant-time public-key comparison. It does
-**not** encrypt the transport today. Bind to loopback or use a trusted
-TLS-terminating proxy until TLS is implemented. See [docs/SECURITY.md](docs/SECURITY.md).
+encrypt the control plane with TLS and the data plane with WireGuard. See
+[docs/SECURITY.md](docs/SECURITY.md).
 
 ## License
 
