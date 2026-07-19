@@ -75,7 +75,8 @@ are forwarded to the configured target through WireGuard.
 | --- | --- |
 | `nwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `nwire_ed25519`. |
 | `nwire list [-i key] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`. Do not add a trailing `/` to `URL`. |
-| `nwire connect [-i key] URL [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`; `--websocket` selects fallback transport. |
+| `nwire connect [-i key] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`; `--websocket` selects fallback transport. |
+| `nwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
 | `nwire version` | Prints the build version (`dev` for an ordinary source build). |
 
 Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of

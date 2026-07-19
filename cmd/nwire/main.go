@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -12,6 +13,8 @@ import (
 	"github.com/nmaguiar/nwire/pkg/protocol"
 	"github.com/nmaguiar/nwire/pkg/sshkey"
 	"golang.org/x/crypto/ssh"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -38,12 +41,72 @@ func main() {
 		status(os.Args[2:])
 	case "disconnect":
 		disconnect(os.Args[2:])
+	case "port":
+		port(os.Args[2:])
 	default:
 		usage()
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: nwire <keygen|list|connect|status|disconnect|version>")
+	fmt.Fprintln(os.Stderr, "usage: nwire <keygen|list|connect|status|disconnect|port|version>")
+}
+
+// port replaces the local loopback port for a running tunnel. The connect
+// process owns the listener, so this uses its token-protected local status UI.
+func port(args []string) {
+	fs := flag.NewFlagSet("port", flag.ExitOnError)
+	path := fs.String("status-file", "", "local status file")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: nwire port [--status-file path] name=local-port")
+		os.Exit(2)
+	}
+	parts := strings.SplitN(fs.Arg(0), "=", 2)
+	if len(parts) != 2 || parts[0] == "" {
+		fmt.Fprintln(os.Stderr, "invalid port mapping; use name=local-port")
+		os.Exit(2)
+	}
+	var localPort int
+	if _, err := fmt.Sscanf(parts[1], "%d", &localPort); err != nil || localPort < 1 || localPort > 65535 {
+		fmt.Fprintln(os.Stderr, "invalid local port")
+		os.Exit(2)
+	}
+	s, err := client.ReadStatus(*path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "not connected:", err)
+		os.Exit(1)
+	}
+	u, err := url.Parse(s.UIURL)
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		fmt.Fprintln(os.Stderr, "running client does not expose a local status UI")
+		os.Exit(1)
+	}
+	u.Path = "/tunnels/" + url.PathEscape(parts[0])
+	b := strings.NewReader(fmt.Sprintf(`{"local_port":%d}`, localPort))
+	req, err := http.NewRequest(http.MethodPut, u.String(), b)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "replace local port:", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintln(os.Stderr, "replace local port:", resp.Status)
+		os.Exit(1)
+	}
+	var out struct {
+		LocalAddress string `json:"local_address"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		fmt.Fprintln(os.Stderr, "replace local port:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("%s  %s\n", parts[0], out.LocalAddress)
 }
 
 func status(args []string) {
