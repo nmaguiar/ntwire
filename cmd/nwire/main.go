@@ -34,12 +34,55 @@ func main() {
 		list(os.Args[2:])
 	case "connect":
 		connect(os.Args[2:])
+	case "status":
+		status(os.Args[2:])
+	case "disconnect":
+		disconnect(os.Args[2:])
 	default:
 		usage()
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: nwire <keygen|list|connect|version>")
+	fmt.Fprintln(os.Stderr, "usage: nwire <keygen|list|connect|status|disconnect|version>")
+}
+
+func status(args []string) {
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	path := fs.String("status-file", "", "local status file")
+	fs.Parse(args)
+	s, err := client.ReadStatus(*path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "not connected:", err)
+		os.Exit(1)
+	}
+	fmt.Println("pid:", s.PID)
+	fmt.Println("server:", s.Server)
+	if s.UIURL != "" {
+		fmt.Println("status:", s.UIURL)
+	}
+	for _, address := range s.LocalAddresses {
+		fmt.Println("local:", address)
+	}
+}
+
+func disconnect(args []string) {
+	fs := flag.NewFlagSet("disconnect", flag.ExitOnError)
+	path := fs.String("status-file", "", "local status file")
+	fs.Parse(args)
+	s, err := client.ReadStatus(*path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "not connected:", err)
+		os.Exit(1)
+	}
+	p, err := os.FindProcess(s.PID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	if err = p.Signal(os.Interrupt); err != nil {
+		fmt.Fprintln(os.Stderr, "disconnect:", err)
+		os.Exit(1)
+	}
 }
 func connect(args []string) {
 	settings, configPath := settingsFor(args)

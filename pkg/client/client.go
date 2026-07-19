@@ -70,6 +70,7 @@ type Options struct {
 	Insecure         bool
 	KnownServersFile string
 	NoWebUI          bool
+	StatusFile       string
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
@@ -214,6 +215,8 @@ type Connection struct {
 	stop           chan struct{}
 	ui             *http.Server
 	UIURL          string
+	statusFile     string
+	keyPath        string
 }
 
 func Connect(url, keyPath string, info protocol.ClientInfo, ports map[string]int) (*Connection, error) {
@@ -254,7 +257,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		st.Close()
 		return nil, err
 	}
-	c := &Connection{Response: r, Stack: st, token: r.Token, base: strings.TrimRight(url, "/"), info: info, http: h, ports: options.Ports, stop: make(chan struct{})}
+	c := &Connection{Response: r, Stack: st, token: r.Token, base: strings.TrimRight(url, "/"), info: info, http: h, ports: options.Ports, stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath}
 	for _, t := range r.Tunnels {
 		p := options.Ports[t.Name]
 		addr := net.JoinHostPort("127.0.0.1", fmt.Sprint(p))
@@ -271,6 +274,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
 		openBrowser(c.UIURL)
+	}
+	if err := writeStatus(c.statusFile, Status{PID: os.Getpid(), Server: c.base, UIURL: c.UIURL, LocalAddresses: c.LocalAddresses}); err != nil {
+		c.Close()
+		return nil, err
 	}
 	return c, nil
 }
@@ -295,7 +302,7 @@ func (c *Connection) renewLoop() {
 		case <-t.C:
 		}
 		for delay := time.Second; ; delay = min(delay*2, time.Minute) {
-			if err := c.renew(); err == nil {
+			if err := c.renew(); err == nil || c.reconnect() == nil {
 				break
 			}
 			select {
@@ -305,6 +312,28 @@ func (c *Connection) renewLoop() {
 			}
 		}
 	}
+}
+
+// reconnect creates a replacement control-plane session while retaining the
+// existing WireGuard private key and local listeners. The server therefore
+// recognizes the same peer once it is available again.
+func (c *Connection) reconnect() error {
+	c.mu.Lock()
+	if c.Stack == nil {
+		c.mu.Unlock()
+		return fmt.Errorf("connection is closed")
+	}
+	public := c.Stack.PublicKey()
+	c.mu.Unlock()
+	r, err := authenticate(c.http, c.base, c.keyPath, c.info, public)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.Response = r
+	c.token = r.Token
+	c.mu.Unlock()
+	return nil
 }
 
 func (c *Connection) renew() error {
@@ -433,6 +462,12 @@ func (c *Connection) Close() {
 	}
 	if c.ui != nil {
 		_ = c.ui.Close()
+	}
+	if c.statusFile == "" {
+		c.statusFile = DefaultStatusFile()
+	}
+	if c.statusFile != "" {
+		_ = os.Remove(c.statusFile)
 	}
 	if c.Stack != nil {
 		_ = c.Stack.Close()

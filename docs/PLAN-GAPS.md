@@ -33,10 +33,9 @@ configured through GoReleaser.
 
 - [x] A persistent `connect` command that starts local listeners and closes the
   session on Ctrl-C.
-- [ ] A standalone `status`/disconnect command, reconnect after an expired
-  session, or persistent client configuration. `connect` now renews its token
-  automatically with exponential retry and performs a best-effort disconnect
-  on exit.
+- [x] `status` and `disconnect` commands, automatic renewal with exponential
+  retry, and re-authentication using the existing WireGuard peer after an
+  expired session. The local runtime file contains no secret material.
 - [x] TOFU certificate pinning in `~/.nwire/known_servers`, plus `--ca` and
   explicitly opt-in `--insecure`.
 - [x] Persistent client configuration at `~/.nwire/config.yaml`, with
