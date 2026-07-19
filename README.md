@@ -53,6 +53,7 @@ tunnels:
     target: example.internal:8080
     description: Example grant
     virtual_port: 18080
+    local_port: 58080 # Preferred client loopback port; falls back if occupied
     allow: ["*"]
 ```
 
@@ -77,7 +78,7 @@ are forwarded to the configured target through WireGuard.
 | --- | --- |
 | `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `ntwire_ed25519`. |
 | `ntwire list [-i key \| --sso] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`, or falls back to SSO when the server advertises it. Do not add a trailing `/` to `URL`. |
-| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Same key/SSO selection as `list`; `--websocket` selects fallback transport. |
+| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. A tunnel's YAML `local_port` is preferred when available; `--port` is a strict client-side override. Same key/SSO selection as `list`; `--websocket` selects fallback transport. |
 | `ntwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
 | `ntwire logout URL` | Clears cached SSO tokens for a server, so the next connection reopens the browser (or device flow) instead of silently refreshing. |
 | `ntwire version` | Prints the build version (`dev` for an ordinary source build). |

@@ -86,7 +86,7 @@ func signedAuthRequest(t *testing.T, privPath, publicKeyLine string) protocol.Au
 
 func TestAuthHandlerSSH(t *testing.T) {
 	s, privPath, authLine := newTestServer(t, []TunnelConfig{
-		{Name: "reports", Target: "reports.internal:8080", VirtualPort: 18080, Allow: []string{"alice@laptop"}},
+		{Name: "reports", Target: "reports.internal:8080", VirtualPort: 18080, LocalPort: 58080, Allow: []string{"alice@laptop"}},
 	})
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -108,7 +108,7 @@ func TestAuthHandlerSSH(t *testing.T) {
 	if out.Token == "" || out.SessionID == "" {
 		t.Fatalf("empty session: %+v", out)
 	}
-	if len(out.Tunnels) != 1 || out.Tunnels[0].Name != "reports" {
+	if len(out.Tunnels) != 1 || out.Tunnels[0].Name != "reports" || out.Tunnels[0].LocalPort != 58080 {
 		t.Fatalf("tunnels = %+v", out.Tunnels)
 	}
 }

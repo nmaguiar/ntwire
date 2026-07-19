@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
 	"github.com/nmaguiar/ntwire/pkg/oidcclient"
@@ -28,6 +29,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -463,13 +465,15 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		options: options, method: auth.method, issuer: auth.issuer,
 	}
 	for _, t := range r.Tunnels {
-		p := options.Ports[t.Name]
+		p, explicitPort := options.Ports[t.Name]
+		if !explicitPort {
+			p = t.LocalPort
+		}
 		if p < 0 || p > 65535 {
 			c.Close()
 			return nil, fmt.Errorf("invalid local port for tunnel %q", t.Name)
 		}
-		addr := net.JoinHostPort("127.0.0.1", fmt.Sprint(p))
-		l, e := net.Listen("tcp", addr)
+		l, e := listenLocal(p, !explicitPort)
 		if e != nil {
 			c.Close()
 			return nil, e
@@ -490,6 +494,18 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	return c, nil
+}
+
+// listenLocal prefers port when it is supplied by the server configuration.
+// A configured local port is a convenience default, so fall back to an
+// ephemeral loopback port when another process already owns it. Explicit
+// client port mappings remain strict overrides.
+func listenLocal(port int, fallbackOnInUse bool) (net.Listener, error) {
+	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+	if err == nil || !fallbackOnInUse || port == 0 || !errors.Is(err, syscall.EADDRINUSE) {
+		return l, err
+	}
+	return net.Listen("tcp", "127.0.0.1:0")
 }
 
 // ReplacePort atomically switches a tunnel to a new loopback listener. Existing

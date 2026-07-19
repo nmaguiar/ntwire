@@ -60,6 +60,7 @@ type Tunnel struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	VirtualPort int    `json:"virtual_port"`
+	LocalPort   int    `json:"local_port,omitempty"`
 	TargetHint  string `json:"target_hint,omitempty"`
 }
 type AuthResponse struct {
