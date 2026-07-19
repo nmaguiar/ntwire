@@ -290,4 +290,4 @@ encrypts the control plane with TLS and the data plane with WireGuard. See
 
 ## License
 
-[MIT](LICENSE)
+[Apache-2.0](LICENSE)
