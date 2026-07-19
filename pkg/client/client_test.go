@@ -63,6 +63,43 @@ func TestReplacePortSwitchesLocalListener(t *testing.T) {
 	_ = c.tunnels[0].listener.Close()
 }
 
+func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skip("sandbox does not permit loopback listeners")
+		}
+		t.Fatal(err)
+	}
+	port := probe.Addr().(*net.TCPAddr).Port
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := listenLocal(port, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := l.Addr().(*net.TCPAddr).Port; got != port {
+		t.Fatalf("configured port = %d, want %d", got, port)
+	}
+	_ = l.Close()
+
+	occupied, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	l, err = listenLocal(port, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if got := l.Addr().(*net.TCPAddr).Port; got == port {
+		t.Fatalf("fallback retained occupied port %d", port)
+	}
+}
+
 func TestStatusRoundTrip(t *testing.T) {
 	path := t.TempDir() + "/status.json"
 	want := Status{PID: 42, Server: "https://server.example", UIURL: "http://127.0.0.1:1234/?token=x", LocalAddresses: []string{"127.0.0.1:2345"}}

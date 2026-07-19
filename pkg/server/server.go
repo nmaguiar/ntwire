@@ -193,7 +193,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
-		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, TargetHint: t.Target})
+		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, LocalPort: t.LocalPort, TargetHint: t.Target})
 	}
 	tunnelIP := ""
 	serverKey := ""
@@ -278,7 +278,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, g := range grants {
-		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, TargetHint: g.Target})
+		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, LocalPort: g.LocalPort, TargetHint: g.Target})
 	}
 	s.sessions.Delete(t)
 	// Deliberately not dropSession here: WireGuardPublicKey and TunnelIP carry

@@ -53,6 +53,7 @@ tunnels:
     target: example.internal:8080
     description: Example grant
     virtual_port: 18080
+    local_port: 58080 # Preferred client loopback port; falls back if occupied
     allow: ["*"]
 ```
 
@@ -77,13 +78,17 @@ are forwarded to the configured target through WireGuard.
 | --- | --- |
 | `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `ntwire_ed25519`. |
 | `ntwire list [-i key \| --sso] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`, or falls back to SSO when the server advertises it. Do not add a trailing `/` to `URL`. |
-| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. Same key/SSO selection as `list`; `--websocket` selects fallback transport. |
+| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. A tunnel's YAML `local_port` is preferred when available; `--port` is a strict client-side override. Same key/SSO selection as `list`; `--websocket` selects fallback transport. |
 | `ntwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
 | `ntwire logout URL` | Clears cached SSO tokens for a server, so the next connection reopens the browser (or device flow) instead of silently refreshing. |
 | `ntwire version` | Prints the build version (`dev` for an ordinary source build). |
 
 Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of
 a self-signed server prompts to store its fingerprint in `~/.ntwire/known_servers`.
+That fingerprint changes on every server restart unless the server is given a
+persistent certificate; see
+[Avoiding repeated re-trust prompts](docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts)
+for the tradeoffs.
 
 ### SSO login
 
@@ -109,38 +114,40 @@ is required. The following is the complete currently parsed configuration:
 
 ```yaml
 listen:
-  https: ":8443"                       # TLS control API and WebSocket fallback
+  https: ":8443"                        # TLS control API (auth, renew, disconnect) and WebSocket fallback
+  wireguard: ":51820"                   # UDP listener for the userspace WireGuard data plane; default shown
 tls:
-  cert_file: ""                         # empty generates a self-signed certificate
-  key_file: ""
+  cert_file: ""                         # PEM certificate; empty generates an in-memory self-signed cert (see docs/SECURITY.md)
+  key_file: ""                          # PEM private key; required together with cert_file
 auth:
   authorized_keys_dir: /etc/ntwire/keys  # one public key per file; optional if oidc.issuers is set
   oidc:
     issuers:
-      - name: google                    # stable id; shown to clients and in --provider
-        issuer: https://accounts.google.com
-        client_id: 1234-abc.apps.googleusercontent.com
-        scopes: [openid, email, profile] # default shown
-        groups_claim: ""                 # e.g. "groups"; empty disables group: grants
-        require_verified_email: true     # default true
-  session_ttl: 15m                       # default: 15m
-  max_sessions_per_key: 5                # applies per identity: ssh fingerprint or oidc email
+      - name: google                    # stable id; shown to clients and selected with --provider
+        issuer: https://accounts.google.com  # OIDC issuer URL; its /.well-known/openid-configuration and JWKS are fetched
+        client_id: 1234-abc.apps.googleusercontent.com  # public OAuth client id registered at the issuer (PKCE, no secret)
+        scopes: [openid, email, profile] # requested OAuth scopes; default shown
+        groups_claim: ""                 # ID-token claim holding group membership, e.g. "groups"; empty disables group: grants
+        require_verified_email: true     # reject tokens without email_verified=true; default true, see docs/SECURITY.md
+  session_ttl: 15m                       # bearer-token session lifetime before renewal is required; default: 15m
+  max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc email); 0 = unlimited
 network:
-  tunnel_cidr: 100.64.0.0/16             # default: 100.64.0.0/16
-  advertised_endpoint: ""                # returned as udp_endpoint only
+  tunnel_cidr: 100.64.0.0/16             # private IPv4 range peer addresses are allocated from; default shown
+  advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward)
 authorizer:
-  webhook_url: ""                        # use this or exec
-  exec: ""                               # executable reads JSON from stdin
-  timeout: 5s                            # default: 5s
+  webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; mutually exclusive with exec
+  exec: ""                               # path to an executable that reads the same JSON on stdin and exits 0 to allow
+  timeout: 5s                            # deadline for the webhook call or executable run; a timeout denies the request; default: 5s
 tunnels:
-  - name: reports
-    target: reports.internal:8080
-    description: Reporting service
-    virtual_port: 18080
+  - name: reports                       # unique identifier; shown to clients in grant listings
+    target: reports.internal:8080       # host:port the server proxies to over the ordinary network, once a client's WireGuard traffic reaches it
+    description: Reporting service      # free-text, shown to clients; optional
+    virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
+    local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
     allow:
       - "*"                             # any authenticated identity, either method
-      - "SHA256:..."                    # ssh: key fingerprint
-      - "alice@laptop"                  # ssh: authorized_keys comment
+      - "SHA256:..."                    # ssh: key fingerprint (preferred; see grant-matching note below)
+      - "alice@laptop"                  # ssh: authorized_keys comment (the bundled client never sends one; see note below)
       - "alice@corp.com"                # oidc: exact verified email
       - "@corp.com"                     # oidc: email domain
       - "group:engineering"             # oidc: groups_claim membership

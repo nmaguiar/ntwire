@@ -27,6 +27,63 @@ produce the same opaque-bearer-token session.
   OIDC request is never compared against fingerprint/comment entries, even
   when both share a literal string (see docs/PROTOCOL.md).
 
+## TLS trust model and avoiding repeated re-trust prompts
+
+When `tls.cert_file`/`tls.key_file` are unset, the server generates a
+self-signed certificate **in memory** at every startup
+(`generateSelfSigned` in `pkg/server/tls.go`); it is never written to disk
+and never reused across restarts. A client that connects for the first time
+computes the certificate's SHA-256 fingerprint and stores it in
+`~/.ntwire/known_servers` (TOFU: trust on first use); every later connection
+compares the presented certificate's fingerprint against that pin and fails
+closed with `UnknownCertificateError` if it differs.
+
+Because the in-memory certificate is regenerated on every restart, its
+fingerprint changes every time, and a client that pinned the previous
+fingerprint is correctly locked out until an operator re-confirms the new
+one. **This is the pinning working as intended** — a changed fingerprint is
+indistinguishable from a machine-in-the-middle presenting its own
+certificate, so silently accepting it would defeat the point of TOFU. Avoid
+"just trust the new one automatically" workarounds; instead, use one of:
+
+- **Configure a real certificate** (`tls.cert_file`/`tls.key_file`, e.g. from
+  Let's Encrypt or an internal CA). This is the most robust fix: it sidesteps
+  TOFU entirely, is reloaded live from disk (see
+  [Server configuration](../README.md#server-configuration)), and is what
+  operators should use for any long-lived deployment with a real hostname.
+- **Persist the self-signed keypair yourself** if a real certificate isn't
+  available: generate a cert/key pair once (e.g. `openssl req -x509
+  -newkey ec -pkeyopt ec_paramgen_curve:P-256 -days 365 -nodes -keyout
+  key.pem -out cert.pem`) and point `tls.cert_file`/`tls.key_file` at the
+  resulting files. That keeps the fingerprint stable across restarts (the
+  same mechanism as the previous bullet) instead of relying on the ephemeral
+  in-memory certificate ntwire-server would otherwise regenerate.
+- **Pre-seed the client's pin out of band.** `known_servers` is a plain
+  YAML file (`host: SHA256:...` entries; see `TrustServer` in
+  `pkg/client/client.go`) that a client also writes to via
+  `ntwire connect --insecure` on first trust. An operator who computes the
+  certificate's fingerprint ahead of time — e.g. with `openssl x509 -in
+  cert.pem -noout -fingerprint -sha256`, formatted to match the
+  `SHA256:base64(...)` form the client stores — can write it into a new
+  client's `~/.ntwire/known_servers` before the first connection, so no
+  prompt appears. ntwire-server does not currently print this fingerprint at
+  startup; computing it from the persisted `cert_file` is the only way to
+  get it today. This only stays useful if the fingerprint is stable (i.e.
+  combined with a persisted or real certificate above) — pre-seeding a pin
+  for an in-memory self-signed certificate just gets invalidated at the next
+  restart like any other pin.
+- **Distribute the certificate itself** with the client's `--ca` flag, which
+  verifies the presented chain against that CA instead of a pinned
+  fingerprint. Note the generated self-signed certificate's only SAN is
+  `localhost` (`pkg/server/tls.go`), so this only works out of the box for
+  `https://localhost:...`; a certificate meant to be distributed this way
+  to non-localhost clients needs a SAN matching the hostname clients will
+  use, which today means supplying your own `cert_file`/`key_file` rather
+  than the built-in self-signed generator.
+- Avoid `--insecure` (`InsecureSkipVerify`, no pin at all) outside a
+  disposable local/dev server — it removes server authentication entirely,
+  not just the restart friction.
+
 ## OIDC threat model
 
 - **Bearer credential, not a signature.** Unlike the SSH flow, the ID token

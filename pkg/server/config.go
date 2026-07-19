@@ -56,6 +56,7 @@ type TunnelConfig struct {
 	Target      string   `yaml:"target"`
 	Description string   `yaml:"description"`
 	VirtualPort int      `yaml:"virtual_port"`
+	LocalPort   int      `yaml:"local_port"`
 	Allow       []string `yaml:"allow"`
 }
 
@@ -114,6 +115,9 @@ func LoadConfig(path string) (Config, error) {
 		seen[t.Name] = true
 		if t.VirtualPort < 1 || t.VirtualPort > 65535 {
 			return c, fmt.Errorf("tunnel %q requires virtual_port in 1..65535", t.Name)
+		}
+		if t.LocalPort < 0 || t.LocalPort > 65535 {
+			return c, fmt.Errorf("tunnel %q requires local_port in 0..65535", t.Name)
 		}
 	}
 	return c, nil
