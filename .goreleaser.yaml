@@ -11,4 +11,13 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
 archives:
-  - format_overrides: [{goos: windows, format: zip}]
+  # Publish the client and server as separate downloadable assets. Docker
+  # images are a deployment alternative, not a replacement for these binaries.
+  - id: ntwire
+    ids: [ntwire]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides: [{goos: windows, format: zip}]
+  - id: ntwire-server
+    ids: [ntwire-server]
+    name_template: "{{ .ProjectName }}-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides: [{goos: windows, format: zip}]

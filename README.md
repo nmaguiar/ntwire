@@ -177,6 +177,18 @@ go test ./...
 go build ./cmd/...
 ```
 
+## Release binaries and containers
+
+Each versioned GitHub Release includes direct-download archives for both the
+`ntwire` client and the `ntwire-server` executable on Linux, macOS, and
+Windows (amd64 and arm64). Download and unpack the archive that matches the
+host running that component; use the client archive for a workstation and the
+server archive for the host that accepts connections.
+
+The server and client Docker images are published alongside those release
+assets. They are optional deployment alternatives and do not replace the
+release binaries.
+
 The Docker Compose example is runnable from `deploy/docker` and exposes HTTPS
 and UDP. Create `deploy/docker/keys/` and place an authorized `.pub` key in it
 before `docker compose up --build`; the `example` tunnel forwards to the echo

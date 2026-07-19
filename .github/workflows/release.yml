@@ -19,7 +19,12 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     steps:
+      # GoReleaser derives the release version from the tag and uploads the
+      # archives to that tag's GitHub Release. Keep the tags available here;
+      # a shallow checkout can otherwise publish images while skipping assets.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with: {go-version: stable}
       - uses: goreleaser/goreleaser-action@v6
