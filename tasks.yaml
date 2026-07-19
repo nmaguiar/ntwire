@@ -1,0 +1,230 @@
+# Development tasks for ntwire.
+#
+# Examples:
+#   ojob tasks.yaml op=build
+#   ojob tasks.yaml op=client
+#   ojob tasks.yaml op=docker dockerTag=dev
+#   ojob tasks.yaml op=tidy
+
+help:
+  text: Build, test, package, and maintain ntwire.
+  expects:
+  - name: dockerTag
+    desc: Docker image tag used by the Docker build tasks.
+    example: dev
+  - name: op
+    desc: Operation to perform. Omitting it opens an interactive selector.
+    example: build
+    mandatory: false
+    options:
+    - all
+    - build
+    - client
+    - server
+    - test
+    - race
+    - check
+    - deps
+    - tidy
+    - format
+    - docker
+    - docker-client
+    - docker-server
+    - compose-up
+    - compose-down
+    - compose-logs
+    - clean
+  - name: goCache
+    desc: Writable Go build-cache directory. Defaults to /tmp/ntwire-gocache.
+    example: /tmp/ntwire-gocache
+
+ojob:
+  catch: logErr(exception); $err(exception, __, __, job.exec)
+  logToConsole: true
+  shareArgs: true
+
+init:
+  dockerTag: dev
+  goCache: /tmp/ntwire-gocache
+
+todo:
+- (ask):
+    op: option.['all'|'build'|'client'|'server'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'compose-up'|'compose-down'|'compose-logs'|'clean']
+  ((question)): "Operation to perform:"
+- (optionOn): op
+  ((lowerCase)): true
+  ((todos)):
+    all:
+    - Build and test
+    build:
+    - Build binaries
+    client:
+    - Build client
+    server:
+    - Build server
+    test:
+    - Test
+    race:
+    - Race test
+    check:
+    - Check
+    deps:
+    - Verify dependencies
+    tidy:
+    - Tidy dependencies
+    format:
+    - Format
+    docker:
+    - Docker images
+    docker-client:
+    - Docker client
+    docker-server:
+    - Docker server
+    compose-up:
+    - Compose up
+    compose-down:
+    - Compose down
+    compose-logs:
+    - Compose logs
+    clean:
+    - Clean build output
+
+jobs:
+- name: Download dependencies
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go mod download
+
+- name: Verify dependencies
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    GOCACHE="$GO_BUILD_CACHE" go mod verify
+
+- name: Tidy dependencies
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go mod tidy
+
+- name: Check formatting
+  lang: shell
+  exec: |
+    unformatted="$(gofmt -l $(find cmd pkg -name '*.go' -type f))"
+    test -z "$unformatted" || { echo "$unformatted"; exit 1; }
+
+- name: Format
+  lang: shell
+  exec: |
+    gofmt -w $(find cmd pkg -name '*.go' -type f)
+
+- name: Vet
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go vet ./...
+
+- name: Test
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go test ./...
+
+- name: Race test
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go test -race ./...
+
+- name: Build client
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p bin "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire ./cmd/ntwire
+
+- name: Build server
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p bin "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire-server ./cmd/ntwire-server
+
+- name: Build binaries
+  to:
+  - Build client
+  - Build server
+
+- name: Build all commands
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go build ./cmd/...
+
+- name: Docker server
+  lang: shell
+  exec: |
+    IMAGE_TAG="{{dockerTag}}"
+    test -n "$IMAGE_TAG" || IMAGE_TAG="{{init.dockerTag}}"
+    docker build --tag "ntwire-server:$IMAGE_TAG" --file deploy/docker/Dockerfile .
+
+- name: Docker client
+  lang: shell
+  exec: |
+    IMAGE_TAG="{{dockerTag}}"
+    test -n "$IMAGE_TAG" || IMAGE_TAG="{{init.dockerTag}}"
+    docker build --tag "ntwire:$IMAGE_TAG" --file deploy/docker/Dockerfile.client .
+
+- name: Docker images
+  to:
+  - Docker server
+  - Docker client
+
+- name: Compose up
+  lang: shell
+  exec: |
+    docker compose --file deploy/docker/docker-compose.yml up --build --detach
+
+- name: Compose logs
+  lang: shell
+  exec: |
+    docker compose --file deploy/docker/docker-compose.yml logs --follow
+
+- name: Compose down
+  lang: shell
+  exec: |
+    docker compose --file deploy/docker/docker-compose.yml down
+
+- name: Clean build output
+  lang: shell
+  exec: |
+    rm -rf bin
+
+- name: Check
+  to:
+  - Download dependencies
+  - Verify dependencies
+  - Check formatting
+  - Vet
+  - Test
+
+- name: Build and test
+  to:
+  - Check
+  - Build binaries
