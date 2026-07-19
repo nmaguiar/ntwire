@@ -34,6 +34,9 @@ type Config struct {
 	PrivateKey string
 	Addresses  []netip.Addr
 	ListenPort int
+	// Bind overrides the default UDP transport. It is used by the WebSocket
+	// fallback while retaining the same WireGuard device and netstack.
+	Bind conn.Bind
 }
 
 // Stack owns both the WireGuard device and its in-memory TCP/IP stack.
@@ -66,7 +69,10 @@ func New(c Config) (*Stack, error) {
 	if err != nil {
 		return nil, err
 	}
-	bind := conn.NewStdNetBind()
+	bind := c.Bind
+	if bind == nil {
+		bind = conn.NewStdNetBind()
+	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
 	lines := "private_key=" + key.Private + "\n"
 	if c.ListenPort > 0 {

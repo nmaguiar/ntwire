@@ -15,6 +15,7 @@ import (
 	"github.com/nmaguiar/nwire/pkg/protocol"
 	"github.com/nmaguiar/nwire/pkg/sshkey"
 	"github.com/nmaguiar/nwire/pkg/wgnet"
+	"github.com/nmaguiar/nwire/pkg/wstransport"
 	"io"
 	"net"
 	"net/http"
@@ -71,6 +72,7 @@ type Options struct {
 	KnownServersFile string
 	NoWebUI          bool
 	StatusFile       string
+	UseWebSocket     bool
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
@@ -240,11 +242,21 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
 	}
-	st, err := wgnet.New(wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}})
+	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}}
+	if options.UseWebSocket {
+		if r.WebSocket == "" {
+			return nil, fmt.Errorf("server did not advertise a WebSocket endpoint")
+		}
+		stackConfig.Bind = wstransport.NewClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+	}
+	st, err := wgnet.New(stackConfig)
 	if err != nil {
 		return nil, err
 	}
 	endpoint := r.UDP
+	if options.UseWebSocket {
+		endpoint = "0.0.0.0:0"
+	}
 	if endpoint == "" {
 		st.Close()
 		return nil, fmt.Errorf("server did not advertise a WireGuard endpoint")
@@ -426,7 +438,13 @@ func (c *Connection) forward(l net.Listener, target string) {
 		}
 		go func() {
 			defer in.Close()
-			out, e := c.Stack.DialContext(context.Background(), "tcp", target)
+			c.mu.Lock()
+			stack := c.Stack
+			c.mu.Unlock()
+			if stack == nil {
+				return
+			}
+			out, e := stack.DialContext(context.Background(), "tcp", target)
 			if e != nil {
 				return
 			}

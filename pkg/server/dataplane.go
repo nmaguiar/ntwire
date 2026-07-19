@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/nwire/pkg/wgnet"
+	"github.com/nmaguiar/nwire/pkg/wstransport"
 )
 
 type dataPlane struct {
@@ -18,6 +19,7 @@ type dataPlane struct {
 	next      uint32
 	listeners []net.Listener
 	stop      chan struct{}
+	ws        *wstransport.Hybrid
 }
 
 // StartDataPlane starts an unprivileged WireGuard UDP endpoint and TCP
@@ -32,11 +34,12 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port})
+	ws := wstransport.NewHybrid()
+	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: ws})
 	if err != nil {
 		return err
 	}
-	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{})}
+	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws}
 	s.data = d
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {
@@ -135,6 +138,9 @@ func (s *Server) addPeer(key, ip string) error {
 func (s *Server) dropSession(v Session) {
 	if s.data != nil && v.WireGuardPublicKey != "" {
 		_ = s.data.stack.RemovePeer(v.WireGuardPublicKey)
+	}
+	if s.data != nil && s.data.ws != nil {
+		s.data.ws.WebSocket.CloseSession(v.ID)
 	}
 }
 func (s *Server) reapLoop() {

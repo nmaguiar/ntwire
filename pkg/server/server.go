@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +39,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/auth", s.auth)
 	m.HandleFunc("POST /v1/renew", s.renew)
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
+	m.HandleFunc("GET /v1/wg", s.websocket)
 	return m
 }
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
@@ -109,7 +111,29 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	session := s.sessions.Create(fp, a.WireGuardPublicKey, tunnelIP, v, ttl)
 	s.log.Info("authentication allowed", "fingerprint", fp, "session", session.ID)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r)})
+}
+func websocketURL(r *http.Request) string {
+	scheme := "wss"
+	if r.TLS == nil {
+		scheme = "ws"
+	}
+	return (&url.URL{Scheme: scheme, Host: r.Host, Path: "/v1/wg"}).String()
+}
+func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
+	if s.data == nil || s.data.ws == nil {
+		http.Error(w, "data plane unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	v, ok := s.sessions.Get(token)
+	if !ok {
+		http.Error(w, "invalid session", http.StatusUnauthorized)
+		return
+	}
+	if err := s.data.ws.WebSocket.ServeHTTP(w, r, v.ID); err != nil {
+		s.log.Warn("WebSocket fallback rejected", "error", err)
+	}
 }
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

@@ -93,6 +93,7 @@ func connect(args []string) {
 	insecure := fs.Bool("insecure", settings.Insecure, "skip TLS certificate verification")
 	known := fs.String("known-servers", "", "known servers file")
 	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open the local status UI in a browser")
+	websocket := fs.Bool("websocket", false, "use the WebSocket WireGuard transport")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
 	mappings := multiFlag{}
 	fs.Var(&mappings, "port", "name=local-port (repeatable)")
@@ -127,7 +128,7 @@ func connect(args []string) {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(2)
 	}
-	o := client.Options{Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser}
+	o := client.Options{Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket}
 	c, e := client.ConnectWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {

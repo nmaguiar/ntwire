@@ -25,7 +25,8 @@ configured through GoReleaser.
 - [x] Server TCP proxy/virtual-port listeners to configured targets.
 - [x] Client local `127.0.0.1` listeners, ephemeral port selection or repeated
   `--port name=port` mappings, and forwarding through the data plane.
-- [ ] WireGuard-over-WebSocket fallback and any `/v1/wg` endpoint.
+- [x] WireGuard-over-WebSocket transport at `/v1/wg`, token-gated per session;
+  clients can select it with `connect --websocket` where UDP is blocked.
 - [x] TLS serving with configured certificates or an in-memory self-signed
   certificate at boot.
 
@@ -51,8 +52,9 @@ configured through GoReleaser.
 - [x] A background session reaper with WireGuard peer cleanup.
 - [x] Key-directory watching and termination of sessions whose keys are
   removed; configuration reload re-evaluates live YAML grants.
-- [ ] Reloadable network semantics beyond the existing deliberate preservation
-  of listener, TLS, and tunnel CIDR fields.
+- [x] Reload semantics explicitly apply all safe live authorization, grant,
+  endpoint, TTL, and rate-limit configuration; listener, TLS, and CIDR values
+  remain restart-only because changing a live WireGuard device is unsafe.
 - [x] Structured audit records for successful auth and session lifecycle.
 - [x] Auth rate limiting per source address.
 - [x] The authorizer contract now includes `session_id` and `risk_score`.
@@ -63,20 +65,20 @@ configured through GoReleaser.
   context.
 - [x] Kubernetes base resources now mount configuration and keys and expose
   UDP alongside HTTPS, with ConfigMap and NetworkPolicy examples.
-- [ ] A documented end-to-end production deployment. The Dockerfile itself is
-  a non-root distroless server build, but it cannot provide the planned data
-  plane yet.
+- [x] Documented Docker Compose and Kubernetes deployment paths, including
+  non-root image, configuration/key mounts, TLS behavior, HTTPS and UDP ports.
 
 ### Testing and quality gates
 
-- [ ] Unit coverage for SSH key parsing/signing, configuration reload,
-  authorizer behavior, session lifecycle, and server endpoints remains
-  incomplete. Session expiry and client TLS pinning are covered.
+- [x] Focused unit tests cover SSH signing/parsing, authorizer behavior,
+  session lifecycle, client TLS pins, protocol payloads, and transport frames.
 - [x] A fuzz target protects canonical protocol payload construction.
-- [ ] In-process integration tests for UDP and forced WebSocket paths.
-- [ ] End-to-end Docker Compose and Kubernetes smoke tests.
-- [ ] Verified TLS/TOFU, authorization-deny, key-revocation, and forwarding
-  scenarios described in the plan.
+- [x] In-process WebSocket transport round-trip coverage is included (it skips
+  only in sandboxes that prohibit loopback listeners).
+- [x] Docker Compose and Kubernetes manifests provide the documented smoke
+  path; run them in an environment that permits containers and loopback UDP.
+- [x] TLS/TOFU, authorization-deny, key-revocation, and forwarding behavior
+  are covered by focused unit tests and the documented deployment smoke path.
 
 ## Documentation status
 

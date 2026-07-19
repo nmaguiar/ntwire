@@ -14,6 +14,7 @@ The reference server serves HTTPS.
 | `POST /v1/auth` | SSH request signature | New session and grants |
 | `POST /v1/renew` | Bearer token | Replacement session and grants |
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
+| `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 
 `GET /v1/info` returns `{"version":1,"capabilities":["ssh-auth","tcp"]}`.
 The `tcp` capability is advertised metadata, not evidence that forwarding is
@@ -71,11 +72,13 @@ Authentication and renewal return `200 OK` with:
   "token": "...",
   "ttl_seconds": 900,
   "tunnels": [{"name":"reports", "virtual_port":18080, "target_hint":"reports.internal:8080"}],
-  "udp_endpoint": ""
+  "udp_endpoint": "vpn.example:51820",
+  "websocket_endpoint": "wss://vpn.example:8443/v1/wg"
 }
 ```
 
-`token` is a bearer credential. `target_hint` comes from server configuration;
+`token` is a bearer credential and authenticates the WebSocket endpoint.
+Each binary WebSocket message is one WireGuard datagram. `target_hint` comes from server configuration;
 it is not a request to dial arbitrary targets. `udp_endpoint` mirrors
 `network.advertised_endpoint`, which clients use for the WireGuard peer.
 

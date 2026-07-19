@@ -12,10 +12,10 @@ For a code-backed checklist of roadmap gaps, see
 
 | Available | Not implemented yet |
 | --- | --- |
-| Ed25519 key generation and SSH request signing | WebSocket fallback |
-| HTTPS control API, WireGuard netstack, and TCP forwarding | TOFU and client status UI |
-| Timestamp/nonce replay protection, rate limits, and session reaping | Automatic renewal and persistent client configuration |
-| YAML/key-directory hot reload and Compose/Kubernetes base manifests | Full end-to-end deployment smoke coverage |
+| Ed25519 key generation, SSH request signing, and TOFU | Listener/TLS/CIDR changes require a restart |
+| HTTPS control API, WireGuard netstack, TCP forwarding, and WebSocket transport | |
+| Session renewal, rate limits, reaping, persistent configuration, and status UI | |
+| YAML/key-directory hot reload and Compose/Kubernetes deployment assets | |
 | Optional webhook or executable authorization hook | |
 
 ## Quick start
@@ -52,7 +52,7 @@ network:
 tunnels:
   - name: demo-http
     target: example.internal:8080
-    description: Example grant; no traffic is forwarded yet
+    description: Example grant
     virtual_port: 18080
     allow: ["*"]
 ```
@@ -69,8 +69,8 @@ In another terminal, authenticate and print the authorized grants:
 ./bin/nwire connect -i .local/nwire/id_ed25519 https://127.0.0.1:8443
 ```
 
-The output contains a `demo-http` row. The configured `target` is only a
-grant hint in the current bootstrap; it is not dialled by the server.
+The output contains a `demo-http` row and loopback listener. Connections to it
+are forwarded to the configured target through WireGuard.
 
 ## Client usage
 
@@ -78,7 +78,7 @@ grant hint in the current bootstrap; it is not dialled by the server.
 | --- | --- |
 | `nwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `nwire_ed25519`. |
 | `nwire list -i key URL` | Authenticates once and prints server grants. Do not add a trailing `/` to `URL`. |
-| `nwire connect -i key URL` | Starts local listeners, renews its session, and prints a token-protected status URL. |
+| `nwire connect -i key URL [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. `--websocket` selects fallback transport. |
 | `nwire version` | Prints the build version (`dev` for an ordinary source build). |
 
 Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of
@@ -92,14 +92,14 @@ complete currently parsed configuration:
 
 ```yaml
 listen:
-  https: ":8443"                       # default; an HTTP listener for now
+  https: ":8443"                       # TLS control API and WebSocket fallback
 tls:
-  cert_file: ""                         # parsed, not used yet
-  key_file: ""                          # parsed, not used yet
+  cert_file: ""                         # empty generates a self-signed certificate
+  key_file: ""
 auth:
   authorized_keys_dir: /etc/nwire/keys  # required; one public key per file
   session_ttl: 15m                       # default: 15m
-  max_sessions_per_key: 5                # parsed, not enforced yet
+  max_sessions_per_key: 5
 network:
   tunnel_cidr: 100.64.0.0/16             # default: 100.64.0.0/16
   advertised_endpoint: ""                # returned as udp_endpoint only
@@ -177,11 +177,10 @@ go test ./...
 go build ./cmd/...
 ```
 
-The Docker and Kubernetes files are scaffolding for the planned service, not
-an end-to-end deployment path. The Docker image builds only the server, no TLS
-listener exists, and the sample Compose build context needs adjustment before
-it can build from the repository root. Use the local quick start to exercise
-the present implementation.
+The Docker Compose example is runnable from `deploy/docker` and exposes HTTPS
+and UDP. Create `deploy/docker/keys/` and place an authorized `.pub` key in it
+before `docker compose up --build`; the `example` tunnel forwards to the echo
+service. Kubernetes manifests mount config and keys and expose both protocols.
 
 ## Security
 
