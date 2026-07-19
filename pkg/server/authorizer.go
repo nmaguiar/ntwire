@@ -12,10 +12,13 @@ import (
 )
 
 type AuthorizationInput struct {
-	SourceIP, KeyFingerprint, KeyComment, SessionID string            `json:"source_ip"`
-	ClientInfo                                      map[string]string `json:"client_info"`
-	GrantedTunnels                                  []string          `json:"granted_tunnels_by_yaml"`
-	RequestedAt                                     time.Time         `json:"requested_at"`
+	SourceIP       string            `json:"source_ip"`
+	KeyFingerprint string            `json:"key_fingerprint"`
+	KeyComment     string            `json:"key_comment"`
+	SessionID      string            `json:"session_id"`
+	ClientInfo     map[string]string `json:"client_info"`
+	GrantedTunnels []string          `json:"granted_tunnels_by_yaml"`
+	RequestedAt    time.Time         `json:"requested_at"`
 }
 type AuthorizationResult struct {
 	Allow          bool   `json:"allow"`

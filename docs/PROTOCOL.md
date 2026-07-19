@@ -1,12 +1,12 @@
 # nwire control protocol v1
 
 This is the implemented control-plane protocol. It authenticates a client and
-returns tunnel grants; it does not currently establish WireGuard or forward
-TCP traffic.
+returns tunnel grants and the values needed to establish a WireGuard netstack
+session and forward TCP traffic.
 
 ## Endpoints
 
-The reference server currently serves plain HTTP.
+The reference server serves HTTPS.
 
 | Method and path | Authentication | Result |
 | --- | --- | --- |
@@ -77,7 +77,7 @@ Authentication and renewal return `200 OK` with:
 
 `token` is a bearer credential. `target_hint` comes from server configuration;
 it is not a request to dial arbitrary targets. `udp_endpoint` mirrors
-`network.advertised_endpoint`, but no UDP transport is implemented yet.
+`network.advertised_endpoint`, which clients use for the WireGuard peer.
 
 Errors are JSON objects of the form `{"error":"message"}`. Malformed input
 returns `400`; authentication or session failures return `401`; an authorizer
@@ -91,5 +91,5 @@ invalidates the old token, and returns a replacement response. `POST
 /v1/disconnect` needs the same header, has no body, and returns `204 No
 Content` after deletion.
 
-Sessions expire after their configured TTL when they are used. The current
-implementation has no background session reaper.
+The server reaps expired sessions in the background and removes their
+WireGuard peers.

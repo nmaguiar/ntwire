@@ -20,9 +20,8 @@ For a code-backed checklist of roadmap gaps, see
 
 ## Quick start
 
-This local example exercises the implemented control plane. The server uses
-plain HTTP at present, so bind it to loopback and do not expose it to an
-untrusted network.
+This local example starts a TLS control server and a userspace WireGuard data
+plane. The client asks to pin the default self-signed certificate on first use.
 
 Requirements: Go 1.26 or later.
 
@@ -43,11 +42,13 @@ Create `.local/nwire/nwire.yaml`:
 ```yaml
 listen:
   https: "127.0.0.1:8443"
+  wireguard: "127.0.0.1:51820"
 auth:
   authorized_keys_dir: .local/nwire/keys
   session_ttl: 15m
 network:
   tunnel_cidr: 100.64.0.0/16
+  advertised_endpoint: "127.0.0.1:51820"
 tunnels:
   - name: demo-http
     target: example.internal:8080
@@ -65,7 +66,7 @@ Start the server in one terminal:
 In another terminal, authenticate and print the authorized grants:
 
 ```sh
-./bin/nwire list -i .local/nwire/id_ed25519 http://127.0.0.1:8443
+./bin/nwire connect -i .local/nwire/id_ed25519 https://127.0.0.1:8443
 ```
 
 The output contains a `demo-http` row. The configured `target` is only a
@@ -77,11 +78,11 @@ grant hint in the current bootstrap; it is not dialled by the server.
 | --- | --- |
 | `nwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `nwire_ed25519`. |
 | `nwire list -i key URL` | Authenticates once and prints server grants. Do not add a trailing `/` to `URL`. |
-| `nwire connect -i key URL` | Currently an alias for `list`; it does not create a local listener or persistent connection. |
+| `nwire connect -i key URL` | Starts local listeners, renews its session, and prints a token-protected status URL. |
 | `nwire version` | Prints the build version (`dev` for an ordinary source build). |
 
-Use an `http://` URL with the current server, for example
-`http://127.0.0.1:8443`. HTTPS URLs will not work until TLS serving exists.
+Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of
+a self-signed server prompts to store its fingerprint in `~/.nwire/known_servers`.
 
 ## Server configuration
 

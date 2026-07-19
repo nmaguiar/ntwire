@@ -12,8 +12,12 @@ import (
 const Version = 1
 
 type ClientInfo struct {
-	OS, Arch, Hostname, Username, ClientVersion string            `json:"os,omitempty"`
-	Extra                                       map[string]string `json:"extra,omitempty"`
+	OS            string            `json:"os,omitempty"`
+	Arch          string            `json:"arch,omitempty"`
+	Hostname      string            `json:"hostname,omitempty"`
+	Username      string            `json:"username,omitempty"`
+	ClientVersion string            `json:"client_version,omitempty"`
+	Extra         map[string]string `json:"extra,omitempty"`
 }
 type AuthRequest struct {
 	Version            int        `json:"version"`
@@ -25,16 +29,20 @@ type AuthRequest struct {
 	Signature          string     `json:"signature"`
 }
 type Tunnel struct {
-	Name, Description string `json:"name"`
-	VirtualPort       int    `json:"virtual_port"`
-	TargetHint        string `json:"target_hint,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	VirtualPort int    `json:"virtual_port"`
+	TargetHint  string `json:"target_hint,omitempty"`
 }
 type AuthResponse struct {
-	SessionID, Token, TunnelIP, ServerPublicKey string   `json:"session_id"`
-	TTLSeconds                                  int      `json:"ttl_seconds"`
-	Tunnels                                     []Tunnel `json:"tunnels"`
-	UDP                                         string   `json:"udp_endpoint,omitempty"`
-	WebSocket                                   string   `json:"websocket_endpoint,omitempty"`
+	SessionID       string   `json:"session_id"`
+	Token           string   `json:"token"`
+	TunnelIP        string   `json:"tunnel_ip"`
+	ServerPublicKey string   `json:"server_public_key"`
+	TTLSeconds      int      `json:"ttl_seconds"`
+	Tunnels         []Tunnel `json:"tunnels"`
+	UDP             string   `json:"udp_endpoint,omitempty"`
+	WebSocket       string   `json:"websocket_endpoint,omitempty"`
 }
 type RenewRequest struct {
 	Info ClientInfo `json:"client_info"`

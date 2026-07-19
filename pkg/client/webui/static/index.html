@@ -1,1 +1,5 @@
-<!doctype html><meta charset="utf-8"><title>nwire</title><style>body{font:16px system-ui;margin:3rem;max-width:50rem}code{background:#eee;padding:.2rem}</style><h1>nwire</h1><p>Connection status is available from the running client.</p><div id="app"></div><script>document.getElementById('app').textContent='Waiting for client status…'</script>
+<!doctype html><meta charset="utf-8"><title>nwire status</title><style>body{font:16px system-ui;margin:3rem;max-width:50rem}code{background:#eee;padding:.2rem}li{margin:.5rem 0}</style><h1>nwire</h1><div id="app">Loading connection status…</div><script>
+const app=document.getElementById('app'), token=new URLSearchParams(location.search).get('token');
+async function refresh(){try{const r=await fetch('/status?token='+encodeURIComponent(token));if(!r.ok)throw Error();const s=await r.json();app.innerHTML='<p>'+(s.connected?'Connected':'Disconnected')+'</p><ul>'+s.tunnels.map((t,i)=>'<li><b>'+t.name+'</b> <code>'+s.local_addresses[i]+'</code></li>').join('')+'</ul>'}catch{app.textContent='Connection status is unavailable.'}}
+refresh();setInterval(refresh,5000);
+</script>

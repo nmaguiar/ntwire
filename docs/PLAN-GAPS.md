@@ -18,63 +18,52 @@ configured through GoReleaser.
 
 ### Transport and forwarding
 
-- [ ] Userspace WireGuard/netstack on either client or server. `pkg/wgnet` and
-  `pkg/wstransport` have no implementation, and the Go module has no WireGuard,
-  gVisor, or WebSocket dependencies.
-- [ ] Server UDP listener, ephemeral WireGuard peer lifecycle, tunnel-IP
+- [x] Userspace WireGuard/netstack on both client and server, backed by
+  wireguard-go and gVisor netstack without an OS network interface.
+- [x] Server UDP listener, ephemeral WireGuard peer lifecycle, tunnel-IP
   allocation, allowed-IP enforcement, and peer removal on expiry/revocation.
-- [ ] Server TCP proxy/virtual-port listeners to configured targets.
-- [ ] Client local `127.0.0.1` listeners, port selection or `--port` mapping,
-  and forwarding through the data plane.
+- [x] Server TCP proxy/virtual-port listeners to configured targets.
+- [x] Client local `127.0.0.1` listeners, ephemeral port selection or repeated
+  `--port name=port` mappings, and forwarding through the data plane.
 - [ ] WireGuard-over-WebSocket fallback and any `/v1/wg` endpoint.
-- [ ] Actual TLS serving, self-signed certificate generation, or client TLS
-  verification. The server calls `http.ListenAndServe`; `tls.cert_file` and
-  `tls.key_file` are currently unused.
+- [x] TLS serving with configured certificates or an in-memory self-signed
+  certificate at boot.
 
 ### Client experience
 
-- [ ] A real `connect` command. It currently executes the same one-shot grant
-  listing path as `list`.
-- [ ] `status`, disconnect UX, automatic renewal, reconnect/backoff, or a
-  persistent client process.
-- [ ] TOFU certificate pinning, `known_servers`, `--ca`, and `--insecure`.
-- [ ] Persistent client configuration, `--port`, `--no-browser`, and
-  `--collect-exec` command-line options.
-- [ ] Built-in username collection and wired-in extensible collectors. The
-  `Collector` and `ExecCollector` types exist, but no collector command or
-  execution path is implemented.
-- [ ] A served connection-status web UI. Static assets are embedded, but no
-  route starts or uses them.
+- [x] A persistent `connect` command that starts local listeners and closes the
+  session on Ctrl-C.
+- [ ] A standalone `status`/disconnect command, reconnect after an expired
+  session, or persistent client configuration. `connect` now renews its token
+  automatically with exponential retry and performs a best-effort disconnect
+  on exit.
+- [x] TOFU certificate pinning in `~/.nwire/known_servers`, plus `--ca` and
+  explicitly opt-in `--insecure`.
+- [x] Persistent client configuration at `~/.nwire/config.yaml`, with
+  command-line overrides including `--port`, `--no-browser`, and
+  `--collect-exec`.
+- [x] Built-in username collection and a size-capped JSON `ExecCollector`.
+- [x] A loopback-only connection-status web UI, protected by a random URL
+  token and served for the lifetime of `connect`.
 
 ### Server lifecycle and authorization
 
-- [ ] Enforcement of `auth.max_sessions_per_key`; the field is parsed but not
-  used.
-- [ ] A background session reaper and cleanup side effects. Expired sessions
-  are removed only when a token is read.
-- [ ] Key-directory watching, SIGHUP reload, and safe handling of key changes.
-  The watcher observes only the parent directory of the YAML file.
-- [ ] Immediate re-evaluation or termination of live sessions after config or
-  ACL changes. Reload updates future authorization only.
+- [x] Enforcement of `auth.max_sessions_per_key`.
+- [x] A background session reaper with WireGuard peer cleanup.
+- [x] Key-directory watching and termination of sessions whose keys are
+  removed; configuration reload re-evaluates live YAML grants.
 - [ ] Reloadable network semantics beyond the existing deliberate preservation
   of listener, TLS, and tunnel CIDR fields.
-- [ ] Structured audit logging for all auth attempts, session lifecycle, and
-  tunnel connections. Current logging is limited to selected server events.
-- [ ] Auth rate limiting per source address.
-- [ ] The plan's full authorizer contract: the implementation supports the
-  basic allow/narrow/shorten-TTL result, but does not supply a session ID to
-  the hook and does not use a risk score.
+- [x] Structured audit records for successful auth and session lifecycle.
+- [x] Auth rate limiting per source address.
+- [x] The authorizer contract now includes `session_id` and `risk_score`.
 
 ### Deployment
 
-- [ ] A runnable Docker Compose example with a target service and a verified
-  repository-root build context. The current Compose file is located under
-  `deploy/docker` and its `build: .` context does not contain the Go module
-  files required by its Dockerfile.
-- [ ] Complete Kubernetes deployment resources: mounted configuration and
-  authorized keys, UDP service, ConfigMap/Secret examples, NetworkPolicy, and
-  a verified in-cluster target example. Current manifests define only a basic
-  Deployment and TCP Service.
+- [x] A Docker Compose example with a target service and repository-root build
+  context.
+- [x] Kubernetes base resources now mount configuration and keys and expose
+  UDP alongside HTTPS, with ConfigMap and NetworkPolicy examples.
 - [ ] A documented end-to-end production deployment. The Dockerfile itself is
   a non-root distroless server build, but it cannot provide the planned data
   plane yet.
@@ -82,9 +71,9 @@ configured through GoReleaser.
 ### Testing and quality gates
 
 - [ ] Unit coverage for SSH key parsing/signing, configuration reload,
-  authorizer behavior, session lifecycle, and server endpoints. The only test
-  file currently covers canonical signing-payload determinism.
-- [ ] Fuzz tests for protocol parsers.
+  authorizer behavior, session lifecycle, and server endpoints remains
+  incomplete. Session expiry and client TLS pinning are covered.
+- [x] A fuzz target protects canonical protocol payload construction.
 - [ ] In-process integration tests for UDP and forced WebSocket paths.
 - [ ] End-to-end Docker Compose and Kubernetes smoke tests.
 - [ ] Verified TLS/TOFU, authorization-deny, key-revocation, and forwarding

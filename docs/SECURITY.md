@@ -2,14 +2,10 @@
 
 ## Current boundary
 
-nwire protects the control-plane authentication request, not the network path
-or configured targets. The server starts a plain HTTP listener even though the
-configuration contains `tls` fields; those fields are parsed but unused.
-WireGuard, WebSocket fallback, and TCP forwarding are not implemented.
-
-Run this bootstrap only on loopback during development, or behind a trusted
-TLS-terminating proxy on a controlled network. Do not send private keys,
-bearer tokens, or signed requests over an untrusted plain-HTTP connection.
+nwire protects control-plane requests with TLS and data-plane traffic with
+WireGuard. The server can use configured TLS files or an in-memory self-signed
+certificate; clients pin the latter on first use. TCP forwarding is limited to
+YAML-granted targets. WebSocket fallback is not implemented.
 
 ## Implemented protections
 
