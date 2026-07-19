@@ -181,6 +181,25 @@ and UDP. Create `deploy/docker/keys/` and place an authorized `.pub` key in it
 before `docker compose up --build`; the `example` tunnel forwards to the echo
 service. Kubernetes manifests mount config and keys and expose both protocols.
 
+The matching client image is built from `deploy/docker/Dockerfile.client` and
+is published as `ghcr.io/nmaguiar/nwire-client`. It keeps certificate pins and
+local status in `/home/nonroot/.nwire`; mount a named volume there to preserve
+that state. The image runs as an unprivileged user. When bind-mounting a host
+private key, run it as your host UID and bind-mount a host-owned state
+directory as shown below. Use `--insecure` only for a disposable development
+server; for an interactive first connection, omit it so the client can pin the
+server certificate.
+
+```sh
+docker build -f deploy/docker/Dockerfile.client -t nwire-client .
+mkdir -p .local/nwire/client-state
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/.local/nwire/id_ed25519:/keys/id_ed25519:ro" \
+  -v "$PWD/.local/nwire/client-state:/home/nonroot/.nwire" \
+  nwire-client connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
+```
+
 ## Security
 
 Keep private keys, session tokens, and signatures out of logs and source

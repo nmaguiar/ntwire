@@ -1,0 +1,15 @@
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/nwire ./cmd/nwire && \
+    mkdir /out/state
+
+FROM gcr.io/distroless/static-debian12:nonroot
+ENV HOME=/home/nonroot
+COPY --from=build /out/nwire /nwire
+COPY --chown=nonroot:nonroot --from=build /out/state /home/nonroot/.nwire
+USER nonroot:nonroot
+VOLUME ["/home/nonroot/.nwire"]
+ENTRYPOINT ["/nwire"]
