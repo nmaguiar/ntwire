@@ -876,7 +876,9 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 				now := time.Now().Unix()
 				last := tunnel.lastDialWarn.Load()
 				if now-last >= 30 && tunnel.lastDialWarn.CompareAndSwap(last, now) {
-					c.log.Warn("tunnel dial failed", "tunnel", tunnel.name, "target", target, "error", e)
+					if c.log != nil {
+						c.log.Warn("tunnel dial failed", "tunnel", tunnel.name, "target", target, "error", e)
+					}
 				}
 				return
 			}
