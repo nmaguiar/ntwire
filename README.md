@@ -315,3 +315,9 @@ encrypts the control plane with TLS and the data plane with WireGuard. See
 ## License
 
 [Apache-2.0](LICENSE)
+# Client quickstart (connecting to an existing server)
+
+1. Run `ntwire keygen`.
+2. Send `~/.ntwire/id_ed25519.pub` to the server administrator.
+3. Run `ntwire connect server.example`. Confirm the first certificate pin with
+   the administrator; future runs can simply use `ntwire connect`.

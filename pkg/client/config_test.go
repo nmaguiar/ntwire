@@ -32,3 +32,29 @@ func TestDefaultIdentityFileSkipsMissingAndNonRegularFiles(t *testing.T) {
 		t.Fatalf("defaultIdentityFile() = %q, want empty", got)
 	}
 }
+
+func TestDefaultIdentityFilePrefersNTWire(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, ".ntwire", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if got := defaultIdentityFile(home); got != path {
+		t.Fatalf("got %q, want %q", got, path)
+	}
+}
+
+func TestNormalizeServerURL(t *testing.T) {
+	for in, want := range map[string]string{" example.test/ ": "https://example.test", "http://example.test:8080/": "http://example.test:8080"} {
+		got, err := NormalizeServerURL(in)
+		if err != nil || got != want {
+			t.Fatalf("NormalizeServerURL(%q) = %q, %v", in, got, err)
+		}
+	}
+	if _, err := NormalizeServerURL("ssh://example.test"); err == nil {
+		t.Fatal("non-HTTP scheme accepted")
+	}
+}

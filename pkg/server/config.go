@@ -5,13 +5,16 @@ import (
 	"gopkg.in/yaml.v3"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 )
 
 type Config struct {
 	TLS struct {
-		CertFile string `yaml:"cert_file"`
-		KeyFile  string `yaml:"key_file"`
+		CertFile  string `yaml:"cert_file"`
+		KeyFile   string `yaml:"key_file"`
+		StateDir  string `yaml:"state_dir"`
+		Ephemeral bool   `yaml:"ephemeral"`
 	} `yaml:"tls"`
 	Listen struct {
 		HTTPS     string `yaml:"https"`
@@ -68,6 +71,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if e = yaml.Unmarshal(b, &c); e != nil {
 		return c, e
+	}
+	if c.TLS.StateDir == "" {
+		c.TLS.StateDir = filepath.Dir(path)
 	}
 	if c.Listen.HTTPS == "" {
 		c.Listen.HTTPS = ":8443"

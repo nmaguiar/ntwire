@@ -137,3 +137,10 @@ certificate, so silently accepting it would defeat the point of TOFU. Avoid
 - Register ntwire as a **public** OAuth client (no client secret) with a
   loopback redirect URI for PKCE and, if used, device-flow support enabled at
   the IdP.
+# Self-signed TLS certificates
+
+Unless `tls.cert_file` and `tls.key_file` are configured, the server persists
+its self-signed certificate in `tls.state_dir` (the configuration file's
+directory by default). It logs the SHA256 pin at startup; users should compare
+that pin on their first TOFU prompt. Set `tls.ephemeral: true` to deliberately
+regenerate an in-memory certificate at each start.

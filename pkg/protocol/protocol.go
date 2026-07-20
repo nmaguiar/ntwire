@@ -72,13 +72,30 @@ type AuthResponse struct {
 	Tunnels         []Tunnel `json:"tunnels"`
 	UDP             string   `json:"udp_endpoint,omitempty"`
 	WebSocket       string   `json:"websocket_endpoint,omitempty"`
+	Identity        string   `json:"identity,omitempty"`
+	Method          string   `json:"method,omitempty"`
 }
 type RenewRequest struct {
 	Info ClientInfo `json:"client_info"`
 }
 type Error struct {
 	Error string `json:"error"`
+	Code  string `json:"code,omitempty"`
 }
+
+const (
+	ErrorInvalidRequest      = "invalid_request"
+	ErrorClockSkew           = "clock_skew"
+	ErrorReplayedNonce       = "replayed_nonce"
+	ErrorUnknownKey          = "unknown_key"
+	ErrorBadSignature        = "bad_signature"
+	ErrorRateLimited         = "rate_limited"
+	ErrorNotAllowed          = "not_allowed"
+	ErrorMaxSessions         = "max_sessions"
+	ErrorOIDCInvalidToken    = "oidc_invalid_token"
+	ErrorNoCapacity          = "no_capacity"
+	ErrorInvalidWireGuardKey = "invalid_wireguard_key"
+)
 
 // SigningPayload is a byte-exact, length-prefixed encoding. It intentionally
 // does not depend on JSON serialization order.

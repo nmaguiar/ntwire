@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
 	"github.com/nmaguiar/ntwire/pkg/oidcclient"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
@@ -19,9 +20,11 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
+	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,7 +46,7 @@ type ExecCollector struct{ Command string }
 func BuiltinInfo() protocol.ClientInfo {
 	h, _ := os.Hostname()
 	u := os.Getenv("USER")
-	return protocol.ClientInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: h, Username: u, ClientVersion: "dev", Extra: map[string]string{}}
+	return protocol.ClientInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: h, Username: u, ClientVersion: buildinfo.String(), Extra: map[string]string{}}
 }
 func (c ExecCollector) Collect() (map[string]string, error) {
 	out, err := exec.Command("sh", "-c", c.Command).Output()
@@ -92,14 +95,49 @@ type Options struct {
 	NoBrowser bool
 	// TokenCacheFile overrides ~/.ntwire/tokens.json.
 	TokenCacheFile string
+	Logger         *slog.Logger
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
 // pinned in known_servers. Call TrustServer and retry after user confirmation.
-type UnknownCertificateError struct{ Host, Fingerprint string }
+type UnknownCertificateError struct{ Host, Fingerprint, Previous string }
 
 func (e *UnknownCertificateError) Error() string {
 	return fmt.Sprintf("unknown server certificate for %s (%s)", e.Host, e.Fingerprint)
+}
+
+// AuthError preserves a server's additive machine-readable code while still
+// being useful with older servers that only return an HTTP status/body.
+type AuthError struct{ Status, Code, Message string }
+
+func (e *AuthError) Error() string {
+	switch e.Code {
+	case protocol.ErrorUnknownKey:
+		if e.Message != "" {
+			return "the server does not recognize your SSH key; ask the admin to add your .pub key to authorized_keys_dir, or use --sso"
+		}
+	case protocol.ErrorClockSkew:
+		return "your computer's clock differs from the server's by more than 2 minutes"
+	case protocol.ErrorNotAllowed:
+		return "authentication succeeded but this identity is not allowed by the server"
+	case protocol.ErrorRateLimited:
+		return "too many authentication attempts; wait a minute and try again"
+	}
+	if e.Message != "" {
+		return "authentication failed: " + e.Message
+	}
+	return "authentication failed: " + e.Status
+}
+func decodeAuthError(resp *http.Response, keyPath string) error {
+	var body protocol.Error
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
+	e := &AuthError{Status: resp.Status, Code: body.Code, Message: body.Error}
+	if e.Code == protocol.ErrorUnknownKey && keyPath != "" {
+		if k, err := sshkey.PublicFromPrivate(keyPath); err == nil {
+			e.Message = fmt.Sprintf("the server does not recognize your key (%s); ask the admin to add %s.pub to authorized_keys_dir, or use --sso", k, keyPath)
+		}
+	}
+	return e
 }
 
 func defaultKnownServersFile() string {
@@ -173,14 +211,18 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		s := sha256.Sum256(cs.PeerCertificates[0].Raw)
 		fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(s[:])
 		if v.Servers[host] != fp {
-			return &UnknownCertificateError{Host: host, Fingerprint: fp}
+			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
 		}
 		return nil
 	}}}}, nil
 }
 
 func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (protocol.AuthResponse, error) {
-	url = strings.TrimRight(url, "/")
+	var err error
+	url, err = NormalizeServerURL(url)
+	if err != nil {
+		return protocol.AuthResponse{}, err
+	}
 	k, err := wgnet.GenerateKey()
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -191,6 +233,31 @@ func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, opti
 	}
 	res, err := authenticateAny(h, url, keyPath, info, k.Public, options, "", "")
 	return res.response, err
+}
+
+// NormalizeServerURL accepts host[:port] and applies HTTPS's standard port
+// when no port is supplied. Paths and non-HTTP schemes are deliberately not
+// accepted because ntwire owns the control-plane path.
+func NormalizeServerURL(raw string) (string, error) {
+	v := strings.TrimSpace(strings.TrimRight(raw, "/"))
+	if v == "" {
+		return "", fmt.Errorf("server URL is required")
+	}
+	if !strings.Contains(v, "://") {
+		v = "https://" + v
+	}
+	u, err := urlpkg.Parse(v)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("invalid server URL %q", raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("server URL scheme must be http or https")
+	}
+	if u.Path != "" && u.Path != "/" {
+		return "", fmt.Errorf("server URL must not include a path")
+	}
+	u.Path, u.RawQuery, u.Fragment = "", "", ""
+	return strings.TrimRight(u.String(), "/"), nil
 }
 
 // authResult remembers which method (and, for OIDC, which issuer) a session
@@ -313,7 +380,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return protocol.AuthResponse{}, fmt.Errorf("authentication failed: %s", resp.Status)
+		return protocol.AuthResponse{}, decodeAuthError(resp, "")
 	}
 	var out protocol.AuthResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
@@ -324,11 +391,16 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 // authentication reopens the browser (or device flow) instead of silently
 // refreshing.
 func Logout(tokenCacheFile, serverURL string) error {
+	var err error
+	serverURL, err = NormalizeServerURL(serverURL)
+	if err != nil {
+		return err
+	}
 	cache, err := oidcclient.OpenCache(tokenCacheFile)
 	if err != nil {
 		return err
 	}
-	return cache.DeleteServer(strings.TrimRight(serverURL, "/"))
+	return cache.DeleteServer(serverURL)
 }
 
 func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string) (protocol.AuthResponse, error) {
@@ -356,7 +428,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return protocol.AuthResponse{}, fmt.Errorf("authentication failed: %s", resp.Status)
+		return protocol.AuthResponse{}, decodeAuthError(resp, keyPath)
 	}
 	var out protocol.AuthResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
@@ -381,6 +453,7 @@ type Connection struct {
 	keyPath        string
 	options        Options
 	method, issuer string // remembers how this session authenticated, for reconnect
+	log            *slog.Logger
 }
 
 // TunnelStats is the traffic observed by a local listener for one tunnel.
@@ -394,27 +467,35 @@ type TunnelStats struct {
 }
 
 type localTunnel struct {
-	name        string
-	virtualPort int
-	listener    net.Listener
-	localAddr   string
-	target      string
-	toTunnel    atomic.Uint64
-	fromTunnel  atomic.Uint64
-	connections atomic.Uint64
-	active      atomic.Int64
+	name         string
+	virtualPort  int
+	listener     net.Listener
+	localAddr    string
+	target       string
+	toTunnel     atomic.Uint64
+	fromTunnel   atomic.Uint64
+	connections  atomic.Uint64
+	active       atomic.Int64
+	lastDialWarn atomic.Int64
 }
 
 func (t *localTunnel) stats() TunnelStats {
 	return TunnelStats{BytesToTunnel: t.toTunnel.Load(), BytesFromTunnel: t.fromTunnel.Load(), Connections: t.connections.Load(), Active: t.active.Load()}
 }
 
+// AuthMethod reports the method used for the current authenticated session.
+func (c *Connection) AuthMethod() string { c.mu.Lock(); defer c.mu.Unlock(); return c.method }
+
 func Connect(url, keyPath string, info protocol.ClientInfo, ports map[string]int) (*Connection, error) {
 	return ConnectWithOptions(url, keyPath, info, Options{Ports: ports})
 }
 
 func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (*Connection, error) {
-	url = strings.TrimRight(url, "/")
+	var err error
+	url, err = NormalizeServerURL(url)
+	if err != nil {
+		return nil, err
+	}
 	key, err := wgnet.GenerateKey()
 	if err != nil {
 		return nil, err
@@ -463,6 +544,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
 		options: options, method: auth.method, issuer: auth.issuer,
+		log: options.Logger,
+	}
+	if c.log == nil {
+		c.log = slog.Default()
 	}
 	for _, t := range r.Tunnels {
 		p, explicitPort := options.Ports[t.Name]
@@ -487,7 +572,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	go c.renewLoop()
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
-		openBrowser(c.UIURL)
+		if err := openBrowser(c.UIURL); err != nil {
+			c.log.Warn("could not open browser; open URL manually", "url", c.UIURL, "error", err)
+		}
 	}
 	if err := c.writeCurrentStatus(); err != nil {
 		c.Close()
@@ -595,7 +682,15 @@ func (c *Connection) renewLoop() {
 		}
 		for delay := time.Second; ; delay = min(delay*2, time.Minute) {
 			if err := c.renew(); err == nil || c.reconnect() == nil {
+				if delay > time.Second {
+					c.log.Warn("control-plane connection reconnected")
+				}
 				break
+			}
+			if delay == time.Second {
+				c.log.Warn("control-plane renewal failed; reconnecting", "retry_in", delay)
+			} else {
+				c.log.Debug("control-plane reconnect failed", "retry_in", delay)
 			}
 			select {
 			case <-c.stop:
@@ -746,7 +841,7 @@ func (c *Connection) webStatus() map[string]any {
 	return map[string]any{"connected": c.Stack != nil, "tunnels": tunnels, "ttl_seconds": c.Response.TTLSeconds}
 }
 
-func openBrowser(url string) {
+func openBrowser(url string) error {
 	var command string
 	var args []string
 	switch runtime.GOOS {
@@ -757,9 +852,7 @@ func openBrowser(url string) {
 	default:
 		command, args = "xdg-open", []string{url}
 	}
-	if err := exec.Command(command, args...).Start(); err != nil {
-		return
-	}
+	return exec.Command(command, args...).Start()
 }
 func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target string) {
 	for {
@@ -780,6 +873,11 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			}
 			out, e := stack.DialContext(context.Background(), "tcp", target)
 			if e != nil {
+				now := time.Now().Unix()
+				last := tunnel.lastDialWarn.Load()
+				if now-last >= 30 && tunnel.lastDialWarn.CompareAndSwap(last, now) {
+					c.log.Warn("tunnel dial failed", "tunnel", tunnel.name, "target", target, "error", e)
+				}
 				return
 			}
 			defer out.Close()
