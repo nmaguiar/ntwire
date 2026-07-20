@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
@@ -57,6 +58,15 @@ func main() {
 	// does not apply once /v1/wg's WebSocket has hijacked the connection, so
 	// long-running data-plane sessions are unaffected. ReadTimeout/WriteTimeout
 	// are deliberately not set: they would also cut off that hijacked stream.
+	if c.Listen.Metrics != "" {
+		mh := &http.Server{Addr: c.Listen.Metrics, Handler: s.MetricsHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
+		go func() {
+			slog.Info("ntwire metrics listening", "metrics", c.Listen.Metrics, "endpoint", "/metrica")
+			if e := mh.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				slog.Error("metrics server stopped", "error", e)
+			}
+		}()
+	}
 	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsManager.Config(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
 	if err = h.ListenAndServeTLS("", ""); err != nil {

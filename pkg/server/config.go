@@ -19,6 +19,7 @@ type Config struct {
 	Listen struct {
 		HTTPS     string `yaml:"https"`
 		WireGuard string `yaml:"wireguard"`
+		Metrics   string `yaml:"metrics"`
 	} `yaml:"listen"`
 	Auth struct {
 		AuthorizedKeysDir string        `yaml:"authorized_keys_dir"`
@@ -76,6 +77,7 @@ func SampleConfig() string {
 listen:
   https: ":8443"                         # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+  metrics: ""                             # optional plaintext metrics listener; when set, exposes /metrica on this address (for example, 127.0.0.1:9090)
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
