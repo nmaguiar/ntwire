@@ -109,8 +109,10 @@ the server revokes access (see [docs/SECURITY.md](docs/SECURITY.md)).
 ## Server configuration
 
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
-`ntwire.yaml`. At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers`
-is required. The following is the complete currently parsed configuration:
+`ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
+write a complete, extensively commented template for every available option.
+At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers` is required.
+The following is the complete currently parsed configuration:
 
 ```yaml
 listen:
@@ -119,6 +121,8 @@ listen:
 tls:
   cert_file: ""                         # PEM certificate; empty generates an in-memory self-signed cert (see docs/SECURITY.md)
   key_file: ""                          # PEM private key; required together with cert_file
+  state_dir: ""                         # directory for a generated self-signed certificate and key; empty uses this YAML file's directory
+  ephemeral: false                       # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
 auth:
   authorized_keys_dir: /etc/ntwire/keys  # one public key per file; optional if oidc.issuers is set
   oidc:
@@ -135,8 +139,8 @@ network:
   tunnel_cidr: 100.64.0.0/16             # private IPv4 range peer addresses are allocated from; default shown
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward)
 authorizer:
-  webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; mutually exclusive with exec
-  exec: ""                               # path to an executable that reads the same JSON on stdin and exits 0 to allow
+  webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
+  exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty
   timeout: 5s                            # deadline for the webhook call or executable run; a timeout denies the request; default: 5s
 tunnels:
   - name: reports                       # unique identifier; shown to clients in grant listings

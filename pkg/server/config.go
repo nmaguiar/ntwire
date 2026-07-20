@@ -63,6 +63,64 @@ type TunnelConfig struct {
 	Allow       []string `yaml:"allow"`
 }
 
+// SampleConfig returns a complete, commented server configuration template.
+// The template is valid YAML and uses a key-based authentication example so it
+// can be used as a starting point without configuring an OIDC provider.
+func SampleConfig() string {
+	return `# ntwire server configuration
+#
+# At least one authentication method is required: auth.authorized_keys_dir,
+# auth.oidc.issuers, or both. Uncomment and adapt the OIDC example below to
+# enable single sign-on alongside SSH public-key authentication.
+
+listen:
+  https: ":8443"                         # TLS control API and WebSocket fallback listener; default: :8443
+  wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+
+tls:
+  cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
+  key_file: ""                           # PEM private key paired with cert_file; required whenever cert_file is set
+  state_dir: ""                          # directory for a generated self-signed certificate and key; empty uses this YAML file's directory
+  ephemeral: false                        # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
+
+auth:
+  authorized_keys_dir: /etc/ntwire/keys  # directory of SSH public-key files; optional only when oidc.issuers is configured
+  session_ttl: 15m                        # bearer-token lifetime before renewal is required; default: 15m
+  max_sessions_per_key: 5                 # concurrent-session cap per SSH fingerprint or OIDC email; 0 means unlimited
+  oidc:
+    issuers: []                           # OIDC providers; leave empty to use SSH keys only
+    # - name: google                      # stable provider ID shown to clients and selected with --provider
+    #   issuer: https://accounts.google.com # issuer URL; its discovery document and JWKS are fetched
+    #   client_id: 1234-abc.apps.googleusercontent.com # public OAuth client ID (PKCE; no client secret)
+    #   scopes: [openid, email, profile]  # requested OAuth scopes; defaults to these three when omitted
+    #   groups_claim: groups               # ID-token claim with group membership; empty disables group: grants
+    #   require_verified_email: true       # reject tokens lacking email_verified=true; default: true
+
+network:
+  tunnel_cidr: 100.64.0.0/16              # private IPv4 range used to allocate peer tunnel addresses; default shown
+  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT
+
+authorizer:
+  webhook_url: ""                         # URL that receives a JSON POST for each connection and returns an allow/deny decision; takes precedence when both hook options are set
+  exec: ""                                # executable that receives the same JSON on stdin and returns an allow/deny decision when webhook_url is empty
+  timeout: 5s                              # deadline for the webhook or executable; errors and timeouts deny the request; default: 5s
+
+tunnels:
+  - name: reports                          # unique identifier shown to clients
+    target: reports.internal:8080          # host:port the server proxies to after traffic reaches its virtual port
+    description: Reporting service         # optional free-text description shown to clients
+    virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
+    local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+    allow:
+      - "*"                                # any authenticated identity
+      # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
+      # - "alice@laptop"                   # SSH authorized_keys comment
+      # - "alice@corp.com"                 # exact verified OIDC email
+      # - "@corp.com"                      # OIDC email domain
+      # - "group:engineering"              # OIDC membership in auth.oidc.issuers[].groups_claim
+`
+}
+
 func LoadConfig(path string) (Config, error) {
 	var c Config
 	b, e := os.ReadFile(path)

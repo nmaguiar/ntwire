@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"log/slog"
@@ -14,7 +15,12 @@ import (
 
 func main() {
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
+	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	flag.Parse()
+	if *printSampleConfig {
+		fmt.Print(server.SampleConfig())
+		return
+	}
 	c, err := server.LoadConfig(*config)
 	if err != nil {
 		slog.Error("configuration error", "error", err)
