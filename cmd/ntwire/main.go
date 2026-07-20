@@ -1,18 +1,14 @@
 package main
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
-	"github.com/nmaguiar/ntwire/pkg/sshkey"
-	"golang.org/x/crypto/ssh"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,8 +17,6 @@ import (
 	"syscall"
 )
 
-const version = "dev"
-
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -30,7 +24,7 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "version":
-		fmt.Println(version)
+		fmt.Println(buildinfo.String())
 	case "keygen":
 		keygen(os.Args[2:])
 	case "list":
@@ -50,7 +44,7 @@ func main() {
 	}
 }
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ntwire <keygen|list|connect|status|disconnect|port|logout|version>")
+	fmt.Fprintln(os.Stderr, "usage: ntwire <command>\n\ncommands: keygen  create an SSH identity\n          connect  connect tunnels\n          list     show allowed tunnels\n          status, disconnect, port, logout, version\n\ntypical first run: ntwire keygen; send ~/.ntwire/id_ed25519.pub to your admin; ntwire connect server.example\n\nrun ntwire <command> -h for command help")
 }
 
 // logout clears cached SSO tokens for a server, so the next authentication
@@ -175,6 +169,7 @@ func disconnect(args []string) {
 func connect(args []string) {
 	settings, configPath := settingsFor(args)
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
+	verbose := fs.Bool("v", false, "show connection diagnostics")
 	fs.String("config", configPath, "persistent client configuration")
 	key := fs.String("i", settings.IdentityFile, "SSH private key")
 	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
@@ -197,7 +192,7 @@ func connect(args []string) {
 		*key = client.DefaultIdentityFile()
 	}
 	if server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire connect [-i key | --sso] [--port name=15432] https://server:8443")
+		fmt.Fprintln(os.Stderr, "No server is configured.\n1. Run: ntwire keygen\n2. Send ~/.ntwire/id_ed25519.pub to your administrator\n3. Run: ntwire connect <server>")
 		os.Exit(2)
 	}
 	ports := map[string]int{}
@@ -226,6 +221,11 @@ func connect(args []string) {
 		Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
 	}
+	if *verbose {
+		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	} else {
+		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
 	c, e := client.ConnectWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {
@@ -238,6 +238,16 @@ func connect(args []string) {
 	if e != nil {
 		fmt.Fprintln(os.Stderr, e)
 		os.Exit(1)
+	}
+	if !*insecure {
+		if changed, err := client.UpdateSettings(configPath, client.Settings{Server: server, IdentityFile: *key, SSO: c.AuthMethod() == "oidc", Provider: *provider}); err != nil {
+			fmt.Fprintln(os.Stderr, "could not save connection settings:", err)
+		} else if changed {
+			fmt.Printf("saved connection settings to %s (next time just run: ntwire connect)\n", configPath)
+		}
+	}
+	if len(c.Response.Tunnels) == 0 {
+		fmt.Printf("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.\n", c.Response.Identity)
 	}
 	defer c.Close()
 	for i, t := range c.Response.Tunnels {
@@ -259,6 +269,7 @@ func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 func list(args []string) {
 	settings, configPath := settingsFor(args)
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	verbose := fs.Bool("v", false, "show connection diagnostics")
 	fs.String("config", configPath, "persistent client configuration")
 	key := fs.String("i", settings.IdentityFile, "SSH private key")
 	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
@@ -290,6 +301,11 @@ func list(args []string) {
 		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
 	}
+	if *verbose {
+		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	} else {
+		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	}
 	r, err := client.AuthenticateWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(err, &unknown) {
@@ -302,6 +318,9 @@ func list(args []string) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
+	}
+	if len(r.Tunnels) == 0 {
+		fmt.Printf("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.\n", r.Identity)
 	}
 	for _, t := range r.Tunnels {
 		fmt.Printf("%-20s %5d  %s\n", t.Name, t.VirtualPort, t.Description)
@@ -342,7 +361,15 @@ func collectedInfo(command string) (protocol.ClientInfo, error) {
 }
 
 func trustPrompt(e *client.UnknownCertificateError, path string) bool {
-	fmt.Fprintf(os.Stderr, "Trust server %s certificate %s? [y/N] ", e.Host, e.Fingerprint)
+	if info, err := os.Stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		fmt.Fprintf(os.Stderr, "cannot confirm certificate without a terminal; verify with the admin then pre-seed it in %s\n", path)
+		return false
+	}
+	if e.Previous == "" {
+		fmt.Fprintf(os.Stderr, "First connection to %s. Verify this fingerprint with the server startup log; it will be remembered in ~/.ntwire/known_servers.\n%s\nTrust? [y/N] ", e.Host, e.Fingerprint)
+	} else {
+		fmt.Fprintf(os.Stderr, "WARNING: certificate for %s CHANGED. Old: %s\nNew: %s\nConfirm with the admin; this could be interception. Trust? [y/N] ", e.Host, e.Previous, e.Fingerprint)
+	}
 	var answer string
 	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
 		return false
@@ -355,25 +382,13 @@ func trustPrompt(e *client.UnknownCertificateError, path string) bool {
 }
 func keygen(args []string) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	out := fs.String("o", "ntwire_ed25519", "private key output")
+	out := fs.String("o", client.DefaultGeneratedIdentityFile(), "private key output")
 	fs.Parse(args)
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	fingerprint, err := client.GenerateIdentity(*out)
 	if err != nil {
-		panic(err)
+		fmt.Fprintln(os.Stderr, "keygen:", err)
+		os.Exit(1)
 	}
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		panic(err)
-	}
-	if err = os.WriteFile(*out, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
-		panic(err)
-	}
-	k, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		panic(err)
-	}
-	if err = os.WriteFile(*out+".pub", ssh.MarshalAuthorizedKey(k), 0644); err != nil {
-		panic(err)
-	}
-	fmt.Printf("wrote %s (%s)\n", *out, sshkey.Fingerprint(k))
+	pub, _ := os.ReadFile(*out + ".pub")
+	fmt.Printf("Identity created: %s\nFingerprint: %s\nSend this line to your administrator:\n%sNext: ntwire connect <server>\n", *out, fingerprint, pub)
 }

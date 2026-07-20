@@ -1,10 +1,17 @@
 package client
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +29,10 @@ func DefaultIdentityFile() string {
 }
 
 func defaultIdentityFile(home string) string {
+	ntwire := filepath.Join(home, ".ntwire", "id_ed25519")
+	if info, err := os.Stat(ntwire); err == nil && info.Mode().IsRegular() {
+		return ntwire
+	}
 	for _, name := range []string{
 		"id_rsa",
 		"id_ecdsa",
@@ -38,6 +49,42 @@ func defaultIdentityFile(home string) string {
 		}
 	}
 	return ""
+}
+
+// GenerateIdentity writes an Ed25519 private key and OpenSSH public key.
+// It never overwrites an existing key pair.
+func GenerateIdentity(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("identity path is required")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("refusing to overwrite existing key %s", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", err
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return "", err
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return "", err
+	}
+	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
+		return "", err
+	}
+	k, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		return "", err
+	}
+	if err = os.WriteFile(path+".pub", ssh.MarshalAuthorizedKey(k), 0644); err != nil {
+		_ = os.Remove(path)
+		return "", err
+	}
+	return sshkey.Fingerprint(k), nil
 }
 
 // Settings is the optional persistent configuration stored at
@@ -62,6 +109,14 @@ func DefaultConfigFile() string {
 	return filepath.Join(h, ".ntwire", "config.yaml")
 }
 
+func DefaultGeneratedIdentityFile() string {
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(h, ".ntwire", "id_ed25519")
+}
+
 // LoadSettings treats a missing configuration file as an empty configuration.
 func LoadSettings(path string) (Settings, error) {
 	if path == "" {
@@ -77,4 +132,84 @@ func LoadSettings(path string) (Settings, error) {
 	}
 	err = yaml.Unmarshal(b, &s)
 	return s, err
+}
+
+// UpdateSettings merges connection fields without replacing comments or other
+// user-owned YAML settings. It returns true only when a file was changed.
+func UpdateSettings(path string, update Settings) (bool, error) {
+	if path == "" {
+		path = DefaultConfigFile()
+	}
+	if path == "" {
+		return false, fmt.Errorf("cannot determine configuration path")
+	}
+	var doc yaml.Node
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err != nil {
+		return false, err
+	} else if err = yaml.Unmarshal(b, &doc); err != nil {
+		return false, err
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return false, fmt.Errorf("configuration root must be a mapping")
+	}
+	m := doc.Content[0]
+	values := map[string]string{"server": update.Server, "identity_file": update.IdentityFile, "provider": update.Provider}
+	changed := false
+	for key, value := range values {
+		if value != "" {
+			changed = setYAMLString(m, key, value) || changed
+		}
+	}
+	changed = setYAMLBool(m, "sso", update.SSO) || changed
+	if !changed {
+		return false, nil
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return false, err
+	}
+	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return false, err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*")
+	if err != nil {
+		return false, err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err = tmp.Chmod(0600); err == nil {
+		_, err = tmp.Write(out)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, os.Rename(tmpName, path)
+}
+
+func setYAMLString(m *yaml.Node, key, value string) bool { return setYAML(m, key, value, "!!str") }
+func setYAMLBool(m *yaml.Node, key string, value bool) bool {
+	v := "false"
+	if value {
+		v = "true"
+	}
+	return setYAML(m, key, v, "!!bool")
+}
+func setYAML(m *yaml.Node, key, value, tag string) bool {
+	for i := 0; i < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			if m.Content[i+1].Value == value {
+				return false
+			}
+			m.Content[i+1].Value, m.Content[i+1].Tag = value, tag
+			return true
+		}
+	}
+	m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value})
+	return true
 }

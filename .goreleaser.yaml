@@ -5,11 +5,13 @@ builds:
     binary: ntwire
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
   - id: ntwire-server
     main: ./cmd/ntwire-server
     binary: ntwire-server
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
 archives:
   # Publish the client and server as separate downloadable assets. Docker
   # images are a deployment alternative, not a replacement for these binaries.

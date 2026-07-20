@@ -182,3 +182,11 @@ The authorizer hook input (`POST` body or stdin JSON, see the README's
 | `identity` | empty | verified email |
 | `issuer` | empty | configured issuer name |
 | `groups` | empty | from `groups_claim`, if configured |
+# UX additions
+
+Authentication failures may include an additive `code` field in the JSON
+error: `invalid_request`, `clock_skew`, `replayed_nonce`, `unknown_key`,
+`bad_signature`, `rate_limited`, `not_allowed`, `max_sessions`,
+`oidc_invalid_token`, `no_capacity`, or `invalid_wireguard_key`. Successful
+authentication and renewal responses may include `identity` and `method`
+(`ssh` or `oidc`). Older peers may omit all of these fields.

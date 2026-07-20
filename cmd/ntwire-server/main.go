@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"log/slog"
 	"net/http"
@@ -51,7 +52,7 @@ func main() {
 	// long-running data-plane sessions are unaffected. ReadTimeout/WriteTimeout
 	// are deliberately not set: they would also cut off that hijacked stream.
 	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsManager.Config(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
-	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard)
+	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
 	if err = h.ListenAndServeTLS("", ""); err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)

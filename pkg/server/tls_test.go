@@ -120,6 +120,30 @@ func TestTLSManagerSelfSignedNeverReloads(t *testing.T) {
 	}
 }
 
+func TestTLSManagerPersistsSelfSignedCertificate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{}
+	cfg.TLS.StateDir = dir
+	first, err := NewTLSManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewTLSManager(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Fingerprint() != second.Fingerprint() {
+		t.Fatal("persisted certificate fingerprint changed")
+	}
+	info, err := os.Stat(filepath.Join(dir, "selfsigned-key.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("key mode = %o, want 0600", info.Mode().Perm())
+	}
+}
+
 // Confirm the manager actually plugs into tls.Config the way main.go uses it.
 func TestTLSManagerConfigUsesGetCertificate(t *testing.T) {
 	m, err := NewTLSManager(Config{})

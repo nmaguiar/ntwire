@@ -83,31 +83,31 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSource(r.RemoteAddr) {
-		fail(w, http.StatusTooManyRequests, "too many authentication attempts")
+		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
 	}
 	var a protocol.AuthRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
-		fail(w, 400, "invalid request")
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
 		return
 	}
 	at, err := protocol.ParseTimestamp(a.Timestamp)
 	if err != nil || time.Since(at) > 2*time.Minute || time.Until(at) > 2*time.Minute {
-		fail(w, 401, "timestamp outside permitted window")
+		fail(w, 401, protocol.ErrorClockSkew, "timestamp outside permitted window")
 		return
 	}
 	if !s.useNonce(a.Nonce) {
-		fail(w, 401, "replayed nonce")
+		fail(w, 401, protocol.ErrorReplayedNonce, "replayed nonce")
 		return
 	}
 	key, comment, err := sshkey.ParsePublicString(a.PublicKey)
 	if err != nil || !s.authorized(key) {
-		fail(w, 401, "unknown public key")
+		fail(w, 401, protocol.ErrorUnknownKey, "unknown public key")
 		return
 	}
 	p, err := protocol.SigningPayload(a)
 	if err != nil || sshkey.Verify(key, p, a.Signature) != nil {
-		fail(w, 401, "invalid signature")
+		fail(w, 401, protocol.ErrorBadSignature, "invalid signature")
 		return
 	}
 	fp := sshkey.Fingerprint(key)
@@ -123,34 +123,34 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 // replay, and allowSource rate-limits repeated attempts per source IP.
 func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	if !s.allowSource(r.RemoteAddr) {
-		fail(w, http.StatusTooManyRequests, "too many authentication attempts")
+		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
 	}
 	var a protocol.OIDCAuthRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
-		fail(w, 400, "invalid request")
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
 		return
 	}
 	if a.Version != protocol.Version {
-		fail(w, 400, "unsupported protocol version")
+		fail(w, 400, protocol.ErrorInvalidRequest, "unsupported protocol version")
 		return
 	}
 	at, err := protocol.ParseTimestamp(a.Timestamp)
 	if err != nil || time.Since(at) > 2*time.Minute || time.Until(at) > 2*time.Minute {
-		fail(w, 401, "timestamp outside permitted window")
+		fail(w, 401, protocol.ErrorClockSkew, "timestamp outside permitted window")
 		return
 	}
 	s.mu.Lock()
 	verifiers := s.oidc
 	s.mu.Unlock()
 	if verifiers == nil {
-		fail(w, 400, "oidc authentication is not configured")
+		fail(w, 400, protocol.ErrorInvalidRequest, "oidc authentication is not configured")
 		return
 	}
 	identity, err := verifiers.Verify(r.Context(), a.IssuerName, a.IDToken)
 	if err != nil {
 		s.log.Warn("oidc verification failed", "issuer", a.IssuerName, "error", err)
-		fail(w, 401, "invalid id token")
+		fail(w, 401, protocol.ErrorOIDCInvalidToken, "invalid id token")
 		return
 	}
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
@@ -179,7 +179,7 @@ type sessionRequest struct {
 // session creation.
 func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) {
 	if s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
-		fail(w, 429, "maximum sessions for key reached")
+		fail(w, 429, protocol.ErrorMaxSessions, "maximum sessions for key reached")
 		return
 	}
 	grants, ttl, err := s.authorize(r, authContext{
@@ -188,7 +188,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}, req.Info, grants)
 	if err != nil {
 		s.log.Warn("authorization denied", "identity", req.Identity, "method", req.Method, "error", err)
-		fail(w, 403, "authorization denied")
+		fail(w, 403, protocol.ErrorNotAllowed, "authorization denied")
 		return
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
@@ -199,16 +199,16 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	serverKey := ""
 	if s.data != nil {
 		if req.WireGuardPublicKey == "" {
-			fail(w, 400, "wireguard_public_key is required")
+			fail(w, 400, protocol.ErrorInvalidRequest, "wireguard_public_key is required")
 			return
 		}
 		tunnelIP, err = s.allocateIP()
 		if err != nil {
-			fail(w, 503, err.Error())
+			fail(w, 503, protocol.ErrorNoCapacity, err.Error())
 			return
 		}
 		if err = s.addPeer(req.WireGuardPublicKey, tunnelIP); err != nil {
-			fail(w, 400, "invalid wireguard key")
+			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "invalid wireguard key")
 			return
 		}
 		serverKey = s.data.stack.PublicKey()
@@ -219,7 +219,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r)})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method})
 }
 func websocketURL(r *http.Request) string {
 	scheme := "wss"
@@ -251,12 +251,12 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	old, ok := s.sessions.Get(t)
 	if !ok {
-		fail(w, 401, "invalid session")
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
 	var body protocol.RenewRequest
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body) != nil {
-		fail(w, 400, "invalid request")
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
 		return
 	}
 	grants := make([]TunnelConfig, 0)
@@ -273,7 +273,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.sessions.Delete(t)
 		s.dropSession(old)
-		fail(w, 403, "authorization denied")
+		fail(w, 403, protocol.ErrorNotAllowed, "authorization denied")
 		return
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
@@ -293,13 +293,13 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, Identity: n.Identity, Method: n.Method})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	old, ok := s.sessions.Get(t)
 	if !ok {
-		fail(w, 401, "invalid session")
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
 	s.sessions.Delete(t)
@@ -579,6 +579,6 @@ func write(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
-func fail(w http.ResponseWriter, status int, msg string) {
-	write(w, status, protocol.Error{Error: msg})
+func fail(w http.ResponseWriter, status int, code, msg string) {
+	write(w, status, protocol.Error{Error: msg, Code: code})
 }
