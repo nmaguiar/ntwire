@@ -43,6 +43,8 @@ jobs:
             image: ntwire-server
           - dockerfile: deploy/docker/Dockerfile.client
             image: ntwire-client
+          - dockerfile: deploy/docker/Dockerfile.relay
+            image: ntwire-relay
     steps:
       - uses: actions/checkout@v4
       - uses: docker/login-action@v3

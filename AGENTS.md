@@ -11,8 +11,8 @@ Use Go 1.26 or the version declared in `go.mod`.
 - `go test ./...` runs the full unit/integration test suite.
 - `go test -race ./...` checks tests for data races before concurrency-sensitive changes.
 - `go vet ./...` catches common Go correctness issues.
-- `go build ./cmd/...` confirms both CLI binaries compile; `go build -o bin/ntwire ./cmd/ntwire` builds just the client.
-- `ojob tasks.yaml op=check` runs dependency verification, formatting checks, vet, and tests. Use `ojob tasks.yaml op=all` to also build both binaries.
+- `go build ./cmd/...` confirms the client, server, and relay binaries compile; `go build -o bin/ntwire ./cmd/ntwire` builds just the client.
+- `ojob tasks.yaml op=check` runs dependency verification, formatting checks, vet, and tests. Use `ojob tasks.yaml op=all` to also build all three binaries.
 - `ojob tasks.yaml op=compose-up` starts the Docker Compose example; use `compose-down` when finished.
 
 The task file defaults to `/tmp/ntwire-gocache`; set `goCache=/path` when the default is not writable.

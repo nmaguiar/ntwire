@@ -12,8 +12,14 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+  - id: ntwire-relay
+    main: ./cmd/ntwire-relay
+    binary: ntwire-relay
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
 archives:
-  # Publish the client and server as separate downloadable assets. Docker
+  # Publish the client, server, and relay as separate downloadable assets. Docker
   # images are a deployment alternative, not a replacement for these binaries.
   - id: ntwire
     ids: [ntwire]
@@ -22,4 +28,8 @@ archives:
   - id: ntwire-server
     ids: [ntwire-server]
     name_template: "{{ .ProjectName }}-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides: [{goos: windows, format: zip}]
+  - id: ntwire-relay
+    ids: [ntwire-relay]
+    name_template: "{{ .ProjectName }}-relay_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
