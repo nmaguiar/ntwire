@@ -2,15 +2,34 @@ package server
 
 import (
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/server/webui"
 	"net/http"
 	"strings"
 )
 
-// MetricsHandler exposes a small Prometheus-compatible plaintext snapshot.
+// MetricsHandler exposes the Prometheus snapshot and optional operator
+// dashboard on the metrics listener, keeping them off the public control API.
 func (s *Server) MetricsHandler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /metrics", s.metrics)
+	m.HandleFunc("GET /", s.dashboard)
+	m.HandleFunc("GET /v1/dashboard", s.dashboardStatus)
 	return m
+}
+
+// dashboard serves the optional operator console. It is deliberately opt-in:
+// its data includes authenticated identities and tunnel addresses.
+func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	if !s.dashboardAllowed(r) {
+		http.NotFound(w, r)
+		return
+	}
+	fsys, err := webui.Files()
+	if err != nil {
+		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
+		return
+	}
+	http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 }
 
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
@@ -27,8 +46,14 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "ntwire_tunnels_configured %d\n", tunnelCount)
 	fmt.Fprintln(w, "# HELP ntwire_session_tunnels Granted tunnels per active session.")
 	fmt.Fprintln(w, "# TYPE ntwire_session_tunnels gauge")
+	fmt.Fprintln(w, "# HELP ntwire_session_latency_milliseconds Last client-observed control-plane round-trip latency.")
+	fmt.Fprintln(w, "# TYPE ntwire_session_latency_milliseconds gauge")
+	fmt.Fprintln(w, "# HELP ntwire_session_reconnections Client control-plane reconnections since startup.")
+	fmt.Fprintln(w, "# TYPE ntwire_session_reconnections counter")
 	for _, session := range sessions {
 		fmt.Fprintf(w, "ntwire_session_tunnels{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), len(session.Tunnels))
+		fmt.Fprintf(w, "ntwire_session_latency_milliseconds{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), session.LatencyMillis)
+		fmt.Fprintf(w, "ntwire_session_reconnections{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), session.Reconnections)
 	}
 }
 

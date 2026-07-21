@@ -27,6 +27,9 @@ type Config struct {
 		SessionTTL        time.Duration `yaml:"session_ttl"`
 		MaxSessionsPerKey int           `yaml:"max_sessions_per_key"`
 	} `yaml:"auth"`
+	Admin struct {
+		WebUIToken string `yaml:"web_ui_token"`
+	} `yaml:"admin"`
 	Network struct {
 		TunnelCIDR         string `yaml:"tunnel_cidr"`
 		AdvertisedEndpoint string `yaml:"advertised_endpoint"`
@@ -77,7 +80,7 @@ func SampleConfig() string {
 listen:
   https: ":8443"                         # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
-  metrics: ""                             # optional plaintext metrics listener; when set, exposes /metrics on this address (for example, 127.0.0.1:9090)
+  metrics: ""                             # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -106,6 +109,9 @@ authorizer:
   webhook_url: ""                         # URL that receives a JSON POST for each connection and returns an allow/deny decision; takes precedence when both hook options are set
   exec: ""                                # executable that receives the same JSON on stdin and returns an allow/deny decision when webhook_url is empty
   timeout: 5s                              # deadline for the webhook or executable; errors and timeouts deny the request; default: 5s
+
+admin:
+  web_ui_token: ""                         # optional secret that enables the server dashboard at /?token=...; leave empty to disable it
 
 tunnels:
   - name: reports                          # unique identifier shown to clients

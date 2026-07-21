@@ -17,6 +17,8 @@ type ClientInfo struct {
 	Hostname      string            `json:"hostname,omitempty"`
 	Username      string            `json:"username,omitempty"`
 	ClientVersion string            `json:"client_version,omitempty"`
+	LatencyMillis uint64            `json:"latency_millis,omitempty"`
+	Reconnections uint64            `json:"reconnections,omitempty"`
 	Extra         map[string]string `json:"extra,omitempty"`
 }
 type AuthRequest struct {
@@ -105,6 +107,9 @@ func SigningPayload(r AuthRequest) ([]byte, error) {
 	}
 	var b bytes.Buffer
 	b.WriteString("ntwire-auth-v1\x00")
+	// Telemetry fields in ClientInfo are intentionally excluded here. Keeping
+	// this payload stable lets a newer server authenticate existing v1 clients;
+	// latency and reconnect counts are operational hints, not authorization data.
 	fields := []string{r.PublicKey, r.WireGuardPublicKey, r.Timestamp, r.Nonce, r.Info.OS, r.Info.Arch, r.Info.Hostname, r.Info.Username, r.Info.ClientVersion}
 	keys := make([]string, 0, len(r.Info.Extra))
 	for k := range r.Info.Extra {

@@ -14,7 +14,7 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 	s := New(Config{Tunnels: []TunnelConfig{{Name: "reports"}, {Name: "admin"}}}, nil)
 	s.sessions.Create(CreateParams{
 		Method: "oidc", Identity: `alice@example.com`,
-		Tunnels: []protocol.Tunnel{{Name: "reports"}}, TTL: time.Minute,
+		Tunnels: []protocol.Tunnel{{Name: "reports"}}, LatencyMillis: 24, Reconnections: 3, TTL: time.Minute,
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -28,6 +28,8 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 		"ntwire_sessions 1",
 		"ntwire_tunnels_configured 2",
 		`ntwire_session_tunnels{method="oidc",identity="alice@example.com"} 1`,
+		`ntwire_session_latency_milliseconds{method="oidc",identity="alice@example.com"} 24`,
+		`ntwire_session_reconnections{method="oidc",identity="alice@example.com"} 3`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q in:\n%s", want, body)

@@ -16,19 +16,21 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Server struct {
-	Config     Config
-	sessions   *Sessions
-	nonces     map[string]time.Time
-	mu         sync.Mutex
-	log        *slog.Logger
-	data       *dataPlane
-	rates      map[string]*rateState
-	oidc       *oidcauth.Verifiers
-	tlsManager *TLSManager
+	Config      Config
+	sessions    *Sessions
+	nonces      map[string]time.Time
+	mu          sync.Mutex
+	log         *slog.Logger
+	data        *dataPlane
+	rates       map[string]*rateState
+	tunnelStats sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
+	oidc        *oidcauth.Verifiers
+	tlsManager  *TLSManager
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -66,6 +68,81 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	return m
+}
+
+func (s *Server) dashboardAllowed(r *http.Request) bool {
+	s.mu.Lock()
+	token := s.Config.Admin.WebUIToken
+	s.mu.Unlock()
+	return token != "" && subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(token)) == 1
+}
+
+type dashboardTunnelStats struct {
+	BytesToTarget   uint64 `json:"bytes_to_target"`
+	BytesFromTarget uint64 `json:"bytes_from_target"`
+	Connections     uint64 `json:"connections"`
+	Active          int64  `json:"active_connections"`
+}
+
+type dashboardTunnel struct {
+	Name          string               `json:"name"`
+	Description   string               `json:"description"`
+	Target        string               `json:"target"`
+	VirtualPort   int                  `json:"virtual_port"`
+	Identity      string               `json:"identity"`
+	Method        string               `json:"method"`
+	TunnelIP      string               `json:"tunnel_ip"`
+	Expires       time.Time            `json:"expires"`
+	LatencyMillis uint64               `json:"latency_millis"`
+	Reconnections uint64               `json:"reconnections"`
+	Stats         dashboardTunnelStats `json:"stats"`
+}
+
+func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.dashboardAllowed(r) {
+		http.NotFound(w, r)
+		return
+	}
+	sessions := s.sessions.All()
+	out := make([]dashboardTunnel, 0)
+	for _, session := range sessions {
+		for _, tunnel := range session.Tunnels {
+			config, ok := s.tunnelConfig(tunnel.Name)
+			if !ok {
+				continue
+			}
+			out = append(out, dashboardTunnel{Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()})
+		}
+	}
+	write(w, http.StatusOK, struct {
+		Sessions int               `json:"sessions"`
+		Tunnels  []dashboardTunnel `json:"tunnels"`
+	}{Sessions: len(sessions), Tunnels: out})
+}
+
+func (s *Server) tunnelConfig(name string) (TunnelConfig, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, tunnel := range s.Config.Tunnels {
+		if tunnel.Name == name {
+			return tunnel, true
+		}
+	}
+	return TunnelConfig{}, false
+}
+
+type serverTunnelStats struct {
+	toTarget, fromTarget, connections atomic.Uint64
+	active                            atomic.Int64
+}
+
+func (v *serverTunnelStats) snapshot() dashboardTunnelStats {
+	return dashboardTunnelStats{BytesToTarget: v.toTarget.Load(), BytesFromTarget: v.fromTarget.Load(), Connections: v.connections.Load(), Active: v.active.Load()}
+}
+func statsKey(ip, name string) string { return ip + "\x00" + name }
+func (s *Server) statsFor(ip, name string) *serverTunnelStats {
+	v, _ := s.tunnelStats.LoadOrStore(statsKey(ip, name), &serverTunnelStats{})
+	return v.(*serverTunnelStats)
 }
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	caps := []string{"tcp"}
@@ -202,10 +279,15 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			fail(w, 400, protocol.ErrorInvalidRequest, "wireguard_public_key is required")
 			return
 		}
-		tunnelIP, err = s.allocateIP()
-		if err != nil {
-			fail(w, 503, protocol.ErrorNoCapacity, err.Error())
-			return
+		if old, ok := s.sessions.FindWireGuardPublicKey(req.WireGuardPublicKey); ok {
+			tunnelIP = old.TunnelIP
+			s.sessions.Delete(old.Token)
+		} else {
+			tunnelIP, err = s.allocateIP()
+			if err != nil {
+				fail(w, 503, protocol.ErrorNoCapacity, err.Error())
+				return
+			}
 		}
 		if err = s.addPeer(req.WireGuardPublicKey, tunnelIP); err != nil {
 			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "invalid wireguard key")
@@ -216,6 +298,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
+		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.audit("auth_allowed", session, "", 0)
@@ -289,6 +372,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	n := s.sessions.Create(CreateParams{
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
+		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)

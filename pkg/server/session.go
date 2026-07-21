@@ -19,6 +19,7 @@ type Session struct {
 	Issuer                                    string
 	Groups                                    []string
 	Tunnels                                   []protocol.Tunnel
+	LatencyMillis, Reconnections              uint64
 	Expires                                   time.Time
 }
 type Sessions struct {
@@ -45,6 +46,7 @@ type CreateParams struct {
 	Groups                       []string
 	WireGuardPublicKey, TunnelIP string
 	Tunnels                      []protocol.Tunnel
+	LatencyMillis, Reconnections uint64
 	TTL                          time.Duration
 }
 
@@ -56,10 +58,28 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
 	return v
+}
+
+// FindWireGuardPublicKey returns the live session using a WireGuard peer.
+// A reconnect replaces that session while retaining its tunnel address.
+func (s *Sessions) FindWireGuardPublicKey(key string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for token, v := range s.byToken {
+		if now.After(v.Expires) {
+			delete(s.byToken, token)
+			continue
+		}
+		if key != "" && v.WireGuardPublicKey == key {
+			return v, true
+		}
+	}
+	return Session{}, false
 }
 func (s *Sessions) Get(t string) (Session, bool) {
 	s.mu.Lock()
