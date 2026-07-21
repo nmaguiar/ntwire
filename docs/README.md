@@ -10,6 +10,7 @@ links out to.
 | [RELAY.md](RELAY.md) | Reaching an `ntwire-server` behind NAT via `ntwire-relay`, and its trust model |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | The `authorizer:` webhook/executable hook: request/response schema and a worked example |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Release binaries, Docker Compose, and Kubernetes manifests |
+| [LOGGING.md](LOGGING.md) | Text vs. Logstash-format JSON logs, the container default, and terminal color/UTF-8 behavior |
 | [OIDC-SETUP.md](OIDC-SETUP.md) | Registering ntwire as a public OAuth client with Google, Microsoft Entra ID, or Keycloak |
 | [PROTOCOL.md](PROTOCOL.md) | The wire-level control protocol: endpoints, signing payloads, and relay registration |
 | [SECURITY.md](SECURITY.md) | The TLS trust model, OIDC threat model, and operator guidance |

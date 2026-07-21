@@ -45,6 +45,9 @@ registrations:
 Point wildcard DNS (`*.relay.example.com`) at the host running `listen.public`,
 and give each registered server its own key with `ntwire keygen -o relay_id_ed25519`.
 
+The sample config also includes a `log:` section (text/json format, log
+level); see [LOGGING.md](LOGGING.md) for the full reference.
+
 ## Pointing a server at a relay
 
 On the server side, add a `relay:` block (see the full option list in

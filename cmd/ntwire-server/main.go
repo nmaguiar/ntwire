@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/server"
+	"github.com/nmaguiar/ntwire/pkg/ui"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,16 +20,39 @@ import (
 func main() {
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
+	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
+	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
+	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
+	flag.Usage = func() {
+		ui.Spec{
+			Tool:    "ntwire-server",
+			Tagline: "ntwire tunnel server",
+			Flags:   ui.FlagsOf(flag.CommandLine),
+			Examples: []string{
+				"ntwire-server -config ntwire.yaml",
+				"ntwire-server -print-sample-config > ntwire.yaml",
+			},
+		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
+	}
 	flag.Parse()
 	if *printSampleConfig {
 		fmt.Print(server.SampleConfig())
 		return
 	}
+
+	caps := ui.Detect(os.Stderr, *noColor)
+	flagLogOpts := logging.Options{Format: *logFormat, Level: *logLevel}
+	bootstrap := logging.Resolve(flagLogOpts, logging.Options{}, logging.EnvOptions("NTWIRE"))
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stderr, bootstrap, caps)))
+
 	c, err := server.LoadConfig(*config)
 	if err != nil {
 		slog.Error("configuration error", "error", err)
 		os.Exit(2)
 	}
+	final := logging.Resolve(flagLogOpts, c.Log.Options(), logging.EnvOptions("NTWIRE"))
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stderr, final, caps)))
+
 	tlsManager, err := server.NewTLSManager(c)
 	if err != nil {
 		slog.Error("TLS configuration error", "error", err)

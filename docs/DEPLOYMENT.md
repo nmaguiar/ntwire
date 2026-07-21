@@ -24,7 +24,9 @@ the relay archive for a public host relaying servers behind NAT (see
 
 Docker images for all three components are published alongside those release
 assets. They are optional deployment alternatives and do not replace the
-release binaries.
+release binaries. All three images set `NTWIRE_LOG_FORMAT=json` by default,
+so logs are Logstash-format JSON out of the box; see
+[LOGGING.md](LOGGING.md) to change or override it.
 
 ## Docker Compose
 
@@ -98,3 +100,4 @@ Edit `configmap.yaml`'s `tunnels:` list for real targets, and see
 - [CONFIGURATION.md](CONFIGURATION.md) — full `ntwire.yaml` reference
 - [RELAY.md](RELAY.md) — deploying a relay for servers behind NAT
 - [SECURITY.md](SECURITY.md) — TLS trust model for a deployed server
+- [LOGGING.md](LOGGING.md) — text vs. JSON logs, and the container default

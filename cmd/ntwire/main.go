@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/ui"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -18,155 +20,233 @@ import (
 )
 
 func main() {
+	noColor := noColorFrom(os.Args[1:])
+	u := ui.New(os.Stdout, os.Stderr, noColor)
 	if len(os.Args) < 2 {
-		usage()
+		usage(u)
 		return
 	}
 	switch os.Args[1] {
 	case "version":
 		fmt.Println(buildinfo.String())
 	case "keygen":
-		keygen(os.Args[2:])
+		keygen(os.Args[2:], u)
 	case "list":
-		list(os.Args[2:])
+		list(os.Args[2:], u)
 	case "connect":
-		connect(os.Args[2:])
+		connect(os.Args[2:], u)
 	case "status":
-		status(os.Args[2:])
+		status(os.Args[2:], u)
 	case "disconnect":
-		disconnect(os.Args[2:])
+		disconnect(os.Args[2:], u)
 	case "port":
-		port(os.Args[2:])
+		port(os.Args[2:], u)
 	case "logout":
-		logout(os.Args[2:])
+		logout(os.Args[2:], u)
 	default:
-		usage()
+		usage(u)
 	}
 }
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: ntwire <command>\n\ncommands: keygen  create an SSH identity\n          connect  connect tunnels\n          list     show allowed tunnels\n          status, disconnect, port, logout, version\n\ntypical first run: ntwire keygen; send ~/.ntwire/id_ed25519.pub to your admin; ntwire connect server.example\n\nrun ntwire <command> -h for command help")
+
+// noColorFrom scans raw args for --no-color/-no-color before any
+// subcommand-specific flag.FlagSet has parsed anything, so both "ntwire
+// --no-color connect ..." and "ntwire connect --no-color ..." disable
+// color for the single UI shared by main() and every subcommand.
+func noColorFrom(args []string) bool {
+	for _, a := range args {
+		if a == "--no-color" || a == "-no-color" {
+			return true
+		}
+	}
+	return false
+}
+
+func usage(u *ui.UI) {
+	ui.Spec{
+		Tool:    "ntwire",
+		Tagline: "connect to tunnels published by an ntwire-server",
+		Commands: []ui.Command{
+			{Name: "keygen", Summary: "create an SSH identity"},
+			{Name: "connect", Summary: "connect tunnels"},
+			{Name: "list", Summary: "show allowed tunnels"},
+			{Name: "status", Summary: "show the running connection"},
+			{Name: "disconnect", Summary: "stop the running connection"},
+			{Name: "port", Summary: "replace a tunnel's local port"},
+			{Name: "logout", Summary: "clear cached SSO tokens"},
+			{Name: "version", Summary: "print the build version"},
+		},
+		Examples: []string{
+			"ntwire keygen",
+			"ntwire connect server.example",
+			"ntwire <command> -h",
+		},
+	}.Fprint(os.Stderr, u)
+}
+
+// setUsage installs a shared-format -h renderer on fs. It can be called
+// any time before fs.Parse, since the renderer visits fs's flags lazily
+// when invoked, not when this function runs.
+func setUsage(fs *flag.FlagSet, u *ui.UI, tagline string, examples ...string) {
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire " + fs.Name(),
+			Tagline:  tagline,
+			Flags:    ui.FlagsOf(fs),
+			Examples: examples,
+		}.Fprint(os.Stderr, u)
+	}
+}
+
+// clientLogger builds the diagnostic logger used by connect/list's -v
+// flag. NTWIRE_LOG_FORMAT/NTWIRE_LOG_LEVEL are honored (so a containerized
+// `ntwire connect` can emit Logstash JSON diagnostics) but there is no
+// config-file or per-subcommand flag layer here: this is an interactive,
+// human-facing tool most of the time, and cluttering every subcommand's
+// -h output with a rarely-used logging flag isn't worth it.
+func clientLogger(verbose bool, caps ui.Capabilities) *slog.Logger {
+	env := logging.EnvOptions("NTWIRE")
+	level := "warn"
+	if verbose {
+		level = "debug"
+	}
+	if env.Level != "" {
+		level = env.Level
+	}
+	format := env.Format
+	if format == "" {
+		format = "text"
+	}
+	return slog.New(logging.NewHandler(os.Stderr, logging.Options{Format: format, Level: level}, caps))
 }
 
 // logout clears cached SSO tokens for a server, so the next authentication
 // reopens the browser (or device flow) instead of silently refreshing.
-func logout(args []string) {
+func logout(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
 	fs := flag.NewFlagSet("logout", flag.ExitOnError)
 	fs.String("config", configPath, "persistent client configuration")
 	cache := fs.String("token-cache", "", "token cache file")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "clear cached SSO tokens for a server", "ntwire logout https://server:8443")
 	fs.Parse(args)
 	server := settings.Server
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
 	if server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire logout https://server:8443")
+		u.Errorf("usage: ntwire logout https://server:8443")
 		os.Exit(2)
 	}
 	if err := client.Logout(*cache, server); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		u.Errorf("%v", err)
 		os.Exit(1)
 	}
-	fmt.Println("logged out of", server)
+	u.Success("logged out of %s", server)
 }
 
 // port replaces the local loopback port for a running tunnel. The connect
 // process owns the listener, so this uses its token-protected local status UI.
-func port(args []string) {
+func port(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("port", flag.ExitOnError)
 	path := fs.String("status-file", "", "local status file")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "replace a running tunnel's local port", "ntwire port reports=8080")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire port [--status-file path] name=local-port")
+		u.Errorf("usage: ntwire port [--status-file path] name=local-port")
 		os.Exit(2)
 	}
 	parts := strings.SplitN(fs.Arg(0), "=", 2)
 	if len(parts) != 2 || parts[0] == "" {
-		fmt.Fprintln(os.Stderr, "invalid port mapping; use name=local-port")
+		u.Errorf("invalid port mapping; use name=local-port")
 		os.Exit(2)
 	}
 	var localPort int
 	if _, err := fmt.Sscanf(parts[1], "%d", &localPort); err != nil || localPort < 1 || localPort > 65535 {
-		fmt.Fprintln(os.Stderr, "invalid local port")
+		u.Errorf("invalid local port")
 		os.Exit(2)
 	}
 	s, err := client.ReadStatus(*path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "not connected:", err)
+		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
-	u, err := url.Parse(s.UIURL)
-	if err != nil || u.Scheme != "http" || u.Host == "" {
-		fmt.Fprintln(os.Stderr, "running client does not expose a local status UI")
+	uu, err := url.Parse(s.UIURL)
+	if err != nil || uu.Scheme != "http" || uu.Host == "" {
+		u.Errorf("running client does not expose a local status UI")
 		os.Exit(1)
 	}
-	u.Path = "/tunnels/" + url.PathEscape(parts[0])
+	uu.Path = "/tunnels/" + url.PathEscape(parts[0])
 	b := strings.NewReader(fmt.Sprintf(`{"local_port":%d}`, localPort))
-	req, err := http.NewRequest(http.MethodPut, u.String(), b)
+	req, err := http.NewRequest(http.MethodPut, uu.String(), b)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		u.Errorf("%v", err)
 		os.Exit(1)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "replace local port:", err)
+		u.Errorf("replace local port: %v", err)
 		os.Exit(1)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintln(os.Stderr, "replace local port:", resp.Status)
+		u.Errorf("replace local port: %s", resp.Status)
 		os.Exit(1)
 	}
 	var out struct {
 		LocalAddress string `json:"local_address"`
 	}
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		fmt.Fprintln(os.Stderr, "replace local port:", err)
+		u.Errorf("replace local port: %v", err)
 		os.Exit(1)
 	}
-	fmt.Printf("%s  %s\n", parts[0], out.LocalAddress)
+	fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(parts[0]), out.LocalAddress)
 }
 
-func status(args []string) {
+func status(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	path := fs.String("status-file", "", "local status file")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "show the running connection", "ntwire status")
 	fs.Parse(args)
 	s, err := client.ReadStatus(*path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "not connected:", err)
+		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
-	fmt.Println("pid:", s.PID)
-	fmt.Println("server:", s.Server)
+	fmt.Fprintf(u.Out, "%s %d\n", u.OutPal.Muted.Sprint("pid:"), s.PID)
+	fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("server:"), s.Server)
 	if s.UIURL != "" {
-		fmt.Println("status:", s.UIURL)
+		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("status:"), s.UIURL)
 	}
 	for _, address := range s.LocalAddresses {
-		fmt.Println("local:", address)
+		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("local:"), address)
 	}
 }
 
-func disconnect(args []string) {
+func disconnect(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("disconnect", flag.ExitOnError)
 	path := fs.String("status-file", "", "local status file")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "stop the running connection", "ntwire disconnect")
 	fs.Parse(args)
 	s, err := client.ReadStatus(*path)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "not connected:", err)
+		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
 	p, err := os.FindProcess(s.PID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		u.Errorf("%v", err)
 		os.Exit(1)
 	}
 	if err = p.Signal(os.Interrupt); err != nil {
-		fmt.Fprintln(os.Stderr, "disconnect:", err)
+		u.Errorf("disconnect: %v", err)
 		os.Exit(1)
 	}
 }
-func connect(args []string) {
+func connect(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "show connection diagnostics")
@@ -181,8 +261,10 @@ func connect(args []string) {
 	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	websocket := fs.Bool("websocket", false, "use the WebSocket WireGuard transport")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
 	mappings := multiFlag{}
 	fs.Var(&mappings, "port", "name=local-port (repeatable)")
+	setUsage(fs, u, "connect tunnels", "ntwire connect server.example", "ntwire connect --sso server.example")
 	fs.Parse(args)
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -192,7 +274,7 @@ func connect(args []string) {
 		*key = client.DefaultIdentityFile()
 	}
 	if server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "No server is configured.\n1. Run: ntwire keygen\n2. Send ~/.ntwire/id_ed25519.pub to your administrator\n3. Run: ntwire connect <server>")
+		u.Errorf("No server is configured.\n1. Run: ntwire keygen\n2. Send ~/.ntwire/id_ed25519.pub to your administrator\n3. Run: ntwire connect <server>")
 		os.Exit(2)
 	}
 	ports := map[string]int{}
@@ -202,60 +284,56 @@ func connect(args []string) {
 	for _, m := range mappings {
 		parts := strings.SplitN(m, "=", 2)
 		if len(parts) != 2 {
-			fmt.Fprintln(os.Stderr, "invalid --port")
+			u.Errorf("invalid --port")
 			os.Exit(2)
 		}
 		var p int
 		if _, e := fmt.Sscanf(parts[1], "%d", &p); e != nil || p < 1 || p > 65535 {
-			fmt.Fprintln(os.Stderr, "invalid --port")
+			u.Errorf("invalid --port")
 			os.Exit(2)
 		}
 		ports[parts[0]] = p
 	}
 	info, e := collectedInfo(*collect)
 	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
+		u.Errorf("%v", e)
 		os.Exit(2)
 	}
 	o := client.Options{
 		Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
 	}
-	if *verbose {
-		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	} else {
-		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	}
+	o.Logger = clientLogger(*verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {
 		if !trustPrompt(unknown, *known) {
-			fmt.Fprintln(os.Stderr, "server certificate was not trusted")
+			u.Errorf("server certificate was not trusted")
 			os.Exit(1)
 		}
 		c, e = client.ConnectWithOptions(server, *key, info, o)
 	}
 	if e != nil {
-		fmt.Fprintln(os.Stderr, e)
+		u.Errorf("%v", e)
 		os.Exit(1)
 	}
 	if !*insecure {
 		if changed, err := client.UpdateSettings(configPath, client.Settings{Server: server, IdentityFile: *key, SSO: c.AuthMethod() == "oidc", Provider: *provider}); err != nil {
-			fmt.Fprintln(os.Stderr, "could not save connection settings:", err)
+			u.Warn("could not save connection settings: %v", err)
 		} else if changed {
-			fmt.Printf("saved connection settings to %s (next time just run: ntwire connect)\n", configPath)
+			u.Info("saved connection settings to %s (next time just run: ntwire connect)", configPath)
 		}
 	}
 	if len(c.Response.Tunnels) == 0 {
-		fmt.Printf("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.\n", c.Response.Identity)
+		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", c.Response.Identity)
 	}
 	defer c.Close()
 	for i, t := range c.Response.Tunnels {
-		fmt.Printf("%s  %s\n", t.Name, c.LocalAddresses[i])
+		fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(t.Name), c.LocalAddresses[i])
 	}
-	fmt.Println("connected; press Ctrl-C to disconnect")
+	u.Success("connected; press Ctrl-C to disconnect")
 	if c.UIURL != "" {
-		fmt.Println("status:", c.UIURL)
+		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("status:"), c.UIURL)
 	}
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
@@ -266,7 +344,7 @@ type multiFlag []string
 
 func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
-func list(args []string) {
+func list(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "show connection diagnostics")
@@ -280,6 +358,8 @@ func list(args []string) {
 	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
 	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "show allowed tunnels", "ntwire list server.example")
 	fs.Parse(args)
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -289,42 +369,47 @@ func list(args []string) {
 		*key = client.DefaultIdentityFile()
 	}
 	if server == "" || fs.NArg() > 1 {
-		fmt.Fprintln(os.Stderr, "usage: ntwire list [-i key | --sso] https://server:8443")
+		u.Errorf("usage: ntwire list [-i key | --sso] https://server:8443")
 		os.Exit(2)
 	}
 	info, err := collectedInfo(*collect)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		u.Errorf("%v", err)
 		os.Exit(2)
 	}
 	o := client.Options{
 		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
 	}
-	if *verbose {
-		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	} else {
-		o.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	}
+	o.Logger = clientLogger(*verbose, u.ErrCaps)
 	r, err := client.AuthenticateWithOptions(server, *key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(err, &unknown) {
 		if !trustPrompt(unknown, *known) {
-			fmt.Fprintln(os.Stderr, "server certificate was not trusted")
+			u.Errorf("server certificate was not trusted")
 			os.Exit(1)
 		}
 		r, err = client.AuthenticateWithOptions(server, *key, info, o)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		u.Errorf("%v", err)
 		os.Exit(1)
 	}
 	if len(r.Tunnels) == 0 {
-		fmt.Printf("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.\n", r.Identity)
+		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
+		return
 	}
-	for _, t := range r.Tunnels {
-		fmt.Printf("%-20s %5d  %s\n", t.Name, t.VirtualPort, t.Description)
+	t := ui.Table{
+		Columns: []ui.Column{
+			{Header: "NAME", Width: 20, Align: "left"},
+			{Header: "PORT", Width: 5, Align: "right"},
+			{Header: "DESCRIPTION", Sep: "  "},
+		},
 	}
+	for _, tunnel := range r.Tunnels {
+		t.Rows = append(t.Rows, []string{tunnel.Name, fmt.Sprintf("%d", tunnel.VirtualPort), tunnel.Description})
+	}
+	fmt.Fprint(u.Out, t.Render(u))
 }
 
 func settingsFor(args []string) (client.Settings, string) {
@@ -380,15 +465,18 @@ func trustPrompt(e *client.UnknownCertificateError, path string) bool {
 	}
 	return true
 }
-func keygen(args []string) {
+func keygen(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("o", client.DefaultGeneratedIdentityFile(), "private key output")
+	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	setUsage(fs, u, "create an SSH identity", "ntwire keygen")
 	fs.Parse(args)
 	fingerprint, err := client.GenerateIdentity(*out)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "keygen:", err)
+		u.Errorf("keygen: %v", err)
 		os.Exit(1)
 	}
 	pub, _ := os.ReadFile(*out + ".pub")
-	fmt.Printf("Identity created: %s\nFingerprint: %s\nSend this line to your administrator:\n%sNext: ntwire connect <server>\n", *out, fingerprint, pub)
+	u.Success("Identity created: %s", *out)
+	fmt.Fprintf(u.Out, "Fingerprint: %s\nSend this line to your administrator:\n%sNext: ntwire connect <server>\n", fingerprint, pub)
 }

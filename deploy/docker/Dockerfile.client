@@ -12,4 +12,5 @@ COPY --from=build /out/ntwire /ntwire
 COPY --chown=nonroot:nonroot --from=build /out/state /home/nonroot/.ntwire
 USER nonroot:nonroot
 VOLUME ["/home/nonroot/.ntwire"]
+ENV NTWIRE_LOG_FORMAT=json
 ENTRYPOINT ["/ntwire"]

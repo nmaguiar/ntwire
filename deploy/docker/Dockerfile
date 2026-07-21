@@ -7,4 +7,5 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ntwire-server ./cm
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/ntwire-server /ntwire-server
 USER nonroot:nonroot
+ENV NTWIRE_LOG_FORMAT=json
 ENTRYPOINT ["/ntwire-server"]
