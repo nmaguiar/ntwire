@@ -11,7 +11,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 	sample := SampleConfig()
 	for _, option := range []string{
 		"cert_file:", "key_file:", "state_dir:", "ephemeral:",
-		"https:", "wireguard:", "authorized_keys_dir:", "session_ttl:",
+		"https:", "wireguard:", "metrics:", "authorized_keys_dir:", "session_ttl:",
 		"max_sessions_per_key:", "issuers:", "name:", "issuer:", "client_id:",
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",

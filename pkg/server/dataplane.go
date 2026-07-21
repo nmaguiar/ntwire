@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -141,8 +142,25 @@ func (s *Server) proxy(t TunnelConfig, in net.Conn) {
 		return
 	}
 	defer out.Close()
-	go io.Copy(out, in)
-	io.Copy(in, out)
+	stats := s.statsFor(host, t.Name)
+	stats.connections.Add(1)
+	stats.active.Add(1)
+	defer stats.active.Add(-1)
+	go io.Copy(countingWriter{w: out, counter: &stats.toTarget}, in)
+	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
+}
+
+type countingWriter struct {
+	w       io.Writer
+	counter *atomic.Uint64
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 {
+		w.counter.Add(uint64(n))
+	}
+	return n, err
 }
 func (s *Server) allowedIP(ip, name string) bool {
 	for _, v := range s.sessions.All() {
@@ -187,6 +205,9 @@ func (s *Server) addPeer(key, ip string) error {
 	return s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: ip + "/32"})
 }
 func (s *Server) dropSession(v Session) {
+	for _, tunnel := range v.Tunnels {
+		s.tunnelStats.Delete(statsKey(v.TunnelIP, tunnel.Name))
+	}
 	if s.data != nil && v.WireGuardPublicKey != "" {
 		_ = s.data.stack.RemovePeer(v.WireGuardPublicKey)
 	}

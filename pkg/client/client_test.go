@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"os"
@@ -112,5 +113,20 @@ func TestStatusRoundTrip(t *testing.T) {
 	}
 	if got.PID != want.PID || got.Server != want.Server || len(got.LocalAddresses) != 1 {
 		t.Fatalf("unexpected status: %#v", got)
+	}
+}
+
+func TestCountingWriterUpdatesTunnelStatsWhileStreaming(t *testing.T) {
+	tunnel := &localTunnel{}
+	var outgoing, incoming bytes.Buffer
+	if _, err := (countingWriter{w: &outgoing, counter: &tunnel.toTunnel}).Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (countingWriter{w: &incoming, counter: &tunnel.fromTunnel}).Write([]byte("response")); err != nil {
+		t.Fatal(err)
+	}
+	got := tunnel.stats()
+	if got.BytesToTunnel != uint64(len("request")) || got.BytesFromTunnel != uint64(len("response")) {
+		t.Fatalf("stats = %#v, want request and response byte counts", got)
 	}
 }

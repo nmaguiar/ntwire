@@ -59,6 +59,8 @@ discovery, scopes, and `client_id` all come from the server.
     "hostname": "laptop",
     "username": "alice",
     "client_version": "dev",
+    "latency_millis": 18,
+    "reconnections": 1,
     "extra": {"example": "value"}
   },
   "signature": "base64-encoded-ssh-signature"
@@ -83,6 +85,11 @@ The strings are, in order: `public_key`, `wireguard_public_key`, `timestamp`,
 `client_info.username`, and `client_info.client_version`. Append each
 `client_info.extra` key and value after that, sorted lexicographically by key.
 No field may exceed 1 MiB.
+
+`client_info.latency_millis` and `client_info.reconnections` are optional
+client telemetry used for operator status and metrics. They are intentionally
+not part of the signed payload so servers remain compatible with existing v1
+clients; do not use them for authorization decisions.
 
 ## OIDC authentication request
 

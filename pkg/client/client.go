@@ -454,6 +454,8 @@ type Connection struct {
 	options        Options
 	method, issuer string // remembers how this session authenticated, for reconnect
 	log            *slog.Logger
+	reconnections  atomic.Uint64
+	latencyMillis  atomic.Uint64
 }
 
 // TunnelStats is the traffic observed by a local listener for one tunnel.
@@ -477,6 +479,19 @@ type localTunnel struct {
 	connections  atomic.Uint64
 	active       atomic.Int64
 	lastDialWarn atomic.Int64
+}
+
+type countingWriter struct {
+	w       io.Writer
+	counter *atomic.Uint64
+}
+
+func (w countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	if n > 0 {
+		w.counter.Add(uint64(n))
+	}
+	return n, err
 }
 
 func (t *localTunnel) stats() TunnelStats {
@@ -504,6 +519,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, err
 	}
+	authStart := time.Now()
 	auth, err := authenticateAny(h, url, keyPath, info, key.Public, options, "", "")
 	if err != nil {
 		return nil, err
@@ -546,6 +562,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
+	c.latencyMillis.Store(uint64(time.Since(authStart).Milliseconds()))
 	if c.log == nil {
 		c.log = slog.Default()
 	}
@@ -669,7 +686,7 @@ func (c *Connection) renewLoop() {
 		if ttl <= 0 {
 			ttl = 60
 		}
-		d := time.Duration(ttl) * time.Second * 2 / 3
+		d := min(time.Duration(ttl)*time.Second*2/3, 15*time.Second)
 		if d < time.Second {
 			d = time.Second
 		}
@@ -713,7 +730,10 @@ func (c *Connection) reconnect() error {
 	public := c.Stack.PublicKey()
 	method, issuer := c.method, c.issuer
 	c.mu.Unlock()
-	auth, err := authenticateAny(c.http, c.base, c.keyPath, c.info, public, c.options, method, issuer)
+	info := c.connectionInfo()
+	info.Reconnections++
+	started := time.Now()
+	auth, err := authenticateAny(c.http, c.base, c.keyPath, info, public, c.options, method, issuer)
 	if err != nil {
 		return err
 	}
@@ -721,12 +741,14 @@ func (c *Connection) reconnect() error {
 	c.Response = auth.response
 	c.token = auth.response.Token
 	c.method, c.issuer = auth.method, auth.issuer
+	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
+	c.reconnections.Store(info.Reconnections)
 	c.mu.Unlock()
 	return nil
 }
 
 func (c *Connection) renew() error {
-	b, _ := json.Marshal(protocol.RenewRequest{Info: c.info})
+	b, _ := json.Marshal(protocol.RenewRequest{Info: c.connectionInfo()})
 	c.mu.Lock()
 	token := c.token
 	c.mu.Unlock()
@@ -736,6 +758,7 @@ func (c *Connection) renew() error {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -751,8 +774,18 @@ func (c *Connection) renew() error {
 	c.mu.Lock()
 	c.Response = out
 	c.token = out.Token
+	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.mu.Unlock()
 	return nil
+}
+
+func (c *Connection) connectionInfo() protocol.ClientInfo {
+	c.mu.Lock()
+	info := c.info
+	c.mu.Unlock()
+	info.LatencyMillis = c.latencyMillis.Load()
+	info.Reconnections = c.reconnections.Load()
+	return info
 }
 
 func (c *Connection) startWebUI() {
@@ -838,7 +871,7 @@ func (c *Connection) webStatus() map[string]any {
 		}
 		tunnels = append(tunnels, wt)
 	}
-	return map[string]any{"connected": c.Stack != nil, "tunnels": tunnels, "ttl_seconds": c.Response.TTLSeconds}
+	return map[string]any{"connected": c.Stack != nil, "tunnels": tunnels, "ttl_seconds": c.Response.TTLSeconds, "latency_millis": c.latencyMillis.Load(), "reconnections": c.reconnections.Load()}
 }
 
 func openBrowser(url string) error {
@@ -862,9 +895,6 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 		}
 		go func() {
 			defer in.Close()
-			tunnel.connections.Add(1)
-			tunnel.active.Add(1)
-			defer tunnel.active.Add(-1)
 			c.mu.Lock()
 			stack := c.Stack
 			c.mu.Unlock()
@@ -883,9 +913,17 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 				return
 			}
 			defer out.Close()
-			go func() { n, _ := io.Copy(out, in); tunnel.toTunnel.Add(uint64(n)) }()
-			n, _ := io.Copy(in, out)
-			tunnel.fromTunnel.Add(uint64(n))
+			tunnel.connections.Add(1)
+			tunnel.active.Add(1)
+			defer tunnel.active.Add(-1)
+			var copies sync.WaitGroup
+			copies.Add(1)
+			go func() {
+				defer copies.Done()
+				_, _ = io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, in)
+			}()
+			_, _ = io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
+			copies.Wait()
 		}()
 	}
 }

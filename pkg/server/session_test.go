@@ -17,3 +17,15 @@ func TestSessionsExpireAndCount(t *testing.T) {
 		t.Fatal("reap")
 	}
 }
+
+func TestSessionsFindWireGuardPublicKey(t *testing.T) {
+	s := NewSessions()
+	want := s.Create(CreateParams{Method: "ssh", Identity: "fp", WireGuardPublicKey: "peer-key", TunnelIP: "100.64.0.2", TTL: time.Minute})
+	got, ok := s.FindWireGuardPublicKey("peer-key")
+	if !ok || got.Token != want.Token || got.TunnelIP != want.TunnelIP {
+		t.Fatalf("FindWireGuardPublicKey = (%+v, %t), want %q", got, ok, want.Token)
+	}
+	if _, ok := s.FindWireGuardPublicKey("other-key"); ok {
+		t.Fatal("unexpected session for unknown WireGuard key")
+	}
+}

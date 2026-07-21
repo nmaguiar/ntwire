@@ -118,6 +118,7 @@ The following is the complete currently parsed configuration:
 listen:
   https: ":8443"                        # TLS control API (auth, renew, disconnect) and WebSocket fallback
   wireguard: ":51820"                   # UDP listener for the userspace WireGuard data plane; default shown
+  metrics: "127.0.0.1:9090"              # optional plaintext metrics and token-protected dashboard listener; empty disables it
 tls:
   cert_file: ""                         # PEM certificate; empty generates an in-memory self-signed cert (see docs/SECURITY.md)
   key_file: ""                          # PEM private key; required together with cert_file
@@ -135,6 +136,8 @@ auth:
         require_verified_email: true     # reject tokens without email_verified=true; default true, see docs/SECURITY.md
   session_ttl: 15m                       # bearer-token session lifetime before renewal is required; default: 15m
   max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc email); 0 = unlimited
+admin:
+  web_ui_token: ""                       # optional secret: enables the server dashboard on listen.metrics at http://server:9090/?token=...; leave empty to disable it
 network:
   tunnel_cidr: 100.64.0.0/16             # private IPv4 range peer addresses are allocated from; default shown
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward)
@@ -198,6 +201,18 @@ new connections after the reload use the new port right away. When
 every reload, so a renewed certificate is served without a restart — an
 in-memory self-signed certificate is never regenerated this way, since that
 would invalidate every client's TOFU pin.
+
+### Server dashboard
+
+Set a long random `admin.web_ui_token` to enable the operator dashboard on the
+metrics listener. Open `http://server:9090/?token=TOKEN` (using the address in
+`listen.metrics`) to see every
+currently granted tunnel, its authenticated identity, tunnel address, expiry,
+target, live connection/traffic counters, client-observed control-plane
+latency, and reconnect counts. The dashboard is disabled by
+default and returns 404 without the exact token because it exposes operational
+and identity data; bind the metrics listener to loopback or place it behind a
+trusted TLS reverse proxy.
 
 ## Authorization hooks
 
