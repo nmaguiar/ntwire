@@ -31,4 +31,4 @@ Follow the existing Conventional Commit-like history: `feat(protocol): ...`, `fi
 
 ## Security & Configuration
 
-Never commit private keys, tokens, or local runtime output. Treat configuration and authentication changes as security-sensitive; review `docs/SECURITY.md` and `deploy/OIDC-SETUP.md`, and add tests for authorization, TLS, or OIDC behavior.
+Never commit private keys, tokens, or local runtime output. Treat configuration and authentication changes as security-sensitive; review `docs/SECURITY.md` and `docs/OIDC-SETUP.md`, and add tests for authorization, TLS, or OIDC behavior.

@@ -4,7 +4,7 @@ listen:
 auth:
   authorized_keys_dir: /etc/ntwire/keys
   # SSO (OIDC) as a parallel authentication method — see
-  # docs/SECURITY.md and deploy/OIDC-SETUP.md before enabling.
+  # docs/SECURITY.md and docs/OIDC-SETUP.md before enabling.
   # oidc:
   #   issuers:
   #     - name: google

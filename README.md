@@ -6,6 +6,10 @@ gVisor netstack forward only the YAML-granted TCP targets to local
 `127.0.0.1` listeners. No host network interface or elevated privilege is
 needed.
 
+This README covers installation and everyday client/server usage. For
+configuration reference, relay mode, deployment, and security details, see
+the [documentation index](docs/README.md).
+
 ## What works today
 
 | Available | Operational limit |
@@ -21,9 +25,13 @@ needed.
 ## Quick start
 
 This local example starts a TLS control server and a userspace WireGuard data
-plane. The client asks to pin the default self-signed certificate on first use.
+plane on one machine, so you can see the whole flow end to end before
+deploying for real. The client asks to pin the default self-signed
+certificate on first use.
 
 Requirements: Go 1.26 or later.
+
+### 1. Build
 
 ```sh
 git clone https://github.com/nmaguiar/ntwire.git
@@ -31,11 +39,17 @@ cd ntwire
 go test ./...
 go build -o bin/ntwire ./cmd/ntwire
 go build -o bin/ntwire-server ./cmd/ntwire-server
+```
 
+### 2. Generate a key
+
+```sh
 mkdir -p .local/ntwire/keys
 ./bin/ntwire keygen -o .local/ntwire/id_ed25519
 cp .local/ntwire/id_ed25519.pub .local/ntwire/keys/local.pub
 ```
+
+### 3. Configure a tunnel
 
 Create `.local/ntwire/ntwire.yaml`:
 
@@ -58,11 +72,18 @@ tunnels:
     allow: ["*"]
 ```
 
-Start the server in one terminal:
+This is a minimal config; the complete option reference is in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md).
+
+### 4. Start the server
 
 ```sh
 ./bin/ntwire-server --config .local/ntwire/ntwire.yaml
 ```
+
+Leave this running in its own terminal.
+
+### 5. Connect
 
 In another terminal, authenticate and print the authorized grants:
 
@@ -72,6 +93,15 @@ In another terminal, authenticate and print the authorized grants:
 
 The output contains a `demo-http` row and loopback listener. Connections to it
 are forwarded to the configured target through WireGuard.
+
+### Connecting to an existing server
+
+If someone else already runs the server, you only need the client:
+
+1. Run `ntwire keygen`.
+2. Send `~/.ntwire/id_ed25519.pub` to the server administrator.
+3. Run `ntwire connect server.example`. Confirm the first certificate pin with
+   the administrator; future runs can simply use `ntwire connect`.
 
 ## Client usage
 
@@ -86,10 +116,9 @@ are forwarded to the configured target through WireGuard.
 
 Use an `https://` URL, for example `https://127.0.0.1:8443`. The first use of
 a self-signed server prompts to store its fingerprint in `~/.ntwire/known_servers`.
-That fingerprint changes on every server restart unless the server is given a
-persistent certificate; see
-[Avoiding repeated re-trust prompts](docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts)
-for the tradeoffs.
+See [docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts](docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts)
+for how that fingerprint stays stable across restarts and what to do if it
+doesn't.
 
 ### SSO login
 
@@ -113,218 +142,52 @@ Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.
 At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers` is required.
-The following is the complete currently parsed configuration:
 
-```yaml
-listen:
-  https: ":8443"                        # TLS control API (auth, renew, disconnect) and WebSocket fallback
-  wireguard: ":51820"                   # UDP listener for the userspace WireGuard data plane; default shown
-  metrics: "127.0.0.1:9090"              # optional plaintext metrics and token-protected dashboard listener; empty disables it
-tls:
-  cert_file: ""                         # PEM certificate; empty generates an in-memory self-signed cert (see docs/SECURITY.md)
-  key_file: ""                          # PEM private key; required together with cert_file
-  state_dir: ""                         # directory for a generated self-signed certificate and key; empty uses this YAML file's directory
-  ephemeral: false                       # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
-auth:
-  authorized_keys_dir: /etc/ntwire/keys  # one public key per file; optional if oidc.issuers is set
-  oidc:
-    issuers:
-      - name: google                    # stable id; shown to clients and selected with --provider
-        issuer: https://accounts.google.com  # OIDC issuer URL; its /.well-known/openid-configuration and JWKS are fetched
-        client_id: 1234-abc.apps.googleusercontent.com  # public OAuth client id registered at the issuer (PKCE, no secret)
-        scopes: [openid, email, profile] # requested OAuth scopes; default shown
-        groups_claim: ""                 # ID-token claim holding group membership, e.g. "groups"; empty disables group: grants
-        require_verified_email: true     # reject tokens without email_verified=true; default true, see docs/SECURITY.md
-  session_ttl: 15m                       # bearer-token session lifetime before renewal is required; default: 15m
-  max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc email); 0 = unlimited
-admin:
-  web_ui_token: ""                       # optional secret: enables the server dashboard on listen.metrics at http://server:9090/?token=...; leave empty to disable it
-network:
-  tunnel_cidr: 100.64.0.0/16             # private IPv4 range peer addresses are allocated from; default shown
-  advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward)
-authorizer:
-  webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
-  exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty
-  timeout: 5s                            # deadline for the webhook call or executable run; a timeout denies the request; default: 5s
-tunnels:
-  - name: reports                       # unique identifier; shown to clients in grant listings
-    target: reports.internal:8080       # host:port the server proxies to over the ordinary network, once a client's WireGuard traffic reaches it
-    description: Reporting service      # free-text, shown to clients; optional
-    virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
-    local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
-    allow:
-      - "*"                             # any authenticated identity, either method
-      - "SHA256:..."                    # ssh: key fingerprint (preferred; see grant-matching note below)
-      - "alice@laptop"                  # ssh: authorized_keys comment (the bundled client never sends one; see note below)
-      - "alice@corp.com"                # oidc: exact verified email
-      - "@corp.com"                     # oidc: email domain
-      - "group:engineering"             # oidc: groups_claim membership
-```
+The Quick start config above is a minimal example. The full option reference —
+listeners, TLS, OIDC issuers, session limits, the operator dashboard, tunnel
+grants, grant matching, and hot-reload behavior — is in
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md). `ntwire-server` is a public
+OAuth client (PKCE, no client secret) and never stores IdP credentials; see
+the Google/Entra/Keycloak registration notes in
+[docs/OIDC-SETUP.md](docs/OIDC-SETUP.md).
 
-Every readable non-directory file in `authorized_keys_dir` is treated as a
-public key. Tunnel names must be unique and each tunnel requires `name` and
-`target`. `ntwire-server` is a public OAuth client (PKCE, no client secret) and
-never stores IdP credentials; see the Google/Entra/Keycloak registration
-notes in [deploy/OIDC-SETUP.md](deploy/OIDC-SETUP.md).
-
-Grant matching stays scoped to how the caller authenticated: an SSH request is
-only ever matched against `allow` entries by fingerprint or `authorized_keys`
-comment, and an OIDC request only by email, `@domain`, or `group:`. `alice@laptop`
-and `alice@corp.com` can therefore share one `allow` list without one method
-ever being able to satisfy the other's grant — an SSH key commented
-`alice@corp.com` cannot pass as the OIDC identity `alice@corp.com`, and vice
-versa. In practice the bundled `ntwire` client never sends a key comment (a
-private key file has none), so comment-based SSH `allow` entries only match
-requests built to include one; prefer fingerprints for SSH grants.
-
-The server watches the configuration file's directory (and, when set, the
-authorized-keys directory). Writing, replacing, or renaming the file reloads
-runtime configuration; sending `SIGHUP` does the same. The listener address
-and tunnel CIDR stay unchanged until restart. Existing sessions are
-re-evaluated against their authentication method — SSH sessions against
-authorized keys, OIDC sessions against the configured issuers — and current
-YAML grants; sessions that lose access are terminated. Changing
-`auth.oidc.issuers` rebuilds OIDC verification in the background without
-dropping unrelated sessions.
-
-Adding, removing, or changing a tunnel's `target` takes effect immediately on
-the server, on the same virtual port, so an already-connected client picks it
-up transparently: the affected data-plane listener is recycled without a
-restart, and a session keeps its existing grant across the change. A
-connection already in flight keeps proxying to its original target until it
-closes; only new connections observe the new one. Changing a tunnel's
-`virtual_port` also recycles the server-side listener immediately, but an
-already-connected client resolved that port once at connect time and will not
-pick up the new one until it reconnects (`ntwire connect` again, or
-`ntwire logout` for an SSO session that should stop auto-reauthenticating);
-new connections after the reload use the new port right away. When
-`tls.cert_file`/`tls.key_file` are set, the files are re-read from disk on
-every reload, so a renewed certificate is served without a restart — an
-in-memory self-signed certificate is never regenerated this way, since that
-would invalidate every client's TOFU pin.
-
-### Server dashboard
-
-Set a long random `admin.web_ui_token` to enable the operator dashboard on the
-metrics listener. Open `http://server:9090/?token=TOKEN` (using the address in
-`listen.metrics`) to see every
-currently granted tunnel, its authenticated identity, tunnel address, expiry,
-target, live connection/traffic counters, client-observed control-plane
-latency, and reconnect counts. The dashboard is disabled by
-default and returns 404 without the exact token because it exposes operational
-and identity data; bind the metrics listener to loopback or place it behind a
-trusted TLS reverse proxy.
+The server watches its configuration file (and, when set, the
+authorized-keys directory) and reloads on change or `SIGHUP`; most settings
+take effect without a restart. See
+[docs/CONFIGURATION.md#hot-reload](docs/CONFIGURATION.md#hot-reload) for
+exactly what does and doesn't.
 
 ## Relay mode
 
-Today's default topology is strictly one-directional: only `ntwire-server`
-listens on a public network, and clients always dial in. A server behind NAT
-or on a home/lab network with no inbound connectivity cannot be reached at
-all — unless it dials out to an `ntwire-relay`:
+A server with no inbound connectivity (behind NAT, or on a home/lab network)
+can still be reached by dialing out to a public `ntwire-relay` instead of
+listening directly:
 
 ```
 ntwire-server (behind NAT, no inbound) --outbound--> ntwire-relay (public) <--inbound-- ntwire client
 ```
 
-The relay never terminates the client's TLS session: it reads only the TLS
-ClientHello's SNI to route the connection, then splices raw bytes to the
-origin server over an authenticated, outbound-initiated connection. This is
-safe because the client already pins the origin server's certificate by
-SHA256 fingerprint with no hostname check (see
-[docs/SECURITY.md](docs/SECURITY.md#the-relays-trust-model)) — the relay
-cannot MITM the session even if compromised. It is trusted only for
-availability, and for the client address it reports for rate limiting and
-audit logging.
-
-Relay mode is TCP-only: with no inbound UDP path available, WireGuard rides
-the existing WebSocket fallback (`/v1/wg`) instead of the direct UDP
-endpoint. `ntwire connect` detects this automatically — a server that
-advertises no UDP endpoint but does advertise a WebSocket one is used over
-WebSocket with no extra flag needed.
-
-Run `ntwire-relay --config path/to/ntwire-relay.yaml`; the default path is
-`ntwire-relay.yaml`. Use `ntwire-relay --print-sample-config > ntwire-relay.yaml`
-for a complete, commented template. A relay serves multiple tenants under one
-wildcard DNS domain, each identified by a first DNS label:
-
-```yaml
-listen:
-  public: ":443"          # raw TCP; client TLS is spliced through, never terminated here
-  agents: ":8444"          # HTTPS endpoint ntwire-servers dial outbound to and register on
-domain: relay.example.com # wildcard suffix; a server registered as "home" is reached at home.relay.example.com
-registrations:
-  - name: home
-    public_key: "ssh-ed25519 AAAA... admin@laptop"
-```
-
-On the server side, add a `relay:` block (see the full option list in
-[Server configuration](#server-configuration)'s sample) and leave
-`listen.https` alone — it is simply never bound in relay mode:
-
-```yaml
-relay:
-  enabled: true
-  url: "wss://relay.example.com:8444"
-  name: home                                    # must match a registrations[] entry on the relay
-  identity_file: /etc/ntwire/relay_id_ed25519    # separate key from auth.authorized_keys_dir
-  fingerprint: ""                                # SHA256:... pin of the relay's own cert; empty uses normal PKI
-network:
-  advertised_endpoint: ""                        # must stay empty when relay.enabled is true
-```
-
-Clients connect exactly as before, using the wildcard hostname:
+The relay never terminates the client's TLS session — it only routes on the
+TLS ClientHello's SNI and splices raw bytes, so it cannot see or modify
+tunnel traffic (see
+[docs/SECURITY.md#the-relays-trust-model](docs/SECURITY.md#the-relays-trust-model)).
+Clients connect exactly as they would to a directly reachable server, using
+the relay's wildcard hostname:
 
 ```sh
 ntwire connect https://home.relay.example.com
 ```
 
+See [docs/RELAY.md](docs/RELAY.md) for running a relay and pointing a server
+at one.
+
 ## Authorization hooks
 
 With no `authorizer` configured, YAML grants are accepted directly. A webhook
-or executable can deny a request, narrow its tunnel list, and shorten its
-session lifetime. Errors, timeouts, malformed responses, non-2xx webhook
-responses, and non-zero executable exits deny the request.
-
-The hook receives JSON by HTTP POST or standard input:
-
-```json
-{
-  "source_ip": "127.0.0.1:50123",
-  "key_fingerprint": "SHA256:...",
-  "key_comment": "alice@laptop",
-  "auth_method": "ssh",
-  "client_info": {"os": "darwin", "arch": "arm64"},
-  "granted_tunnels_by_yaml": ["reports"],
-  "requested_at": "2026-07-17T12:00:00Z"
-}
-```
-
-An OIDC session sends `auth_method: "oidc"` with `key_fingerprint`/`key_comment`
-empty and adds `identity` (the verified email), `issuer` (the configured issuer
-name), and `groups` (from `groups_claim`, when configured):
-
-```json
-{
-  "source_ip": "127.0.0.1:50123",
-  "auth_method": "oidc",
-  "identity": "alice@corp.com",
-  "issuer": "google",
-  "groups": ["engineering"],
-  "client_info": {"os": "darwin", "arch": "arm64"},
-  "granted_tunnels_by_yaml": ["reports"],
-  "requested_at": "2026-07-17T12:00:00Z"
-}
-```
-
-A successful response is, for example:
-
-```json
-{"allow": true, "allowed_tunnels": ["reports"], "ttl_seconds": 300}
-```
-
-Set `allowed_tunnels` to `"*"` to preserve all YAML grants. An array can only
-narrow them. `ttl_seconds` applies only when it is shorter than the configured
-session TTL.
+or executable can additionally deny a request, narrow its tunnel list, or
+shorten its session lifetime. See
+[docs/AUTHORIZATION.md](docs/AUTHORIZATION.md) for the request/response
+schema and a runnable example.
 
 ## Control API
 
@@ -347,43 +210,10 @@ go test ./...
 go build ./cmd/...
 ```
 
-## Release binaries and containers
-
-Each versioned GitHub Release includes direct-download archives for both the
-`ntwire` client and the `ntwire-server` executable on Linux, macOS, and
-Windows (amd64 and arm64). Download and unpack the archive that matches the
-host running that component; use the client archive for a workstation and the
-server archive for the host that accepts connections.
-
-The server and client Docker images are published alongside those release
-assets. They are optional deployment alternatives and do not replace the
-release binaries.
-
-The Docker Compose example is runnable from `deploy/docker` and exposes HTTPS
-and UDP. Create `deploy/docker/keys/` and place an authorized `.pub` key in it
-before `docker compose up --build`; the `example` tunnel forwards to the echo
-service. Kubernetes manifests mount config and keys and expose both protocols.
-
-The matching client image is built from `deploy/docker/Dockerfile.client` and
-is published as `ghcr.io/nmaguiar/ntwire-client`. It keeps certificate pins,
-local status, and (for `--sso`) the token cache in `/home/nonroot/.ntwire`;
-mount a named volume there to preserve that state. The image runs as an
-unprivileged user. When bind-mounting a host private key, run it as your host
-UID and bind-mount a host-owned state directory as shown below. Use
-`--insecure` only for a disposable development server; for an interactive
-first connection, omit it so the client can pin the server certificate. SSO
-login inside a container has no browser to open, so pass `--sso --no-browser`
-to use the device flow.
-
-```sh
-docker build -f deploy/docker/Dockerfile.client -t ntwire-client .
-mkdir -p .local/ntwire/client-state
-docker run --rm -it \
-  --user "$(id -u):$(id -g)" \
-  -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
-  -v "$PWD/.local/ntwire/client-state:/home/nonroot/.ntwire" \
-  ntwire-client connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
-```
+builds and tests the client, server, and relay together. Release binaries,
+Docker images/Compose, and Kubernetes manifests are covered in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See [AGENTS.md](AGENTS.md) for the
+full contributor workflow, coding style, and commit conventions.
 
 ## Security
 
@@ -398,9 +228,3 @@ encrypts the control plane with TLS and the data plane with WireGuard. See
 ## License
 
 [Apache-2.0](LICENSE)
-# Client quickstart (connecting to an existing server)
-
-1. Run `ntwire keygen`.
-2. Send `~/.ntwire/id_ed25519.pub` to the server administrator.
-3. Run `ntwire connect server.example`. Confirm the first certificate pin with
-   the administrator; future runs can simply use `ntwire connect`.

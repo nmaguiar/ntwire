@@ -3,8 +3,9 @@
 ## Current boundary
 
 ntwire protects control-plane requests with TLS and data-plane traffic with
-WireGuard. The server can use configured TLS files or an in-memory self-signed
-certificate; clients pin the latter on first use. TCP forwarding is limited to
+WireGuard. The server can use configured TLS files or a self-signed
+certificate it persists across restarts; clients pin the latter on first use.
+TCP forwarding is limited to
 YAML-granted targets. Where UDP is blocked, WireGuard datagrams can use the
 token-authenticated WebSocket fallback on the HTTPS endpoint. SSH keys and SSO
 (OIDC) logins are parallel, equally-trusted authentication methods; both
@@ -25,61 +26,64 @@ produce the same opaque-bearer-token session.
 - OIDC grant matching stays scoped to the authentication method: an SSH
   request is never compared against email/domain/group `allow` entries and an
   OIDC request is never compared against fingerprint/comment entries, even
-  when both share a literal string (see docs/PROTOCOL.md).
+  when both share a literal string (see
+  [PROTOCOL.md](PROTOCOL.md#grant-matching-and-the-sshoidc-namespace)).
 
 ## TLS trust model and avoiding repeated re-trust prompts
 
 When `tls.cert_file`/`tls.key_file` are unset, the server generates a
-self-signed certificate **in memory** at every startup
-(`generateSelfSigned` in `pkg/server/tls.go`); it is never written to disk
-and never reused across restarts. A client that connects for the first time
-computes the certificate's SHA-256 fingerprint and stores it in
-`~/.ntwire/known_servers` (TOFU: trust on first use); every later connection
-compares the presented certificate's fingerprint against that pin and fails
-closed with `UnknownCertificateError` if it differs.
+self-signed certificate and, by default, **persists it** to
+`tls.state_dir` (the configuration file's directory unless overridden) as
+`selfsigned-cert.pem`/`selfsigned-key.pem`, mode `0600`
+(`loadOrCreateSelfSigned` in `pkg/server/tls.go`). It is reused across
+restarts and only regenerated if the stored pair is missing, unreadable, or
+expiring within 30 days; the server logs its SHA-256 pin at startup as
+`tls_fingerprint`. Set `tls.ephemeral: true` to opt back into a fresh
+in-memory-only certificate on every start instead. A client that connects
+for the first time computes the presented certificate's SHA-256 fingerprint
+and stores it in `~/.ntwire/known_servers` (TOFU: trust on first use); every
+later connection compares the presented certificate's fingerprint against
+that pin and fails closed with `UnknownCertificateError` if it differs.
 
-Because the in-memory certificate is regenerated on every restart, its
-fingerprint changes every time, and a client that pinned the previous
-fingerprint is correctly locked out until an operator re-confirms the new
-one. **This is the pinning working as intended** — a changed fingerprint is
-indistinguishable from a machine-in-the-middle presenting its own
-certificate, so silently accepting it would defeat the point of TOFU. Avoid
-"just trust the new one automatically" workarounds; instead, use one of:
+Because a persisted self-signed certificate keeps the same fingerprint
+across restarts, the default configuration does not normally trigger a
+re-trust prompt. `tls.ephemeral: true`, or a `state_dir` the server cannot
+write to (it falls back to an in-memory certificate with a logged warning),
+regenerates the certificate — and therefore its fingerprint — on every
+start, and a client that pinned the previous fingerprint is correctly
+locked out until an operator re-confirms the new one. **This is the pinning
+working as intended** — a changed fingerprint is indistinguishable from a
+machine-in-the-middle presenting its own certificate, so silently accepting
+it would defeat the point of TOFU. Avoid "just trust the new one
+automatically" workarounds; instead, use one of:
 
+- **Keep the default persisted self-signed certificate**, which already
+  keeps the fingerprint stable across restarts with no extra configuration.
+  Make sure `tls.state_dir` (or the config file's directory) is writable and
+  backed up if you want to survive rebuilding the host.
 - **Configure a real certificate** (`tls.cert_file`/`tls.key_file`, e.g. from
-  Let's Encrypt or an internal CA). This is the most robust fix: it sidesteps
-  TOFU entirely, is reloaded live from disk (see
-  [Server configuration](../README.md#server-configuration)), and is what
-  operators should use for any long-lived deployment with a real hostname.
-- **Persist the self-signed keypair yourself** if a real certificate isn't
-  available: generate a cert/key pair once (e.g. `openssl req -x509
-  -newkey ec -pkeyopt ec_paramgen_curve:P-256 -days 365 -nodes -keyout
-  key.pem -out cert.pem`) and point `tls.cert_file`/`tls.key_file` at the
-  resulting files. That keeps the fingerprint stable across restarts (the
-  same mechanism as the previous bullet) instead of relying on the ephemeral
-  in-memory certificate ntwire-server would otherwise regenerate.
+  Let's Encrypt or an internal CA). This is the most robust fix for a
+  long-lived deployment with a real hostname: it sidesteps TOFU entirely and
+  is reloaded live from disk (see
+  [Server configuration](CONFIGURATION.md#hot-reload)).
 - **Pre-seed the client's pin out of band.** `known_servers` is a plain
   YAML file (`host: SHA256:...` entries; see `TrustServer` in
   `pkg/client/client.go`) that a client also writes to via
-  `ntwire connect --insecure` on first trust. An operator who computes the
-  certificate's fingerprint ahead of time — e.g. with `openssl x509 -in
-  cert.pem -noout -fingerprint -sha256`, formatted to match the
-  `SHA256:base64(...)` form the client stores — can write it into a new
-  client's `~/.ntwire/known_servers` before the first connection, so no
-  prompt appears. ntwire-server does not currently print this fingerprint at
-  startup; computing it from the persisted `cert_file` is the only way to
-  get it today. This only stays useful if the fingerprint is stable (i.e.
-  combined with a persisted or real certificate above) — pre-seeding a pin
-  for an in-memory self-signed certificate just gets invalidated at the next
-  restart like any other pin.
+  `ntwire connect --insecure` on first trust. Read the pin from the server's
+  startup log (`tls_fingerprint`), or compute it yourself with `openssl x509
+  -in <state_dir>/selfsigned-cert.pem -noout -fingerprint -sha256` formatted
+  to match the `SHA256:base64(...)` form the client stores, and write it into
+  a new client's `~/.ntwire/known_servers` before the first connection so no
+  prompt appears. This only stays useful if the fingerprint is stable (i.e.
+  not combined with `tls.ephemeral: true`).
 - **Distribute the certificate itself** with the client's `--ca` flag, which
   verifies the presented chain against that CA instead of a pinned
-  fingerprint. Note the generated self-signed certificate's only SAN is
-  `localhost` (`pkg/server/tls.go`), so this only works out of the box for
-  `https://localhost:...`; a certificate meant to be distributed this way
-  to non-localhost clients needs a SAN matching the hostname clients will
-  use, which today means supplying your own `cert_file`/`key_file` rather
-  than the built-in self-signed generator.
+  fingerprint. The generated self-signed certificate's SANs are `localhost`,
+  the server's hostname, and the loopback IPs (`pkg/server/tls.go`), so this
+  works out of the box for `https://localhost:...` or `https://<hostname>:...`;
+  a certificate meant to be distributed this way to a different hostname
+  needs a matching SAN, which today means supplying your own
+  `cert_file`/`key_file` rather than the built-in self-signed generator.
 - Avoid `--insecure` (`InsecureSkipVerify`, no pin at all) outside a
   disposable local/dev server — it removes server authentication entirely,
   not just the restart friction.
@@ -137,19 +141,12 @@ certificate, so silently accepting it would defeat the point of TOFU. Avoid
 - Register ntwire as a **public** OAuth client (no client secret) with a
   loopback redirect URI for PKCE and, if used, device-flow support enabled at
   the IdP.
-# Self-signed TLS certificates
-
-Unless `tls.cert_file` and `tls.key_file` are configured, the server persists
-its self-signed certificate in `tls.state_dir` (the configuration file's
-directory by default). It logs the SHA256 pin at startup; users should compare
-that pin on their first TOFU prompt. Set `tls.ephemeral: true` to deliberately
-regenerate an in-memory certificate at each start.
 
 ## The relay's trust model
 
 An ntwire-server behind NAT with no inbound connectivity can dial out to a
-public `ntwire-relay` instead of listening directly (see PLAN-RELAY.md for the
-full design). This is safe with the same client TOFU pin described above,
+public `ntwire-relay` instead of listening directly (see [RELAY.md](RELAY.md)
+for setup and the full design). This is safe with the same client TOFU pin described above,
 because of one property that predates the relay entirely: the client verifies
 the server's certificate by **SHA256 fingerprint only** (`InsecureSkipVerify`
 plus a `VerifyConnection` hook, no hostname check —
@@ -166,7 +163,8 @@ pins is unaffected by the relay hop.
   inside the spliced TLS stream, opaque to the relay.
 - Impersonate a tenant to claim a name — that requires a valid
   `RelayRegisterRequest` signature from the corresponding private key (see
-  docs/PROTOCOL.md's relay registration protocol).
+  [PROTOCOL.md](PROTOCOL.md#relay-registration-protocol-ntwire-server-ntwire-relay)'s
+  relay registration protocol).
 - Authenticate as a client — it never sees `/v1/auth` traffic in cleartext.
 
 **A malicious or compromised relay can:**

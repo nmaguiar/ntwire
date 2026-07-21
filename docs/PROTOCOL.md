@@ -145,6 +145,13 @@ Errors are JSON objects of the form `{"error":"message"}`. Malformed input
 returns `400`; authentication or session failures return `401`; an authorizer
 denial returns `403`.
 
+Authentication failures may include an additive `code` field in the JSON
+error: `invalid_request`, `clock_skew`, `replayed_nonce`, `unknown_key`,
+`bad_signature`, `rate_limited`, `not_allowed`, `max_sessions`,
+`oidc_invalid_token`, `no_capacity`, or `invalid_wireguard_key`. Successful
+authentication and renewal responses may include `identity` and `method`
+(`ssh` or `oidc`). Older peers may omit all of these fields.
+
 ## Renewal and disconnect
 
 `POST /v1/renew` requires `Authorization: Bearer TOKEN` and a body with
@@ -179,8 +186,8 @@ built to include one; prefer fingerprints for SSH `allow` entries.
 
 ## Authorizer hook additions for OIDC
 
-The authorizer hook input (`POST` body or stdin JSON, see the README's
-"Authorization hooks" section) gains:
+The authorizer hook input (`POST` body or stdin JSON, see
+[AUTHORIZATION.md](AUTHORIZATION.md)) gains:
 
 | Field | SSH | OIDC |
 | --- | --- | --- |
@@ -189,14 +196,6 @@ The authorizer hook input (`POST` body or stdin JSON, see the README's
 | `identity` | empty | verified email |
 | `issuer` | empty | configured issuer name |
 | `groups` | empty | from `groups_claim`, if configured |
-# UX additions
-
-Authentication failures may include an additive `code` field in the JSON
-error: `invalid_request`, `clock_skew`, `replayed_nonce`, `unknown_key`,
-`bad_signature`, `rate_limited`, `not_allowed`, `max_sessions`,
-`oidc_invalid_token`, `no_capacity`, or `invalid_wireguard_key`. Successful
-authentication and renewal responses may include `identity` and `method`
-(`ssh` or `oidc`). Older peers may omit all of these fields.
 
 ## Relay registration protocol (ntwire-server ↔ ntwire-relay)
 
@@ -204,8 +203,9 @@ An ntwire-server behind NAT can dial out to a public `ntwire-relay` instead of
 listening for inbound connections. This is a separate protocol from client
 authentication above: it runs between an ntwire-server and an ntwire-relay
 over the relay's `agents` HTTPS listener, and never involves the ntwire
-client. See `docs/SECURITY.md` for the trust model — the relay is untrusted
-for confidentiality and integrity, trusted only for availability.
+client. See [SECURITY.md#the-relays-trust-model](SECURITY.md#the-relays-trust-model)
+for the trust model — the relay is untrusted for confidentiality and
+integrity, trusted only for availability.
 
 `GET /v1/relay/control` upgrades to a long-lived WebSocket. The server sends
 one JSON `RelayRegisterRequest` text message to claim a tenant name:
