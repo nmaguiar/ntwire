@@ -35,7 +35,23 @@ type Config struct {
 		AdvertisedEndpoint string `yaml:"advertised_endpoint"`
 	} `yaml:"network"`
 	Authorizer AuthorizerConfig `yaml:"authorizer"`
+	Relay      RelayConfig      `yaml:"relay"`
 	Tunnels    []TunnelConfig   `yaml:"tunnels"`
+}
+
+// RelayConfig configures ntwire-server to dial out to an ntwire-relay
+// instead of listening for inbound connections directly (see PLAN-RELAY.md).
+// When Enabled, listen.https is never bound; the server instead maintains an
+// outbound control connection and serves its unchanged Handler() over
+// dial-back data connections.
+type RelayConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	URL          string        `yaml:"url"`
+	Name         string        `yaml:"name"`
+	IdentityFile string        `yaml:"identity_file"`
+	Fingerprint  string        `yaml:"fingerprint"`
+	ReconnectMin time.Duration `yaml:"reconnect_min"`
+	ReconnectMax time.Duration `yaml:"reconnect_max"`
 }
 type OIDCConfig struct {
 	Issuers []OIDCIssuerConfig `yaml:"issuers"`
@@ -103,7 +119,19 @@ auth:
 
 network:
   tunnel_cidr: 100.64.0.0/16              # private IPv4 range used to allocate peer tunnel addresses; default shown
-  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT
+  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; must be empty when relay.enabled is true
+
+relay:
+  enabled: false                          # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)
+  url: ""                                 # wss://relay.example.com:8444, the relay's listen.agents endpoint
+  name: home                              # tenant label; must match this key's registrations[] entry on the relay
+  identity_file: /etc/ntwire/relay_id_ed25519 # private key used to sign relay registration, separate from auth.authorized_keys_dir
+  fingerprint: ""                         # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
+  reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
+  reconnect_max: 1m                        # backoff ceiling; default: 1m
+  # When relay.enabled is true, consider setting listen.wireguard to
+  # "127.0.0.1:0": WireGuard rides the /v1/wg WebSocket fallback in relay
+  # mode, so the UDP socket StartDataPlane still opens is unused.
 
 authorizer:
   webhook_url: ""                         # URL that receives a JSON POST for each connection and returns an allow/deny decision; takes precedence when both hook options are set
@@ -175,6 +203,20 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if _, _, e = net.ParseCIDR(c.Network.TunnelCIDR); e != nil {
 		return c, fmt.Errorf("network.tunnel_cidr: %w", e)
+	}
+	if c.Relay.Enabled {
+		if c.Relay.URL == "" || c.Relay.Name == "" || c.Relay.IdentityFile == "" {
+			return c, fmt.Errorf("relay.enabled requires relay.url, relay.name, and relay.identity_file")
+		}
+		if c.Network.AdvertisedEndpoint != "" {
+			return c, fmt.Errorf("relay.enabled cannot be combined with network.advertised_endpoint: a relayed server has no UDP endpoint to advertise")
+		}
+	}
+	if c.Relay.ReconnectMin == 0 {
+		c.Relay.ReconnectMin = time.Second
+	}
+	if c.Relay.ReconnectMax == 0 {
+		c.Relay.ReconnectMax = time.Minute
 	}
 	seen := map[string]bool{}
 	for _, t := range c.Tunnels {

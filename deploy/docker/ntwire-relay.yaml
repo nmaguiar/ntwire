@@ -1,0 +1,11 @@
+listen:
+  public: ":443"
+  agents: ":8444"
+domain: relay.example.com
+registrations:
+  # One entry per ntwire-server allowed to claim a tenant name. Generate its
+  # key with `ntwire keygen -o relay_id_ed25519` and paste the resulting
+  # .pub line here; that same private key goes in the server's
+  # relay.identity_file.
+  - name: home
+    public_key: "ssh-ed25519 AAAA... admin@laptop"

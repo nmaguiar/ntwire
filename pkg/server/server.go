@@ -558,13 +558,16 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 // and target/virtual_port changes take effect immediately by recycling the
 // affected data-plane listeners, and an explicit TLS cert_file/key_file pair
 // is re-read from disk so a renewed certificate is served without a
-// restart. Listener address, cert_file/key_file *paths*, and tunnel-CIDR
-// changes are intentionally ignored until restart.
+// restart. Listener address, cert_file/key_file *paths*, tunnel-CIDR, and
+// relay changes are intentionally ignored until restart: relay mode changes
+// which net.Listener cmd/ntwire-server passes to ServeTLS, which Handler()
+// never sees, so there is nothing here for it to hot-reload.
 func (s *Server) Reload(c Config) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.Listen = s.Config.Listen
 	c.TLS = s.Config.TLS
+	c.Relay = s.Config.Relay
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
 	oldIssuers := s.Config.Auth.OIDC.Issuers
 	s.Config = c

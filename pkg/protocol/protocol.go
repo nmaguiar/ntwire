@@ -97,7 +97,66 @@ const (
 	ErrorOIDCInvalidToken    = "oidc_invalid_token"
 	ErrorNoCapacity          = "no_capacity"
 	ErrorInvalidWireGuardKey = "invalid_wireguard_key"
+	ErrorRelayNameNotAllowed = "relay_name_not_allowed"
 )
+
+// RelayRegisterRequest is sent by an ntwire-server over its long-lived
+// control connection to claim a tenant name on the relay. It authenticates
+// with the same sshkey primitives as AuthRequest, but under a distinct
+// domain separator (see RelayRegisterPayload) because it binds a Name field
+// that SigningPayload does not cover.
+type RelayRegisterRequest struct {
+	Version   int    `json:"version"`
+	PublicKey string `json:"public_key"` // authorized_keys line
+	Name      string `json:"name"`       // requested tenant label
+	Timestamp string `json:"timestamp"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature"`
+}
+
+// RelayRegisterResponse answers a RelayRegisterRequest. Name is the
+// authoritative label the relay bound to this key (from its own
+// registrations config, never the wire), not necessarily an echo of the
+// request.
+type RelayRegisterResponse struct {
+	Version int    `json:"version"`
+	Name    string `json:"name"`
+	Domain  string `json:"domain"`
+	Error   string `json:"error,omitempty"`
+	Code    string `json:"code,omitempty"`
+}
+
+// RelayOpen is pushed by the relay to an ntwire-server's control connection
+// each time an inbound client TCP connection is accepted with that server's
+// SNI name, instructing it to dial back a data connection carrying ConnID.
+type RelayOpen struct {
+	ConnID     string `json:"conn_id"`
+	ClientAddr string `json:"client_addr"` // real client ip:port
+	SNI        string `json:"sni"`
+}
+
+// RelayRegisterPayload is a byte-exact, length-prefixed encoding, structured
+// identically to SigningPayload, over [PublicKey, Name, Timestamp, Nonce].
+// It intentionally uses its own domain separator rather than reusing
+// SigningPayload's: SigningPayload has no Name field, so reusing it would
+// either leave the tenant name unbound (forgeable) or require stuffing it
+// into ClientInfo.Extra, creating a cross-protocol signature-reuse hazard
+// between /v1/auth and relay registration.
+func RelayRegisterPayload(r RelayRegisterRequest) ([]byte, error) {
+	if r.Version != Version {
+		return nil, fmt.Errorf("unsupported protocol version %d", r.Version)
+	}
+	var b bytes.Buffer
+	b.WriteString("ntwire-relay-register-v1\x00")
+	for _, f := range []string{r.PublicKey, r.Name, r.Timestamp, r.Nonce} {
+		if len(f) > 1<<20 {
+			return nil, fmt.Errorf("field too large")
+		}
+		_ = binary.Write(&b, binary.BigEndian, uint32(len(f)))
+		b.WriteString(f)
+	}
+	return b.Bytes(), nil
+}
 
 // SigningPayload is a byte-exact, length-prefixed encoding. It intentionally
 // does not depend on JSON serialization order.

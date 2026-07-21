@@ -21,6 +21,7 @@ help:
     - build
     - client
     - server
+    - relay
     - test
     - race
     - check
@@ -30,6 +31,7 @@ help:
     - docker
     - docker-client
     - docker-server
+    - docker-relay
     - compose-up
     - compose-down
     - compose-logs
@@ -49,7 +51,7 @@ init:
 
 todo:
 - (ask):
-    op: option.['all'|'build'|'client'|'server'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'compose-up'|'compose-down'|'compose-logs'|'clean']
+    op: option.['all'|'build'|'client'|'server'|'relay'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'clean']
   ((question)): "Operation to perform:"
 - (optionOn): op
   ((lowerCase)): true
@@ -62,6 +64,8 @@ todo:
     - Build client
     server:
     - Build server
+    relay:
+    - Build relay
     test:
     - Test
     race:
@@ -80,6 +84,8 @@ todo:
     - Docker client
     docker-server:
     - Docker server
+    docker-relay:
+    - Docker relay
     compose-up:
     - Compose up
     compose-down:
@@ -164,10 +170,19 @@ jobs:
     mkdir -p bin "$GO_BUILD_CACHE"
     GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire-server ./cmd/ntwire-server
 
+- name: Build relay
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p bin "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire-relay ./cmd/ntwire-relay
+
 - name: Build binaries
   to:
   - Build client
   - Build server
+  - Build relay
 
 - name: Build all commands
   lang: shell
@@ -191,10 +206,18 @@ jobs:
     test -n "$IMAGE_TAG" || IMAGE_TAG="{{init.dockerTag}}"
     docker build --tag "ntwire:$IMAGE_TAG" --file deploy/docker/Dockerfile.client .
 
+- name: Docker relay
+  lang: shell
+  exec: |
+    IMAGE_TAG="{{dockerTag}}"
+    test -n "$IMAGE_TAG" || IMAGE_TAG="{{init.dockerTag}}"
+    docker build --tag "ntwire-relay:$IMAGE_TAG" --file deploy/docker/Dockerfile.relay .
+
 - name: Docker images
   to:
   - Docker server
   - Docker client
+  - Docker relay
 
 - name: Compose up
   lang: shell

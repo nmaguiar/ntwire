@@ -1,10 +1,19 @@
 package wstransport
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -51,5 +60,88 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	clientBuf, clientSizes, clientEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
 	if n, err := clientFns[0](clientBuf, clientSizes, clientEP); err != nil || n != 1 || clientSizes[0] != 16 {
 		t.Fatalf("client receive: n=%d err=%v size=%d", n, err, clientSizes[0])
+	}
+}
+
+// TestClientBindSendsSNIThroughPinningTransport answers a question raised by
+// the ntwire relay design (PLAN-RELAY.md §I): the /v1/wg data-plane dial
+// goes through coder/websocket driven by the same fingerprint-pinning
+// http.Client as pkg/client's control plane (InsecureSkipVerify, no explicit
+// ServerName). That is a different code path than a plain http.Transport
+// request, so this asserts empirically that it still puts SNI on the wire
+// for a named host — if it silently didn't, the control plane would work
+// fine over a relay while the data plane dead-ended at the relay's SNI
+// router.
+func TestClientBindSendsSNIThroughPinningTransport(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: "origin"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+
+	rawLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rawLn.Close()
+
+	sniCh := make(chan string, 1)
+	tlsLn := tls.NewListener(rawLn, &tls.Config{
+		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
+			select {
+			case sniCh <- chi.ServerName:
+			default:
+			}
+			return &tls.Config{Certificates: []tls.Certificate{cert}}, nil
+		},
+	})
+	defer tlsLn.Close()
+
+	server := NewServer()
+	if _, _, err := server.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_ = server.ServeHTTP(w, r, "session")
+	})
+	srv := &http.Server{Handler: mux}
+	go srv.Serve(tlsLn)
+	defer srv.Close()
+
+	// Mirrors pkg/client's httpClient(): InsecureSkipVerify with no explicit
+	// ServerName, plus a DialContext that redirects the named host to the
+	// loopback listener above (there is no real DNS entry for it).
+	pinningClient := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return net.Dial("tcp", rawLn.Addr().String())
+		},
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+
+	client := NewClient("wss://home.relay.test:1234/", pinningClient, nil)
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatalf("client dial through pinning transport failed: %v", err)
+	}
+	defer client.Close()
+
+	select {
+	case sni := <-sniCh:
+		if sni != "home.relay.test" {
+			t.Fatalf("SNI = %q, want %q", sni, "home.relay.test")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the ClientHello")
 	}
 }
