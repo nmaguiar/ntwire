@@ -120,6 +120,12 @@ See [docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts](do
 for how that fingerprint stays stable across restarts and what to do if it
 doesn't.
 
+`-h`/`--help` output (for `ntwire`, `ntwire-server`, and `ntwire-relay`) is
+colorized with UTF-8 symbols on a capable terminal, and falls back to plain
+ASCII automatically when piped, redirected, or when `NO_COLOR` is set; pass
+`--no-color` to disable it explicitly. See [docs/LOGGING.md](docs/LOGGING.md)
+for log format/color details.
+
 ### SSO login
 
 When a server advertises one or more OIDC issuers, `connect`/`list` use SSO by

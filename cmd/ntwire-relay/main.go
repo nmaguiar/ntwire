@@ -11,22 +11,47 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/relay"
+	"github.com/nmaguiar/ntwire/pkg/ui"
 )
 
 func main() {
 	config := flag.String("config", "ntwire-relay.yaml", "relay configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
+	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
+	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
+	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
+	flag.Usage = func() {
+		ui.Spec{
+			Tool:    "ntwire-relay",
+			Tagline: "NAT-traversal relay for ntwire-server",
+			Flags:   ui.FlagsOf(flag.CommandLine),
+			Examples: []string{
+				"ntwire-relay -config ntwire-relay.yaml",
+				"ntwire-relay -print-sample-config > ntwire-relay.yaml",
+			},
+		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
+	}
 	flag.Parse()
 	if *printSampleConfig {
 		fmt.Print(relay.SampleConfig())
 		return
 	}
+
+	caps := ui.Detect(os.Stderr, *noColor)
+	flagLogOpts := logging.Options{Format: *logFormat, Level: *logLevel}
+	bootstrap := logging.Resolve(flagLogOpts, logging.Options{}, logging.EnvOptions("NTWIRE"))
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stderr, bootstrap, caps)))
+
 	c, err := relay.LoadConfig(*config)
 	if err != nil {
 		slog.Error("configuration error", "error", err)
 		os.Exit(2)
 	}
+	final := logging.Resolve(flagLogOpts, c.Log.Options(), logging.EnvOptions("NTWIRE"))
+	slog.SetDefault(slog.New(logging.NewHandler(os.Stderr, final, caps)))
+
 	r, err := relay.New(c, slog.Default())
 	if err != nil {
 		slog.Error("relay configuration error", "error", err)

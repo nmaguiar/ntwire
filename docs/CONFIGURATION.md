@@ -52,7 +52,13 @@ tunnels:
       - "alice@corp.com"                # oidc: exact verified email
       - "@corp.com"                     # oidc: email domain
       - "group:engineering"             # oidc: groups_claim membership
+log:
+  format: text                          # text or json (Logstash-format); container images default to json
+  level: info                           # debug, info, warn, or error
 ```
+
+See [LOGGING.md](LOGGING.md) for the full `log:` reference, including the
+`-log-format`/`-log-level` flags and env vars, and their precedence.
 
 Every readable non-directory file in `authorized_keys_dir` is treated as a
 public key. Tunnel names must be unique and each tunnel requires `name` and

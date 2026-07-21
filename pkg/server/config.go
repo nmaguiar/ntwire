@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/logging"
 )
 
 type Config struct {
@@ -37,6 +39,7 @@ type Config struct {
 	Authorizer AuthorizerConfig `yaml:"authorizer"`
 	Relay      RelayConfig      `yaml:"relay"`
 	Tunnels    []TunnelConfig   `yaml:"tunnels"`
+	Log        logging.Config   `yaml:"log"`
 }
 
 // RelayConfig configures ntwire-server to dial out to an ntwire-relay
@@ -154,6 +157,11 @@ tunnels:
       # - "alice@corp.com"                 # exact verified OIDC email
       # - "@corp.com"                      # OIDC email domain
       # - "group:engineering"              # OIDC membership in auth.oidc.issuers[].groups_claim
+
+log:
+  format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
+  level: info                               # debug, info, warn, or error
+  # Precedence: -log-format/-log-level flags > this file > NTWIRE_LOG_FORMAT/NTWIRE_LOG_LEVEL env > built-in default (text, info). See docs/LOGGING.md.
 `
 }
 

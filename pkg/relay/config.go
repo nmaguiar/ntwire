@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"gopkg.in/yaml.v3"
 )
@@ -30,6 +31,7 @@ type Config struct {
 		MaxNewConnsPerMinute int           `yaml:"max_new_conns_per_minute"`
 	} `yaml:"limits"`
 	Registrations []RegistrationConfig `yaml:"registrations"`
+	Log           logging.Config       `yaml:"log"`
 }
 
 type RegistrationConfig struct {
@@ -70,6 +72,11 @@ limits:
 registrations:
   - name: home                              # first DNS label; clients use https://home.relay.example.com
     public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINA2Gh3ezOG8R0iaD0WVnVsJTQGHqjI96LwGrIc/Kwgc admin@laptop" # authorized_keys line identifying the ntwire-server allowed to claim this name; replace with your own
+
+log:
+  format: text                              # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
+  level: info                                # debug, info, warn, or error
+  # Precedence: -log-format/-log-level flags > this file > NTWIRE_LOG_FORMAT/NTWIRE_LOG_LEVEL env > built-in default (text, info). See docs/LOGGING.md.
 `
 }
 
