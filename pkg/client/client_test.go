@@ -13,6 +13,41 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
+func TestSelectTransport(t *testing.T) {
+	cases := []struct {
+		name     string
+		explicit bool
+		udp      string
+		ws       string
+		wantWS   bool
+		wantErr  bool
+	}{
+		{"direct server, UDP only", false, "vpn.example:51820", "", false, false},
+		{"direct server, both endpoints, UDP preferred", false, "vpn.example:51820", "wss://vpn.example/v1/wg", false, false},
+		{"relay-only server auto-selects websocket", false, "", "wss://home.relay.example/v1/wg", true, false},
+		{"explicit --websocket overrides UDP availability", true, "vpn.example:51820", "wss://vpn.example/v1/wg", true, false},
+		{"explicit --websocket with no websocket endpoint errors", true, "vpn.example:51820", "", false, true},
+		{"neither endpoint advertised errors", false, "", "", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectTransport(tc.explicit, tc.udp, tc.ws)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.wantWS {
+				t.Fatalf("useWS = %v, want %v", got, tc.wantWS)
+			}
+		})
+	}
+}
+
 func TestTrustServerPersistsPin(t *testing.T) {
 	path := t.TempDir() + "/known_servers"
 	if err := TrustServer(path, "server.example:8443", "SHA256:example"); err != nil {

@@ -529,11 +529,12 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
 	}
+	useWS, err := selectTransport(options.UseWebSocket, r.UDP, r.WebSocket)
+	if err != nil {
+		return nil, err
+	}
 	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}}
-	if options.UseWebSocket {
-		if r.WebSocket == "" {
-			return nil, fmt.Errorf("server did not advertise a WebSocket endpoint")
-		}
+	if useWS {
 		stackConfig.Bind = wstransport.NewClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
 	}
 	st, err := wgnet.New(stackConfig)
@@ -541,12 +542,8 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	endpoint := r.UDP
-	if options.UseWebSocket {
+	if useWS {
 		endpoint = "0.0.0.0:0"
-	}
-	if endpoint == "" {
-		st.Close()
-		return nil, fmt.Errorf("server did not advertise a WireGuard endpoint")
 	}
 	serverIP := clientIP
 	a := serverIP.As4()
@@ -598,6 +595,25 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	return c, nil
+}
+
+// selectTransport decides whether the WireGuard data plane uses the
+// WebSocket fallback instead of UDP. explicit is the caller's --websocket
+// flag; udp and websocket are AuthResponse.UDP/WebSocket. A relay-only
+// server advertises no UDP endpoint (udp == ""), so this auto-selects
+// WebSocket instead of requiring the caller to know that in advance — a
+// direct server with a misconfigured empty advertised_endpoint used to
+// simply error here; it now silently works over WebSocket instead, which is
+// strictly better but is a deliberate behavior change (see PLAN-RELAY.md §F).
+func selectTransport(explicit bool, udp, websocket string) (useWS bool, err error) {
+	useWS = explicit || (udp == "" && websocket != "")
+	if useWS && websocket == "" {
+		return false, fmt.Errorf("server did not advertise a WebSocket endpoint")
+	}
+	if !useWS && udp == "" {
+		return false, fmt.Errorf("server did not advertise a WireGuard endpoint")
+	}
+	return useWS, nil
 }
 
 // listenLocal prefers port when it is supplied by the server configuration.

@@ -144,3 +144,80 @@ its self-signed certificate in `tls.state_dir` (the configuration file's
 directory by default). It logs the SHA256 pin at startup; users should compare
 that pin on their first TOFU prompt. Set `tls.ephemeral: true` to deliberately
 regenerate an in-memory certificate at each start.
+
+## The relay's trust model
+
+An ntwire-server behind NAT with no inbound connectivity can dial out to a
+public `ntwire-relay` instead of listening directly (see PLAN-RELAY.md for the
+full design). This is safe with the same client TOFU pin described above,
+because of one property that predates the relay entirely: the client verifies
+the server's certificate by **SHA256 fingerprint only** (`InsecureSkipVerify`
+plus a `VerifyConnection` hook, no hostname check —
+`pkg/client/client.go`). The relay routes on the TLS ClientHello's SNI and
+splices raw bytes; it never holds the origin server's private key and never
+terminates the client's TLS session, so the fingerprint the client already
+pins is unaffected by the relay hop.
+
+**A malicious or compromised relay cannot:**
+
+- MITM the client's TLS session — it does not have the origin's key, and
+  presenting its own certificate would fail the client's fingerprint pin.
+- Read or forge tunnel traffic — WireGuard's Noise handshake runs end-to-end
+  inside the spliced TLS stream, opaque to the relay.
+- Impersonate a tenant to claim a name — that requires a valid
+  `RelayRegisterRequest` signature from the corresponding private key (see
+  docs/PROTOCOL.md's relay registration protocol).
+- Authenticate as a client — it never sees `/v1/auth` traffic in cleartext.
+
+**A malicious or compromised relay can:**
+
+- Deny service to a tenant (drop the control connection, refuse to dial
+  back, or simply not run).
+- Observe timing, connection volume, and which tenant name (subdomain) each
+  inbound client contacts — the SNI itself is necessarily plaintext.
+- **Lie about the client's source IP.** The relay reports each inbound
+  client's address in `RelayOpen.client_addr`, and the origin server trusts
+  it for per-source-IP rate limiting (`allowSource`), audit logging, and the
+  authorizer hook's `source_ip` field. This is a new trust requirement
+  introduced by relay mode specifically, and it is the reason
+  `relayConn.RemoteAddr()` exists (`pkg/server/relay.go`) — without it, every
+  relayed client would collapse into one bucket keyed by the relay's own
+  address, a functional outage under mild concurrent load. **Operators must
+  not build IP allowlists against a relayed deployment's authorizer hook or
+  audit log**, since a relay that misbehaves (or is itself compromised) can
+  misreport this field. This does not let a malicious relay bypass
+  authentication — it can only affect rate-limit bucketing and the address
+  recorded in logs/hooks.
+
+In short: **the relay is untrusted for confidentiality and integrity, and
+trusted only for availability** (and, within that, for accurately reporting
+client addresses used for rate limiting and logging — not a security boundary
+strong enough to authorize based on).
+
+**Operational notes:**
+
+- The relay's own `listen.agents` TLS certificate is *not* what the ntwire
+  client pins; it only protects the server↔relay control/data connections.
+  Set `relay.fingerprint` on the server (or `tls.cert_file`/`key_file` on the
+  relay with normal PKI) to authenticate that hop; leaving it empty falls
+  back to normal certificate verification, which requires the relay's
+  `listen.agents` certificate to chain to a trusted root.
+- A scanner or unauthenticated connection to `listen.public` sees a TCP port
+  that accepts, then resets without ever sending a byte — no certificate, no
+  banner, no HTTP response, matching the behavior of an unregistered or
+  offline tenant name (see below).
+- An unregistered tenant name and a registered-but-offline one are
+  deliberately indistinguishable from the outside: both simply reset the
+  connection. This prevents enumerating which tenant names are configured
+  on a given relay.
+- **Encrypted Client Hello (ECH)** would hide the SNI the relay routes on,
+  breaking routing entirely. ntwire's Go TLS stack does not send ECH by
+  default, so this is not a concern today, but it is a known future
+  incompatibility if ECH is ever adopted on the client side.
+- Rate limiting on `listen.public` (`limits.max_new_conns_per_minute`) is
+  **mandatory**, unlike the server's `allowSource`, because the relay is
+  internet-facing and a relay is a **dial-back amplification vector**: every
+  inbound connection with a valid, registered SNI forces the origin server to
+  open an outbound data connection. `limits.max_pending_per_server` and
+  `limits.max_conns_per_server` cap this per tenant, independent of the
+  source-IP rate limit.

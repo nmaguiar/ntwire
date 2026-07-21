@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -68,6 +69,21 @@ func main() {
 		}()
 	}
 	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsManager.Config(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
+	if c.Relay.Enabled {
+		agent, err := server.NewRelayAgent(c.Relay, slog.Default())
+		if err != nil {
+			slog.Error("relay configuration error", "error", err)
+			os.Exit(2)
+		}
+		go agent.Run(context.Background())
+		defer agent.Close()
+		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
+		if err = h.ServeTLS(agent.Listener(), "", ""); err != nil {
+			slog.Error("server stopped", "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
 	if err = h.ListenAndServeTLS("", ""); err != nil {
 		slog.Error("server stopped", "error", err)

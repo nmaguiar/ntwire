@@ -197,3 +197,82 @@ error: `invalid_request`, `clock_skew`, `replayed_nonce`, `unknown_key`,
 `oidc_invalid_token`, `no_capacity`, or `invalid_wireguard_key`. Successful
 authentication and renewal responses may include `identity` and `method`
 (`ssh` or `oidc`). Older peers may omit all of these fields.
+
+## Relay registration protocol (ntwire-server ↔ ntwire-relay)
+
+An ntwire-server behind NAT can dial out to a public `ntwire-relay` instead of
+listening for inbound connections. This is a separate protocol from client
+authentication above: it runs between an ntwire-server and an ntwire-relay
+over the relay's `agents` HTTPS listener, and never involves the ntwire
+client. See `docs/SECURITY.md` for the trust model — the relay is untrusted
+for confidentiality and integrity, trusted only for availability.
+
+`GET /v1/relay/control` upgrades to a long-lived WebSocket. The server sends
+one JSON `RelayRegisterRequest` text message to claim a tenant name:
+
+```json
+{
+  "version": 1,
+  "public_key": "ssh-ed25519 AAAA... admin@laptop",
+  "name": "home",
+  "timestamp": "2026-07-17T12:00:00Z",
+  "nonce": "base64url-random-value",
+  "signature": "base64-encoded-ssh-signature"
+}
+```
+
+The relay replies with `RelayRegisterResponse`:
+
+```json
+{"version": 1, "name": "home", "domain": "relay.example.com"}
+```
+
+or, on failure, `{"version":1,"error":"...","code":"..."}` and closes the
+connection. `name` in the response is authoritative from the relay's own
+`registrations` config, never an echo of the request.
+
+### Signing payload
+
+Structured identically to `/v1/auth`'s signing payload, but with its own
+domain separator, since `name` is a field `/v1/auth`'s payload does not cover:
+
+1. Write ASCII `ntwire-relay-register-v1` followed by a zero byte.
+2. Length-prefix (32-bit big-endian) and write, in order: `public_key`,
+   `name`, `timestamp`, `nonce`.
+
+A signature produced for `/v1/auth` does not verify as a relay registration,
+and vice versa, even when field values overlap.
+
+### Verification order
+
+Timestamp within ±2 minutes of the relay's clock → nonce unseen (5-minute
+cache) → fingerprint present in the relay's `registrations` (else
+`unknown_key`) → signature valid (else `bad_signature`) → `name` matches the
+fingerprint's configured name (else `relay_name_not_allowed`, a new error
+code). A successful registration evicts and closes any prior control
+connection already registered under that name (last-writer-wins): this is
+both how a duplicate claim is rejected and how a server reconnecting after a
+drop replaces its own stale connection, with no separate timeout to tune.
+
+### Data connections and `RelayOpen`
+
+Once registered, the relay pushes a `RelayOpen` message over the control
+connection for every inbound public TCP connection whose SNI resolves to that
+server's tenant name:
+
+```json
+{"conn_id": "base64-random-32-bytes", "client_addr": "203.0.113.5:51422", "sni": "home.relay.example.com"}
+```
+
+The server then opens `GET /v1/relay/data?conn_id=...` — a second WebSocket,
+one per inbound client connection — and the relay splices the raw TLS bytes
+of that client connection into it verbatim, without ever terminating the
+client's TLS session. `conn_id` is a single-use, 10-second-TTL bearer
+capability minted by the relay and handed out only over the
+already-authenticated control connection; it is not itself signed.
+
+The origin ntwire-server observes the relayed connection through its normal
+`net.Listener`/`http.Server.ServeTLS` path, with one difference: the
+connection's `RemoteAddr()` reports `client_addr` from `RelayOpen`, not the
+relay's own address, so per-source-IP rate limiting and audit logging remain
+correct across a relay hop.
