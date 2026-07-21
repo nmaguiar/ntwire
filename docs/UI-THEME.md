@@ -1,3 +1,9 @@
+---
+title: ntwire UI Theme
+description: Visual theme and styling reference for the ntwire web UI
+type: reference
+---
+
 # ntwire UI Theme
 
 ntwire uses a crisp, operations-focused theme that should feel calm during normal tunnel use and clear during incident response. The local status UI supports both light and dark modes through CSS custom properties and the user's `prefers-color-scheme` setting.

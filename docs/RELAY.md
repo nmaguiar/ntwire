@@ -1,3 +1,9 @@
+---
+title: Relay Mode (NAT Traversal)
+description: Guide to configuring ntwire-relay for servers behind NAT
+type: guide
+---
+
 # Relay mode (NAT traversal)
 
 Today's default topology is strictly one-directional: only `ntwire-server`

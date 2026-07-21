@@ -1,3 +1,9 @@
+---
+title: Security Notes
+description: TLS trust model, OIDC threat model, and relay trust model for ntwire
+type: reference
+---
+
 # Security notes
 
 ## Current boundary
