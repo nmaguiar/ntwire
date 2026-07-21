@@ -61,7 +61,7 @@ func main() {
 	if c.Listen.Metrics != "" {
 		mh := &http.Server{Addr: c.Listen.Metrics, Handler: s.MetricsHandler(), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second}
 		go func() {
-			slog.Info("ntwire metrics listening", "metrics", c.Listen.Metrics, "endpoint", "/metrica")
+			slog.Info("ntwire metrics listening", "metrics", c.Listen.Metrics, "endpoint", "/metrics")
 			if e := mh.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 				slog.Error("metrics server stopped", "error", e)
 			}

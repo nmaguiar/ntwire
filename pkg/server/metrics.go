@@ -9,11 +9,11 @@ import (
 // MetricsHandler exposes a small Prometheus-compatible plaintext snapshot.
 func (s *Server) MetricsHandler() http.Handler {
 	m := http.NewServeMux()
-	m.HandleFunc("GET /metrica", s.metrica)
+	m.HandleFunc("GET /metrics", s.metrics)
 	return m
 }
 
-func (s *Server) metrica(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	sessions := s.sessions.All()
 	s.mu.Lock()
