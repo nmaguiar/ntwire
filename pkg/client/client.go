@@ -329,6 +329,9 @@ func decideMethod(o Options, keyPath string, info protocol.InfoResponse) (method
 // method a session started with instead of re-deciding.
 func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientInfo, wgPublic string, o Options, pinnedMethod, pinnedIssuer string) (authResult, error) {
 	if pinnedMethod == "ssh" {
+		if o.Logger != nil {
+			o.Logger.Debug("authenticating", "method", "ssh")
+		}
 		r, err := authenticateSSH(h, base, keyPath, info, wgPublic)
 		return authResult{response: r, method: "ssh"}, err
 	}
@@ -343,6 +346,9 @@ func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientI
 			return authResult{}, err
 		}
 		method, issuerName = m, iss.Name
+	}
+	if o.Logger != nil {
+		o.Logger.Debug("authenticating", "method", method, "issuer", issuerName)
 	}
 	switch method {
 	case "ssh":
@@ -563,6 +569,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if c.log == nil {
 		c.log = slog.Default()
 	}
+	transport := "udp"
+	if useWS {
+		transport = "websocket"
+	}
+	c.log.Debug("control-plane session established", "transport", transport, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
 	for _, t := range r.Tunnels {
 		p, explicitPort := options.Ports[t.Name]
 		if !explicitPort {
@@ -581,6 +592,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, localAddr: l.Addr().String(), target: target}
 		c.tunnels = append(c.tunnels, lt)
 		c.LocalAddresses = append(c.LocalAddresses, l.Addr().String())
+		c.log.Debug("tunnel listener bound", "tunnel", t.Name, "local_address", l.Addr().String(), "target", target)
 		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
@@ -718,6 +730,10 @@ func (c *Connection) renewLoop() {
 				if delay > time.Second {
 					c.log.Warn("control-plane connection reconnected")
 				}
+				c.mu.Lock()
+				newTTL := c.Response.TTLSeconds
+				c.mu.Unlock()
+				c.log.Debug("control-plane session renewed", "ttl_seconds", newTTL)
 				break
 			}
 			if delay == time.Second {
@@ -868,7 +884,9 @@ func (c *Connection) startWebUI() {
 	go func() { _ = c.ui.Serve(l) }()
 }
 
-type webTunnel struct {
+// WebTunnel is the live status of one tunnel on a running connect process,
+// as reported by its local status UI's /status endpoint.
+type WebTunnel struct {
 	Name         string      `json:"name"`
 	VirtualPort  int         `json:"virtual_port"`
 	Description  string      `json:"description"`
@@ -876,18 +894,58 @@ type webTunnel struct {
 	Stats        TunnelStats `json:"stats"`
 }
 
-func (c *Connection) webStatus() map[string]any {
+// WebStatus is the JSON reported by a running connect process's local
+// status UI (see Connection.webStatus and FetchWebStatus), exported so
+// other callers (e.g. the CLI's list/status commands) can decode it.
+type WebStatus struct {
+	Connected     bool        `json:"connected"`
+	Tunnels       []WebTunnel `json:"tunnels"`
+	TTLSeconds    int         `json:"ttl_seconds"`
+	LatencyMillis uint64      `json:"latency_millis"`
+	Reconnections uint64      `json:"reconnections"`
+}
+
+func (c *Connection) webStatus() WebStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	tunnels := make([]webTunnel, 0, len(c.tunnels))
+	tunnels := make([]WebTunnel, 0, len(c.tunnels))
 	for i, t := range c.tunnels {
-		wt := webTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats()}
+		wt := WebTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats()}
 		if i < len(c.Response.Tunnels) {
 			wt.Description = c.Response.Tunnels[i].Description
 		}
 		tunnels = append(tunnels, wt)
 	}
-	return map[string]any{"connected": c.Stack != nil, "tunnels": tunnels, "ttl_seconds": c.Response.TTLSeconds, "latency_millis": c.latencyMillis.Load(), "reconnections": c.reconnections.Load()}
+	return WebStatus{Connected: c.Stack != nil, Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+}
+
+// FetchWebStatus retrieves live per-tunnel status from a running connect
+// process's local status UI (Status.UIURL). It is used on a best-effort
+// basis by commands like `list` and `status` that want to enrich their
+// output with live data when a connection happens to be running.
+func FetchWebStatus(uiURL string) (WebStatus, error) {
+	var ws WebStatus
+	if uiURL == "" {
+		return ws, errors.New("no local status UI")
+	}
+	u, err := urlpkg.Parse(uiURL)
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return ws, errors.New("running client does not expose a local status UI")
+	}
+	u.Path = "/status"
+	h := &http.Client{Timeout: 2 * time.Second}
+	resp, err := h.Get(u.String())
+	if err != nil {
+		return ws, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ws, fmt.Errorf("fetch status: %s", resp.Status)
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&ws); err != nil {
+		return ws, err
+	}
+	return ws, nil
 }
 
 func openBrowser(url string) error {
@@ -932,6 +990,12 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			tunnel.connections.Add(1)
 			tunnel.active.Add(1)
 			defer tunnel.active.Add(-1)
+			started := time.Now()
+			remote := in.RemoteAddr().String()
+			if c.log != nil {
+				c.log.Debug("tunnel connection opened", "tunnel", tunnel.name, "remote", remote)
+			}
+			toStart, fromStart := tunnel.toTunnel.Load(), tunnel.fromTunnel.Load()
 			var copies sync.WaitGroup
 			copies.Add(1)
 			go func() {
@@ -940,6 +1004,10 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			}()
 			_, _ = io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
 			copies.Wait()
+			if c.log != nil {
+				c.log.Debug("tunnel connection closed", "tunnel", tunnel.name, "remote", remote,
+					"bytes_to_tunnel", tunnel.toTunnel.Load()-toStart, "bytes_from_tunnel", tunnel.fromTunnel.Load()-fromStart, "duration", time.Since(started))
+			}
 		}()
 	}
 }

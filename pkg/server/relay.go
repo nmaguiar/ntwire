@@ -117,6 +117,7 @@ func (a *RelayAgent) Listener() net.Listener { return a.listener }
 func (a *RelayAgent) Run(ctx context.Context) {
 	delay := a.cfg.ReconnectMin
 	for {
+		a.log.Debug("relay control connection dialing", "url", a.cfg.URL)
 		registered, err := a.runOnce(ctx)
 		if ctx.Err() != nil {
 			return
@@ -181,6 +182,7 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 		if json.Unmarshal(data, &open) != nil {
 			continue
 		}
+		a.log.Debug("relay open received", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
 		go a.handleOpen(ctx, open)
 	}
 }
@@ -211,6 +213,7 @@ func (a *RelayAgent) handleOpen(ctx context.Context, open protocol.RelayOpen) {
 		return
 	}
 	conn := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
+	a.log.Debug("relay data connection opened", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
 	a.listener.push(&relayConn{Conn: conn, remoteAddr: stringAddr(open.ClientAddr)})
 }
 
