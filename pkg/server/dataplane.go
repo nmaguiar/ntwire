@@ -75,6 +75,7 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 	d.mu.Lock()
 	d.listeners[tunnel.Name] = &tunnelListener{listener: l, config: tunnel}
 	d.mu.Unlock()
+	s.log.Debug("tunnel listener opened", "tunnel", tunnel.Name, "virtual_port", tunnel.VirtualPort, "target", tunnel.Target)
 	go func() {
 		for {
 			c, e := l.Accept()
@@ -120,6 +121,7 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	}
 	d.mu.Unlock()
 	for _, tl := range toClose {
+		s.log.Debug("tunnel listener closed", "tunnel", tl.config.Name)
 		_ = tl.listener.Close()
 	}
 	for _, nt := range toOpen {
@@ -139,15 +141,21 @@ func (s *Server) proxy(t TunnelConfig, in net.Conn) {
 	}
 	out, err := net.DialTimeout("tcp", t.Target, 10*time.Second)
 	if err != nil {
+		s.log.Debug("tunnel target dial failed", "tunnel", t.Name, "target", t.Target, "error", err)
 		return
 	}
 	defer out.Close()
+	started := time.Now()
+	s.log.Debug("tunnel connection opened", "tunnel", t.Name, "client", host)
 	stats := s.statsFor(host, t.Name)
 	stats.connections.Add(1)
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
+	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
 	go io.Copy(countingWriter{w: out, counter: &stats.toTarget}, in)
 	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
+	s.log.Debug("tunnel connection closed", "tunnel", t.Name, "client", host,
+		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
 
 type countingWriter struct {
@@ -226,6 +234,7 @@ func (s *Server) reapLoop(d *dataPlane) {
 		case <-tick.C:
 			for _, v := range s.sessions.Reap() {
 				s.dropSession(v)
+				s.log.Debug("session expired", "session", v.ID, "identity", v.Identity)
 				s.audit("session_expired", v, "", 0)
 			}
 		case <-d.stop:

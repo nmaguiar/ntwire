@@ -301,8 +301,19 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
+	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method})
+}
+
+// tunnelNames extracts the tunnel names granted in a session, for compact
+// debug-level logging (the full protocol.Tunnel slice is verbose).
+func tunnelNames(v []protocol.Tunnel) []string {
+	names := make([]string, len(v))
+	for i, t := range v {
+		names[i] = t.Name
+	}
+	return names
 }
 func websocketURL(r *http.Request) string {
 	scheme := "wss"
@@ -377,6 +388,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
+	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, Identity: n.Identity, Method: n.Method})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
@@ -388,6 +400,7 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sessions.Delete(t)
 	s.dropSession(old)
+	s.log.Debug("session disconnected", "session", old.ID, "identity", old.Identity)
 	s.audit("session_disconnected", old, "", 0)
 	w.WriteHeader(http.StatusNoContent)
 }

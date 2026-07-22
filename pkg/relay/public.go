@@ -82,6 +82,7 @@ func (p *publicListener) handle(c net.Conn) {
 	if _, err := back.Write(raw); err != nil {
 		return
 	}
+	p.log.Debug("relay connection spliced", "tenant", name, "client", host, "sni", sni)
 	splice(c, back)
 }
 

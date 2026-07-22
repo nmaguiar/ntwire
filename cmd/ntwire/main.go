@@ -204,6 +204,91 @@ func port(args []string, u *ui.UI) {
 	fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(parts[0]), out.LocalAddress)
 }
 
+// formatBytes renders a byte count the same way the local status UI's
+// dashboard does (pkg/client/webui/static/index.html's bytes()): B/KiB/
+// MiB/GiB/TiB, one decimal place once it's past whole bytes.
+func formatBytes(n uint64) string {
+	units := [...]string{"B", "KiB", "MiB", "GiB", "TiB"}
+	f, i := float64(n), 0
+	for f >= 1024 && i < len(units)-1 {
+		f /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%.0f %s", f, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", f, units[i])
+}
+
+// connsSummary and trafficSummary render a tunnel's live counters as two
+// bounded fields (rather than one combined field, which can run long
+// enough to break column alignment) reused by both `list`'s CONNS/TRAFFIC
+// columns and `status`'s per-tunnel breakdown.
+func connsSummary(s client.TunnelStats) string {
+	return fmt.Sprintf("%d/%d", s.Active, s.Connections)
+}
+
+func trafficSummary(s client.TunnelStats) string {
+	return fmt.Sprintf("%s in / %s out", formatBytes(s.BytesFromTunnel), formatBytes(s.BytesToTunnel))
+}
+
+// tunnelStatusRow builds one row of a NAME | LOCAL ADDRESS | STATUS |
+// CONNS | TRAFFIC table for a live tunnel, where STATUS reflects whether
+// it currently has any active connections (distinct from list's STATUS
+// column, which reflects whether the tunnel is connected at all).
+func tunnelStatusRow(t client.WebTunnel) []string {
+	status := "idle"
+	if t.Stats.Active > 0 {
+		status = "active"
+	}
+	return []string{t.Name, t.LocalAddress, status, connsSummary(t.Stats), trafficSummary(t.Stats)}
+}
+
+// listColumns is factored out of list() so a test can render the exact
+// column widths list() uses and catch overflow that would break the
+// DESCRIPTION column's alignment (see TestListColumnsFitLiveStats).
+func listColumns() []ui.Column {
+	return []ui.Column{
+		{Header: "NAME", Width: 20, Align: "left"},
+		{Header: "PORT", Width: 5, Align: "right"},
+		{Header: "LOCAL", Width: 6, Align: "right"},
+		{Header: "STATUS", Width: 10, Align: "left"},
+		{Header: "CONNS", Width: 11, Align: "right"},
+		{Header: "TRAFFIC", Width: 30, Align: "left"},
+		{Header: "DESCRIPTION", Sep: "  "},
+	}
+}
+
+// liveTunnelStatus best-effort looks up a currently-running `ntwire
+// connect` process's live per-tunnel status, but only when that process is
+// connected to the same server being queried -- a status file pointing at
+// a different server is not relevant here. Any failure (nothing running,
+// wrong server, unreachable status UI) yields a nil map, which callers
+// treat the same as "nothing live to show."
+func liveTunnelStatus(server, statusFile string) map[string]client.WebTunnel {
+	target, err := client.NormalizeServerURL(server)
+	if err != nil {
+		return nil
+	}
+	s, err := client.ReadStatus(statusFile)
+	if err != nil {
+		return nil
+	}
+	running, err := client.NormalizeServerURL(s.Server)
+	if err != nil || running != target {
+		return nil
+	}
+	ws, err := client.FetchWebStatus(s.UIURL)
+	if err != nil {
+		return nil
+	}
+	byName := make(map[string]client.WebTunnel, len(ws.Tunnels))
+	for _, t := range ws.Tunnels {
+		byName[t.Name] = t
+	}
+	return byName
+}
+
 func status(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	path := fs.String("status-file", "", "local status file")
@@ -215,13 +300,36 @@ func status(args []string, u *ui.UI) {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(u.Out, "%s %d\n", u.OutPal.Muted.Sprint("pid:"), s.PID)
-	fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("server:"), s.Server)
-	if s.UIURL != "" {
-		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("status:"), s.UIURL)
-	}
+	var kv ui.KV
+	kv.Add("pid", fmt.Sprintf("%d", s.PID))
+	kv.Add("server", s.Server)
+	kv.Add("status", s.UIURL)
 	for _, address := range s.LocalAddresses {
-		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("local:"), address)
+		kv.Add("local", address)
+	}
+	ws, wsErr := client.FetchWebStatus(s.UIURL)
+	if wsErr == nil {
+		kv.Add("connected", fmt.Sprintf("%t", ws.Connected))
+		kv.Add("ttl", fmt.Sprintf("%ds", ws.TTLSeconds))
+		kv.Add("latency", fmt.Sprintf("%dms", ws.LatencyMillis))
+		kv.Add("reconnections", fmt.Sprintf("%d", ws.Reconnections))
+	}
+	fmt.Fprint(u.Out, kv.Render(u))
+	if wsErr == nil && len(ws.Tunnels) > 0 {
+		fmt.Fprintln(u.Out)
+		t := ui.Table{
+			Columns: []ui.Column{
+				{Header: "NAME", Width: 20, Align: "left"},
+				{Header: "LOCAL ADDRESS", Width: 22, Align: "left"},
+				{Header: "STATUS", Width: 8, Align: "left"},
+				{Header: "CONNS", Width: 11, Align: "right"},
+				{Header: "TRAFFIC", Sep: "  "},
+			},
+		}
+		for _, tn := range ws.Tunnels {
+			t.Rows = append(t.Rows, tunnelStatusRow(tn))
+		}
+		fmt.Fprint(u.Out, t.Render(u))
 	}
 }
 
@@ -358,6 +466,7 @@ func list(args []string, u *ui.UI) {
 	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
 	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
+	statusFile := fs.String("status-file", "", "local status file")
 	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
 	setUsage(fs, u, "show allowed tunnels", "ntwire list server.example")
 	fs.Parse(args)
@@ -399,15 +508,19 @@ func list(args []string, u *ui.UI) {
 		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
 		return
 	}
-	t := ui.Table{
-		Columns: []ui.Column{
-			{Header: "NAME", Width: 20, Align: "left"},
-			{Header: "PORT", Width: 5, Align: "right"},
-			{Header: "DESCRIPTION", Sep: "  "},
-		},
-	}
+	live := liveTunnelStatus(server, *statusFile)
+	t := ui.Table{Columns: listColumns()}
 	for _, tunnel := range r.Tunnels {
-		t.Rows = append(t.Rows, []string{tunnel.Name, fmt.Sprintf("%d", tunnel.VirtualPort), tunnel.Description})
+		localPort, status, conns, traffic := "-", "-", "-", "-"
+		if tunnel.LocalPort != 0 {
+			localPort = fmt.Sprintf("%d", tunnel.LocalPort)
+		}
+		if wt, ok := live[tunnel.Name]; ok {
+			status = "connected"
+			conns = connsSummary(wt.Stats)
+			traffic = trafficSummary(wt.Stats)
+		}
+		t.Rows = append(t.Rows, []string{tunnel.Name, fmt.Sprintf("%d", tunnel.VirtualPort), localPort, status, conns, traffic, tunnel.Description})
 	}
 	fmt.Fprint(u.Out, t.Render(u))
 }
