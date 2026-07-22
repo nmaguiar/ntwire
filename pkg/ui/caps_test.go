@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"os"
 	"testing"
 )
 
@@ -33,6 +34,17 @@ func TestDetectNoColorEnvWins(t *testing.T) {
 }
 
 func TestDetectCLIColorForceEnablesOffTTY(t *testing.T) {
+	noColor, wasSet := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv("NO_COLOR", noColor)
+			return
+		}
+		_ = os.Unsetenv("NO_COLOR")
+	})
 	t.Setenv("CLICOLOR_FORCE", "1")
 	var buf bytes.Buffer
 	caps := Detect(&buf, false)
