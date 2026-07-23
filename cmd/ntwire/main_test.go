@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -34,6 +35,48 @@ func TestConnsAndTrafficSummary(t *testing.T) {
 	}
 	if got, want := trafficSummary(s), "1.1 MiB in / 4.2 MiB out"; got != want {
 		t.Errorf("trafficSummary() = %q, want %q", got, want)
+	}
+}
+
+// TestListEntryJSONOmitsLiveFieldsWhenNotConnected checks that a tunnel
+// with no matching live status marshals without a "stats" field, rather
+// than a misleading zero-valued one -- callers should be able to tell
+// "not connected" apart from "connected with zero traffic" by field
+// presence alone.
+func TestListEntryJSONOmitsLiveFieldsWhenNotConnected(t *testing.T) {
+	e := listEntry{Name: "reports", VirtualPort: 51001, Description: "Reporting DB"}
+	b, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	got := string(b)
+	if strings.Contains(got, `"stats"`) {
+		t.Errorf("Marshal() = %s, want no \"stats\" field for a disconnected tunnel", got)
+	}
+	if !strings.Contains(got, `"connected":false`) {
+		t.Errorf("Marshal() = %s, want \"connected\":false", got)
+	}
+}
+
+// TestStatusJSONOmitsWebStatusWhenUnavailable checks that statusJSON's
+// embedded *client.WebStatus, when left nil (the live status UI could not
+// be reached), disappears entirely from the marshaled output instead of
+// contributing zero-valued "connected"/"ttl_seconds"/etc. fields that would
+// look like real data.
+func TestStatusJSONOmitsWebStatusWhenUnavailable(t *testing.T) {
+	out := statusJSON{Status: client.Status{PID: 123, Server: "https://example.com:8443"}}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	got := string(b)
+	for _, field := range []string{"connected", "ttl_seconds", "latency_millis", "reconnections", "tunnels"} {
+		if strings.Contains(got, `"`+field+`"`) {
+			t.Errorf("Marshal() = %s, want no %q field when WebStatus is nil", got, field)
+		}
+	}
+	if !strings.Contains(got, `"pid":123`) {
+		t.Errorf("Marshal() = %s, want \"pid\":123", got)
 	}
 }
 
