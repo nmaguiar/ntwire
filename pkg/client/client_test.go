@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -45,6 +46,62 @@ func TestSelectTransport(t *testing.T) {
 				t.Fatalf("useWS = %v, want %v", got, tc.wantWS)
 			}
 		})
+	}
+}
+
+func TestResolveServerTunnelIP(t *testing.T) {
+	cases := []struct {
+		name           string
+		serverTunnelIP string
+		clientIP       string
+		want           string
+		wantErr        bool
+	}{
+		{"field present, IPv4", "100.64.0.1", "100.64.0.5", "100.64.0.1", false},
+		{"field present, IPv6", "fd00:ac1d::1", "fd00:ac1d::5", "fd00:ac1d::1", false},
+		{"field present but invalid", "not-an-ip", "100.64.0.5", "", true},
+		{"field absent, IPv4 falls back to legacy host-.1 derivation", "", "100.64.0.5", "100.64.0.1", false},
+		{"field absent, IPv6 has no legacy fallback", "", "fd00:ac1d::5", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clientIP, err := netip.ParseAddr(tc.clientIP)
+			if err != nil {
+				t.Fatalf("test setup: invalid clientIP %q: %v", tc.clientIP, err)
+			}
+			got, err := resolveServerTunnelIP(tc.serverTunnelIP, clientIP)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected an error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.String() != tc.want {
+				t.Fatalf("resolveServerTunnelIP() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAllowedIPsForFamily(t *testing.T) {
+	cases := []struct {
+		clientIP string
+		want     string
+	}{
+		{"100.64.0.5", "0.0.0.0/0"},
+		{"fd00:ac1d::5", "::/0"},
+	}
+	for _, tc := range cases {
+		clientIP, err := netip.ParseAddr(tc.clientIP)
+		if err != nil {
+			t.Fatalf("test setup: invalid clientIP %q: %v", tc.clientIP, err)
+		}
+		if got := allowedIPsForFamily(clientIP); got != tc.want {
+			t.Fatalf("allowedIPsForFamily(%q) = %q, want %q", tc.clientIP, got, tc.want)
+		}
 	}
 }
 

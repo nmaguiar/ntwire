@@ -274,6 +274,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}
 	tunnelIP := ""
 	serverKey := ""
+	serverTunnelIP := ""
 	if s.data != nil {
 		if req.WireGuardPublicKey == "" {
 			fail(w, 400, protocol.ErrorInvalidRequest, "wireguard_public_key is required")
@@ -294,6 +295,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			return
 		}
 		serverKey = s.data.stack.PublicKey()
+		serverTunnelIP = s.data.serverIP.String()
 	}
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
@@ -303,7 +305,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method})
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact

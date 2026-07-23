@@ -121,7 +121,7 @@ auth:
     #   require_verified_email: true       # reject tokens lacking email_verified=true; default: true
 
 network:
-  tunnel_cidr: 100.64.0.0/16              # private IPv4 range used to allocate peer tunnel addresses; default shown
+  tunnel_cidr: 100.64.0.0/16              # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; must be empty when relay.enabled is true
 
 relay:

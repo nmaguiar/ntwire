@@ -27,6 +27,41 @@ func TestWireJSONFieldsAreDistinct(t *testing.T) {
 		}
 	}
 }
+func TestAuthResponseServerTunnelIPRoundTrip(t *testing.T) {
+	b, err := json.Marshal(AuthResponse{SessionID: "id", Token: "token", TunnelIP: "fd00:ac1d::2", ServerTunnelIP: "fd00:ac1d::1", ServerPublicKey: "server"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "\"server_tunnel_ip\":\"fd00:ac1d::1\"") {
+		t.Fatalf("missing server_tunnel_ip in %s", b)
+	}
+	var out AuthResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ServerTunnelIP != "fd00:ac1d::1" {
+		t.Fatalf("ServerTunnelIP = %q, want fd00:ac1d::1", out.ServerTunnelIP)
+	}
+
+	// omitempty: an unset ServerTunnelIP must not appear in the JSON at all,
+	// and must decode back to the zero value (compatibility with an old
+	// server's response, which never sends this key).
+	b, err = json.Marshal(AuthResponse{SessionID: "id", Token: "token", TunnelIP: "100.64.0.2", ServerPublicKey: "server"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "server_tunnel_ip") {
+		t.Fatalf("expected server_tunnel_ip to be omitted when empty, got %s", b)
+	}
+	out = AuthResponse{}
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.ServerTunnelIP != "" {
+		t.Fatalf("ServerTunnelIP = %q, want empty", out.ServerTunnelIP)
+	}
+}
+
 func FuzzSigningPayload(f *testing.F) {
 	f.Add("a")
 	f.Fuzz(func(t *testing.T, s string) { _, _ = SigningPayload(AuthRequest{Version: Version, PublicKey: s}) })

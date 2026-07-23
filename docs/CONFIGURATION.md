@@ -33,7 +33,7 @@ auth:
 admin:
   web_ui_token: ""                       # optional secret: enables the server dashboard on listen.metrics at http://server:9090/?token=...; leave empty to disable it
 network:
-  tunnel_cidr: 100.64.0.0/16             # private IPv4 range peer addresses are allocated from; default shown
+  tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward)
 authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set

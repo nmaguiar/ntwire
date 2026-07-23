@@ -186,13 +186,18 @@ func (s *Server) allocateIP() (string, error) {
 	s.data.mu.Lock()
 	defer s.data.mu.Unlock()
 	p, _ := netip.ParsePrefix(s.Config.Network.TunnelCIDR)
-	bits := p.Addr().As4()
+	base := p.Addr().As16()
+	is4 := p.Addr().Is4()
 	for tries := uint32(0); tries < 65534; tries++ {
 		n := s.data.next
 		s.data.next++
-		bits[2] = byte(n >> 8)
-		bits[3] = byte(n)
-		ip := netip.AddrFrom4(bits)
+		bits := base
+		bits[14] = byte(n >> 8)
+		bits[15] = byte(n)
+		ip := netip.AddrFrom16(bits)
+		if is4 {
+			ip = ip.Unmap()
+		}
 		used := false
 		for _, x := range s.sessions.All() {
 			if x.TunnelIP == ip.String() {
@@ -210,7 +215,15 @@ func (s *Server) addPeer(key, ip string) error {
 	if s.data == nil {
 		return nil
 	}
-	return s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: ip + "/32"})
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return err
+	}
+	mask := "/32"
+	if addr.Is6() {
+		mask = "/128"
+	}
+	return s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: ip + mask})
 }
 func (s *Server) dropSession(v Session) {
 	for _, tunnel := range v.Tunnels {
