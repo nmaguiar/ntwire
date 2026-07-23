@@ -96,6 +96,12 @@ type Options struct {
 	// TokenCacheFile overrides ~/.ntwire/tokens.json.
 	TokenCacheFile string
 	Logger         *slog.Logger
+
+	// QueryOnly asks the server for the caller's allowed tunnels without
+	// establishing a tunnel session: no WireGuard keypair is generated and
+	// no session is created server-side, so repeated calls (e.g. `ntwire
+	// list`) never occupy a max_sessions_per_key slot.
+	QueryOnly bool
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
@@ -223,15 +229,19 @@ func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, opti
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	k, err := wgnet.GenerateKey()
-	if err != nil {
-		return protocol.AuthResponse{}, err
+	wgPublic := ""
+	if !options.QueryOnly {
+		k, err := wgnet.GenerateKey()
+		if err != nil {
+			return protocol.AuthResponse{}, err
+		}
+		wgPublic = k.Public
 	}
 	h, err := httpClient(url, options)
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	res, err := authenticateAny(h, url, keyPath, info, k.Public, options, "", "")
+	res, err := authenticateAny(h, url, keyPath, info, wgPublic, options, "", "")
 	return res.response, err
 }
 
@@ -332,7 +342,7 @@ func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientI
 		if o.Logger != nil {
 			o.Logger.Debug("authenticating", "method", "ssh")
 		}
-		r, err := authenticateSSH(h, base, keyPath, info, wgPublic)
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o.QueryOnly)
 		return authResult{response: r, method: "ssh"}, err
 	}
 	serverInfo, err := fetchInfo(h, base)
@@ -352,7 +362,7 @@ func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientI
 	}
 	switch method {
 	case "ssh":
-		r, err := authenticateSSH(h, base, keyPath, info, wgPublic)
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o.QueryOnly)
 		return authResult{response: r, method: "ssh"}, err
 	case "oidc":
 		iss, err := selectIssuer(serverInfo, issuerName)
@@ -378,6 +388,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	r := protocol.OIDCAuthRequest{
 		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
+		QueryOnly: o.QueryOnly,
 	}
 	b, _ := json.Marshal(r)
 	resp, err := h.Post(base+"/v1/auth/oidc", "application/json", bytes.NewReader(b))
@@ -409,7 +420,7 @@ func Logout(tokenCacheFile, serverURL string) error {
 	return cache.DeleteServer(serverURL)
 }
 
-func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string) (protocol.AuthResponse, error) {
+func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string, queryOnly bool) (protocol.AuthResponse, error) {
 	pub, err := sshkey.PublicFromPrivate(keyPath)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -418,7 +429,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, QueryOnly: queryOnly}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err

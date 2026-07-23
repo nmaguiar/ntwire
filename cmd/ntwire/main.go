@@ -523,6 +523,7 @@ func list(args []string, u *ui.UI) {
 	o := client.Options{
 		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
+		QueryOnly: true,
 	}
 	o.Logger = clientLogger(*verbose, u.ErrCaps)
 	r, err := client.AuthenticateWithOptions(server, *key, info, o)

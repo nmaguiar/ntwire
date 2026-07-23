@@ -191,7 +191,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
 	s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, QueryOnly: a.QueryOnly,
 	}, grants)
 }
 
@@ -233,7 +233,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, QueryOnly: a.QueryOnly,
 	}, grants)
 }
 
@@ -249,13 +249,18 @@ type sessionRequest struct {
 	Groups             []string // oidc only
 	WireGuardPublicKey string
 	Info               protocol.ClientInfo
+	// QueryOnly: see protocol.AuthRequest.QueryOnly.
+	QueryOnly bool
 }
 
 // establishSession is the common tail shared by SSH and OIDC authentication:
 // session cap check, authorizer hook, IP allocation, WireGuard peer add, and
-// session creation.
+// session creation. A QueryOnly request stops after the authorizer hook and
+// returns just the allowed tunnel list, so a caller that only wants to look
+// (e.g. `ntwire list`) never occupies a max_sessions_per_key slot or a
+// WireGuard peer/IP.
 func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) {
-	if s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
+	if !req.QueryOnly && s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
 		fail(w, 429, protocol.ErrorMaxSessions, "maximum sessions for key reached")
 		return
 	}
@@ -271,6 +276,11 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
 		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, LocalPort: t.LocalPort, TargetHint: t.Target})
+	}
+	if req.QueryOnly {
+		s.log.Info("query-only authentication allowed", "method", req.Method, "identity", req.Identity)
+		write(w, 200, protocol.AuthResponse{Tunnels: v, Identity: req.Identity, Method: req.Method})
+		return
 	}
 	tunnelIP := ""
 	serverKey := ""
