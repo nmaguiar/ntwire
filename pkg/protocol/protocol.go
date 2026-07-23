@@ -69,6 +69,7 @@ type AuthResponse struct {
 	SessionID       string   `json:"session_id"`
 	Token           string   `json:"token"`
 	TunnelIP        string   `json:"tunnel_ip"`
+	ServerTunnelIP  string   `json:"server_tunnel_ip,omitempty"`
 	ServerPublicKey string   `json:"server_public_key"`
 	TTLSeconds      int      `json:"ttl_seconds"`
 	Tunnels         []Tunnel `json:"tunnels"`

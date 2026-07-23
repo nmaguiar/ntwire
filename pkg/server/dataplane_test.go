@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
 // startTestDataPlane starts a data plane on loopback with the given tunnels,
@@ -15,12 +18,82 @@ import (
 // (newTestServer's Config is built by hand, not through LoadConfig).
 func startTestDataPlane(t *testing.T, s *Server) {
 	t.Helper()
-	s.Config.Network.TunnelCIDR = "100.64.0.0/16"
+	startTestDataPlaneWithCIDR(t, s, "100.64.0.0/16")
+}
+
+// startTestDataPlaneWithCIDR is startTestDataPlane with a caller-chosen
+// tunnel_cidr, so tests can exercise an IPv6 prefix without disturbing the
+// existing IPv4 fixtures.
+func startTestDataPlaneWithCIDR(t *testing.T, s *Server, cidr string) {
+	t.Helper()
+	s.Config.Network.TunnelCIDR = cidr
 	s.Config.Listen.WireGuard = "127.0.0.1:0"
 	if err := s.StartDataPlane(); err != nil {
 		t.Fatalf("StartDataPlane: %v", err)
 	}
 	t.Cleanup(s.Close)
+}
+
+// TestAllocateIPSequenceIPv4Unchanged pins allocateIP's IPv4 allocation order
+// across the As4()/As16() rewrite: it must return the exact same addresses,
+// in the exact same order, as before IPv6 support was added.
+func TestAllocateIPSequenceIPv4Unchanged(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	startTestDataPlane(t, s)
+
+	want := []string{"100.64.0.2", "100.64.0.3", "100.64.0.4"}
+	for i, w := range want {
+		ip, err := s.allocateIP()
+		if err != nil {
+			t.Fatalf("allocateIP: %v", err)
+		}
+		if ip != w {
+			t.Fatalf("allocation %d = %q, want %q", i, ip, w)
+		}
+		s.sessions.Create(CreateParams{Method: "ssh", Identity: fmt.Sprintf("id-%d", i), TunnelIP: ip, TTL: time.Minute})
+	}
+}
+
+// TestAllocateAndAddPeerIPv6 exercises allocateIP and addPeer end-to-end
+// against an IPv6 tunnel_cidr, asserting no panic, addresses land inside the
+// configured prefix, are distinct, and addPeer (which must emit a /128 mask
+// for an IPv6 address) succeeds.
+func TestAllocateAndAddPeerIPv6(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	startTestDataPlaneWithCIDR(t, s, "fd00:ac1d::/64")
+
+	prefix := netip.MustParsePrefix("fd00:ac1d::/64")
+	seen := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		ip, err := s.allocateIP()
+		if err != nil {
+			t.Fatalf("allocateIP: %v", err)
+		}
+		addr, err := netip.ParseAddr(ip)
+		if err != nil {
+			t.Fatalf("allocateIP returned invalid address %q: %v", ip, err)
+		}
+		if !addr.Is6() {
+			t.Fatalf("expected an IPv6 address, got %q", ip)
+		}
+		if !prefix.Contains(addr) {
+			t.Fatalf("allocated address %q is outside prefix %v", ip, prefix)
+		}
+		if seen[ip] {
+			t.Fatalf("allocateIP returned a duplicate address %q", ip)
+		}
+		seen[ip] = true
+
+		key, err := wgnet.GenerateKey()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.addPeer(key.Public, ip); err != nil {
+			t.Fatalf("addPeer: %v", err)
+		}
+		// Register a session for this address so the next allocation skips it.
+		s.sessions.Create(CreateParams{Method: "ssh", Identity: fmt.Sprintf("id-%d", i), TunnelIP: ip, TTL: time.Minute})
+	}
 }
 
 func TestReloadRecyclesListenerWhenTunnelTargetChanges(t *testing.T) {

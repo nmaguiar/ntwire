@@ -551,11 +551,12 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if useWS {
 		endpoint = "0.0.0.0:0"
 	}
-	serverIP := clientIP
-	a := serverIP.As4()
-	a[3] = 1
-	serverIP = netip.AddrFrom4(a)
-	if err = st.AddPeer(wgnet.Endpoint{PublicKey: r.ServerPublicKey, Address: "0.0.0.0/0@" + endpoint}); err != nil {
+	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
+	if err != nil {
+		st.Close()
+		return nil, err
+	}
+	if err = st.AddPeer(wgnet.Endpoint{PublicKey: r.ServerPublicKey, Address: allowedIPsForFamily(clientIP) + "@" + endpoint}); err != nil {
 		st.Close()
 		return nil, err
 	}
@@ -626,6 +627,36 @@ func selectTransport(explicit bool, udp, websocket string) (useWS bool, err erro
 		return false, fmt.Errorf("server did not advertise a WireGuard endpoint")
 	}
 	return useWS, nil
+}
+
+// resolveServerTunnelIP determines the server's own tunnel address. Before
+// AuthResponse.ServerTunnelIP existed, the client guessed it by convention
+// (server = host .1 of the client's network) — an IPv4-only convention that
+// panics for an IPv6 clientIP. The fallback is kept only for an old server
+// that predates this field, and only for an IPv4 clientIP.
+func resolveServerTunnelIP(serverTunnelIP string, clientIP netip.Addr) (netip.Addr, error) {
+	if serverTunnelIP != "" {
+		addr, err := netip.ParseAddr(serverTunnelIP)
+		if err != nil {
+			return netip.Addr{}, fmt.Errorf("server returned an invalid tunnel address %q: %w", serverTunnelIP, err)
+		}
+		return addr, nil
+	}
+	if clientIP.Is4() {
+		a := clientIP.As4()
+		a[3] = 1
+		return netip.AddrFrom4(a), nil
+	}
+	return netip.Addr{}, fmt.Errorf("server did not return its tunnel address; upgrade the server for IPv6 support")
+}
+
+// allowedIPsForFamily returns the tunnel's default-route AllowedIPs entry
+// for the client's own tunnel address family.
+func allowedIPsForFamily(clientIP netip.Addr) string {
+	if clientIP.Is6() {
+		return "::/0"
+	}
+	return "0.0.0.0/0"
 }
 
 // listenLocal prefers port when it is supplied by the server configuration.
