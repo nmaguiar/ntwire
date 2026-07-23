@@ -29,6 +29,12 @@ type AuthRequest struct {
 	Nonce              string     `json:"nonce"`
 	Info               ClientInfo `json:"client_info"`
 	Signature          string     `json:"signature"`
+	// QueryOnly asks the server to report the caller's allowed tunnels
+	// without establishing a tunnel session: no WireGuard peer/IP is
+	// allocated and the request does not count against
+	// max_sessions_per_key. Not part of the signed payload since it only
+	// ever narrows what the server does for the caller's own request.
+	QueryOnly bool `json:"query_only,omitempty"`
 }
 
 // OIDCAuthRequest authenticates with an ID token instead of an SSH signature.
@@ -41,6 +47,8 @@ type OIDCAuthRequest struct {
 	WireGuardPublicKey string     `json:"wireguard_public_key"`
 	Timestamp          string     `json:"timestamp"`
 	Info               ClientInfo `json:"client_info"`
+	// QueryOnly: see AuthRequest.QueryOnly.
+	QueryOnly bool `json:"query_only,omitempty"`
 }
 
 // OIDCIssuerInfo advertises an issuer to clients so they can run the login

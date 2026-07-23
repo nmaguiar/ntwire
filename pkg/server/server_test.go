@@ -113,6 +113,79 @@ func TestAuthHandlerSSH(t *testing.T) {
 	}
 }
 
+// TestAuthHandlerSSHQueryOnly checks that a QueryOnly auth request (as used
+// by `ntwire list`) returns the caller's tunnels without allocating a
+// session: no token/session ID is issued, and it never counts against
+// max_sessions_per_key even when called more times than the cap allows.
+func TestAuthHandlerSSHQueryOnly(t *testing.T) {
+	s, privPath, authLine := newTestServer(t, []TunnelConfig{
+		{Name: "reports", Target: "reports.internal:8080", VirtualPort: 18080, LocalPort: 58080, Allow: []string{"alice@laptop"}},
+	})
+	s.Config.Auth.MaxSessionsPerKey = 1
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	for i := 0; i < 3; i++ {
+		req := signedAuthRequest(t, privPath, authLine)
+		req.QueryOnly = true
+		b, _ := json.Marshal(req)
+		resp, err := http.Post(ts.URL+"/v1/auth", "application/json", bytes.NewReader(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out protocol.AuthResponse
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("call %d: status = %d, want 200", i, resp.StatusCode)
+		}
+		if out.Token != "" || out.SessionID != "" {
+			t.Fatalf("call %d: query-only response allocated a session: %+v", i, out)
+		}
+		if len(out.Tunnels) != 1 || out.Tunnels[0].Name != "reports" {
+			t.Fatalf("call %d: tunnels = %+v", i, out.Tunnels)
+		}
+	}
+	if n := s.sessions.CountIdentity("ssh", sshkey.Fingerprint(mustParseKey(t, authLine))); n != 0 {
+		t.Fatalf("query-only calls left %d live sessions, want 0", n)
+	}
+
+	// A real (non-QueryOnly) auth still respects the cap.
+	req := signedAuthRequest(t, privPath, authLine)
+	b, _ := json.Marshal(req)
+	resp, err := http.Post(ts.URL+"/v1/auth", "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first real session: status = %d, want 200", resp.StatusCode)
+	}
+
+	req2 := signedAuthRequest(t, privPath, authLine)
+	b2, _ := json.Marshal(req2)
+	resp2, err := http.Post(ts.URL+"/v1/auth", "application/json", bytes.NewReader(b2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("second real session: status = %d, want 429", resp2.StatusCode)
+	}
+}
+
+func mustParseKey(t *testing.T, authorizedLine string) ssh.PublicKey {
+	t.Helper()
+	k, _, err := sshkey.ParsePublicString(authorizedLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
 func TestAuthHandlerSSHUnknownKey(t *testing.T) {
 	s, _, _ := newTestServer(t, nil)
 	ts := httptest.NewServer(s.Handler())
