@@ -259,6 +259,18 @@ func listColumns() []ui.Column {
 	}
 }
 
+// listEntry is the --json shape for one row of `list`'s table: the
+// tunnel's server-side definition plus, when a matching `ntwire connect`
+// process is running, its live stats.
+type listEntry struct {
+	Name        string              `json:"name"`
+	VirtualPort int                 `json:"virtual_port"`
+	LocalPort   int                 `json:"local_port,omitempty"`
+	Connected   bool                `json:"connected"`
+	Stats       *client.TunnelStats `json:"stats,omitempty"`
+	Description string              `json:"description,omitempty"`
+}
+
 // liveTunnelStatus best-effort looks up a currently-running `ntwire
 // connect` process's live per-tunnel status, but only when that process is
 // connected to the same server being queried -- a status file pointing at
@@ -289,9 +301,20 @@ func liveTunnelStatus(server, statusFile string) map[string]client.WebTunnel {
 	return byName
 }
 
+// statusJSON is the --json shape for `status`: the local status-file
+// record plus, when the running connect process's local status UI answers,
+// its live WebStatus. WebStatus is a pointer so a failed fetch (nothing
+// running, or unreachable) omits those fields entirely rather than
+// reporting zero values as if they were real.
+type statusJSON struct {
+	client.Status
+	*client.WebStatus
+}
+
 func status(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	path := fs.String("status-file", "", "local status file")
+	jsonOut := fs.Bool("json", false, "output as JSON")
 	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
 	setUsage(fs, u, "show the running connection", "ntwire status")
 	fs.Parse(args)
@@ -300,6 +323,17 @@ func status(args []string, u *ui.UI) {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
+	ws, wsErr := client.FetchWebStatus(s.UIURL)
+	if *jsonOut {
+		out := statusJSON{Status: s}
+		if wsErr == nil {
+			out.WebStatus = &ws
+		}
+		enc := json.NewEncoder(u.Out)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+		return
+	}
 	var kv ui.KV
 	kv.Add("pid", fmt.Sprintf("%d", s.PID))
 	kv.Add("server", s.Server)
@@ -307,7 +341,6 @@ func status(args []string, u *ui.UI) {
 	for _, address := range s.LocalAddresses {
 		kv.Add("local", address)
 	}
-	ws, wsErr := client.FetchWebStatus(s.UIURL)
 	if wsErr == nil {
 		kv.Add("connected", fmt.Sprintf("%t", ws.Connected))
 		kv.Add("ttl", fmt.Sprintf("%ds", ws.TTLSeconds))
@@ -467,6 +500,7 @@ func list(args []string, u *ui.UI) {
 	tokenCache := fs.String("token-cache", "", "SSO token cache file")
 	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
 	statusFile := fs.String("status-file", "", "local status file")
+	jsonOut := fs.Bool("json", false, "output as JSON")
 	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
 	setUsage(fs, u, "show allowed tunnels", "ntwire list server.example")
 	fs.Parse(args)
@@ -505,10 +539,31 @@ func list(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	if len(r.Tunnels) == 0 {
+		if *jsonOut {
+			fmt.Fprintln(u.Out, "[]")
+			u.Warn("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
+			return
+		}
 		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
 		return
 	}
 	live := liveTunnelStatus(server, *statusFile)
+	if *jsonOut {
+		entries := make([]listEntry, 0, len(r.Tunnels))
+		for _, tunnel := range r.Tunnels {
+			e := listEntry{Name: tunnel.Name, VirtualPort: tunnel.VirtualPort, LocalPort: tunnel.LocalPort, Description: tunnel.Description}
+			if wt, ok := live[tunnel.Name]; ok {
+				e.Connected = true
+				stats := wt.Stats
+				e.Stats = &stats
+			}
+			entries = append(entries, e)
+		}
+		enc := json.NewEncoder(u.Out)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(entries)
+		return
+	}
 	t := ui.Table{Columns: listColumns()}
 	for _, tunnel := range r.Tunnels {
 		localPort, status, conns, traffic := "-", "-", "-", "-"
