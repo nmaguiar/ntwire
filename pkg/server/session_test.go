@@ -18,6 +18,38 @@ func TestSessionsExpireAndCount(t *testing.T) {
 	}
 }
 
+func TestSessionsDeleteByID(t *testing.T) {
+	s := NewSessions()
+	want := s.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
+
+	got, ok := s.DeleteByID(want.ID)
+	if !ok || got.Token != want.Token {
+		t.Fatalf("DeleteByID(%q) = (%+v, %t), want the created session", want.ID, got, ok)
+	}
+	if _, ok := s.Get(want.Token); ok {
+		t.Fatal("session still present after DeleteByID")
+	}
+	if _, ok := s.DeleteByID(want.ID); ok {
+		t.Fatal("DeleteByID succeeded a second time for an already-deleted session")
+	}
+}
+
+func TestSessionsDeleteByIDUnknown(t *testing.T) {
+	s := NewSessions()
+	if _, ok := s.DeleteByID("does-not-exist"); ok {
+		t.Fatal("DeleteByID(unknown) = true, want false")
+	}
+}
+
+func TestSessionsDeleteByIDIgnoresExpired(t *testing.T) {
+	s := NewSessions()
+	expired := s.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Millisecond})
+	time.Sleep(2 * time.Millisecond)
+	if _, ok := s.DeleteByID(expired.ID); ok {
+		t.Fatal("DeleteByID matched an expired session")
+	}
+}
+
 func TestSessionsFindWireGuardPublicKey(t *testing.T) {
 	s := NewSessions()
 	want := s.Create(CreateParams{Method: "ssh", Identity: "fp", WireGuardPublicKey: "peer-key", TunnelIP: "100.64.0.2", TTL: time.Minute})

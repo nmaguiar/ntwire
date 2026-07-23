@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"golang.org/x/crypto/ssh"
@@ -227,6 +229,35 @@ func TestInfoHandler(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("capabilities missing ssh-auth: %+v", out["capabilities"])
+	}
+}
+
+func TestAuditFallsBackToMainLogWithoutAuditLog(t *testing.T) {
+	var mainBuf bytes.Buffer
+	s := New(Config{}, slog.New(logging.NewLogstashHandler(&mainBuf, slog.LevelInfo)))
+
+	s.audit("session_disconnected", Session{ID: "sess-1"}, "", 0)
+
+	if !bytes.Contains(mainBuf.Bytes(), []byte(`"session_id":"sess-1"`)) {
+		t.Fatalf("main log missing audit event: %s", mainBuf.String())
+	}
+}
+
+func TestAuditUsesAuditLogWhenConfigured(t *testing.T) {
+	var mainBuf, auditBuf bytes.Buffer
+	s := New(Config{}, slog.New(logging.NewLogstashHandler(&mainBuf, slog.LevelInfo)))
+	s.SetAuditLog(slog.New(logging.NewMultiHandler(
+		logging.NewLogstashHandler(&mainBuf, slog.LevelInfo),
+		logging.NewLogstashHandler(&auditBuf, slog.LevelInfo),
+	)))
+
+	s.audit("session_revoked", Session{ID: "sess-2"}, "admin request", 0)
+
+	if !bytes.Contains(mainBuf.Bytes(), []byte(`"session_id":"sess-2"`)) {
+		t.Fatalf("main log missing audit event: %s", mainBuf.String())
+	}
+	if !bytes.Contains(auditBuf.Bytes(), []byte(`"session_id":"sess-2"`)) {
+		t.Fatalf("audit log missing audit event: %s", auditBuf.String())
 	}
 }
 

@@ -55,10 +55,20 @@ tunnels:
 log:
   format: text                          # text or json (Logstash-format); container images default to json
   level: info                           # debug, info, warn, or error
+audit:
+  log_file: ""                          # optional path for a dedicated JSON-lines audit log; events also still go to the main log
 ```
 
 See [LOGGING.md](LOGGING.md) for the full `log:` reference, including the
 `-log-format`/`-log-level` flags and env vars, and their precedence.
+
+`audit.log_file`, when set, additionally writes every `audit` event
+(`auth_allowed`, `session_disconnected`, `session_expired`, `session_revoked`)
+as a Logstash-format JSON line to that file, regardless of `log.format`. This
+is additive: audit events keep appearing in the main log too, so existing
+log-based monitoring is unaffected. The file is opened append-only with mode
+`0600` and is not rotated by ntwire-server; pair it with `logrotate` or an
+equivalent if it needs to be bounded.
 
 Every readable non-directory file in `authorized_keys_dir` is treated as a
 public key. Tunnel names must be unique and each tunnel requires `name` and
@@ -113,10 +123,15 @@ metrics listener. Open `http://server:9090/?token=TOKEN` (using the address in
 `listen.metrics`) to see every
 currently granted tunnel, its authenticated identity, tunnel address, expiry,
 target, live connection/traffic counters, client-observed control-plane
-latency, and reconnect counts. The dashboard is disabled by
-default and returns 404 without the exact token because it exposes operational
-and identity data; bind the metrics listener to loopback or place it behind a
-trusted TLS reverse proxy.
+latency, and reconnect counts. Each tunnel entry's `session_id` can be passed
+to `POST /v1/admin/sessions/{id}/revoke?token=TOKEN` (same listener, same
+token) to immediately end that session — the one way to revoke a live
+session without waiting for its `session_ttl` or a config reload; see
+[SECURITY.md](SECURITY.md#oidc-threat-model) for why that matters for OIDC
+deprovisioning specifically. The dashboard and revoke endpoint are disabled by
+default and return 404 without the exact token because they expose
+operational and identity data (and, for revoke, session control); bind the
+metrics listener to loopback or place it behind a trusted TLS reverse proxy.
 
 ## See also
 

@@ -13,9 +13,13 @@ import (
 func TestMetricsHandlerExposesMetrics(t *testing.T) {
 	s := New(Config{Tunnels: []TunnelConfig{{Name: "reports"}, {Name: "admin"}}}, nil)
 	s.sessions.Create(CreateParams{
-		Method: "oidc", Identity: `alice@example.com`,
+		Method: "oidc", Identity: `alice@example.com`, TunnelIP: "100.64.0.2",
 		Tunnels: []protocol.Tunnel{{Name: "reports"}}, LatencyMillis: 24, Reconnections: 3, TTL: time.Minute,
 	})
+	stats := s.statsFor("100.64.0.2", "reports")
+	stats.toTarget.Add(150)
+	stats.fromTarget.Add(4200)
+	stats.active.Add(1)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	s.MetricsHandler().ServeHTTP(rec, req)
@@ -30,6 +34,9 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 		`ntwire_session_tunnels{method="oidc",identity="alice@example.com"} 1`,
 		`ntwire_session_latency_milliseconds{method="oidc",identity="alice@example.com"} 24`,
 		`ntwire_session_reconnections{method="oidc",identity="alice@example.com"} 3`,
+		`ntwire_tunnel_bytes_to_target_total{tunnel="reports",method="oidc",identity="alice@example.com"} 150`,
+		`ntwire_tunnel_bytes_from_target_total{tunnel="reports",method="oidc",identity="alice@example.com"} 4200`,
+		`ntwire_tunnel_connections_active{tunnel="reports",method="oidc",identity="alice@example.com"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q in:\n%s", want, body)

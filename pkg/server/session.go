@@ -93,6 +93,27 @@ func (s *Sessions) Get(t string) (Session, bool) {
 }
 func (s *Sessions) Delete(t string) { s.mu.Lock(); defer s.mu.Unlock(); delete(s.byToken, t) }
 
+// DeleteByID finds a live session by its ID (distinct from its bearer
+// Token, which admin callers -- unlike the session's own owner -- never
+// have) and atomically removes it, so a concurrent renew or expiry can't
+// race an admin revoke into deleting the wrong generation of a session.
+func (s *Sessions) DeleteByID(id string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for token, v := range s.byToken {
+		if now.After(v.Expires) {
+			delete(s.byToken, token)
+			continue
+		}
+		if v.ID == id {
+			delete(s.byToken, token)
+			return v, true
+		}
+	}
+	return Session{}, false
+}
+
 // CountIdentity counts live sessions for one principal, scoped by method so
 // an SSH fingerprint and an OIDC email can never collide in the count.
 func (s *Sessions) CountIdentity(method, identity string) int {

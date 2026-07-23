@@ -3,12 +3,124 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 )
+
+func TestNoColorFrom(t *testing.T) {
+	cases := []struct {
+		args []string
+		want bool
+	}{
+		{nil, false},
+		{[]string{"connect", "server.example"}, false},
+		{[]string{"--no-color", "connect"}, true},
+		{[]string{"connect", "--no-color"}, true},
+		{[]string{"connect", "-no-color", "server.example"}, true},
+	}
+	for _, c := range cases {
+		if got := noColorFrom(c.args); got != c.want {
+			t.Errorf("noColorFrom(%v) = %v, want %v", c.args, got, c.want)
+		}
+	}
+}
+
+func TestSettingsForParsesConfigFlag(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("server: https://example.com:8443\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"--config", path, "connect"},
+		{"--config=" + path, "connect"},
+	} {
+		settings, configPath := settingsFor(args)
+		if configPath != path {
+			t.Errorf("settingsFor(%v) configPath = %q, want %q", args, configPath, path)
+		}
+		if settings.Server != "https://example.com:8443" {
+			t.Errorf("settingsFor(%v) server = %q", args, settings.Server)
+		}
+	}
+}
+
+func TestSettingsForDefaultsToDefaultConfigFile(t *testing.T) {
+	_, configPath := settingsFor(nil)
+	if configPath != client.DefaultConfigFile() {
+		t.Errorf("settingsFor(nil) configPath = %q, want %q", configPath, client.DefaultConfigFile())
+	}
+}
+
+func TestCollectedInfoWithoutCommandReturnsBuiltinInfo(t *testing.T) {
+	info, err := collectedInfo("")
+	if err != nil {
+		t.Fatalf("collectedInfo(\"\") error = %v", err)
+	}
+	if info.OS == "" {
+		t.Errorf("collectedInfo(\"\") returned empty OS field, want BuiltinInfo()'s runtime.GOOS")
+	}
+}
+
+func TestCollectedInfoMergesCommandOutput(t *testing.T) {
+	info, err := collectedInfo(`echo '{"team":"platform"}'`)
+	if err != nil {
+		t.Fatalf("collectedInfo() error = %v", err)
+	}
+	if info.Extra["team"] != "platform" {
+		t.Errorf("collectedInfo() Extra = %+v, want team=platform", info.Extra)
+	}
+}
+
+func TestCollectedInfoWrapsCommandError(t *testing.T) {
+	_, err := collectedInfo("exit 1")
+	if err == nil || !strings.Contains(err.Error(), "collect-exec") {
+		t.Fatalf("collectedInfo() error = %v, want a wrapped collect-exec error", err)
+	}
+}
+
+func TestKeygenWritesIdentity(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "id_ed25519")
+	var stdout, stderr bytes.Buffer
+	u := ui.New(&stdout, &stderr, true)
+
+	keygen([]string{"-o", out}, u)
+
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("private key not written: %v", err)
+	}
+	pub, err := os.ReadFile(out + ".pub")
+	if err != nil {
+		t.Fatalf("public key not written: %v", err)
+	}
+	if !strings.HasPrefix(string(pub), "ssh-ed25519 ") {
+		t.Errorf("public key = %q, want an ssh-ed25519 OpenSSH line", pub)
+	}
+	if !strings.Contains(stdout.String(), "Fingerprint:") {
+		t.Errorf("keygen output = %q, want a Fingerprint line", stdout.String())
+	}
+}
+
+// TestTrustPromptWithoutTerminalDenies exercises trustPrompt's no-TTY path,
+// which is what every non-interactive invocation (CI, a piped ntwire
+// connect) actually hits: without a terminal to confirm on, it must fail
+// closed rather than block reading stdin or silently trust the certificate.
+func TestTrustPromptWithoutTerminalDenies(t *testing.T) {
+	if info, err := os.Stdin.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+		t.Skip("stdin is a terminal in this environment; the no-TTY path isn't exercised here")
+	}
+	e := &client.UnknownCertificateError{Host: "server.example", Fingerprint: "SHA256:abc"}
+	if trustPrompt(e, filepath.Join(t.TempDir(), "known_servers")) {
+		t.Fatal("trustPrompt() = true without a terminal, want false (fail closed)")
+	}
+}
 
 func TestFormatBytes(t *testing.T) {
 	cases := []struct {

@@ -112,15 +112,22 @@ automatically" workarounds; instead, use one of:
   refresh token and is written mode `0600`. Treat it like a private key: a
   reader can mint fresh sessions until it is revoked. `ntwire logout` deletes
   a server's entries locally; it does not revoke the refresh token at the IdP.
-- **Revocation is YAML/groups change + session TTL, not instantaneous.**
-  Removing a user's email/domain/group grant, removing an issuer, or editing
-  the groups a directory reports takes effect on the next config reload (which
+- **Revocation is YAML/groups change + session TTL, not instantaneous —
+  unless an operator revokes the session directly.** Removing a user's
+  email/domain/group grant, removing an issuer, or editing the groups a
+  directory reports takes effect on the next config reload (which
   re-evaluates every live OIDC session against current grants) or, for a
   session already dropped from `allow`, immediately; a session that keeps its
   grant continues until `session_ttl` and does not need the ID token to
   remain valid, so IdP-side deprovisioning alone does not immediately end an
-  already-established ntwire session — pair it with a YAML/group grant change
-  for prompt revocation.
+  already-established ntwire session. For immediate revocation without
+  waiting on a config change or TTL, an operator with `admin.web_ui_token`
+  can end one session right away: read its `session_id` from
+  `GET /v1/dashboard` (see [Server dashboard](CONFIGURATION.md#server-dashboard)),
+  then `POST /v1/admin/sessions/{id}/revoke?token=...` on the metrics
+  listener. This endpoint is deliberately not on the public control API — it
+  shares the dashboard's token gate and listener, so it inherits the same
+  "bind to loopback or place it behind an authenticating proxy" guidance.
 - **Per-identity session cap.** `max_sessions_per_key` applies per identity
   for OIDC too (the verified email), independent of the SSH fingerprint
   namespace.
