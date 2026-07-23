@@ -31,6 +31,7 @@ type Server struct {
 	tunnelStats sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
 	oidc        *oidcauth.Verifiers
 	tlsManager  *TLSManager
+	auditLog    *slog.Logger
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -51,6 +52,16 @@ func (s *Server) SetTLSManager(m *TLSManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tlsManager = m
+}
+
+// SetAuditLog attaches the logger audit() uses instead of the main log,
+// e.g. one built over logging.NewMultiHandler so an audit event still
+// reaches the main log while also landing in a dedicated audit sink. A nil
+// logger (the default) makes audit() fall back to the main log alone.
+func (s *Server) SetAuditLog(l *slog.Logger) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditLog = l
 }
 func newVerifiers(c Config, l *slog.Logger) *oidcauth.Verifiers {
 	cfgs := make([]oidcauth.IssuerConfig, 0, len(c.Auth.OIDC.Issuers))
@@ -85,6 +96,7 @@ type dashboardTunnelStats struct {
 }
 
 type dashboardTunnel struct {
+	SessionID     string               `json:"session_id"`
 	Name          string               `json:"name"`
 	Description   string               `json:"description"`
 	Target        string               `json:"target"`
@@ -111,7 +123,7 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
-			out = append(out, dashboardTunnel{Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()})
+			out = append(out, dashboardTunnel{SessionID: session.ID, Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()})
 		}
 	}
 	write(w, http.StatusOK, struct {
@@ -684,7 +696,13 @@ func (s *Server) allowSource(remote string) bool {
 	return v.n <= 20
 }
 func (s *Server) audit(event string, session Session, reason string, risk int) {
-	s.log.Info("audit", "event", event, "session_id", session.ID, "fingerprint", session.Fingerprint, "reason", reason, "risk_score", risk)
+	s.mu.Lock()
+	l := s.auditLog
+	s.mu.Unlock()
+	if l == nil {
+		l = s.log
+	}
+	l.Info("audit", "event", event, "session_id", session.ID, "fingerprint", session.Fingerprint, "reason", reason, "risk_score", risk)
 }
 func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

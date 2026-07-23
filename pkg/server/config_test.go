@@ -15,7 +15,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"max_sessions_per_key:", "issuers:", "name:", "issuer:", "client_id:",
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
-		"local_port:", "allow:", "target:", "description:",
+		"local_port:", "allow:", "target:", "description:", "log_file:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -51,6 +51,26 @@ tunnels:
 	}
 	if len(got.Tunnels) != 1 || got.Tunnels[0].LocalPort != 58080 {
 		t.Fatalf("tunnels = %+v", got.Tunnels)
+	}
+}
+
+func TestLoadConfigReadsAuditLogFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+audit:
+  log_file: /var/log/ntwire/audit.log
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Audit.LogFile != "/var/log/ntwire/audit.log" {
+		t.Fatalf("audit.log_file = %q", got.Audit.LogFile)
 	}
 }
 

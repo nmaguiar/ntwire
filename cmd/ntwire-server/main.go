@@ -51,7 +51,8 @@ func main() {
 		os.Exit(2)
 	}
 	final := logging.Resolve(flagLogOpts, c.Log.Options(), logging.EnvOptions("NTWIRE"))
-	slog.SetDefault(slog.New(logging.NewHandler(os.Stderr, final, caps)))
+	mainHandler := logging.NewHandler(os.Stderr, final, caps)
+	slog.SetDefault(slog.New(mainHandler))
 
 	tlsManager, err := server.NewTLSManager(c)
 	if err != nil {
@@ -60,6 +61,15 @@ func main() {
 	}
 	s := server.New(c, slog.Default())
 	s.SetTLSManager(tlsManager)
+	if c.Audit.LogFile != "" {
+		f, err := os.OpenFile(c.Audit.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		if err != nil {
+			slog.Error("audit log file error", "error", err)
+			os.Exit(2)
+		}
+		defer f.Close()
+		s.SetAuditLog(slog.New(logging.NewMultiHandler(mainHandler, logging.NewLogstashHandler(f, slog.LevelInfo))))
+	}
 	if err = s.StartDataPlane(); err != nil {
 		slog.Error("data plane error", "error", err)
 		os.Exit(2)

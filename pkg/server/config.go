@@ -40,6 +40,9 @@ type Config struct {
 	Relay      RelayConfig      `yaml:"relay"`
 	Tunnels    []TunnelConfig   `yaml:"tunnels"`
 	Log        logging.Config   `yaml:"log"`
+	Audit      struct {
+		LogFile string `yaml:"log_file"`
+	} `yaml:"audit"`
 }
 
 // RelayConfig configures ntwire-server to dial out to an ntwire-relay
@@ -162,6 +165,9 @@ log:
   format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
   level: info                               # debug, info, warn, or error
   # Precedence: -log-format/-log-level flags > this file > NTWIRE_LOG_FORMAT/NTWIRE_LOG_LEVEL env > built-in default (text, info). See docs/LOGGING.md.
+
+audit:
+  log_file: ""                             # optional path for a dedicated JSON-lines audit log (auth_allowed, session_disconnected, session_expired, session_revoked); in addition to, not instead of, the main log
 `
 }
 

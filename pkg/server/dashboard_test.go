@@ -39,12 +39,69 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
-	if len(out.Tunnels) != 1 || out.Tunnels[0].Identity != "alice@example.com" || out.Tunnels[0].Target != "reports.internal:8080" || out.Tunnels[0].LatencyMillis != 18 || out.Tunnels[0].Reconnections != 2 || out.Tunnels[0].Stats.BytesToTarget != 42 || out.Tunnels[0].Stats.BytesFromTarget != 17 || out.Tunnels[0].Stats.Connections != 3 || out.Tunnels[0].Stats.Active != 1 {
+	if len(out.Tunnels) != 1 || out.Tunnels[0].SessionID == "" || out.Tunnels[0].Identity != "alice@example.com" || out.Tunnels[0].Target != "reports.internal:8080" || out.Tunnels[0].LatencyMillis != 18 || out.Tunnels[0].Reconnections != 2 || out.Tunnels[0].Stats.BytesToTarget != 42 || out.Tunnels[0].Stats.BytesFromTarget != 17 || out.Tunnels[0].Stats.Connections != 3 || out.Tunnels[0].Stats.Active != 1 {
 		t.Fatalf("dashboard tunnels = %+v", out.Tunnels)
 	}
 	control := httptest.NewRecorder()
 	s.Handler().ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/v1/dashboard?token=operator-secret", nil))
 	if control.Code != http.StatusNotFound {
 		t.Fatalf("control API dashboard status = %d, want 404", control.Code)
+	}
+}
+
+func TestRevokeSessionRequiresToken(t *testing.T) {
+	c := Config{}
+	c.Admin.WebUIToken = "operator-secret"
+	s := New(c, nil)
+	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
+
+	rec := httptest.NewRecorder()
+	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/"+session.ID+"/revoke", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 without a token", rec.Code)
+	}
+	if _, ok := s.sessions.Get(session.Token); !ok {
+		t.Fatal("session was revoked despite the missing token")
+	}
+}
+
+func TestRevokeSessionEndsSessionByID(t *testing.T) {
+	c := Config{}
+	c.Admin.WebUIToken = "operator-secret"
+	s := New(c, nil)
+	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
+
+	rec := httptest.NewRecorder()
+	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/"+session.ID+"/revoke?token=operator-secret", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	if _, ok := s.sessions.Get(session.Token); ok {
+		t.Fatal("session still present after revoke")
+	}
+}
+
+func TestRevokeSessionUnknownIDNotFound(t *testing.T) {
+	c := Config{}
+	c.Admin.WebUIToken = "operator-secret"
+	s := New(c, nil)
+
+	rec := httptest.NewRecorder()
+	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/does-not-exist/revoke?token=operator-secret", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for an unknown session id", rec.Code)
+	}
+}
+
+func TestRevokeSessionNotOnPublicControlAPI(t *testing.T) {
+	c := Config{}
+	c.Admin.WebUIToken = "operator-secret"
+	s := New(c, nil)
+	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/"+session.ID+"/revoke?token=operator-secret", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("control API revoke status = %d, want 404 (admin endpoints stay off the public API)", rec.Code)
 	}
 }
