@@ -37,7 +37,7 @@ images set `ENV NTWIRE_LOG_FORMAT=json`, so logs are structured JSON by
 default when running under an orchestrator. Override it at run time:
 
 ```sh
-docker run -e NTWIRE_LOG_FORMAT=text ghcr.io/nmaguiar/ntwire-server:latest
+docker run -e NTWIRE_LOG_FORMAT=text nmaguiar/ntwire-server:build
 ```
 
 or by setting `log.format: text` in a mounted config file, which takes

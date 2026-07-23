@@ -22,11 +22,12 @@ workstation, the server archive for the host that accepts connections, and
 the relay archive for a public host relaying servers behind NAT (see
 [RELAY.md](RELAY.md)).
 
-Docker images for all three components are published alongside those release
-assets. They are optional deployment alternatives and do not replace the
-release binaries. All three images set `NTWIRE_LOG_FORMAT=json` by default,
-so logs are Logstash-format JSON out of the box; see
-[LOGGING.md](LOGGING.md) to change or override it.
+Container images for all three components are also published to Docker Hub as
+`nmaguiar/ntwire-server`, `nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`
+(currently tagged `build`, built from `main`). They are optional deployment
+alternatives and do not replace the release binaries. All three images set
+`NTWIRE_LOG_FORMAT=json` by default, so logs are Logstash-format JSON out of
+the box; see [LOGGING.md](LOGGING.md) to change or override it.
 
 ## Docker Compose
 
@@ -47,7 +48,7 @@ forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 ### Client image
 
 The matching client image is built from `deploy/docker/Dockerfile.client` and
-published as `ghcr.io/nmaguiar/ntwire-client`. It keeps certificate pins,
+published as `nmaguiar/ntwire-client`. It keeps certificate pins,
 local status, and (for `--sso`) the token cache in `/home/nonroot/.ntwire`;
 mount a named volume there to preserve that state. The image runs as an
 unprivileged user. When bind-mounting a host private key, run it as your host
@@ -58,13 +59,18 @@ login inside a container has no browser to open, so pass `--sso --no-browser`
 to use the device flow.
 
 ```sh
-docker build -f deploy/docker/Dockerfile.client -t ntwire-client .
 mkdir -p .local/ntwire/client-state
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
   -v "$PWD/.local/ntwire/client-state:/home/nonroot/.ntwire" \
-  ntwire-client connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
+  nmaguiar/ntwire-client:build connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
+```
+
+Or build the image locally instead of pulling it:
+
+```sh
+docker build -f deploy/docker/Dockerfile.client -t ntwire-client .
 ```
 
 ### Relay image

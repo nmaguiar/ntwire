@@ -14,11 +14,11 @@ the [documentation index](docs/README.md).
 
 | Available | Operational limit |
 | --- | --- |
-| Ed25519 key generation, SSH request signing, and TOFU | Listener address and tunnel-CIDR changes require a restart; tunnel additions/removals/repoints and an explicit TLS cert/key file pair reload live. |
+| Ed25519 key generation, SSH request signing, and TOFU | |
 | SSO login (Auth Code + PKCE, with an OAuth device-flow fallback) against any generic OIDC issuer | ntwire-server never becomes an OAuth client; it only verifies ID tokens against the issuer's JWKS. |
 | HTTPS control API, WireGuard netstack, TCP forwarding, and WebSocket transport | |
 | Session renewal, rate limits, reaping, persistent configuration, and status UI | |
-| YAML/key-directory hot reload and Compose/Kubernetes deployment assets | |
+| YAML/key-directory hot reload and Compose/Kubernetes deployment assets | Listener address and tunnel-CIDR changes require a restart; tunnel additions/removals/repoints and an explicit TLS cert/key file pair reload live. |
 | Optional webhook or executable authorization hook | |
 | `ntwire-relay`: lets an ntwire-server behind NAT (no inbound connectivity) dial out to a public relay instead of listening directly | Relay mode is TCP-only: WireGuard always rides the WebSocket fallback, never UDP. |
 
@@ -216,10 +216,13 @@ go test ./...
 go build ./cmd/...
 ```
 
-builds and tests the client, server, and relay together. Release binaries,
-Docker images/Compose, and Kubernetes manifests are covered in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See [AGENTS.md](AGENTS.md) for the
-full contributor workflow, coding style, and commit conventions.
+builds and tests the client, server, and relay together. Prebuilt container
+images are also published to Docker Hub as `nmaguiar/ntwire-server`,
+`nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`, as an alternative to
+the release binaries. Release binaries, Docker Compose, and Kubernetes
+manifests are covered in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See
+[AGENTS.md](AGENTS.md) for the full contributor workflow, coding style, and
+commit conventions.
 
 ## Security
 

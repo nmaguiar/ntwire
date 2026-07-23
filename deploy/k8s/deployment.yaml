@@ -14,7 +14,7 @@ spec:
           secret: {secretName: ntwire-authorized-keys}
       containers:
         - name: server
-          image: ghcr.io/nmaguiar/ntwire-server:latest
+          image: nmaguiar/ntwire-server:build
           args: [--config, /etc/ntwire/ntwire.yaml]
           securityContext: {runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false}
           ports: [{containerPort: 8443, name: https}, {containerPort: 51820, name: wireguard, protocol: UDP}]
