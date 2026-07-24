@@ -9,7 +9,9 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"golang.org/x/term"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -440,9 +442,14 @@ func connect(args []string, u *ui.UI) {
 		u.Errorf("%v", e)
 		os.Exit(2)
 	}
+	passphrase, e := resolveKeyPassphrase(*key, u)
+	if e != nil {
+		u.Errorf("%v", e)
+		os.Exit(1)
+	}
 	o := client.Options{
 		Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket,
-		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
+		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache, KeyPassphrase: passphrase,
 	}
 	o.Logger = clientLogger(*verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, *key, info, o)
@@ -520,10 +527,15 @@ func list(args []string, u *ui.UI) {
 		u.Errorf("%v", err)
 		os.Exit(2)
 	}
+	passphrase, err := resolveKeyPassphrase(*key, u)
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(1)
+	}
 	o := client.Options{
 		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
 		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
-		QueryOnly: true,
+		QueryOnly: true, KeyPassphrase: passphrase,
 	}
 	o.Logger = clientLogger(*verbose, u.ErrCaps)
 	r, err := client.AuthenticateWithOptions(server, *key, info, o)
@@ -634,6 +646,43 @@ func trustPrompt(e *client.UnknownCertificateError, path string) bool {
 	}
 	return true
 }
+
+// resolveKeyPassphrase checks whether keyPath is an encrypted private key
+// and, if so, prompts for its passphrase on the controlling terminal
+// (retrying on a wrong passphrase, like ssh does). Resolving it here, before
+// authentication starts, is what lets the background reconnect loop reuse it
+// later without ever needing to prompt itself.
+func resolveKeyPassphrase(keyPath string, u *ui.UI) (string, error) {
+	if keyPath == "" {
+		return "", nil
+	}
+	needs, err := sshkey.NeedsPassphrase(keyPath)
+	if err != nil {
+		return "", err
+	}
+	if !needs {
+		return "", nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", fmt.Errorf("private key %s is encrypted and no terminal is available to prompt for its passphrase", keyPath)
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		fmt.Fprintf(os.Stderr, "Passphrase for %s: ", keyPath)
+		b, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return "", err
+		}
+		if _, err = sshkey.PublicFromPrivateWithPassphrase(keyPath, b); err == nil {
+			return string(b), nil
+		}
+		if attempt < 3 {
+			u.Warn("incorrect passphrase, try again")
+		}
+	}
+	return "", fmt.Errorf("incorrect passphrase for %s", keyPath)
+}
+
 func keygen(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	out := fs.String("o", client.DefaultGeneratedIdentityFile(), "private key output")

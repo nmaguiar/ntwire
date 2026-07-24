@@ -41,3 +41,61 @@ func TestGeneratedKeySignsAndParses(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEncryptedKeyRequiresPassphrase(t *testing.T) {
+	signer, _, err := GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(signer, "", []byte("s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/id"
+	if err = os.WriteFile(path, pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if needs, err := NeedsPassphrase(path); err != nil || !needs {
+		t.Fatalf("NeedsPassphrase() = %v, %v, want true, nil", needs, err)
+	}
+	if _, err := SignFile(path, []byte("ntwire")); err == nil {
+		t.Fatal("SignFile without a passphrase on an encrypted key should fail")
+	}
+	if _, err := SignFileWithPassphrase(path, []byte("ntwire"), []byte("wrong")); err == nil {
+		t.Fatal("SignFileWithPassphrase with the wrong passphrase should fail")
+	}
+	sig, err := SignFileWithPassphrase(path, []byte("ntwire"), []byte("s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := PublicFromPrivateWithPassphrase(path, []byte("s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _, err := ParsePublicString(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Verify(parsed, []byte("ntwire"), sig); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNeedsPassphraseUnencryptedKey(t *testing.T) {
+	signer, _, err := GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/id"
+	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if needs, err := NeedsPassphrase(path); err != nil || needs {
+		t.Fatalf("NeedsPassphrase() = %v, %v, want false, nil", needs, err)
+	}
+}

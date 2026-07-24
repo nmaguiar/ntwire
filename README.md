@@ -120,6 +120,11 @@ See [docs/SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts](do
 for how that fingerprint stays stable across restarts and what to do if it
 doesn't.
 
+If the private key (found or given via `-i`) is encrypted, `connect`/`list`
+prompt for its passphrase on the terminal (input is hidden, and a wrong
+passphrase can be retried); a non-interactive run without a terminal fails
+with a clear error instead of hanging.
+
 `-h`/`--help` output (for `ntwire`, `ntwire-server`, and `ntwire-relay`) is
 colorized with UTF-8 symbols on a capable terminal, and falls back to plain
 ASCII automatically when piped, redirected, or when `NO_COLOR` is set; pass
