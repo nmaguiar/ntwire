@@ -81,6 +81,11 @@ type Options struct {
 	StatusFile       string
 	UseWebSocket     bool
 
+	// KeyPassphrase decrypts an encrypted SSH private key at KeyPath. Callers
+	// resolve it up front (e.g. an interactive prompt) since it must survive
+	// into background reconnect, which cannot prompt.
+	KeyPassphrase string
+
 	// SSO forces OIDC authentication even when an SSH key is available.
 	// Without it, an SSH key (found or given via -i) is preferred; SSO is
 	// only the default when no key is available and the server advertises
@@ -134,12 +139,12 @@ func (e *AuthError) Error() string {
 	}
 	return "authentication failed: " + e.Status
 }
-func decodeAuthError(resp *http.Response, keyPath string) error {
+func decodeAuthError(resp *http.Response, keyPath, keyPassphrase string) error {
 	var body protocol.Error
 	_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body)
 	e := &AuthError{Status: resp.Status, Code: body.Code, Message: body.Error}
 	if e.Code == protocol.ErrorUnknownKey && keyPath != "" {
-		if k, err := sshkey.PublicFromPrivate(keyPath); err == nil {
+		if k, err := sshkey.PublicFromPrivateWithPassphrase(keyPath, []byte(keyPassphrase)); err == nil {
 			e.Message = fmt.Sprintf("the server does not recognize your key (%s); ask the admin to add %s.pub to authorized_keys_dir, or use --sso", k, keyPath)
 		}
 	}
@@ -342,7 +347,7 @@ func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientI
 		if o.Logger != nil {
 			o.Logger.Debug("authenticating", "method", "ssh")
 		}
-		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o.QueryOnly)
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o)
 		return authResult{response: r, method: "ssh"}, err
 	}
 	serverInfo, err := fetchInfo(h, base)
@@ -362,7 +367,7 @@ func authenticateAny(h *http.Client, base, keyPath string, info protocol.ClientI
 	}
 	switch method {
 	case "ssh":
-		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o.QueryOnly)
+		r, err := authenticateSSH(h, base, keyPath, info, wgPublic, o)
 		return authResult{response: r, method: "ssh"}, err
 	case "oidc":
 		iss, err := selectIssuer(serverInfo, issuerName)
@@ -397,7 +402,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return protocol.AuthResponse{}, decodeAuthError(resp, "")
+		return protocol.AuthResponse{}, decodeAuthError(resp, "", "")
 	}
 	var out protocol.AuthResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
@@ -420,8 +425,8 @@ func Logout(tokenCacheFile, serverURL string) error {
 	return cache.DeleteServer(serverURL)
 }
 
-func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string, queryOnly bool) (protocol.AuthResponse, error) {
-	pub, err := sshkey.PublicFromPrivate(keyPath)
+func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientInfo, wgPublic string, o Options) (protocol.AuthResponse, error) {
+	pub, err := sshkey.PublicFromPrivateWithPassphrase(keyPath, []byte(o.KeyPassphrase))
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
@@ -429,12 +434,12 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, QueryOnly: queryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, QueryOnly: o.QueryOnly}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r.Signature, err = sshkey.SignFile(keyPath, p)
+	r.Signature, err = sshkey.SignFileWithPassphrase(keyPath, p, []byte(o.KeyPassphrase))
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
@@ -445,7 +450,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return protocol.AuthResponse{}, decodeAuthError(resp, keyPath)
+		return protocol.AuthResponse{}, decodeAuthError(resp, keyPath, o.KeyPassphrase)
 	}
 	var out protocol.AuthResponse
 	err = json.NewDecoder(resp.Body).Decode(&out)
