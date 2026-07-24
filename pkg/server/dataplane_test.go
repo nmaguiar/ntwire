@@ -1,7 +1,11 @@
 package server
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -131,6 +135,48 @@ func TestReloadRecyclesListenerWhenTunnelTargetChanges(t *testing.T) {
 	}
 }
 
+// TestReloadRecyclesListenerWhenSocksFilterChanges pins the extension to
+// reloadTunnels' recycle condition: a socks tunnel's virtual_port and
+// target ("socks") don't change when only its filters do, so the diff must
+// separately notice a changed socks: block or a filter edit would never
+// take effect on SIGHUP/config-watch.
+func TestReloadRecyclesListenerWhenSocksFilterChanges(t *testing.T) {
+	s, _, _ := newTestServer(t, []TunnelConfig{
+		{Name: "egress", Target: "socks", VirtualPort: 18085, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}},
+	})
+	startTestDataPlane(t, s)
+
+	s.data.mu.Lock()
+	orig := s.data.listeners["egress"]
+	s.data.mu.Unlock()
+	if orig == nil || orig.socks == nil {
+		t.Fatal("expected a socks-backed listener for tunnel egress after boot")
+	}
+
+	changed := s.Config
+	changed.Tunnels = []TunnelConfig{
+		{Name: "egress", Target: "socks", VirtualPort: 18085, Allow: []string{"*"}, Socks: &SocksConfig{OnlyLocal: true}},
+	}
+	s.Reload(changed)
+
+	if _, err := orig.listener.Accept(); err == nil {
+		t.Fatal("old listener should be closed once its tunnel's socks config changes on reload")
+	}
+
+	s.data.mu.Lock()
+	updated := s.data.listeners["egress"]
+	s.data.mu.Unlock()
+	if updated == nil || updated.socks == nil {
+		t.Fatal("expected a replacement socks-backed listener for tunnel egress after reload")
+	}
+	if updated == orig {
+		t.Fatal("expected reload to open a new listener, not keep the stale one")
+	}
+	if !updated.config.Socks.OnlyLocal {
+		t.Fatal("replacement listener has stale socks config")
+	}
+}
+
 func TestReloadKeepsListenerWhenTunnelUnchanged(t *testing.T) {
 	s, _, _ := newTestServer(t, []TunnelConfig{
 		{Name: "svc", Target: "127.0.0.1:1", VirtualPort: 18082, Allow: []string{"*"}},
@@ -199,6 +245,273 @@ func TestReloadClosesListenerForRemovedTunnel(t *testing.T) {
 	s.data.mu.Unlock()
 	if exists {
 		t.Fatal("removed tunnel should no longer have an entry in the listener map")
+	}
+}
+
+// freeUDPPort finds a currently-unused UDP port by briefly binding to
+// 127.0.0.1:0 and releasing it, so StartDataPlane can be given a fixed,
+// known listen.wireguard port for a second, independent client-side Stack
+// to dial back to (mirrors pkg/wgnet's own freeUDPPort test helper).
+func freeUDPPort(t *testing.T) int {
+	t.Helper()
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).Port
+}
+
+// TestProxySocksOverRealWireGuardConn drives a target: socks tunnel through
+// the real accept-loop wiring (StartDataPlane -> listenTunnel -> proxy ->
+// proxySocks), using a second, independent wgnet.Stack as an ntwire client
+// would: a genuine WireGuard handshake, then a real *gonet.TCPConn dialed
+// through it. This is deliberately not net.Pipe (used by pkg/socks's own
+// tests): net.Pipe conns don't implement CloseWrite, so they can't catch a
+// regression in countingConn's half-close forwarding to the accepted
+// gonet.TCPConn, which is the type every real SOCKS tunnel connection
+// actually is.
+func TestProxySocksOverRealWireGuardConn(t *testing.T) {
+	upstream := echoUpstream(t)
+
+	wgPort := freeUDPPort(t)
+	s, _, _ := newTestServer(t, []TunnelConfig{
+		{Name: "egress", Target: "socks", VirtualPort: 11090, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}},
+	})
+	s.Config.Network.TunnelCIDR = "100.64.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(wgPort)
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatalf("StartDataPlane: %v", err)
+	}
+	t.Cleanup(s.Close)
+
+	clientTunnelIP := netip.MustParseAddr("100.64.0.5")
+	clientStack, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{clientTunnelIP}})
+	if err != nil {
+		t.Fatalf("client wgnet.New: %v", err)
+	}
+	t.Cleanup(func() { clientStack.Close() })
+
+	if err := s.addPeer(clientStack.PublicKey(), clientTunnelIP.String()); err != nil {
+		t.Fatalf("server addPeer: %v", err)
+	}
+	if err := clientStack.AddPeer(wgnet.Endpoint{PublicKey: s.data.stack.PublicKey(), Address: "0.0.0.0/0@127.0.0.1:" + fmt.Sprint(wgPort)}); err != nil {
+		t.Fatalf("client AddPeer: %v", err)
+	}
+	s.sessions.Create(CreateParams{
+		Method: "ssh", Identity: "id", TunnelIP: clientTunnelIP.String(),
+		Tunnels: []protocol.Tunnel{{Name: "egress"}}, TTL: time.Minute,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := clientStack.DialContext(ctx, "tcp", net.JoinHostPort(s.data.serverIP.String(), "11090"))
+	if err != nil {
+		t.Fatalf("client.DialContext through WireGuard peer: %v", err)
+	}
+
+	// SOCKS5 no-auth greeting.
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, buf); err != nil || buf[1] != 0x00 {
+		t.Fatalf("method reply = %v, err = %v", buf, err)
+	}
+
+	req := []byte{0x05, 0x01, 0x00, 0x01}
+	ip4 := upstream.Addr().As4()
+	req = append(req, ip4[:]...)
+	var portBuf [2]byte
+	binary.BigEndian.PutUint16(portBuf[:], upstream.Port())
+	req = append(req, portBuf[:]...)
+	if _, err := conn.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[1] != 0x00 {
+		t.Fatalf("expected CONNECT success over the real WireGuard conn, got rep=%d", reply[1])
+	}
+
+	msg := []byte("hello over real wireguard+socks")
+	if _, err := conn.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("echo = %q, want %q", got, msg)
+	}
+
+	// Closing the client's write side (the real CloseWrite path
+	// countingConn must forward) must let the relay -- and so the whole
+	// accepted server-side connection -- wind down on its own, not hang.
+	if cw, ok := conn.(interface{ CloseWrite() error }); ok {
+		if err := cw.CloseWrite(); err != nil {
+			t.Fatalf("CloseWrite: %v", err)
+		}
+	} else {
+		t.Fatal("expected the dialed conn to implement CloseWrite (gonet.TCPConn)")
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := io.ReadFull(conn, make([]byte, 1)); err != io.EOF {
+		t.Fatalf("expected EOF after the server relayed the half-close, got %v", err)
+	}
+	conn.Close()
+}
+
+// echoUpstream is a real TCP listener that echoes back whatever it reads,
+// standing in for a SOCKS CONNECT destination.
+func echoUpstream(t *testing.T) netip.AddrPort {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				io.Copy(c, c)
+			}()
+		}
+	}()
+	return netip.MustParseAddrPort(l.Addr().String())
+}
+
+// newSocksProxyCall wires up a target: socks tunnel's proxy path exactly as
+// listenTunnel would, without needing a real WireGuard/netstack listener:
+// s.proxy is driven directly against a fake accepted conn (via relayConn,
+// the same RemoteAddr-overriding wrapper the relay data plane uses) whose
+// reported remote host matches a live session's TunnelIP, so allowedIP
+// passes the same gate a real connection would.
+func newSocksProxyCall(t *testing.T, s *Server, tunnel TunnelConfig, tunnelIP string) net.Conn {
+	t.Helper()
+	tl := &tunnelListener{config: tunnel, socks: s.newSocksRuntime(tunnel)}
+	if tl.socks == nil {
+		t.Fatal("newSocksRuntime returned nil")
+	}
+	s.sessions.Create(CreateParams{
+		Method: "ssh", Identity: "id", TunnelIP: tunnelIP,
+		Tunnels: []protocol.Tunnel{{Name: tunnel.Name}}, TTL: time.Minute,
+	})
+	client, server := net.Pipe()
+	fake := &relayConn{Conn: server, remoteAddr: stringAddr(tunnelIP + ":9999")}
+	go s.proxy(tl, fake)
+	return client
+}
+
+func TestProxySocksConnectAllowedRelays(t *testing.T) {
+	upstream := echoUpstream(t)
+	s, _, _ := newTestServer(t, nil)
+
+	tunnel := TunnelConfig{
+		Name: "egress", Target: "socks", VirtualPort: 11080, Allow: []string{"*"},
+		Socks: &SocksConfig{AllowAll: true},
+	}
+	client := newSocksProxyCall(t, s, tunnel, "100.64.0.5")
+
+	// SOCKS5 no-auth greeting.
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(client, buf); err != nil || buf[1] != 0x00 {
+		t.Fatalf("method reply = %v, err = %v", buf, err)
+	}
+
+	req := []byte{0x05, 0x01, 0x00, 0x01}
+	ip4 := upstream.Addr().As4()
+	req = append(req, ip4[:]...)
+	var portBuf [2]byte
+	binary.BigEndian.PutUint16(portBuf[:], upstream.Port())
+	req = append(req, portBuf[:]...)
+	if _, err := client.Write(req); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[1] != 0x00 {
+		t.Fatalf("expected CONNECT success, got rep=%d", reply[1])
+	}
+
+	msg := []byte("hello through socks")
+	if _, err := client.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("echo = %q, want %q", got, msg)
+	}
+}
+
+func TestProxySocksConnectDeniedByDefault(t *testing.T) {
+	upstream := echoUpstream(t)
+	s, _, _ := newTestServer(t, nil)
+
+	// No socks.filters/allow_all: deny-by-default should refuse every
+	// destination, unlike socksd's own allow-all default.
+	tunnel := TunnelConfig{
+		Name: "egress", Target: "socks", VirtualPort: 11081, Allow: []string{"*"},
+		Socks: &SocksConfig{},
+	}
+	client := newSocksProxyCall(t, s, tunnel, "100.64.0.6")
+
+	client.Write([]byte{0x05, 0x01, 0x00})
+	buf := make([]byte, 2)
+	io.ReadFull(client, buf)
+
+	req := []byte{0x05, 0x01, 0x00, 0x01}
+	ip4 := upstream.Addr().As4()
+	req = append(req, ip4[:]...)
+	var portBuf [2]byte
+	binary.BigEndian.PutUint16(portBuf[:], upstream.Port())
+	req = append(req, portBuf[:]...)
+	client.Write(req)
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply[1] != 0x02 { // not allowed by ruleset
+		t.Fatalf("expected denial (rep=0x02), got rep=%d", reply[1])
+	}
+}
+
+func TestProxySocksRejectsUnauthorizedTunnelIP(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	tunnel := TunnelConfig{
+		Name: "egress", Target: "socks", VirtualPort: 11082, Allow: []string{"*"},
+		Socks: &SocksConfig{AllowAll: true},
+	}
+	tl := &tunnelListener{config: tunnel, socks: s.newSocksRuntime(tunnel)}
+	// Deliberately do not register a session for this tunnel IP: the
+	// allowedIP gate (shared with the fixed-target path) must still apply
+	// to SOCKS tunnels.
+	client, server := net.Pipe()
+	fake := &relayConn{Conn: server, remoteAddr: stringAddr("100.64.0.9:9999")}
+	go s.proxy(tl, fake)
+
+	client.Write([]byte{0x05, 0x01, 0x00})
+	buf := make([]byte, 2)
+	client.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := client.Read(buf); err == nil {
+		t.Fatal("expected the connection to be dropped for an unauthorized tunnel IP, got a SOCKS reply instead")
 	}
 }
 

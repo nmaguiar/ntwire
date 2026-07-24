@@ -52,6 +52,18 @@ tunnels:
       - "alice@corp.com"                # oidc: exact verified email
       - "@corp.com"                     # oidc: email domain
       - "group:engineering"             # oidc: groups_claim membership
+  - name: egress                        # a tunnel can instead be an embedded SOCKS4/5 proxy; see "SOCKS proxy tunnels" below
+    target: socks                       # sentinel value that selects the SOCKS target type instead of a fixed host:port
+    virtual_port: 11080
+    allow: ["group:engineering"]
+    socks:
+      only_local: false                 # true restricts to private ranges only and ignores every other socks.* filter
+      filters: []                       # destination CIDR allow-list, e.g. ["10.0.0.0/8", "fc00::/7"]
+      domain_filters: []                # destination hostname-suffix allow-list, e.g. [".svc.cluster.local"]
+      asn_filters: []                   # destination ASN allow-list (IPv4 only), e.g. [15169]
+      reverse_filters: false            # invert the above from an allow-list into a deny-list
+      dns_timeout: 10s                  # timeout for resolving SOCKS5 domain requests
+      allow_all: false                  # required to permit every destination when no filters above are set
 log:
   format: text                          # text or json (Logstash-format); container images default to json
   level: info                           # debug, info, warn, or error
@@ -75,6 +87,53 @@ public key. Tunnel names must be unique and each tunnel requires `name` and
 `target`. `ntwire-server` is a public OAuth client (PKCE, no client secret) and
 never stores IdP credentials; see the Google/Entra/Keycloak registration
 notes in [OIDC-SETUP.md](OIDC-SETUP.md).
+
+## SOCKS proxy tunnels
+
+Setting a tunnel's `target: socks` turns it into an embedded SOCKS4/SOCKS5
+CONNECT proxy instead of a fixed-destination forward: once a client's traffic
+reaches the tunnel's `virtual_port`, the server speaks the SOCKS protocol on
+that connection and dials whatever destination the client's SOCKS request
+names, gated by the tunnel's `socks:` block. This re-implements the
+filter/feature set of [socksd](https://github.com/nmaguiar/socksd) natively
+(socksd is a JVM/OpenAF stack, not a Go library, so nothing is vendored) —
+same CIDR/domain/ASN/only-local/reverse filter semantics, but see the default
+below, which intentionally differs. Session auth, grant matching (`allow:`),
+the `authorizer:` webhook/exec hook, per-source rate limiting, and
+`audit.log_file` all still apply exactly as they do to a fixed-target tunnel;
+`socks:` only adds a second, per-destination filtering layer inside it.
+
+A SOCKS tunnel is a general-purpose egress proxy: whatever it's allowed to
+reach, every session holding its grant can reach. **Unlike socksd, which
+defaults to allowing every destination when no filters are configured, an
+ntwire SOCKS tunnel with no `socks.filters`/`domain_filters`/`asn_filters`/
+`only_local`/`reverse_filters` denies every destination** — set
+`allow_all: true` to opt into socksd's original behavior. A tunnel that would
+otherwise silently deny everything logs a warning at startup.
+
+`socks.filters` (CIDR) and `socks.asn_filters` gate the *resolved* destination
+IP; `socks.domain_filters` gates the hostname the client asked to connect to
+(SOCKS5 domain requests only — SOCKS4 and SOCKS5 IP-literal requests have no
+hostname to match). When both a CIDR/ASN filter and a domain filter are
+configured, a CIDR/ASN miss denies immediately without consulting the domain
+filter, but a CIDR/ASN hit does not by itself allow the connection: the
+domain filter is still checked and is decisive. `socks.only_local` (a
+hardcoded private-range allow-list: `10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`, `fc00::/7`) overrides every other `socks.*` filter when
+set. `socks.reverse_filters` inverts the whole result, turning the configured
+filters from an allow-list into a deny-list.
+
+`socks.asn_filters` and periodic ASN index refresh require the server itself
+to reach the internet (default index: `https://openaf.io/asnidx.json.gz`,
+overridable with `socks.asn_url`); the index is IPv4-only, so ASN filters
+never match an IPv6 destination. Both the CONNECT and BIND commands are
+proxied (SOCKS4 and SOCKS5), with the same destination filtering applied to
+a BIND request's target address as to a CONNECT one. BIND opens a real,
+unfiltered-by-NAT listener on the server host and is a best-effort
+implementation with no NAT traversal, matching upstream: it exists for
+legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
+ASSOCIATE is recognized by the handshake but refused — it needs UDP to
+traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
 
 ## Grant matching
 

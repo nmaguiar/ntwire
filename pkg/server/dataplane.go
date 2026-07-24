@@ -1,14 +1,17 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
@@ -24,10 +27,65 @@ type dataPlane struct {
 }
 
 // tunnelListener pairs a live listener with the tunnel config it was opened
-// for, so a reload can detect a changed target/virtual_port and recycle it.
+// for, so a reload can detect a changed target/virtual_port/socks config and
+// recycle it.
 type tunnelListener struct {
 	listener net.Listener
 	config   TunnelConfig
+	socks    *socksRuntime // non-nil only for config.IsSocks() tunnels
+}
+
+// socksRuntime is the live embedded-SOCKS-proxy state for one tunnel: the
+// handler itself plus the background ASN index refresh it owns, if any.
+type socksRuntime struct {
+	server  *socks.Server
+	stopASN chan struct{}
+}
+
+// newSocksRuntime builds the SOCKS proxy handler for a target: socks tunnel,
+// starting a background ASN index refresh when the tunnel's filters need
+// one. cfg.Socks must be non-empty; config validation guarantees this.
+func (s *Server) newSocksRuntime(t TunnelConfig) *socksRuntime {
+	sc := t.Socks
+	log := s.log.With("tunnel", t.Name)
+	if sc.deniesAllByDefault() {
+		log.Warn("socks tunnel has no destination filters and no allow_all; it will deny every connection")
+	}
+	asnIdx := socks.NewASNIndex()
+	stopASN := make(chan struct{})
+	if sc.WantsASNUpdates() {
+		go asnIdx.Refresh(sc.ASNURL, 0, log, stopASN)
+	}
+	sv, err := socks.New(socks.Config{
+		Filter: socks.FilterConfig{
+			OnlyLocal:      sc.OnlyLocal,
+			CIDRs:          sc.Filters,
+			DomainSuffixes: sc.DomainFilters,
+			ASNs:           sc.ASNFilters,
+			Invert:         sc.ReverseFilters,
+			AllowAll:       sc.AllowAll,
+		},
+		ASNLookup:  asnIdx,
+		DNSTimeout: sc.DNSTimeout,
+		Logger:     log,
+	})
+	if err != nil {
+		// Filters are already validated at config load time; this should be
+		// unreachable, but fail closed rather than proxy unfiltered.
+		log.Warn("failed to build socks server", "error", err)
+		close(stopASN)
+		return nil
+	}
+	return &socksRuntime{server: sv, stopASN: stopASN}
+}
+
+// socksConfigChanged reports whether a and b differ in a way that requires
+// rebuilding a tunnel's socksRuntime.
+func socksConfigChanged(a, b *SocksConfig) bool {
+	if a == nil || b == nil {
+		return a != b
+	}
+	return !reflect.DeepEqual(*a, *b)
 }
 
 // StartDataPlane starts an unprivileged WireGuard UDP endpoint and TCP
@@ -72,8 +130,12 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 	if err != nil {
 		return err
 	}
+	tl := &tunnelListener{listener: l, config: tunnel}
+	if tunnel.IsSocks() {
+		tl.socks = s.newSocksRuntime(tunnel)
+	}
 	d.mu.Lock()
-	d.listeners[tunnel.Name] = &tunnelListener{listener: l, config: tunnel}
+	d.listeners[tunnel.Name] = tl
 	d.mu.Unlock()
 	s.log.Debug("tunnel listener opened", "tunnel", tunnel.Name, "virtual_port", tunnel.VirtualPort, "target", tunnel.Target)
 	go func() {
@@ -82,10 +144,19 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 			if e != nil {
 				return
 			}
-			go s.proxy(tunnel, c)
+			go s.proxy(tl, c)
 		}
 	}()
 	return nil
+}
+
+// closeTunnelListener closes tl's listener and, for a SOCKS tunnel, stops
+// its background ASN index refresh.
+func (s *Server) closeTunnelListener(tl *tunnelListener) {
+	_ = tl.listener.Close()
+	if tl.socks != nil {
+		close(tl.socks.stopASN)
+	}
 }
 
 // reloadTunnels reconciles the live listener set against the newly loaded
@@ -109,7 +180,8 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	var toOpen []TunnelConfig
 	for name, tl := range d.listeners {
 		nt, ok := wanted[name]
-		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target {
+		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target ||
+			socksConfigChanged(nt.Socks, tl.config.Socks) {
 			toClose = append(toClose, tl)
 			delete(d.listeners, name)
 		}
@@ -122,7 +194,7 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	d.mu.Unlock()
 	for _, tl := range toClose {
 		s.log.Debug("tunnel listener closed", "tunnel", tl.config.Name)
-		_ = tl.listener.Close()
+		s.closeTunnelListener(tl)
 	}
 	for _, nt := range toOpen {
 		if err := s.listenTunnel(d, nt); err != nil {
@@ -130,13 +202,18 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 		}
 	}
 }
-func (s *Server) proxy(t TunnelConfig, in net.Conn) {
+func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	defer in.Close()
+	t := tl.config
 	host, _, err := net.SplitHostPort(in.RemoteAddr().String())
 	if err != nil {
 		return
 	}
 	if !s.allowedIP(host, t.Name) {
+		return
+	}
+	if t.IsSocks() {
+		s.proxySocks(tl, host, in)
 		return
 	}
 	out, err := net.DialTimeout("tcp", t.Target, 10*time.Second)
@@ -158,6 +235,29 @@ func (s *Server) proxy(t TunnelConfig, in net.Conn) {
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
 
+// proxySocks serves the embedded SOCKS proxy for a target: socks tunnel on
+// an already-accepted, already-authorized connection. Bytes are counted the
+// same way a fixed-target tunnel's are: everything read from the client
+// (destined for whatever target the client's SOCKS request names) counts as
+// toTarget, everything written back to the client counts as fromTarget.
+func (s *Server) proxySocks(tl *tunnelListener, host string, in net.Conn) {
+	t := tl.config
+	if tl.socks == nil {
+		s.log.Warn("socks tunnel has no server instance", "tunnel", t.Name)
+		return
+	}
+	started := time.Now()
+	s.log.Debug("socks tunnel connection opened", "tunnel", t.Name, "client", host)
+	stats := s.statsFor(host, t.Name)
+	stats.connections.Add(1)
+	stats.active.Add(1)
+	defer stats.active.Add(-1)
+	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
+	tl.socks.server.ServeConn(context.Background(), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
+	s.log.Debug("socks tunnel connection closed", "tunnel", t.Name, "client", host,
+		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
+}
+
 type countingWriter struct {
 	w       io.Writer
 	counter *atomic.Uint64
@@ -167,6 +267,47 @@ func (w countingWriter) Write(p []byte) (int, error) {
 	n, err := w.w.Write(p)
 	if n > 0 {
 		w.counter.Add(uint64(n))
+	}
+	return n, err
+}
+
+// countingConn wraps a net.Conn to tally bytes the same way countingWriter
+// does for the fixed-target proxy path: Read (bytes from the SOCKS client,
+// ultimately relayed to its requested destination) counts as toTarget,
+// Write (bytes relayed back to the client) counts as fromTarget.
+//
+// CloseWrite is implemented explicitly rather than left to interface
+// embedding: embedding the net.Conn *interface* only promotes methods
+// declared on net.Conn itself, never optional ones (like CloseWrite) a
+// particular concrete conn happens to also implement -- so without this,
+// pkg/socks's relay half-close would silently degrade to a full Close on
+// every SOCKS tunnel connection, cutting off any client upload still in
+// flight when the target side finishes first.
+type countingConn struct {
+	net.Conn
+	toTarget   *atomic.Uint64
+	fromTarget *atomic.Uint64
+}
+
+func (c countingConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
+}
+
+func (c countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.toTarget.Add(uint64(n))
+	}
+	return n, err
+}
+
+func (c countingConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.fromTarget.Add(uint64(n))
 	}
 	return n, err
 }
@@ -262,7 +403,7 @@ func (s *Server) Close() {
 	close(s.data.stop)
 	s.data.mu.Lock()
 	for _, tl := range s.data.listeners {
-		_ = tl.listener.Close()
+		s.closeTunnelListener(tl)
 	}
 	s.data.mu.Unlock()
 	_ = s.data.stack.Close()
