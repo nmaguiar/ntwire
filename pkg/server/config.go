@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 )
 
@@ -87,6 +88,15 @@ type TunnelConfig struct {
 	VirtualPort int      `yaml:"virtual_port"`
 	LocalPort   int      `yaml:"local_port"`
 	Allow       []string `yaml:"allow"`
+
+	// Instructions is optional Markdown shown to clients in their local
+	// status UI, describing how to point a tool at this tunnel. It is
+	// expanded as a Go template on the client, where the real loopback port
+	// is known: see pkg/client/instructions for the available fields.
+	Instructions string `yaml:"instructions"`
+	// DocsURL is an optional http(s) link offered next to Instructions for
+	// users who want the full setup documentation.
+	DocsURL string `yaml:"docs_url"`
 
 	// Socks configures this tunnel as an embedded SOCKS4/5 proxy instead of
 	// a fixed-target forward. It is used, and required, when Target is the
@@ -206,6 +216,16 @@ tunnels:
     description: Reporting service         # optional free-text description shown to clients
     virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
     local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+    docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
+    instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
+      Fetch a report through the tunnel:
+
+      ~~~sh
+      curl -s http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
+      ~~~
+
+      Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
+      .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
     allow:
       - "*"                                # any authenticated identity
       # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
@@ -313,6 +333,9 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if t.LocalPort < 0 || t.LocalPort > 65535 {
 			return c, fmt.Errorf("tunnel %q requires local_port in 0..65535", t.Name)
+		}
+		if t.DocsURL != "" && !instructions.SafeURL(t.DocsURL) {
+			return c, fmt.Errorf("tunnel %q requires an absolute http(s) docs_url", t.Name)
 		}
 		if t.IsSocks() {
 			if t.Socks == nil {

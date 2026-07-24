@@ -16,6 +16,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "allow:", "target:", "description:", "log_file:",
+		"instructions:", "docs_url:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -207,5 +208,56 @@ tunnels:
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("LoadConfig accepted local_port above 65535")
+	}
+}
+
+func TestLoadConfigReadsTunnelInstructions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    docs_url: https://wiki.example/reports
+    instructions: |
+      curl http://{{.LocalHost}}:{{.LocalPort}}/
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tunnels[0].DocsURL != "https://wiki.example/reports" {
+		t.Fatalf("docs URL = %q", got.Tunnels[0].DocsURL)
+	}
+	if got.Tunnels[0].Instructions != "curl http://{{.LocalHost}}:{{.LocalPort}}/\n" {
+		t.Fatalf("instructions = %q", got.Tunnels[0].Instructions)
+	}
+}
+
+// A docs_url reaches an href in every connected client's browser, so a value
+// that is not an absolute http(s) URL has to fail at load rather than ship.
+func TestLoadConfigRejectsUnsafeDocsURL(t *testing.T) {
+	for _, bad := range []string{"javascript:alert(1)", "/relative", "wiki.example"} {
+		path := filepath.Join(t.TempDir(), "ntwire.yaml")
+		config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    docs_url: "` + bad + `"
+`
+		if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil {
+			t.Errorf("docs_url %q was accepted", bad)
+		}
 	}
 }

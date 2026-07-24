@@ -72,6 +72,12 @@ type Tunnel struct {
 	VirtualPort int    `json:"virtual_port"`
 	LocalPort   int    `json:"local_port,omitempty"`
 	TargetHint  string `json:"target_hint,omitempty"`
+	// Instructions is optional Markdown describing how to use this tunnel,
+	// expanded as a Go template by the client (see pkg/instructions) so that
+	// the real loopback port can appear in the commands it documents.
+	Instructions string `json:"instructions,omitempty"`
+	// DocsURL is an optional http(s) link to fuller setup documentation.
+	DocsURL string `json:"docs_url,omitempty"`
 }
 type AuthResponse struct {
 	SessionID       string   `json:"session_id"`

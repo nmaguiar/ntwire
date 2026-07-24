@@ -18,6 +18,7 @@ the [documentation index](docs/README.md).
 | SSO login (Auth Code + PKCE, with an OAuth device-flow fallback) against any generic OIDC issuer | ntwire-server never becomes an OAuth client; it only verifies ID tokens against the issuer's JWKS. |
 | HTTPS control API, WireGuard netstack, TCP forwarding, and WebSocket transport | |
 | Session renewal, rate limits, reaping, persistent configuration, and status UI | |
+| Per-tunnel Markdown setup instructions in the client status UI, templated with the port the client actually bound, with copy-to-clipboard commands and a "See more" link | Instructions are rendered from a Markdown subset (headings, lists, fenced code, inline code, emphasis, `http(s)` links); anything else is shown verbatim. |
 | YAML/key-directory hot reload and Compose/Kubernetes deployment assets | Listener address and tunnel-CIDR changes require a restart; tunnel additions/removals/repoints and an explicit TLS cert/key file pair reload live. |
 | Optional webhook or executable authorization hook | |
 | `target: socks` tunnels: an embedded SOCKS4/5 CONNECT and BIND proxy with CIDR/domain/ASN/only-local/reverse destination filters | UDP ASSOCIATE is recognized but refused. Unfiltered SOCKS tunnels deny all destinations unless `allow_all: true` is set. |
@@ -152,8 +153,8 @@ At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers` is required.
 
 The Quick start config above is a minimal example. The full option reference —
 listeners, TLS, OIDC issuers, session limits, the operator dashboard, tunnel
-grants, grant matching, hot-reload behavior, and `target: socks` proxy
-tunnels — is in
+grants, grant matching, per-tunnel client instructions, hot-reload behavior,
+and `target: socks` proxy tunnels — is in
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md#socks-proxy-tunnels).
 `ntwire-server` is a public
 OAuth client (PKCE, no client secret) and never stores IdP credentials; see

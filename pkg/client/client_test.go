@@ -2,8 +2,11 @@ package client
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"strconv"
@@ -11,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
@@ -220,5 +224,79 @@ func TestCountingWriterUpdatesTunnelStatsWhileStreaming(t *testing.T) {
 	got := tunnel.stats()
 	if got.BytesToTunnel != uint64(len("request")) || got.BytesFromTunnel != uint64(len("response")) {
 		t.Fatalf("stats = %#v, want request and response byte counts", got)
+	}
+}
+
+// Local listeners keep their creation order while Connection.Response is
+// replaced wholesale on renew, so status and instructions must be paired with
+// their grant by name: pairing by position would show one tunnel the setup
+// commands -- and the loopback port -- of another.
+func TestWebViewsPairGrantsByNameNotPosition(t *testing.T) {
+	c := &Connection{
+		Response: protocol.AuthResponse{
+			TunnelIP:       "10.90.0.7",
+			ServerTunnelIP: "10.90.0.1",
+			// Reverse order, as a renew that dropped and re-added a grant leaves it.
+			Tunnels: []protocol.Tunnel{
+				{Name: "reports", Description: "reporting", DocsURL: "https://example.com/reports",
+					Instructions: "run `curl http://{{.LocalHost}}:{{.LocalPort}}/`"},
+				{Name: "database", Description: "postgres", DocsURL: "javascript:alert(1)"},
+			},
+		},
+		tunnels: []*localTunnel{
+			{name: "database", virtualPort: 15432, localAddr: "127.0.0.1:55432"},
+			{name: "reports", virtualPort: 18080, localAddr: "127.0.0.1:58080"},
+		},
+		base: "https://ntwire.example:8443",
+	}
+	status := c.webStatus()
+	if status.Tunnels[0].Description != "postgres" || status.Tunnels[1].Description != "reporting" {
+		t.Fatalf("descriptions paired by position: %+v", status.Tunnels)
+	}
+
+	got := c.webInstructions().Tunnels
+	// database has no instructions and an unusable docs_url, so it is omitted.
+	if len(got) != 1 || got[0].Name != "reports" {
+		t.Fatalf("instructions = %+v, want only reports", got)
+	}
+	if got[0].DocsURL != "https://example.com/reports" {
+		t.Fatalf("docs URL = %q", got[0].DocsURL)
+	}
+	if len(got[0].Blocks) != 1 || len(got[0].Blocks[0].Spans) != 2 {
+		t.Fatalf("blocks = %+v", got[0].Blocks)
+	}
+	if code := got[0].Blocks[0].Spans[1]; code.Text != "curl http://127.0.0.1:58080/" {
+		t.Fatalf("rendered command = %q, want the reports listener's port", code.Text)
+	}
+}
+
+// A renewal response repeats neither the tunnel address nor the server key --
+// the session keeps the ones it already has -- so renew() must not zero them
+// out of Connection.Response, which the status UI and instruction templates
+// read the client's addressing from.
+func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
+	renewed := protocol.AuthResponse{SessionID: "s2", Token: "t2", TTLSeconds: 900,
+		Tunnels: []protocol.Tunnel{{Name: "reports", VirtualPort: 18080}}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/renew" {
+			t.Errorf("unexpected request to %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(renewed)
+	}))
+	defer srv.Close()
+
+	c := &Connection{
+		Response: protocol.AuthResponse{SessionID: "s1", Token: "t1",
+			TunnelIP: "10.90.0.7", ServerTunnelIP: "10.90.0.1", ServerPublicKey: "abc="},
+		base: srv.URL, http: srv.Client(),
+	}
+	if err := c.renew(); err != nil {
+		t.Fatal(err)
+	}
+	if c.Response.SessionID != "s2" || c.token != "t2" {
+		t.Fatalf("renewal not applied: %+v", c.Response)
+	}
+	if c.Response.TunnelIP != "10.90.0.7" || c.Response.ServerTunnelIP != "10.90.0.1" || c.Response.ServerPublicKey != "abc=" {
+		t.Fatalf("addressing lost on renew: %+v", c.Response)
 	}
 }

@@ -45,6 +45,13 @@ tunnels:
     description: Reporting service      # free-text, shown to clients; optional
     virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
     local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
+    docs_url: https://wiki/reports      # absolute http(s) link offered as "See more" in the client status UI; optional
+    instructions: |                     # Markdown setup guidance shown in the client status UI; optional, see "Tunnel instructions" below
+      Fetch the latest report:
+
+      ```sh
+      curl -sS http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
+      ```
     allow:
       - "*"                             # any authenticated identity, either method
       - "SHA256:..."                    # ssh: key fingerprint (preferred; see grant-matching note below)
@@ -134,6 +141,44 @@ implementation with no NAT traversal, matching upstream: it exists for
 legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
 ASSOCIATE is recognized by the handshake but refused — it needs UDP to
 traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
+
+## Tunnel instructions
+
+`instructions` is optional Markdown that `ntwire connect` shows under each
+tunnel in its local status UI, so users are told how to point their tools at a
+tunnel instead of having to work it out from a port number. `docs_url` adds a
+"See more" link beside it, and must be an absolute `http(s)` URL — the server
+refuses to start otherwise.
+
+The text is expanded as a [Go template](https://pkg.go.dev/text/template) **on
+the client**, because only the client knows which loopback port it actually
+bound: the server's `local_port` is a preference, an occupied port falls back
+to a free one, and the user can change it at runtime from the status UI. These
+fields are available:
+
+| Field | Value |
+| --- | --- |
+| `{{.Name}}` | tunnel name |
+| `{{.Description}}` | the `description` above |
+| `{{.LocalAddress}}` | bound loopback address, e.g. `127.0.0.1:58080` |
+| `{{.LocalHost}}` | host part of `LocalAddress` |
+| `{{.LocalPort}}` | bound loopback port |
+| `{{.VirtualPort}}` | the `virtual_port` above |
+| `{{.TargetHint}}` | the `target` above |
+| `{{.TunnelIP}}` | the client's address inside the tunnel |
+| `{{.ServerTunnelIP}}` | the server's address inside the tunnel |
+| `{{.Server}}` | control-plane URL the client is connected to |
+
+Supported Markdown is headings, paragraphs, bullet and numbered lists, fenced
+code blocks, inline code, emphasis, and `http(s)` links. Fenced code blocks get
+a copy-to-clipboard button, which is the point of templating the port into
+them. Anything outside that subset is shown verbatim rather than interpreted,
+as is the raw text of a template that fails to parse or execute — a typo in
+`instructions` degrades to unrendered text rather than an empty card.
+
+Instructions never become markup: the client parses them into a block tree and
+the status UI builds DOM nodes from it, and links whose target is not an
+absolute `http(s)` URL stay literal text.
 
 ## Grant matching
 
