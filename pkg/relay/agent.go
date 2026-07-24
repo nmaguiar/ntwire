@@ -60,14 +60,6 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var writeMu sync.Mutex
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain})
-	writeMu.Lock()
-	err = ws.Write(ctx, websocket.MessageText, b)
-	writeMu.Unlock()
-	if err != nil {
-		return
-	}
-
 	var closeOnce sync.Once
 	agent := &Agent{Name: name}
 	agent.Push = func(open protocol.RelayOpen) error {
@@ -85,6 +77,14 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
+
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain})
+	writeMu.Lock()
+	err = ws.Write(ctx, websocket.MessageText, b)
+	writeMu.Unlock()
+	if err != nil {
+		return
+	}
 
 	readErr := make(chan error, 1)
 	go func() {
