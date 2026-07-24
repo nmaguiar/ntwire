@@ -968,6 +968,7 @@ type WebTunnel struct {
 // other callers (e.g. the CLI's list/status commands) can decode it.
 type WebStatus struct {
 	Connected     bool        `json:"connected"`
+	Server        string      `json:"server"`
 	Tunnels       []WebTunnel `json:"tunnels"`
 	TTLSeconds    int         `json:"ttl_seconds"`
 	LatencyMillis uint64      `json:"latency_millis"`
@@ -984,7 +985,7 @@ func (c *Connection) webStatus() WebStatus {
 		wt.Description = granted[t.name].Description
 		tunnels = append(tunnels, wt)
 	}
-	return WebStatus{Connected: c.Stack != nil, Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	return WebStatus{Connected: c.Stack != nil, Server: c.base, Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
 }
 
 // grantedByName indexes the tunnels the server granted this session by name.
