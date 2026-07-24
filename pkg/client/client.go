@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
+	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/oidcclient"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -29,6 +30,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -851,6 +853,19 @@ func (c *Connection) renew() error {
 		return err
 	}
 	c.mu.Lock()
+	// A renewal reuses the same WireGuard peer and tunnel address, so the
+	// server does not repeat the addressing fields in its response. Carry
+	// them over instead of letting them be zeroed: Connection.Response is
+	// the session view the status UI and instruction templates read from.
+	if out.TunnelIP == "" {
+		out.TunnelIP = c.Response.TunnelIP
+	}
+	if out.ServerTunnelIP == "" {
+		out.ServerTunnelIP = c.Response.ServerTunnelIP
+	}
+	if out.ServerPublicKey == "" {
+		out.ServerPublicKey = c.Response.ServerPublicKey
+	}
 	c.Response = out
 	c.token = out.Token
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
@@ -885,6 +900,13 @@ func (c *Connection) startWebUI() {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(c.webStatus())
+	})
+	mux.HandleFunc("/instructions", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(c.webInstructions())
 	})
 	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
@@ -955,15 +977,79 @@ type WebStatus struct {
 func (c *Connection) webStatus() WebStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	granted := c.grantedByName()
 	tunnels := make([]WebTunnel, 0, len(c.tunnels))
-	for i, t := range c.tunnels {
+	for _, t := range c.tunnels {
 		wt := WebTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats()}
-		if i < len(c.Response.Tunnels) {
-			wt.Description = c.Response.Tunnels[i].Description
-		}
+		wt.Description = granted[t.name].Description
 		tunnels = append(tunnels, wt)
 	}
 	return WebStatus{Connected: c.Stack != nil, Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+}
+
+// grantedByName indexes the tunnels the server granted this session by name.
+// Local listeners keep the order they were created in while c.Response is
+// replaced wholesale on every renew, so the two slices must not be paired by
+// position: a renew that drops or reorders a grant would otherwise attach one
+// tunnel's description -- or its setup instructions, and the port inside them
+// -- to a different tunnel. Callers must hold c.mu.
+func (c *Connection) grantedByName() map[string]protocol.Tunnel {
+	m := make(map[string]protocol.Tunnel, len(c.Response.Tunnels))
+	for _, t := range c.Response.Tunnels {
+		m[t.Name] = t
+	}
+	return m
+}
+
+// WebInstructions is the rendered setup guidance for one tunnel, as reported
+// by a running connect process's local status UI. It is served separately from
+// WebStatus because it is static for the lifetime of a local listener, while
+// WebStatus is polled every few seconds and is also decoded by the CLI.
+type WebInstructions struct {
+	Name string `json:"name"`
+	// DocsURL is the server-supplied "see more" link, when it is a usable
+	// absolute http(s) URL.
+	DocsURL string `json:"docs_url,omitempty"`
+	// Blocks is the tunnel's Markdown instructions, templated against this
+	// client's live values and parsed into renderable blocks.
+	Blocks []instructions.Block `json:"blocks,omitempty"`
+}
+
+// WebInstructionsList is the payload of the local status UI's /instructions
+// endpoint: one entry per tunnel that has instructions or a docs link.
+type WebInstructionsList struct {
+	Tunnels []WebInstructions `json:"tunnels"`
+}
+
+func (c *Connection) webInstructions() WebInstructionsList {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	granted := c.grantedByName()
+	out := WebInstructionsList{Tunnels: make([]WebInstructions, 0, len(c.tunnels))}
+	for _, t := range c.tunnels {
+		g := granted[t.name]
+		wi := WebInstructions{Name: t.name}
+		if instructions.SafeURL(g.DocsURL) {
+			wi.DocsURL = strings.TrimSpace(g.DocsURL)
+		}
+		host, port, err := net.SplitHostPort(t.localAddr)
+		if err != nil {
+			host = t.localAddr
+		}
+		p, _ := strconv.Atoi(port)
+		wi.Blocks = instructions.Render(g.Instructions, instructions.Data{
+			Name: t.name, Description: g.Description,
+			LocalAddress: t.localAddr, LocalHost: host, LocalPort: p,
+			VirtualPort: t.virtualPort, TargetHint: g.TargetHint,
+			TunnelIP: c.Response.TunnelIP, ServerTunnelIP: c.Response.ServerTunnelIP,
+			Server: c.base,
+		})
+		if wi.DocsURL == "" && len(wi.Blocks) == 0 {
+			continue
+		}
+		out.Tunnels = append(out.Tunnels, wi)
+	}
+	return out
 }
 
 // FetchWebStatus retrieves live per-tunnel status from a running connect

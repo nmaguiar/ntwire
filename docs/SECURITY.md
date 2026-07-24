@@ -12,7 +12,11 @@ ntwire protects control-plane requests with TLS and data-plane traffic with
 WireGuard. The server can use configured TLS files or a self-signed
 certificate it persists across restarts; clients pin the latter on first use.
 TCP forwarding is limited to
-YAML-granted targets. Where UDP is blocked, WireGuard datagrams can use the
+YAML-granted targets — with one deliberate exception: a `target: socks`
+tunnel (see below and
+[CONFIGURATION.md](CONFIGURATION.md#socks-proxy-tunnels)) grants access to a
+class of destinations, filtered by its `socks:` block, rather than a single
+fixed one. Where UDP is blocked, WireGuard datagrams can use the
 token-authenticated WebSocket fallback on the HTTPS endpoint. SSH keys and SSO
 (OIDC) logins are parallel, equally-trusted authentication methods; both
 produce the same opaque-bearer-token session.
@@ -134,6 +138,42 @@ automatically" workarounds; instead, use one of:
 - **`require_verified_email`** defaults to `true`; disabling it (per issuer)
   should only be done for IdPs known not to set `email_verified`, since an
   unverified email is not a reliable identity claim.
+
+## SOCKS proxy tunnels and egress risk
+
+A `target: socks` tunnel is a governed general-purpose egress proxy, not a
+fixed-destination forward: every session holding its grant can reach every
+destination the tunnel's `socks:` filters permit, and the server itself, not
+just the client, initiates each of those outbound connections and DNS
+resolutions. Weigh that before granting one broadly:
+
+- **The default denies everything, not everything.** socksd (the filter set
+  this re-implements) defaults to allowing every destination when no filters
+  are configured; ntwire deliberately does not, because that default would
+  turn an authenticated tunnel into a silent open proxy. Leaving
+  `socks.filters`/`domain_filters`/`asn_filters`/`only_local`/
+  `reverse_filters` all unset denies every destination (logged as a warning
+  at startup) unless `allow_all: true` is set explicitly — treat setting it
+  with the same scrutiny as granting an unrestricted fixed target.
+- **Filters gate the destination, not the requester.** `allow:` still governs
+  *who* can use the tunnel; `socks:` governs *where* their traffic can go.
+  Both apply to every connection.
+- **`socks.asn_filters` makes the server itself an internet client.** ASN
+  filtering downloads and periodically refreshes an index from the internet
+  (default `https://openaf.io/asnidx.json.gz`, overridable with
+  `socks.asn_url`) — don't enable it on a server that otherwise has no
+  outbound internet access, and pin `socks.asn_url` to a trusted source if
+  you do.
+- **SOCKS5 domain requests resolve on the server**, using the server's DNS
+  resolver and `socks.dns_timeout`, before `socks.domain_filters` is
+  matched against the requested hostname and `socks.filters`/`asn_filters`
+  against the resolved IP; a client cannot force resolution elsewhere.
+- **BIND opens a real, temporary *inbound* listener on the server host**,
+  reachable from any address that can route to it (not just over the
+  WireGuard tunnel), for up to two minutes while it waits for one peer to
+  connect — the same `socks:` filters gate the request's declared target
+  address beforehand, but, matching upstream, the peer that actually
+  connects to that listener is never itself re-checked against them.
 
 ## Operator guidance
 

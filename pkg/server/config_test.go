@@ -16,6 +16,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "allow:", "target:", "description:", "log_file:",
+		"instructions:", "docs_url:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -74,6 +75,123 @@ audit:
 	}
 }
 
+func TestLoadConfigReadsSocksTunnel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: egress
+    target: socks
+    virtual_port: 11080
+    socks:
+      only_local: true
+      filters: ["10.0.0.0/8"]
+      domain_filters: [".svc.cluster.local"]
+      asn_filters: [15169]
+      reverse_filters: true
+      dns_timeout: 5s
+      allow_all: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tunnels) != 1 || !got.Tunnels[0].IsSocks() {
+		t.Fatalf("tunnels = %+v", got.Tunnels)
+	}
+	sc := got.Tunnels[0].Socks
+	if sc == nil {
+		t.Fatal("socks config is nil")
+	}
+	if !sc.OnlyLocal || len(sc.Filters) != 1 || len(sc.DomainFilters) != 1 || len(sc.ASNFilters) != 1 ||
+		!sc.ReverseFilters || sc.DNSTimeout != 5*1e9 || !sc.AllowAll {
+		t.Fatalf("socks config = %+v", sc)
+	}
+}
+
+func TestLoadConfigRejectsSocksTargetWithoutSocksBlock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: egress
+    target: socks
+    virtual_port: 11080
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted target: socks without a socks: block")
+	}
+}
+
+func TestLoadConfigRejectsSocksBlockWithoutSocksTarget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    socks:
+      allow_all: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted a socks: block on a non-socks target")
+	}
+}
+
+func TestLoadConfigRejectsInvalidSocksFilterCIDR(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: egress
+    target: socks
+    virtual_port: 11080
+    socks:
+      filters: ["not-a-cidr"]
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("LoadConfig accepted an invalid socks.filters CIDR")
+	}
+}
+
+func TestSocksConfigWantsASNUpdates(t *testing.T) {
+	yes, no := true, false
+	tests := []struct {
+		name string
+		cfg  SocksConfig
+		want bool
+	}{
+		{"unset, no asn filters", SocksConfig{}, false},
+		{"unset, with asn filters", SocksConfig{ASNFilters: []uint32{15169}}, true},
+		{"explicitly disabled despite asn filters", SocksConfig{ASNFilters: []uint32{15169}, ASNUpdates: &no}, false},
+		{"explicitly enabled without asn filters", SocksConfig{ASNUpdates: &yes}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.cfg.WantsASNUpdates(); got != tt.want {
+				t.Errorf("WantsASNUpdates() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLoadConfigRejectsInvalidTunnelLocalPort(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ntwire.yaml")
 	config := `
@@ -90,5 +208,56 @@ tunnels:
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("LoadConfig accepted local_port above 65535")
+	}
+}
+
+func TestLoadConfigReadsTunnelInstructions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    docs_url: https://wiki.example/reports
+    instructions: |
+      curl http://{{.LocalHost}}:{{.LocalPort}}/
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tunnels[0].DocsURL != "https://wiki.example/reports" {
+		t.Fatalf("docs URL = %q", got.Tunnels[0].DocsURL)
+	}
+	if got.Tunnels[0].Instructions != "curl http://{{.LocalHost}}:{{.LocalPort}}/\n" {
+		t.Fatalf("instructions = %q", got.Tunnels[0].Instructions)
+	}
+}
+
+// A docs_url reaches an href in every connected client's browser, so a value
+// that is not an absolute http(s) URL has to fail at load rather than ship.
+func TestLoadConfigRejectsUnsafeDocsURL(t *testing.T) {
+	for _, bad := range []string{"javascript:alert(1)", "/relative", "wiki.example"} {
+		path := filepath.Join(t.TempDir(), "ntwire.yaml")
+		config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    docs_url: "` + bad + `"
+`
+		if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil {
+			t.Errorf("docs_url %q was accepted", bad)
+		}
 	}
 }

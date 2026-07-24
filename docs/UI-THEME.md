@@ -54,3 +54,6 @@ Dark mode should reduce glare while keeping tunnel metadata legible for long-run
 - Keep forms inline where possible, with clear labels and a primary action button.
 - Use status badges for connected/disconnected states and preserve text equivalents for assistive technology.
 - Avoid relying on color alone; pair badges and errors with explicit text.
+- Make each tunnel card a `<details>`/`<summary>` section so long cards can be folded away. The status UI rebuilds its cards on every poll, so which sections are collapsed lives in `localStorage`, not in the DOM.
+- Reveal copy-to-clipboard buttons on hover and on keyboard focus, and keep them visible where hover does not exist (`@media (hover:none)`). They are icon-only, so give each an `aria-label`, and confirm the copy on the button itself rather than in the shared status line.
+- Render server-supplied instruction Markdown as DOM nodes built from the client's parsed block tree; never assign it as markup, and only ever link to absolute `http(s)` targets.

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 )
 
@@ -87,6 +88,68 @@ type TunnelConfig struct {
 	VirtualPort int      `yaml:"virtual_port"`
 	LocalPort   int      `yaml:"local_port"`
 	Allow       []string `yaml:"allow"`
+
+	// Instructions is optional Markdown shown to clients in their local
+	// status UI, describing how to point a tool at this tunnel. It is
+	// expanded as a Go template on the client, where the real loopback port
+	// is known: see pkg/client/instructions for the available fields.
+	Instructions string `yaml:"instructions"`
+	// DocsURL is an optional http(s) link offered next to Instructions for
+	// users who want the full setup documentation.
+	DocsURL string `yaml:"docs_url"`
+
+	// Socks configures this tunnel as an embedded SOCKS4/5 proxy instead of
+	// a fixed-target forward. It is used, and required, when Target is the
+	// sentinel value "socks"; see SocksConfig.
+	Socks *SocksConfig `yaml:"socks"`
+}
+
+// socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
+// embedded SOCKS proxy rather than a fixed host:port forward.
+const socksTarget = "socks"
+
+// IsSocks reports whether t is an embedded-SOCKS-server tunnel.
+func (t TunnelConfig) IsSocks() bool {
+	return t.Target == socksTarget
+}
+
+// SocksConfig configures an embedded SOCKS tunnel's destination filtering,
+// re-implementing (not vendoring -- it isn't Go) the filter/feature set of
+// github.com/nmaguiar/socksd: see pkg/socks for the ported filter engine.
+//
+// Unlike socksd, an unfiltered SOCKS tunnel defaults to denying every
+// destination rather than allowing all of them: socksd's allow-all default
+// would silently turn an authenticated ntwire session into an open egress
+// proxy. Set AllowAll to opt into socksd's original behavior.
+type SocksConfig struct {
+	OnlyLocal      bool          `yaml:"only_local"`
+	Filters        []string      `yaml:"filters"`
+	DomainFilters  []string      `yaml:"domain_filters"`
+	ASNFilters     []uint32      `yaml:"asn_filters"`
+	ASNUpdates     *bool         `yaml:"asn_updates"`
+	ASNURL         string        `yaml:"asn_url"`
+	ReverseFilters bool          `yaml:"reverse_filters"`
+	DNSTimeout     time.Duration `yaml:"dns_timeout"`
+	AllowAll       bool          `yaml:"allow_all"`
+}
+
+// WantsASNUpdates reports whether the background ASN index refresh should
+// run: explicitly enabled, or implicitly whenever ASN filters are in use
+// and the setting was left unspecified.
+func (c SocksConfig) WantsASNUpdates() bool {
+	if c.ASNUpdates != nil {
+		return *c.ASNUpdates
+	}
+	return len(c.ASNFilters) > 0
+}
+
+// deniesAllByDefault reports whether this configuration has no filters at
+// all (and did not opt into AllowAll), meaning pkg/socks.Filter.Allowed
+// will deny every destination. Mirrors the "no filters configured" branch
+// of pkg/socks's ported filter engine, used only to emit a startup warning.
+func (c SocksConfig) deniesAllByDefault() bool {
+	return !c.OnlyLocal && !c.AllowAll &&
+		len(c.Filters) == 0 && len(c.DomainFilters) == 0 && len(c.ASNFilters) == 0 && !c.ReverseFilters
 }
 
 // SampleConfig returns a complete, commented server configuration template.
@@ -153,6 +216,16 @@ tunnels:
     description: Reporting service         # optional free-text description shown to clients
     virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
     local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+    docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
+    instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
+      Fetch a report through the tunnel:
+
+      ~~~sh
+      curl -s http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
+      ~~~
+
+      Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
+      .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
     allow:
       - "*"                                # any authenticated identity
       # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
@@ -160,6 +233,20 @@ tunnels:
       # - "alice@corp.com"                 # exact verified OIDC email
       # - "@corp.com"                      # OIDC email domain
       # - "group:engineering"              # OIDC membership in auth.oidc.issuers[].groups_claim
+  # - name: egress                          # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
+  #   target: socks                         # required sentinel value that selects the SOCKS target type
+  #   virtual_port: 11080
+  #   allow: ["group:engineering"]
+  #   socks:
+  #     only_local: false                   # true restricts to private ranges only (10/8, 172.16/12, 192.168/16, fc00::/7) and ignores every other socks.* filter below
+  #     filters: []                         # destination CIDR allow-list, e.g. ["10.0.0.0/8", "fc00::/7"]
+  #     domain_filters: []                  # destination hostname-suffix allow-list, e.g. [".svc.cluster.local"]
+  #     asn_filters: []                     # destination ASN allow-list (IPv4 only), e.g. [15169]
+  #     asn_updates: null                   # periodically refresh the ASN index; defaults to true when asn_filters is non-empty
+  #     asn_url: ""                         # override the ASN index download URL; default: https://openaf.io/asnidx.json.gz
+  #     reverse_filters: false              # invert the above from an allow-list into a deny-list
+  #     dns_timeout: 10s                    # timeout for resolving SOCKS5 domain requests
+  #     allow_all: false                    # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
 
 log:
   format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
@@ -246,6 +333,24 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if t.LocalPort < 0 || t.LocalPort > 65535 {
 			return c, fmt.Errorf("tunnel %q requires local_port in 0..65535", t.Name)
+		}
+		if t.DocsURL != "" && !instructions.SafeURL(t.DocsURL) {
+			return c, fmt.Errorf("tunnel %q requires an absolute http(s) docs_url", t.Name)
+		}
+		if t.IsSocks() {
+			if t.Socks == nil {
+				return c, fmt.Errorf("tunnel %q: target: socks requires a socks: block", t.Name)
+			}
+			for _, cidr := range t.Socks.Filters {
+				if _, _, e := net.ParseCIDR(cidr); e != nil {
+					return c, fmt.Errorf("tunnel %q: socks.filters: %w", t.Name, e)
+				}
+			}
+			if t.Socks.DNSTimeout < 0 {
+				return c, fmt.Errorf("tunnel %q: socks.dns_timeout must not be negative", t.Name)
+			}
+		} else if t.Socks != nil {
+			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
 		}
 	}
 	return c, nil

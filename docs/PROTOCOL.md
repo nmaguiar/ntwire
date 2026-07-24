@@ -130,7 +130,8 @@ the same shape:
   "session_id": "...",
   "token": "...",
   "ttl_seconds": 900,
-  "tunnels": [{"name":"reports", "virtual_port":18080, "target_hint":"reports.internal:8080"}],
+  "tunnels": [{"name":"reports", "virtual_port":18080, "target_hint":"reports.internal:8080",
+               "instructions":"curl http://{{.LocalHost}}:{{.LocalPort}}/", "docs_url":"https://wiki/reports"}],
   "udp_endpoint": "vpn.example:51820",
   "websocket_endpoint": "wss://vpn.example:8443/v1/wg"
 }
@@ -138,7 +139,11 @@ the same shape:
 
 `token` is a bearer credential and authenticates the WebSocket endpoint.
 Each binary WebSocket message is one WireGuard datagram. `target_hint` comes from server configuration;
-it is not a request to dial arbitrary targets. `udp_endpoint` mirrors
+it is not a request to dial arbitrary targets. `instructions` and `docs_url` are
+optional per-tunnel setup guidance for the client's status UI: the client
+expands `instructions` as a Go template against its own bound port and renders
+the result as Markdown (see [CONFIGURATION.md](CONFIGURATION.md#tunnel-instructions)),
+and ignores a `docs_url` that is not an absolute `http(s)` URL. `udp_endpoint` mirrors
 `network.advertised_endpoint`, which clients use for the WireGuard peer.
 
 Errors are JSON objects of the form `{"error":"message"}`. Malformed input

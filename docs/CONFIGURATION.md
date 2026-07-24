@@ -45,6 +45,13 @@ tunnels:
     description: Reporting service      # free-text, shown to clients; optional
     virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
     local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
+    docs_url: https://wiki/reports      # absolute http(s) link offered as "See more" in the client status UI; optional
+    instructions: |                     # Markdown setup guidance shown in the client status UI; optional, see "Tunnel instructions" below
+      Fetch the latest report:
+
+      ```sh
+      curl -sS http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
+      ```
     allow:
       - "*"                             # any authenticated identity, either method
       - "SHA256:..."                    # ssh: key fingerprint (preferred; see grant-matching note below)
@@ -52,6 +59,18 @@ tunnels:
       - "alice@corp.com"                # oidc: exact verified email
       - "@corp.com"                     # oidc: email domain
       - "group:engineering"             # oidc: groups_claim membership
+  - name: egress                        # a tunnel can instead be an embedded SOCKS4/5 proxy; see "SOCKS proxy tunnels" below
+    target: socks                       # sentinel value that selects the SOCKS target type instead of a fixed host:port
+    virtual_port: 11080
+    allow: ["group:engineering"]
+    socks:
+      only_local: false                 # true restricts to private ranges only and ignores every other socks.* filter
+      filters: []                       # destination CIDR allow-list, e.g. ["10.0.0.0/8", "fc00::/7"]
+      domain_filters: []                # destination hostname-suffix allow-list, e.g. [".svc.cluster.local"]
+      asn_filters: []                   # destination ASN allow-list (IPv4 only), e.g. [15169]
+      reverse_filters: false            # invert the above from an allow-list into a deny-list
+      dns_timeout: 10s                  # timeout for resolving SOCKS5 domain requests
+      allow_all: false                  # required to permit every destination when no filters above are set
 log:
   format: text                          # text or json (Logstash-format); container images default to json
   level: info                           # debug, info, warn, or error
@@ -75,6 +94,91 @@ public key. Tunnel names must be unique and each tunnel requires `name` and
 `target`. `ntwire-server` is a public OAuth client (PKCE, no client secret) and
 never stores IdP credentials; see the Google/Entra/Keycloak registration
 notes in [OIDC-SETUP.md](OIDC-SETUP.md).
+
+## SOCKS proxy tunnels
+
+Setting a tunnel's `target: socks` turns it into an embedded SOCKS4/SOCKS5
+CONNECT proxy instead of a fixed-destination forward: once a client's traffic
+reaches the tunnel's `virtual_port`, the server speaks the SOCKS protocol on
+that connection and dials whatever destination the client's SOCKS request
+names, gated by the tunnel's `socks:` block. This re-implements the
+filter/feature set of [socksd](https://github.com/nmaguiar/socksd) natively
+(socksd is a JVM/OpenAF stack, not a Go library, so nothing is vendored) —
+same CIDR/domain/ASN/only-local/reverse filter semantics, but see the default
+below, which intentionally differs. Session auth, grant matching (`allow:`),
+the `authorizer:` webhook/exec hook, per-source rate limiting, and
+`audit.log_file` all still apply exactly as they do to a fixed-target tunnel;
+`socks:` only adds a second, per-destination filtering layer inside it.
+
+A SOCKS tunnel is a general-purpose egress proxy: whatever it's allowed to
+reach, every session holding its grant can reach. **Unlike socksd, which
+defaults to allowing every destination when no filters are configured, an
+ntwire SOCKS tunnel with no `socks.filters`/`domain_filters`/`asn_filters`/
+`only_local`/`reverse_filters` denies every destination** — set
+`allow_all: true` to opt into socksd's original behavior. A tunnel that would
+otherwise silently deny everything logs a warning at startup.
+
+`socks.filters` (CIDR) and `socks.asn_filters` gate the *resolved* destination
+IP; `socks.domain_filters` gates the hostname the client asked to connect to
+(SOCKS5 domain requests only — SOCKS4 and SOCKS5 IP-literal requests have no
+hostname to match). When both a CIDR/ASN filter and a domain filter are
+configured, a CIDR/ASN miss denies immediately without consulting the domain
+filter, but a CIDR/ASN hit does not by itself allow the connection: the
+domain filter is still checked and is decisive. `socks.only_local` (a
+hardcoded private-range allow-list: `10.0.0.0/8`, `172.16.0.0/12`,
+`192.168.0.0/16`, `fc00::/7`) overrides every other `socks.*` filter when
+set. `socks.reverse_filters` inverts the whole result, turning the configured
+filters from an allow-list into a deny-list.
+
+`socks.asn_filters` and periodic ASN index refresh require the server itself
+to reach the internet (default index: `https://openaf.io/asnidx.json.gz`,
+overridable with `socks.asn_url`); the index is IPv4-only, so ASN filters
+never match an IPv6 destination. Both the CONNECT and BIND commands are
+proxied (SOCKS4 and SOCKS5), with the same destination filtering applied to
+a BIND request's target address as to a CONNECT one. BIND opens a real,
+unfiltered-by-NAT listener on the server host and is a best-effort
+implementation with no NAT traversal, matching upstream: it exists for
+legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
+ASSOCIATE is recognized by the handshake but refused — it needs UDP to
+traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
+
+## Tunnel instructions
+
+`instructions` is optional Markdown that `ntwire connect` shows under each
+tunnel in its local status UI, so users are told how to point their tools at a
+tunnel instead of having to work it out from a port number. `docs_url` adds a
+"See more" link beside it, and must be an absolute `http(s)` URL — the server
+refuses to start otherwise.
+
+The text is expanded as a [Go template](https://pkg.go.dev/text/template) **on
+the client**, because only the client knows which loopback port it actually
+bound: the server's `local_port` is a preference, an occupied port falls back
+to a free one, and the user can change it at runtime from the status UI. These
+fields are available:
+
+| Field | Value |
+| --- | --- |
+| `{{.Name}}` | tunnel name |
+| `{{.Description}}` | the `description` above |
+| `{{.LocalAddress}}` | bound loopback address, e.g. `127.0.0.1:58080` |
+| `{{.LocalHost}}` | host part of `LocalAddress` |
+| `{{.LocalPort}}` | bound loopback port |
+| `{{.VirtualPort}}` | the `virtual_port` above |
+| `{{.TargetHint}}` | the `target` above |
+| `{{.TunnelIP}}` | the client's address inside the tunnel |
+| `{{.ServerTunnelIP}}` | the server's address inside the tunnel |
+| `{{.Server}}` | control-plane URL the client is connected to |
+
+Supported Markdown is headings, paragraphs, bullet and numbered lists, fenced
+code blocks, inline code, emphasis, and `http(s)` links. Fenced code blocks get
+a copy-to-clipboard button, which is the point of templating the port into
+them. Anything outside that subset is shown verbatim rather than interpreted,
+as is the raw text of a template that fails to parse or execute — a typo in
+`instructions` degrades to unrendered text rather than an empty card.
+
+Instructions never become markup: the client parses them into a block tree and
+the status UI builds DOM nodes from it, and links whose target is not an
+absolute `http(s)` URL stay literal text.
 
 ## Grant matching
 
