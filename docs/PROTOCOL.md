@@ -250,11 +250,15 @@ and vice versa, even when field values overlap.
 
 ### Verification order
 
-Timestamp within ±2 minutes of the relay's clock → nonce unseen (5-minute
-cache) → fingerprint present in the relay's `registrations` (else
-`unknown_key`) → signature valid (else `bad_signature`) → `name` matches the
-fingerprint's configured name (else `relay_name_not_allowed`, a new error
-code). A successful registration evicts and closes any prior control
+Timestamp within ±2 minutes of the relay's clock → fingerprint present in the
+relay's `registrations` (else `unknown_key`) → signature valid (else
+`bad_signature`) → nonce unseen (5-minute cache, size-capped as a backstop;
+else `replayed_nonce`) → `name` matches the fingerprint's configured name
+(else `relay_name_not_allowed`, a new error code). Nonce replay is checked
+only after the signature verifies: consuming a nonce slot for an
+unauthenticated request would let anyone who can merely reach `listen.agents`
+exhaust the cache without ever presenting a valid key. A successful
+registration evicts and closes any prior control
 connection already registered under that name (last-writer-wins): this is
 both how a duplicate claim is rejected and how a server reconnecting after a
 drop replaces its own stale connection, with no separate timeout to tune.

@@ -106,6 +106,15 @@ func NewRegistry(registrations []Registration, limits Limits) *Registry {
 	return r
 }
 
+// maxNonces backstops useNonceLocked's normal 5-minute expiry: it bounds
+// memory if an authenticated peer (the only kind that can reach this point
+// post-reorder, see Register) registers with an unusual number of distinct
+// nonces within one window.
+const maxNonces = 4096
+
+// useNonceLocked records n as seen, evicting expired entries and -- if still
+// over maxNonces afterward -- the single oldest surviving entry as a
+// backstop.
 func (r *Registry) useNonceLocked(n string) bool {
 	if n == "" {
 		return false
@@ -115,10 +124,20 @@ func (r *Registry) useNonceLocked(n string) bool {
 	}
 	now := time.Now()
 	r.nonces[n] = now
+	var oldestKey string
+	var oldestTime time.Time
+	haveOldest := false
 	for k, v := range r.nonces {
 		if now.Sub(v) > 5*time.Minute {
 			delete(r.nonces, k)
+			continue
 		}
+		if !haveOldest || v.Before(oldestTime) {
+			oldestKey, oldestTime, haveOldest = k, v, true
+		}
+	}
+	if len(r.nonces) > maxNonces && haveOldest {
+		delete(r.nonces, oldestKey)
 	}
 	return true
 }
@@ -126,9 +145,13 @@ func (r *Registry) useNonceLocked(n string) bool {
 // Register verifies a RelayRegisterRequest against the configured
 // registrations and returns the authoritative tenant name and the
 // registering key's fingerprint on success. The verification order is:
-// protocol version, timestamp window, nonce replay, fingerprint known,
-// signature valid, then the wire-supplied name checked against the
-// fingerprint's configured name (never the reverse).
+// protocol version, timestamp window, fingerprint known, signature valid,
+// nonce replay, then the wire-supplied name checked against the
+// fingerprint's configured name (never the reverse). Nonce replay is
+// checked only after the signature verifies, not before: consuming a nonce
+// slot for an unauthenticated request would let anyone who can merely reach
+// listen.agents exhaust the (5-minute, size-capped) nonce cache without
+// ever presenting a valid key.
 func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprint string, regErr *RegisterError) {
 	if req.Version != protocol.Version {
 		return "", "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
@@ -136,12 +159,6 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 	ts, err := protocol.ParseTimestamp(req.Timestamp)
 	if err != nil || time.Since(ts) > 2*time.Minute || time.Until(ts) > 2*time.Minute {
 		return "", "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
-	}
-	r.mu.Lock()
-	nonceOK := r.useNonceLocked(req.Nonce)
-	r.mu.Unlock()
-	if !nonceOK {
-		return "", "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
 	}
 	key, _, err := sshkey.ParsePublicString(req.PublicKey)
 	if err != nil {
@@ -157,6 +174,12 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil || sshkey.Verify(reg.PublicKey, payload, req.Signature) != nil {
 		return "", "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
+	}
+	r.mu.Lock()
+	nonceOK := r.useNonceLocked(req.Nonce)
+	r.mu.Unlock()
+	if !nonceOK {
+		return "", "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
 	}
 	if req.Name != reg.Name {
 		return "", "", &RegisterError{Code: protocol.ErrorRelayNameNotAllowed, Message: "name does not match this key's registration"}

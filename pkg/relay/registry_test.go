@@ -124,6 +124,62 @@ func TestRegistry_RegisterReplayedNonce(t *testing.T) {
 	}
 }
 
+// TestRegistry_UnauthenticatedRequestDoesNotConsumeNonce is the regression
+// test for Register consuming a nonce before verifying the signature: any
+// peer that could merely reach listen.agents could burn nonce cache
+// entries -- retained for 5 minutes -- without ever presenting a valid key.
+// A nonce used by a request that fails authentication (bad signature, or an
+// unknown key entirely) must still be available to a subsequent,
+// legitimately authenticated request.
+func TestRegistry_UnauthenticatedRequestDoesNotConsumeNonce(t *testing.T) {
+	k := generateTestKey(t)
+	other := generateTestKey(t)
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+
+	t.Run("bad signature", func(t *testing.T) {
+		bad := signedRegisterRequest(t, k, "home", "nonce-bad-sig")
+		bad.Signature = bad.Signature[:len(bad.Signature)-4] + "abcd"
+		if _, _, err := reg.Register(bad); err == nil || err.Code != protocol.ErrorBadSignature {
+			t.Fatalf("err = %v, want bad_signature", err)
+		}
+		good := signedRegisterRequest(t, k, "home", "nonce-bad-sig")
+		if _, _, err := reg.Register(good); err != nil {
+			t.Fatalf("reusing a nonce from a failed-signature attempt was rejected: %v", err)
+		}
+	})
+
+	t.Run("unknown key", func(t *testing.T) {
+		unknown := signedRegisterRequest(t, other, "home", "nonce-unknown-key")
+		if _, _, err := reg.Register(unknown); err == nil || err.Code != protocol.ErrorUnknownKey {
+			t.Fatalf("err = %v, want unknown_key", err)
+		}
+		good := signedRegisterRequest(t, k, "home", "nonce-unknown-key")
+		if _, _, err := reg.Register(good); err != nil {
+			t.Fatalf("reusing a nonce from an unknown-key attempt was rejected: %v", err)
+		}
+	})
+}
+
+// TestRegistry_NonceMapStaysCapped is the regression test for useNonceLocked
+// having no size backstop beyond its 5-minute expiry: registering many
+// distinct nonces within one window must not grow the map unboundedly.
+func TestRegistry_NonceMapStaysCapped(t *testing.T) {
+	k := generateTestKey(t)
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+	for i := 0; i < maxNonces+500; i++ {
+		req := signedRegisterRequest(t, k, "home", fmt.Sprintf("nonce-%d", i))
+		if _, _, err := reg.Register(req); err != nil {
+			t.Fatalf("registration %d failed: %v", i, err)
+		}
+	}
+	reg.mu.Lock()
+	n := len(reg.nonces)
+	reg.mu.Unlock()
+	if n > maxNonces {
+		t.Fatalf("nonce map grew to %d entries, want <= %d", n, maxNonces)
+	}
+}
+
 func TestRegistry_RegisterClockSkew(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
