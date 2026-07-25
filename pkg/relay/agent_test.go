@@ -48,7 +48,7 @@ func registerOverControl(t *testing.T, ws *websocket.Conn, req protocol.RelayReg
 func TestAgentServer_RegisterSuccess(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -67,7 +67,7 @@ func TestAgentServer_RegisterUnknownKeyClosesConnection(t *testing.T) {
 	k := generateTestKey(t)
 	other := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -82,7 +82,7 @@ func TestAgentServer_RegisterUnknownKeyClosesConnection(t *testing.T) {
 func TestAgentServer_RegisterBadSignature(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -99,7 +99,7 @@ func TestAgentServer_RegisterBadSignature(t *testing.T) {
 func TestAgentServer_RegisterNameMismatch(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -114,7 +114,7 @@ func TestAgentServer_RegisterNameMismatch(t *testing.T) {
 func TestAgentServer_LastWriterWinsEviction(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	first := dialControl(t, srv)
@@ -141,7 +141,7 @@ func TestAgentServer_LastWriterWinsEviction(t *testing.T) {
 func TestAgentServer_DataConnRoundTrip(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	control := dialControl(t, srv)
@@ -205,9 +205,67 @@ func TestAgentServer_DataConnRoundTrip(t *testing.T) {
 	}
 }
 
+// TestAgentServer_PushTimesOutOnStalledWriteAndFreesWriteMu is the
+// regression test for the unbounded agent.Push bug: Push used to call
+// ws.Write with context.Background() and no timeout, so a stalled agent
+// socket (client never reading) blocked Push forever, holding writeMu and
+// starving the 30s keepalive ping that exists specifically to detect and
+// evict a dead agent. It reaches into the registry's internal tenantState to
+// grab the live *Agent directly (same package), then drives its Push
+// closure without ever reading the control connection from the test's side,
+// forcing the write to stall on the OS socket buffer.
+func TestAgentServer_PushTimesOutOnStalledWriteAndFreesWriteMu(t *testing.T) {
+	k := generateTestKey(t)
+	limits := Limits{DialBackTimeout: 300 * time.Millisecond, MaxPendingPerServer: 10, MaxConnsPerServer: 10}
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, limits)
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", limits).Handler())
+	defer srv.Close()
+
+	control := dialControl(t, srv)
+	defer control.Close(websocket.StatusNormalClosure, "")
+	if resp := registerOverControl(t, control, signedRegisterRequest(t, k, "home", "n1")); resp.Error != "" {
+		t.Fatalf("registration failed: %+v", resp)
+	}
+	// Deliberately never read from control again: nothing drains the
+	// socket, so a large enough write from the server side blocks on the OS
+	// send buffer exactly like a stalled/NAT-dropped agent would.
+
+	reg.mu.Lock()
+	agent := reg.tenants["home"].agent
+	reg.mu.Unlock()
+	if agent == nil {
+		t.Fatal("agent not registered")
+	}
+
+	// 32MiB comfortably exceeds any default loopback socket buffer, so this
+	// write is guaranteed to stall with no reader on the other end.
+	huge := strings.Repeat("x", 32<<20)
+	start := time.Now()
+	err := agent.Push(protocol.RelayOpen{ConnID: huge})
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("expected Push to fail once the stalled write exceeds DialBackTimeout")
+	}
+	if elapsed > limits.DialBackTimeout+3*time.Second {
+		t.Fatalf("Push blocked for %v, want it bounded near DialBackTimeout (%v)", elapsed, limits.DialBackTimeout)
+	}
+
+	// The actual defect this guards against: a wedged writeMu, not merely a
+	// slow Open. Prove writeMu is free by issuing another Push immediately;
+	// it must return promptly (the connection is now closed on the failure
+	// path) rather than hang behind the mutex the first call left behind.
+	doneCh := make(chan error, 1)
+	go func() { doneCh <- agent.Push(protocol.RelayOpen{ConnID: "small"}) }()
+	select {
+	case <-doneCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("writeMu still held after the stalled Push returned: a subsequent Push hung")
+	}
+}
+
 func TestAgentServer_DataConnUnknownConnID(t *testing.T) {
 	reg := NewRegistry(nil, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com").Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
 	defer srv.Close()
 
 	resp, err := srv.Client().Get(srv.URL + "/v1/relay/data?conn_id=does-not-exist")

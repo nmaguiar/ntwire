@@ -17,10 +17,11 @@ import (
 type agentServer struct {
 	registry *Registry
 	domain   string
+	limits   Limits
 }
 
-func newAgentServer(registry *Registry, domain string) *agentServer {
-	return &agentServer{registry: registry, domain: domain}
+func newAgentServer(registry *Registry, domain string, limits Limits) *agentServer {
+	return &agentServer{registry: registry, domain: domain, limits: limits}
 }
 
 func (a *agentServer) Handler() http.Handler {
@@ -67,9 +68,19 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
+		// Bound the write so a stalled agent socket cannot block the
+		// public-listener goroutine calling Push, nor hold writeMu long
+		// enough to starve the keepalive ping below. Released before Close
+		// is invoked on failure, since Close itself writes a close frame.
+		pctx, cancel := context.WithTimeout(context.Background(), a.limits.DialBackTimeout)
+		defer cancel()
 		writeMu.Lock()
-		defer writeMu.Unlock()
-		return ws.Write(context.Background(), websocket.MessageText, b)
+		err = ws.Write(pctx, websocket.MessageText, b)
+		writeMu.Unlock()
+		if err != nil {
+			agent.Close()
+		}
+		return err
 	}
 	agent.Close = func() {
 		closeOnce.Do(func() { ws.Close(websocket.StatusNormalClosure, "replaced") })
