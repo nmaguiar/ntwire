@@ -188,12 +188,12 @@ func TestRegistry_OpenRedeemHappyPath(t *testing.T) {
 		t.Fatalf("unexpected RelayOpen: %+v", pushed)
 	}
 
-	deliver, ok := reg.Redeem(pushed.ConnID)
+	handoff, ok := reg.Redeem(pushed.ConnID)
 	if !ok {
 		t.Fatal("Redeem failed on a fresh conn_id")
 	}
 	want := &fakeConn{}
-	deliver <- want
+	handoff.Deliver <- want
 
 	if err := <-errCh; err != nil {
 		t.Fatalf("Open returned error: %v", err)
@@ -205,6 +205,86 @@ func TestRegistry_OpenRedeemHappyPath(t *testing.T) {
 	// Single-use: redeeming again must fail.
 	if _, ok := reg.Redeem(pushed.ConnID); ok {
 		t.Fatal("conn_id was redeemable a second time")
+	}
+}
+
+// TestRegistry_HandoffAbandonedByTimeoutIsNotDeliverable is the regression
+// test for the handleData handoff leak: Redeem can win the race against
+// Open's own dial-back timeout, handing agent.go's handleData a live
+// Handoff for a conn_id whose Open has already given up. Before Handoff.Done
+// existed, handleData would still send into Deliver's one-slot buffer with
+// nobody ever left to read or close it -- a permanent fd leak, once per lost
+// race.
+//
+// This drives Registry directly rather than through a real HTTP/WebSocket
+// round trip: in production the window between Redeem succeeding and
+// handleData attempting delivery is only the time to complete a WS
+// handshake, far faster than any DialBackTimeout, so forcing that exact
+// interleaving deterministically over real sockets would itself be racy.
+// Redeeming immediately after the push and only then waiting for Open to
+// time out reproduces the same ordering without the flakiness.
+func TestRegistry_HandoffAbandonedByTimeoutIsNotDeliverable(t *testing.T) {
+	limits := Limits{DialBackTimeout: 30 * time.Millisecond, MaxPendingPerServer: 2, MaxConnsPerServer: 2}
+	reg := NewRegistry(nil, limits)
+	pushedCh := make(chan protocol.RelayOpen, 1)
+	agent := &Agent{Name: "home", Push: func(o protocol.RelayOpen) error { pushedCh <- o; return nil }, Close: func() {}}
+	reg.RegisterAgent("home", agent)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := reg.Open(context.Background(), "home", "203.0.113.5:1234", "home.relay.test")
+		errCh <- err
+	}()
+
+	var pushed protocol.RelayOpen
+	select {
+	case pushed = <-pushedCh:
+	case <-time.After(time.Second):
+		t.Fatal("RelayOpen never pushed")
+	}
+
+	handoff, ok := reg.Redeem(pushed.ConnID)
+	if !ok {
+		t.Fatal("Redeem failed on a fresh conn_id")
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected Open to time out")
+	}
+
+	// The fix: handleData's actual delivery logic (agent.go), reproduced
+	// verbatim. With Open already abandoned, the priority check must take
+	// the Done branch and never reach the send at all.
+	conn := &fakeConn{}
+	delivered := false
+	select {
+	case <-handoff.Done:
+		conn.Close()
+	default:
+		select {
+		case handoff.Deliver <- conn:
+			delivered = true
+		case <-handoff.Done:
+			conn.Close()
+		}
+	}
+	if delivered {
+		t.Fatal("delivered into a channel nobody will ever read: this is the fd leak Done exists to prevent")
+	}
+	if !conn.closed {
+		t.Fatal("abandoned connection was not closed")
+	}
+
+	// Counterfactual: the pre-fix behavior was an unconditional send with no
+	// Done check at all. Confirm that naive send still succeeds into the
+	// buffer in this exact scenario -- proving the check above is load
+	// bearing, not incidentally passing because the buffer would have
+	// rejected it anyway.
+	naiveConn := &fakeConn{}
+	select {
+	case handoff.Deliver <- naiveConn:
+	default:
+		t.Fatal("expected the one-slot buffer to still accept an unconditional send (demonstrating why Done is required)")
 	}
 }
 
@@ -303,12 +383,12 @@ func TestRegistry_MaxConnsPerServerHoldsAcrossRedeemedConnections(t *testing.T) 
 		}
 		agent.Push = noopPush
 
-		deliver, ok := reg.Redeem(pushed.ConnID)
+		handoff, ok := reg.Redeem(pushed.ConnID)
 		if !ok {
 			t.Fatal("Redeem failed on a fresh conn_id")
 		}
 		conn := &fakeConn{}
-		deliver <- conn
+		handoff.Deliver <- conn
 		got := <-resultCh
 		if got != conn {
 			t.Fatal("Open did not return the delivered connection")

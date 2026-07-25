@@ -139,7 +139,7 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing conn_id", http.StatusBadRequest)
 		return
 	}
-	deliver, ok := a.registry.Redeem(connID)
+	handoff, ok := a.registry.Redeem(connID)
 	if !ok {
 		http.Error(w, "unknown or expired conn_id", http.StatusNotFound)
 		return
@@ -149,5 +149,21 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
-	deliver <- conn
+
+	// Open may have already abandoned this conn_id (dial-back timeout or a
+	// canceled context) while the handshake above was in flight. Check
+	// first, non-blocking: Deliver's one-slot buffer would otherwise accept
+	// the send even with nobody left to ever read and close it, leaking the
+	// connection's fd for the life of the process.
+	select {
+	case <-handoff.Done:
+		conn.Close()
+		return
+	default:
+	}
+	select {
+	case handoff.Deliver <- conn:
+	case <-handoff.Done:
+		conn.Close()
+	}
 }

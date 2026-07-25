@@ -60,7 +60,17 @@ type tenantState struct {
 type pendingConn struct {
 	name    string
 	ch      chan net.Conn
+	done    chan struct{} // closed by Open if it abandons before Redeem delivers
 	expires time.Time
+}
+
+// Handoff is what Redeem hands the agents listener: the channel to deliver
+// the freshly dialed-back connection on, and a signal that the original
+// Open has already given up (timed out or had its context canceled) and
+// will never read from Deliver again.
+type Handoff struct {
+	Deliver chan<- net.Conn
+	Done    <-chan struct{}
 }
 
 // Registry tracks configured tenant registrations, their live control
@@ -209,7 +219,8 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 		return nil, err
 	}
 	ch := make(chan net.Conn, 1)
-	r.pending[connID] = &pendingConn{name: name, ch: ch, expires: time.Now().Add(r.limits.DialBackTimeout)}
+	done := make(chan struct{})
+	r.pending[connID] = &pendingConn{name: name, ch: ch, done: done, expires: time.Now().Add(r.limits.DialBackTimeout)}
 	t.pending++
 	agent := t.agent
 	r.mu.Unlock()
@@ -234,10 +245,12 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 	case <-timer.C:
 		r.cancelPending(connID)
 		drainPending(ch)
+		close(done)
 		return nil, fmt.Errorf("dial-back timed out")
 	case <-ctx.Done():
 		r.cancelPending(connID)
 		drainPending(ch)
+		close(done)
 		return nil, ctx.Err()
 	}
 }
@@ -300,10 +313,11 @@ func (r *Registry) ReplaceRegistrations(registrations []Registration) {
 	}
 }
 
-// Redeem consumes a single-use conn_id, returning the channel to deliver the
-// freshly dialed-back data connection to. It fails for an unknown, already
-// redeemed, or expired conn_id.
-func (r *Registry) Redeem(connID string) (chan<- net.Conn, bool) {
+// Redeem consumes a single-use conn_id, returning a Handoff carrying the
+// channel to deliver the freshly dialed-back data connection to and a
+// signal for whether the original Open has already given up. It fails for
+// an unknown, already redeemed, or expired conn_id.
+func (r *Registry) Redeem(connID string) (Handoff, bool) {
 	r.mu.Lock()
 	p, exists := r.pending[connID]
 	if exists {
@@ -314,9 +328,9 @@ func (r *Registry) Redeem(connID string) (chan<- net.Conn, bool) {
 	}
 	r.mu.Unlock()
 	if !exists || time.Now().After(p.expires) {
-		return nil, false
+		return Handoff{}, false
 	}
-	return p.ch, true
+	return Handoff{Deliver: p.ch, Done: p.done}, true
 }
 
 func randomConnID() (string, error) {
