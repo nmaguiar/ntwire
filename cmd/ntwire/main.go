@@ -339,6 +339,9 @@ func status(args []string, u *ui.UI) {
 	var kv ui.KV
 	kv.Add("pid", fmt.Sprintf("%d", s.PID))
 	kv.Add("server", s.Server)
+	if s.Name != "" {
+		kv.Add("name", s.Name)
+	}
 	kv.Add("status", s.UIURL)
 	for _, address := range s.LocalAddresses {
 		kv.Add("local", address)
@@ -479,7 +482,7 @@ func connect(args []string, u *ui.UI) {
 	for i, t := range c.Response.Tunnels {
 		fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(t.Name), c.LocalAddresses[i])
 	}
-	u.Success("connected; press Ctrl-C to disconnect")
+	u.Success("connected to %s; press Ctrl-C to disconnect", c.DisplayName())
 	if c.UIURL != "" {
 		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("status:"), c.UIURL)
 	}
