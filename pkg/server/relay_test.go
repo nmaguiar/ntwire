@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -14,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/relay"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"golang.org/x/crypto/ssh"
@@ -345,4 +348,100 @@ func TestRelayAgent_EndToEndWithRealRelay(t *testing.T) {
 func sha256Sum(b []byte) []byte {
 	sum := sha256.Sum256(b)
 	return sum[:]
+}
+
+// TestRelayAgent_ReconnectsWhenRelayStopsRespondingToPings is the regression
+// test for runOnce having no keepalive of its own on the control connection:
+// without it, a relay that accepts registration and then hangs -- stops
+// responding to everything, including pings, without ever closing the
+// connection -- was only ever caught by whatever the OS's default TCP
+// keepalive happens to notice, not the prompt detection relay mode depends
+// on for NAT rebinding. This drives a hand-rolled control endpoint (not a
+// real pkg/relay.Relay, which always answers pings) that registers once and
+// then never reads or writes again.
+//
+// This necessarily waits through the real, hardcoded 30s ping interval and
+// 5s ping timeout mirrored from pkg/relay/agent.go -- there is no other
+// externally observable signal that would prove the ping fired, and no
+// existing test in this codebase exercises that interval via real timing
+// either (agent.go's own keepalive is equally untested that way).
+func TestRelayAgent_ReconnectsWhenRelayStopsRespondingToPings(t *testing.T) {
+	if testing.Short() {
+		t.Skip("waits through the real 30s ping interval; skipped in -short")
+	}
+	signer, _, err := sshkey.GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idPath := t.TempDir() + "/id"
+	if err := os.WriteFile(idPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pair, err := generateSelfSigned()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(sha256Sum(pair.Certificate[0]))
+
+	connectAttempts := make(chan struct{}, 8)
+	// Keep every accepted *websocket.Conn referenced for the test's
+	// lifetime: coder/websocket finalizes (closes) a Conn that becomes
+	// unreachable to GC, which would otherwise close the "hung" connection
+	// out from under this test and mask the very condition it simulates.
+	heldConns := make(chan *websocket.Conn, 8)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/relay/control", func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		heldConns <- ws
+		connectAttempts <- struct{}{}
+		if _, _, err := ws.Read(r.Context()); err != nil {
+			return
+		}
+		resp := protocol.RelayRegisterResponse{Version: protocol.Version, Name: "home", Domain: "relay.test"}
+		b, _ := json.Marshal(resp)
+		_ = ws.Write(r.Context(), websocket.MessageText, b)
+		// Deliberately never read or write again: registered, then hung.
+	})
+	srv := &http.Server{Handler: mux, TLSConfig: &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.ServeTLS(ln, "", "")
+	defer srv.Close()
+
+	agentCfg := RelayConfig{
+		Enabled: true, URL: "wss://" + ln.Addr().String(), Name: "home",
+		IdentityFile: idPath, Fingerprint: fp,
+		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 100 * time.Millisecond,
+	}
+	agent, err := NewRelayAgent(agentCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go agent.Run(ctx)
+	defer agent.Close()
+
+	select {
+	case <-connectAttempts:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial control connection was never established")
+	}
+
+	select {
+	case <-connectAttempts:
+	case <-time.After(45 * time.Second):
+		t.Fatal("agent never reconnected after the relay stopped responding to pings")
+	}
 }

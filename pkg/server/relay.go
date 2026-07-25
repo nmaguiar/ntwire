@@ -173,17 +173,46 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	}
 	a.log.Info("relay registered", "name", resp.Name, "domain", resp.Domain)
 
+	// Mirror the relay's own keepalive (pkg/relay/agent.go): without a ping
+	// of our own, a dead path (relay process gone, NAT rebinding) is only
+	// ever caught by whatever the OS's default TCP keepalive happens to
+	// notice, rather than promptly triggering Run's reconnect.
+	var writeMu sync.Mutex
+	readErr := make(chan error, 1)
+	go func() {
+		for {
+			_, data, err := ws.Read(ctx)
+			if err != nil {
+				readErr <- err
+				return
+			}
+			var open protocol.RelayOpen
+			if json.Unmarshal(data, &open) != nil {
+				continue
+			}
+			a.log.Debug("relay open received", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
+			go a.handleOpen(ctx, open)
+		}
+	}()
+
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
 	for {
-		_, data, err := ws.Read(ctx)
-		if err != nil {
+		select {
+		case <-ticker.C:
+			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			writeMu.Lock()
+			err := ws.Ping(pctx)
+			writeMu.Unlock()
+			cancel()
+			if err != nil {
+				return true, fmt.Errorf("ping: %w", err)
+			}
+		case err := <-readErr:
 			return true, err
+		case <-ctx.Done():
+			return true, ctx.Err()
 		}
-		var open protocol.RelayOpen
-		if json.Unmarshal(data, &open) != nil {
-			continue
-		}
-		a.log.Debug("relay open received", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
-		go a.handleOpen(ctx, open)
 	}
 }
 
