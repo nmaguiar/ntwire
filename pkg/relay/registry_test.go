@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -259,6 +260,98 @@ func TestRegistry_MaxPendingPerServer(t *testing.T) {
 	_, err := reg.Open(context.Background(), "home", "2.2.2.2:2", "home.relay.test")
 	if err != ErrTenantAtCapacity {
 		t.Fatalf("err = %v, want ErrTenantAtCapacity", err)
+	}
+}
+
+// TestRegistry_MaxConnsPerServerHoldsAcrossRedeemedConnections is the
+// discriminating regression test for the pending double-decrement bug
+// (registry.go's Open success branch used to decrement pending a second time
+// after Redeem already had). TestRegistry_MaxPendingPerServer never redeems,
+// so it cannot see this: the bug only manifests once connections complete
+// the full Open->Redeem->deliver->Release cycle, at which point pending
+// drifts negative and both max_pending_per_server and max_conns_per_server
+// stop rejecting anything. This test fails against the pre-fix code.
+func TestRegistry_MaxConnsPerServerHoldsAcrossRedeemedConnections(t *testing.T) {
+	limits := Limits{DialBackTimeout: 500 * time.Millisecond, MaxPendingPerServer: 10, MaxConnsPerServer: 2}
+	reg := NewRegistry(nil, limits)
+	noopPush := func(protocol.RelayOpen) error { return nil }
+	agent := &Agent{Name: "home", Push: noopPush, Close: func() {}}
+	reg.RegisterAgent("home", agent)
+
+	// openRedeemDeliver installs a one-shot Push wrapper to capture the
+	// conn_id, then restores agent.Push to the harmless noop before
+	// returning. It must not accumulate wrapper layers across calls: a
+	// permanently-nested Push, still holding earlier calls' now-unread
+	// buffered channels, deadlocks the later concurrent phase below the
+	// moment two saturating Opens land on the same stale channel.
+	openRedeemDeliver := func() net.Conn {
+		t.Helper()
+		pushedCh := make(chan protocol.RelayOpen, 1)
+		agent.Push = func(o protocol.RelayOpen) error { pushedCh <- o; return nil }
+
+		resultCh := make(chan net.Conn, 1)
+		go func() {
+			c, _ := reg.Open(context.Background(), "home", "203.0.113.5:1234", "home.relay.test")
+			resultCh <- c
+		}()
+
+		var pushed protocol.RelayOpen
+		select {
+		case pushed = <-pushedCh:
+		case <-time.After(time.Second):
+			t.Fatal("RelayOpen never pushed")
+		}
+		agent.Push = noopPush
+
+		deliver, ok := reg.Redeem(pushed.ConnID)
+		if !ok {
+			t.Fatal("Redeem failed on a fresh conn_id")
+		}
+		conn := &fakeConn{}
+		deliver <- conn
+		got := <-resultCh
+		if got != conn {
+			t.Fatal("Open did not return the delivered connection")
+		}
+		return got
+	}
+
+	// Fully cycle MaxConnsPerServer connections through Open/Redeem/Release.
+	// Under the pre-fix code, pending goes negative each time this succeeds,
+	// so the concurrent, never-redeemed opens below (which must reject once
+	// the cap is reached) instead keep succeeding.
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		openRedeemDeliver()
+		reg.Release("home")
+	}
+
+	reg.mu.Lock()
+	ts := reg.tenants["home"]
+	if ts.pending != 0 || ts.live != 0 {
+		t.Fatalf("counters did not return to zero after full cycles: pending=%d live=%d", ts.pending, ts.live)
+	}
+	reg.mu.Unlock()
+
+	// Saturate the tenant with MaxConnsPerServer concurrent, never-redeemed
+	// opens (each holds a pending slot for the whole DialBackTimeout), then
+	// assert the next Open is rejected immediately with ErrTenantAtCapacity
+	// rather than blocking for a timeout. Concurrency matters: sequential
+	// calls would each time out on their own and mask the counter bug.
+	errCh := make(chan error, limits.MaxConnsPerServer)
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		go func(i int) {
+			_, err := reg.Open(context.Background(), "home", fmt.Sprintf("203.0.113.%d:1", i), "home.relay.test")
+			errCh <- err
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond) // let all saturating opens register their pending slot
+
+	_, err := reg.Open(context.Background(), "home", "203.0.113.99:1", "home.relay.test")
+	if err != ErrTenantAtCapacity {
+		t.Fatalf("err = %v, want ErrTenantAtCapacity once pending+live reaches MaxConnsPerServer", err)
+	}
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		<-errCh // drain the saturating opens' eventual timeouts
 	}
 }
 

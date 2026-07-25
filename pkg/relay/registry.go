@@ -223,9 +223,10 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 	defer timer.Stop()
 	select {
 	case conn := <-ch:
+		// Redeem already decremented pending for this conn_id; only account
+		// the new live connection here.
 		r.mu.Lock()
 		if ts := r.tenants[name]; ts != nil {
-			ts.pending--
 			ts.live++
 		}
 		r.mu.Unlock()
