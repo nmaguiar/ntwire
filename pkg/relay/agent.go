@@ -40,6 +40,12 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// The ping-failure, read-error, and ctx.Done exits below all return
+	// without closing ws explicitly, leaking its fd on every agent
+	// disconnect and reconnect. CloseNow is a no-op after an explicit Close
+	// (registration failure, or agent.Close on eviction/Push failure), so
+	// this is safe to defer unconditionally.
+	defer ws.CloseNow()
 	ctx := r.Context()
 
 	_, data, err := ws.Read(ctx)

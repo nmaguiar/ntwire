@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,6 +136,73 @@ func TestAgentServer_LastWriterWinsEviction(t *testing.T) {
 	defer cancel()
 	if _, _, err := first.Read(readCtx); err == nil {
 		t.Fatal("expected the evicted first control connection to be closed")
+	}
+}
+
+// closeTrackingConn/closeTrackingListener let a test observe whether the
+// server explicitly closed its side of an accepted connection. Go's
+// net/http never closes a connection on the server's behalf once a handler
+// hijacks it (as websocket.Accept does): StateHijacked is documented as
+// terminal and never transitions to StateClosed. So this is the only
+// portable way to prove handleControl's defer actually ran, rather than
+// relying on the OS having torn the socket down anyway once the client
+// disconnected.
+type closeTrackingConn struct {
+	net.Conn
+	closed *int32
+}
+
+func (c *closeTrackingConn) Close() error {
+	atomic.StoreInt32(c.closed, 1)
+	return c.Conn.Close()
+}
+
+type closeTrackingListener struct {
+	net.Listener
+	closed *int32 // single-connection use only: the one client this test dials
+}
+
+func (l *closeTrackingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &closeTrackingConn{Conn: c, closed: l.closed}, nil
+}
+
+// TestAgentServer_ControlConnClosedOnReadError is the regression test for
+// handleControl leaking the control WebSocket's fd on every exit path
+// except the eviction one (which already closed explicitly via
+// agent.Close). An abrupt client-side disconnect drives the server's read
+// loop to its readErr branch, which used to return without closing ws at
+// all.
+func TestAgentServer_ControlConnClosedOnReadError(t *testing.T) {
+	k := generateTestKey(t)
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+
+	var closed int32
+	srv := httptest.NewUnstartedServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv.Listener = &closeTrackingListener{Listener: srv.Listener, closed: &closed}
+	srv.StartTLS()
+	defer srv.Close()
+
+	ws := dialControl(t, srv)
+	resp := registerOverControl(t, ws, signedRegisterRequest(t, k, "home", "n1"))
+	if resp.Error != "" {
+		t.Fatalf("registration failed: %+v", resp)
+	}
+
+	// Abrupt close (no WS close handshake): the server's blocking ws.Read in
+	// its read-loop goroutine sees an error immediately, taking the readErr
+	// exit branch.
+	ws.CloseNow()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadInt32(&closed) == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&closed) == 0 {
+		t.Fatal("server never closed its side of the control connection after the client disconnected")
 	}
 }
 
