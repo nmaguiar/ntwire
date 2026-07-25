@@ -81,7 +81,12 @@ func (p *publicListener) handle(c net.Conn) {
 
 	name, ok := resolveTenant(sni, p.domain)
 	if !ok {
-		return // no SNI, malformed label, or wrong domain suffix: reset, no default tenant
+		// Reset with no reply either way, but log it: LoadConfig validates
+		// domain and registration names as DNS labels, so a mismatch here
+		// in practice means a client is using the wrong SNI, not a
+		// misconfigured relay -- worth being able to tell apart.
+		p.log.Debug("public listener: sni did not resolve to a tenant", "sni", sni, "domain", p.domain)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), p.limits.DialBackTimeout)

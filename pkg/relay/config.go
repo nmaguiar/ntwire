@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/logging"
@@ -101,6 +102,16 @@ func LoadConfig(path string) (Config, error) {
 	if c.Domain == "" {
 		return c, fmt.Errorf("domain is required")
 	}
+	// resolveTenant (public.go) compares the ClientHello SNI -- already
+	// lowercased and trailing-dot-trimmed by peekClientHello -- against
+	// this domain with a case-sensitive suffix match. An un-normalized
+	// domain here (mixed case, or a stray trailing dot) would never match
+	// any real SNI, silently resetting every client connection with no log
+	// line to explain why.
+	c.Domain = normalizeSNI(c.Domain)
+	if c.Domain == "" || strings.HasPrefix(c.Domain, ".") || strings.HasSuffix(c.Domain, ".") || strings.Contains(c.Domain, "..") {
+		return c, fmt.Errorf("domain %q is not a valid DNS name", c.Domain)
+	}
 	if c.Limits.HandshakeTimeout == 0 {
 		c.Limits.HandshakeTimeout = 5 * time.Second
 	}
@@ -120,6 +131,14 @@ func LoadConfig(path string) (Config, error) {
 	for _, r := range c.Registrations {
 		if r.Name == "" || r.PublicKey == "" {
 			return c, fmt.Errorf("registrations require name and public_key")
+		}
+		// resolveTenant (public.go) only ever matches a lowercase
+		// [a-z0-9-]+ label against the SNI's leading component. A name
+		// that fails validLabel here would register successfully and then
+		// never match any client connection, again with nothing logged to
+		// explain the silent reset.
+		if !validLabel(r.Name) {
+			return c, fmt.Errorf("registration name %q must be a lowercase DNS label ([a-z0-9-]+)", r.Name)
 		}
 		if seen[r.Name] {
 			return c, fmt.Errorf("duplicate registration name %q", r.Name)
