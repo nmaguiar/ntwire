@@ -20,6 +20,7 @@ import (
 func main() {
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
+	printVersion := flag.Bool("version", false, "print the build version and exit")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
 	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
@@ -31,10 +32,15 @@ func main() {
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
+				"ntwire-server -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
 	}
 	flag.Parse()
+	if *printVersion {
+		fmt.Println(buildinfo.String())
+		return
+	}
 	if *printSampleConfig {
 		fmt.Print(server.SampleConfig())
 		return
