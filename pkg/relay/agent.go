@@ -58,7 +58,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 		ws.Close(websocket.StatusPolicyViolation, "invalid registration message")
 		return
 	}
-	name, regErr := a.registry.Register(req)
+	name, fingerprint, regErr := a.registry.Register(req)
 	if regErr != nil {
 		b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Error: regErr.Message, Code: regErr.Code})
 		_ = ws.Write(ctx, websocket.MessageText, b)
@@ -68,7 +68,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	var writeMu sync.Mutex
 	var closeOnce sync.Once
-	agent := &Agent{Name: name}
+	agent := &Agent{Name: name, Fingerprint: fingerprint}
 	agent.Push = func(open protocol.RelayOpen) error {
 		b, err := json.Marshal(open)
 		if err != nil {

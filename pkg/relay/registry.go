@@ -36,6 +36,10 @@ type Limits struct {
 // Agent is a live control connection for one registered tenant name.
 type Agent struct {
 	Name string
+	// Fingerprint is the registering key's fingerprint, recorded so a
+	// config reload can evict this agent if its name's registration has
+	// since been rebound to a different key (see ReplaceRegistrations).
+	Fingerprint string
 	// Push delivers a RelayOpen over the control connection.
 	Push func(protocol.RelayOpen) error
 	// Close tears down the control connection. Idempotent.
@@ -120,43 +124,44 @@ func (r *Registry) useNonceLocked(n string) bool {
 }
 
 // Register verifies a RelayRegisterRequest against the configured
-// registrations and returns the authoritative tenant name on success. The
-// verification order is: protocol version, timestamp window, nonce replay,
-// fingerprint known, signature valid, then the wire-supplied name checked
-// against the fingerprint's configured name (never the reverse).
-func (r *Registry) Register(req protocol.RelayRegisterRequest) (string, *RegisterError) {
+// registrations and returns the authoritative tenant name and the
+// registering key's fingerprint on success. The verification order is:
+// protocol version, timestamp window, nonce replay, fingerprint known,
+// signature valid, then the wire-supplied name checked against the
+// fingerprint's configured name (never the reverse).
+func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprint string, regErr *RegisterError) {
 	if req.Version != protocol.Version {
-		return "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
+		return "", "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
 	}
 	ts, err := protocol.ParseTimestamp(req.Timestamp)
 	if err != nil || time.Since(ts) > 2*time.Minute || time.Until(ts) > 2*time.Minute {
-		return "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
+		return "", "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
 	}
 	r.mu.Lock()
 	nonceOK := r.useNonceLocked(req.Nonce)
 	r.mu.Unlock()
 	if !nonceOK {
-		return "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
+		return "", "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
 	}
 	key, _, err := sshkey.ParsePublicString(req.PublicKey)
 	if err != nil {
-		return "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unrecognized public key"}
+		return "", "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unrecognized public key"}
 	}
 	fp := sshkey.Fingerprint(key)
 	r.mu.Lock()
 	reg, known := r.byFingerprint[fp]
 	r.mu.Unlock()
 	if !known {
-		return "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unknown public key"}
+		return "", "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unknown public key"}
 	}
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil || sshkey.Verify(reg.PublicKey, payload, req.Signature) != nil {
-		return "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
+		return "", "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
 	}
 	if req.Name != reg.Name {
-		return "", &RegisterError{Code: protocol.ErrorRelayNameNotAllowed, Message: "name does not match this key's registration"}
+		return "", "", &RegisterError{Code: protocol.ErrorRelayNameNotAllowed, Message: "name does not match this key's registration"}
 	}
-	return reg.Name, nil
+	return reg.Name, fp, nil
 }
 
 // RegisterAgent binds agent as the live control connection for name,
@@ -287,22 +292,30 @@ func (r *Registry) cancelPending(connID string) {
 }
 
 // ReplaceRegistrations swaps the configured name/key set for a config
-// reload. A name that disappears from the new set has its live agent (if
-// any) evicted immediately, mirroring pkg/server's Reload, which drops
-// sessions for a fingerprint no longer in authorized_keys_dir rather than
-// waiting for a future touch.
+// reload. A live agent is evicted immediately if its name disappears from
+// the new set, or if its name is rebound to a different key -- mirroring
+// pkg/server's Reload, which drops sessions for a fingerprint no longer
+// authorized rather than waiting for a future touch. Evicting by name alone
+// would leave a compromised server's control connection live indefinitely
+// across a key rotation that kept the same name, since it never
+// re-registers on its own.
 func (r *Registry) ReplaceRegistrations(registrations []Registration) {
 	r.mu.Lock()
 	byFP := map[string]Registration{}
-	names := map[string]bool{}
+	fpByName := map[string]string{}
 	for _, reg := range registrations {
-		byFP[sshkey.Fingerprint(reg.PublicKey)] = reg
-		names[reg.Name] = true
+		fp := sshkey.Fingerprint(reg.PublicKey)
+		byFP[fp] = reg
+		fpByName[reg.Name] = fp
 	}
 	r.byFingerprint = byFP
 	var evicted []*Agent
 	for name, t := range r.tenants {
-		if !names[name] && t.agent != nil {
+		if t.agent == nil {
+			continue
+		}
+		newFP, stillRegistered := fpByName[name]
+		if !stillRegistered || newFP != t.agent.Fingerprint {
 			evicted = append(evicted, t.agent)
 			t.agent = nil
 		}

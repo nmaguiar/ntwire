@@ -385,6 +385,37 @@ func TestRelay_RegistrationsReloadEvictsRemovedTenant(t *testing.T) {
 	}
 }
 
+// TestRelay_RegistrationsReloadEvictsRotatedKey is the regression test for
+// key rotation not taking effect on reload: ReplaceRegistrations used to
+// evict by name alone, so rotating a compromised key while keeping the same
+// name left the compromised server's control connection live indefinitely
+// -- it never re-registers on its own, so the new key was never checked.
+func TestRelay_RegistrationsReloadEvictsRotatedKey(t *testing.T) {
+	oldKey := generateTestKey(t)
+	newKey := generateTestKey(t)
+	relay := testRelayConfig(t, "relay.test", []RegistrationConfig{{Name: "home", PublicKey: oldKey.line}})
+
+	dialBack, originFP := startOrigin(t, "home.relay.test", "hello from home")
+	runFakeAgent(t, relay.AgentsAddr().String(), oldKey, "home", dialBack)
+	time.Sleep(50 * time.Millisecond)
+
+	conn, err := dialClientThroughRelay(relay.PublicAddr().String(), "home.relay.test", originFP)
+	if err != nil {
+		t.Fatalf("expected initial connection to succeed: %v", err)
+	}
+	conn.Close()
+
+	// Rotate the key for "home" without the old agent ever re-registering.
+	if err := relay.ReloadRegistrations([]RegistrationConfig{{Name: "home", PublicKey: newKey.line}}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+
+	if _, err := dialClientThroughRelay(relay.PublicAddr().String(), "home.relay.test", originFP); err == nil {
+		t.Fatal("expected the old key's agent to be evicted once its name was rebound to a different key")
+	}
+}
+
 func TestRelay_SampleConfigParses(t *testing.T) {
 	tmp := t.TempDir() + "/relay.yaml"
 	if err := os.WriteFile(tmp, []byte(SampleConfig()), 0600); err != nil {

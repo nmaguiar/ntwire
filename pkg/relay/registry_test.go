@@ -68,7 +68,7 @@ func TestRegistry_RegisterSuccess(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "nonce-1")
-	name, err := reg.Register(req)
+	name, _, err := reg.Register(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestRegistry_RegisterUnknownKey(t *testing.T) {
 	other := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, other, "home", "nonce-1")
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorUnknownKey {
 		t.Fatalf("err = %v, want unknown_key", err)
 	}
@@ -93,7 +93,7 @@ func TestRegistry_RegisterBadSignature(t *testing.T) {
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "nonce-1")
 	req.Signature = req.Signature[:len(req.Signature)-4] + "abcd"
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorBadSignature {
 		t.Fatalf("err = %v, want bad_signature", err)
 	}
@@ -103,7 +103,7 @@ func TestRegistry_RegisterNameMismatch(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "not-home", "nonce-1")
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorRelayNameNotAllowed {
 		t.Fatalf("err = %v, want relay_name_not_allowed", err)
 	}
@@ -113,13 +113,13 @@ func TestRegistry_RegisterReplayedNonce(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "reused-nonce")
-	if _, err := reg.Register(req); err != nil {
+	if _, _, err := reg.Register(req); err != nil {
 		t.Fatalf("first registration failed: %v", err)
 	}
 	req2 := signedRegisterRequest(t, k, "home", "reused-nonce")
 	req2.Timestamp = req.Timestamp
 	req2.Signature = req.Signature
-	if _, err := reg.Register(req2); err == nil || err.Code != protocol.ErrorReplayedNonce {
+	if _, _, err := reg.Register(req2); err == nil || err.Code != protocol.ErrorReplayedNonce {
 		t.Fatalf("err = %v, want replayed_nonce", err)
 	}
 }
@@ -133,7 +133,7 @@ func TestRegistry_RegisterClockSkew(t *testing.T) {
 	}
 	p, _ := protocol.RelayRegisterPayload(req)
 	req.Signature, _ = sshkey.SignFile(k.path, p)
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorClockSkew {
 		t.Fatalf("err = %v, want clock_skew", err)
 	}
