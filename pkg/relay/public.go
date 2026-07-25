@@ -30,16 +30,34 @@ func newPublicListener(registry *Registry, domain string, limits Limits, maxNewC
 	return &publicListener{registry: registry, domain: domain, limits: limits, rate: newRateLimiter(maxNewConnsPerMinute), log: log}
 }
 
+// serve mirrors the backoff net/http.Server.Serve applies to its own accept
+// loop: retry indefinitely on any error other than the listener being
+// closed, backing off from 5ms to a 1s cap so a run of failures (e.g.
+// EMFILE) doesn't spin, and resetting once accepts succeed again. Returning
+// on a transient error here would silently stop serving every tenant for
+// the life of the process while the agents listener keeps accepting
+// registrations -- the accept loop is the one thing that must not give up.
 func (p *publicListener) serve(ln net.Listener) {
+	var delay time.Duration
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			p.log.Warn("public listener accept error", "error", err)
-			return
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else {
+				delay *= 2
+			}
+			if delay > time.Second {
+				delay = time.Second
+			}
+			p.log.Warn("public listener accept error; retrying", "error", err, "retry_in", delay)
+			time.Sleep(delay)
+			continue
 		}
+		delay = 0
 		go p.handle(c)
 	}
 }
