@@ -99,6 +99,35 @@ func (l *sequencedListener) Accept() (net.Conn, error) {
 func (l *sequencedListener) Close() error   { return nil }
 func (l *sequencedListener) Addr() net.Addr { return fakeAddr("127.0.0.1:0") }
 
+// TestSplice_ClosesBothSidesWhenEitherDirectionFinishes is the regression
+// test for splice waiting on both io.Copy directions independently: if the
+// origin (back) finishes its response and closes cleanly while the client
+// (c) has simply gone silent without sending a FIN -- asleep, network-
+// partitioned, whatever -- the direction reading from the client blocks
+// forever with nothing left to unblock it, pinning the pair, their fds, and
+// the tenant's live-connection slot for good.
+func TestSplice_ClosesBothSidesWhenEitherDirectionFinishes(t *testing.T) {
+	clientConn, _ := net.Pipe() // the client's peer end is discarded: it
+	// never reads or writes again, simulating a
+	// vanished client that sends no FIN.
+	backConn, testBack := net.Pipe()
+
+	done := make(chan struct{})
+	go func() {
+		splice(clientConn, backConn)
+		close(done)
+	}()
+
+	// The origin finishes and closes its side cleanly.
+	testBack.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("splice never returned: the origin closing its side should force-close the client side too, unblocking its stalled read")
+	}
+}
+
 // TestPublicListener_SurvivesTransientAcceptError is the regression test for
 // serve returning on any accept error: before the fix, a single transient
 // failure (EMFILE, ECONNABORTED, ...) permanently stopped the public

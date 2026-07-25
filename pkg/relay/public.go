@@ -137,11 +137,20 @@ func validLabel(s string) bool {
 	return true
 }
 
+// splice copies bytes bidirectionally until either direction returns, then
+// closes both connections so the other direction unblocks too. Waiting for
+// both to return independently (the prior behavior) meant a client that
+// vanished without a FIN left io.Copy(back, c) blocked on a read from c
+// forever, pinning the pair, their fds, and the tenant's live-connection
+// slot. Closing on the first return is safe in this specific topology: back
+// is a WebSocket-backed net.Conn with no CloseWrite, so half-close can never
+// propagate to the origin server regardless -- there is no half-close state
+// this could cut short.
 func splice(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(a, b) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(b, a) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(a, b); _ = a.Close(); _ = b.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(b, a); _ = a.Close(); _ = b.Close() }()
 	wg.Wait()
 }
 
