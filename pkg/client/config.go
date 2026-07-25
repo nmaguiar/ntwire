@@ -1,17 +1,12 @@
 package client
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
-	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,37 +49,7 @@ func defaultIdentityFile(home string) string {
 // GenerateIdentity writes an Ed25519 private key and OpenSSH public key.
 // It never overwrites an existing key pair.
 func GenerateIdentity(path string) (string, error) {
-	if path == "" {
-		return "", fmt.Errorf("identity path is required")
-	}
-	if _, err := os.Stat(path); err == nil {
-		return "", fmt.Errorf("refusing to overwrite existing key %s", path)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return "", err
-	}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return "", err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return "", err
-	}
-	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
-		return "", err
-	}
-	k, err := ssh.NewPublicKey(pub)
-	if err != nil {
-		return "", err
-	}
-	if err = os.WriteFile(path+".pub", ssh.MarshalAuthorizedKey(k), 0644); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	return sshkey.Fingerprint(k), nil
+	return sshkey.GenerateIdentityFile(path)
 }
 
 // Settings is the optional persistent configuration stored at

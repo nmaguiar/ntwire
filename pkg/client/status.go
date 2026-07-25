@@ -11,8 +11,11 @@ import (
 // Status is a local, non-secret record for the currently running connect
 // process. It intentionally contains neither SSH keys nor session tokens.
 type Status struct {
-	PID            int      `json:"pid"`
-	Server         string   `json:"server"`
+	PID    int    `json:"pid"`
+	Server string `json:"server"`
+	// Name is Connection.DisplayName(): the operator-configured listen.name,
+	// or the host:port connected to when that was left unset.
+	Name           string   `json:"name,omitempty"`
 	UIURL          string   `json:"ui_url"`
 	LocalAddresses []string `json:"local_addresses"`
 	UpdatedAt      string   `json:"updated_at"`

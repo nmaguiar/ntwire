@@ -8,11 +8,13 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/server"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -20,7 +22,7 @@ import (
 func main() {
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
-	printVersion := flag.Bool("version", false, "print the build version and exit")
+	generateRelayKey := flag.String("generate-relay-key", "", "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
 	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
@@ -32,7 +34,7 @@ func main() {
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
-				"ntwire-server -version",
+				"ntwire-server -generate-relay-key relay_id_ed25519",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
 	}
@@ -44,6 +46,9 @@ func main() {
 	if *printSampleConfig {
 		fmt.Print(server.SampleConfig())
 		return
+	}
+	if *generateRelayKey != "" {
+		generateRelayKeyAndExit(*generateRelayKey, ui.New(os.Stdout, os.Stderr, *noColor))
 	}
 
 	caps := ui.Detect(os.Stderr, *noColor)
@@ -130,4 +135,50 @@ func main() {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// generateRelayKeyAndExit creates the Ed25519 identity relay.identity_file
+// points at -- a key separate from auth.authorized_keys_dir, used only to
+// sign this server's registration with an ntwire-relay (see PLAN-RELAY.md
+// and docs/RELAY.md) -- and prints the two follow-up edits an operator needs
+// to wire it in: a registrations[] entry on the relay, and the relay: block
+// here. It never touches *config, since relay.enabled with no
+// identity_file yet is exactly the state LoadConfig rejects.
+func generateRelayKeyAndExit(path string, u *ui.UI) {
+	fingerprint, err := sshkey.GenerateIdentityFile(path)
+	if err != nil {
+		u.Errorf("generate-relay-key: %v", err)
+		os.Exit(1)
+	}
+	pub, err := os.ReadFile(path + ".pub")
+	if err != nil {
+		u.Errorf("generate-relay-key: %v", err)
+		os.Exit(1)
+	}
+	u.Success("Relay identity created: %s (fingerprint %s)", path, fingerprint)
+	fmt.Fprintf(u.Out, `
+This key only authenticates this server's registration with an
+ntwire-relay; it is unrelated to auth.authorized_keys_dir and this
+server's own TLS certificate (which is generated automatically).
+
+1. Give the relay operator this authorized_keys line to add as a
+   registrations[] entry in ntwire-relay.yaml, choosing <name> as the
+   first DNS label this server will be reached at (<name>.<relay domain>):
+
+     - name: <name>
+       public_key: "%s"
+
+2. In this server's config, add:
+
+     relay:
+       enabled: true
+       url: "wss://<relay-host>:<relay listen.agents port>"
+       name: <name>                 # must match the registrations[] entry above
+       identity_file: %s
+       fingerprint: ""              # optional SHA256:... pin of the relay's own
+                                     # cert, obtained from the relay operator
+
+See docs/RELAY.md for the full walkthrough.
+`, strings.TrimSpace(string(pub)), path)
+	os.Exit(0)
 }

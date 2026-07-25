@@ -482,6 +482,27 @@ type Connection struct {
 	latencyMillis  atomic.Uint64
 }
 
+// DisplayName returns the operator-configured listen.name this server
+// advertised (protocol.AuthResponse.ServerName), or, when it left that unset,
+// the host:port the client connected to. It lets logs, the CLI, and the local
+// status UI tell apart several ntwire connections running at once.
+func (c *Connection) DisplayName() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.displayName()
+}
+
+// displayName is DisplayName without locking c.mu; callers must hold it.
+func (c *Connection) displayName() string {
+	if c.Response.ServerName != "" {
+		return c.Response.ServerName
+	}
+	if u, err := urlpkg.Parse(c.base); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return c.base
+}
+
 // TunnelStats is the traffic observed by a local listener for one tunnel.
 // BytesToTunnel flow from the local application to the remote virtual port;
 // BytesFromTunnel flow in the opposite direction.
@@ -592,7 +613,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if useWS {
 		transport = "websocket"
 	}
-	c.log.Debug("control-plane session established", "transport", transport, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
+	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
 	for _, t := range r.Tunnels {
 		p, explicitPort := options.Ports[t.Name]
 		if !explicitPort {
@@ -750,7 +771,7 @@ func (c *Connection) ReplacePort(name string, port int) (string, error) {
 
 func (c *Connection) writeCurrentStatus() error {
 	c.mu.Lock()
-	s := Status{PID: os.Getpid(), Server: c.base, UIURL: c.UIURL, LocalAddresses: append([]string(nil), c.LocalAddresses...)}
+	s := Status{PID: os.Getpid(), Server: c.base, Name: c.displayName(), UIURL: c.UIURL, LocalAddresses: append([]string(nil), c.LocalAddresses...)}
 	c.mu.Unlock()
 	return writeStatus(c.statusFile, s)
 }
@@ -777,18 +798,18 @@ func (c *Connection) renewLoop() {
 		for delay := time.Second; ; delay = min(delay*2, time.Minute) {
 			if err := c.renew(); err == nil || c.reconnect() == nil {
 				if delay > time.Second {
-					c.log.Warn("control-plane connection reconnected")
+					c.log.Warn("control-plane connection reconnected", "server", c.DisplayName())
 				}
 				c.mu.Lock()
 				newTTL := c.Response.TTLSeconds
 				c.mu.Unlock()
-				c.log.Debug("control-plane session renewed", "ttl_seconds", newTTL)
+				c.log.Debug("control-plane session renewed", "server", c.DisplayName(), "ttl_seconds", newTTL)
 				break
 			}
 			if delay == time.Second {
-				c.log.Warn("control-plane renewal failed; reconnecting", "retry_in", delay)
+				c.log.Warn("control-plane renewal failed; reconnecting", "server", c.DisplayName(), "retry_in", delay)
 			} else {
-				c.log.Debug("control-plane reconnect failed", "retry_in", delay)
+				c.log.Debug("control-plane reconnect failed", "server", c.DisplayName(), "retry_in", delay)
 			}
 			select {
 			case <-c.stop:
@@ -967,8 +988,12 @@ type WebTunnel struct {
 // status UI (see Connection.webStatus and FetchWebStatus), exported so
 // other callers (e.g. the CLI's list/status commands) can decode it.
 type WebStatus struct {
-	Connected     bool        `json:"connected"`
-	Server        string      `json:"server"`
+	Connected bool   `json:"connected"`
+	Server    string `json:"server"`
+	// ServerName is Connection.DisplayName(): the operator-configured
+	// listen.name, or the host:port connected to when that was left unset.
+	// It is what the status UI shows to tell several running clients apart.
+	ServerName    string      `json:"server_name"`
 	Tunnels       []WebTunnel `json:"tunnels"`
 	TTLSeconds    int         `json:"ttl_seconds"`
 	LatencyMillis uint64      `json:"latency_millis"`
@@ -985,7 +1010,7 @@ func (c *Connection) webStatus() WebStatus {
 		wt.Description = granted[t.name].Description
 		tunnels = append(tunnels, wt)
 	}
-	return WebStatus{Connected: c.Stack != nil, Server: c.base, Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	return WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
 }
 
 // grantedByName indexes the tunnels the server granted this session by name.

@@ -49,7 +49,10 @@ registrations:
 ```
 
 Point wildcard DNS (`*.relay.example.com`) at the host running `listen.public`,
-and give each registered server its own key with `ntwire keygen -o relay_id_ed25519`.
+and give each registered server its own key. On that server, run
+`ntwire-server -generate-relay-key relay_id_ed25519`: it creates the key pair
+and prints the `public_key` line to add above, plus the matching `relay:`
+block described next.
 
 The sample config also includes a `log:` section (text/json format, log
 level); see [LOGGING.md](LOGGING.md) for the full reference.

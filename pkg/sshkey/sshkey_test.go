@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"os"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -79,6 +80,42 @@ func TestEncryptedKeyRequiresPassphrase(t *testing.T) {
 	}
 	if err = Verify(parsed, []byte("ntwire"), sig); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGenerateIdentityFileRoundTripsThroughPublicFromPrivateAndSignFile(t *testing.T) {
+	path := t.TempDir() + "/relay_id_ed25519"
+	fingerprint, err := GenerateIdentityFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubLine, err := PublicFromPrivate(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _, err := ParsePublicString(pubLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if Fingerprint(parsed) != fingerprint {
+		t.Fatalf("Fingerprint(parsed) = %q, want %q", Fingerprint(parsed), fingerprint)
+	}
+	onDisk, err := os.ReadFile(path + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(onDisk)) != pubLine {
+		t.Fatalf(".pub file %q does not match PublicFromPrivate %q", onDisk, pubLine)
+	}
+	sig, err := SignFile(path, []byte("ntwire-relay-register-v1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = Verify(parsed, []byte("ntwire-relay-register-v1"), sig); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = GenerateIdentityFile(path); err == nil {
+		t.Fatal("GenerateIdentityFile should refuse to overwrite an existing key")
 	}
 }
 

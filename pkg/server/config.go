@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/instructions"
@@ -23,6 +24,11 @@ type Config struct {
 		HTTPS     string `yaml:"https"`
 		WireGuard string `yaml:"wireguard"`
 		Metrics   string `yaml:"metrics"`
+		// Name is an optional friendly label advertised to clients in
+		// AuthResponse.ServerName, so a client running a local status UI for
+		// several servers at once can tell them apart. Clients that get an
+		// empty name fall back to displaying the host:port they connected to.
+		Name string `yaml:"name"`
 	} `yaml:"listen"`
 	Auth struct {
 		AuthorizedKeysDir string        `yaml:"authorized_keys_dir"`
@@ -166,6 +172,7 @@ listen:
   https: ":8443"                         # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
   metrics: ""                             # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
+  name: ""                                # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -194,7 +201,7 @@ relay:
   enabled: false                          # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)
   url: ""                                 # wss://relay.example.com:8444, the relay's listen.agents endpoint
   name: home                              # tenant label; must match this key's registrations[] entry on the relay
-  identity_file: /etc/ntwire/relay_id_ed25519 # private key used to sign relay registration, separate from auth.authorized_keys_dir
+  identity_file: /etc/ntwire/relay_id_ed25519 # private key used to sign relay registration, separate from auth.authorized_keys_dir; generate with: ntwire-server -generate-relay-key /etc/ntwire/relay_id_ed25519
   fingerprint: ""                         # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
   reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
   reconnect_max: 1m                        # backoff ceiling; default: 1m
@@ -276,6 +283,7 @@ func LoadConfig(path string) (Config, error) {
 	if c.Listen.WireGuard == "" {
 		c.Listen.WireGuard = ":51820"
 	}
+	c.Listen.Name = strings.TrimSpace(c.Listen.Name)
 	if c.Auth.SessionTTL == 0 {
 		c.Auth.SessionTTL = 15 * time.Minute
 	}

@@ -91,6 +91,10 @@ type AuthResponse struct {
 	WebSocket       string   `json:"websocket_endpoint,omitempty"`
 	Identity        string   `json:"identity,omitempty"`
 	Method          string   `json:"method,omitempty"`
+	// ServerName is the operator-configured listen.name, letting a client
+	// distinguish several servers it is connected to at once. Empty when
+	// unset; clients fall back to the host:port they connected to.
+	ServerName string `json:"server_name,omitempty"`
 }
 type RenewRequest struct {
 	Info ClientInfo `json:"client_info"`
