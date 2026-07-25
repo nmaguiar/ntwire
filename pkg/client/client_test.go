@@ -300,3 +300,14 @@ func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
 		t.Fatalf("addressing lost on renew: %+v", c.Response)
 	}
 }
+
+func TestDisplayNameFallsBackToHostPortWhenServerNameUnset(t *testing.T) {
+	c := &Connection{base: "https://localhost:8443"}
+	if got := c.DisplayName(); got != "localhost:8443" {
+		t.Fatalf("DisplayName() = %q, want host:port fallback", got)
+	}
+	c.Response.ServerName = "home"
+	if got := c.DisplayName(); got != "home" {
+		t.Fatalf("DisplayName() = %q, want configured server name", got)
+	}
+}

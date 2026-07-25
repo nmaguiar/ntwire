@@ -13,6 +13,7 @@ listen:
   https: ":8443"                        # TLS control API (auth, renew, disconnect) and WebSocket fallback
   wireguard: ":51820"                   # UDP listener for the userspace WireGuard data plane; default shown
   metrics: "127.0.0.1:9090"              # optional plaintext metrics and token-protected dashboard listener; empty disables it
+  name: ""                              # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
 tls:
   cert_file: ""                         # PEM certificate; empty generates an in-memory self-signed cert (see SECURITY.md)
   key_file: ""                          # PEM private key; required together with cert_file
