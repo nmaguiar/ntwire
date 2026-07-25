@@ -30,16 +30,34 @@ func newPublicListener(registry *Registry, domain string, limits Limits, maxNewC
 	return &publicListener{registry: registry, domain: domain, limits: limits, rate: newRateLimiter(maxNewConnsPerMinute), log: log}
 }
 
+// serve mirrors the backoff net/http.Server.Serve applies to its own accept
+// loop: retry indefinitely on any error other than the listener being
+// closed, backing off from 5ms to a 1s cap so a run of failures (e.g.
+// EMFILE) doesn't spin, and resetting once accepts succeed again. Returning
+// on a transient error here would silently stop serving every tenant for
+// the life of the process while the agents listener keeps accepting
+// registrations -- the accept loop is the one thing that must not give up.
 func (p *publicListener) serve(ln net.Listener) {
+	var delay time.Duration
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
-			p.log.Warn("public listener accept error", "error", err)
-			return
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else {
+				delay *= 2
+			}
+			if delay > time.Second {
+				delay = time.Second
+			}
+			p.log.Warn("public listener accept error; retrying", "error", err, "retry_in", delay)
+			time.Sleep(delay)
+			continue
 		}
+		delay = 0
 		go p.handle(c)
 	}
 }
@@ -63,7 +81,12 @@ func (p *publicListener) handle(c net.Conn) {
 
 	name, ok := resolveTenant(sni, p.domain)
 	if !ok {
-		return // no SNI, malformed label, or wrong domain suffix: reset, no default tenant
+		// Reset with no reply either way, but log it: LoadConfig validates
+		// domain and registration names as DNS labels, so a mismatch here
+		// in practice means a client is using the wrong SNI, not a
+		// misconfigured relay -- worth being able to tell apart.
+		p.log.Debug("public listener: sni did not resolve to a tenant", "sni", sni, "domain", p.domain)
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), p.limits.DialBackTimeout)
@@ -114,11 +137,20 @@ func validLabel(s string) bool {
 	return true
 }
 
+// splice copies bytes bidirectionally until either direction returns, then
+// closes both connections so the other direction unblocks too. Waiting for
+// both to return independently (the prior behavior) meant a client that
+// vanished without a FIN left io.Copy(back, c) blocked on a read from c
+// forever, pinning the pair, their fds, and the tenant's live-connection
+// slot. Closing on the first return is safe in this specific topology: back
+// is a WebSocket-backed net.Conn with no CloseWrite, so half-close can never
+// propagate to the origin server regardless -- there is no half-close state
+// this could cut short.
 func splice(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(a, b) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(b, a) }()
+	go func() { defer wg.Done(); _, _ = io.Copy(a, b); _ = a.Close(); _ = b.Close() }()
+	go func() { defer wg.Done(); _, _ = io.Copy(b, a); _ = a.Close(); _ = b.Close() }()
 	wg.Wait()
 }
 

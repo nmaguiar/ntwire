@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"os"
 	"testing"
@@ -67,7 +68,7 @@ func TestRegistry_RegisterSuccess(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "nonce-1")
-	name, err := reg.Register(req)
+	name, _, err := reg.Register(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestRegistry_RegisterUnknownKey(t *testing.T) {
 	other := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, other, "home", "nonce-1")
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorUnknownKey {
 		t.Fatalf("err = %v, want unknown_key", err)
 	}
@@ -92,7 +93,7 @@ func TestRegistry_RegisterBadSignature(t *testing.T) {
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "nonce-1")
 	req.Signature = req.Signature[:len(req.Signature)-4] + "abcd"
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorBadSignature {
 		t.Fatalf("err = %v, want bad_signature", err)
 	}
@@ -102,7 +103,7 @@ func TestRegistry_RegisterNameMismatch(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "not-home", "nonce-1")
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorRelayNameNotAllowed {
 		t.Fatalf("err = %v, want relay_name_not_allowed", err)
 	}
@@ -112,14 +113,70 @@ func TestRegistry_RegisterReplayedNonce(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 	req := signedRegisterRequest(t, k, "home", "reused-nonce")
-	if _, err := reg.Register(req); err != nil {
+	if _, _, err := reg.Register(req); err != nil {
 		t.Fatalf("first registration failed: %v", err)
 	}
 	req2 := signedRegisterRequest(t, k, "home", "reused-nonce")
 	req2.Timestamp = req.Timestamp
 	req2.Signature = req.Signature
-	if _, err := reg.Register(req2); err == nil || err.Code != protocol.ErrorReplayedNonce {
+	if _, _, err := reg.Register(req2); err == nil || err.Code != protocol.ErrorReplayedNonce {
 		t.Fatalf("err = %v, want replayed_nonce", err)
+	}
+}
+
+// TestRegistry_UnauthenticatedRequestDoesNotConsumeNonce is the regression
+// test for Register consuming a nonce before verifying the signature: any
+// peer that could merely reach listen.agents could burn nonce cache
+// entries -- retained for 5 minutes -- without ever presenting a valid key.
+// A nonce used by a request that fails authentication (bad signature, or an
+// unknown key entirely) must still be available to a subsequent,
+// legitimately authenticated request.
+func TestRegistry_UnauthenticatedRequestDoesNotConsumeNonce(t *testing.T) {
+	k := generateTestKey(t)
+	other := generateTestKey(t)
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+
+	t.Run("bad signature", func(t *testing.T) {
+		bad := signedRegisterRequest(t, k, "home", "nonce-bad-sig")
+		bad.Signature = bad.Signature[:len(bad.Signature)-4] + "abcd"
+		if _, _, err := reg.Register(bad); err == nil || err.Code != protocol.ErrorBadSignature {
+			t.Fatalf("err = %v, want bad_signature", err)
+		}
+		good := signedRegisterRequest(t, k, "home", "nonce-bad-sig")
+		if _, _, err := reg.Register(good); err != nil {
+			t.Fatalf("reusing a nonce from a failed-signature attempt was rejected: %v", err)
+		}
+	})
+
+	t.Run("unknown key", func(t *testing.T) {
+		unknown := signedRegisterRequest(t, other, "home", "nonce-unknown-key")
+		if _, _, err := reg.Register(unknown); err == nil || err.Code != protocol.ErrorUnknownKey {
+			t.Fatalf("err = %v, want unknown_key", err)
+		}
+		good := signedRegisterRequest(t, k, "home", "nonce-unknown-key")
+		if _, _, err := reg.Register(good); err != nil {
+			t.Fatalf("reusing a nonce from an unknown-key attempt was rejected: %v", err)
+		}
+	})
+}
+
+// TestRegistry_NonceMapStaysCapped is the regression test for useNonceLocked
+// having no size backstop beyond its 5-minute expiry: registering many
+// distinct nonces within one window must not grow the map unboundedly.
+func TestRegistry_NonceMapStaysCapped(t *testing.T) {
+	k := generateTestKey(t)
+	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+	for i := 0; i < maxNonces+500; i++ {
+		req := signedRegisterRequest(t, k, "home", fmt.Sprintf("nonce-%d", i))
+		if _, _, err := reg.Register(req); err != nil {
+			t.Fatalf("registration %d failed: %v", i, err)
+		}
+	}
+	reg.mu.Lock()
+	n := len(reg.nonces)
+	reg.mu.Unlock()
+	if n > maxNonces {
+		t.Fatalf("nonce map grew to %d entries, want <= %d", n, maxNonces)
 	}
 }
 
@@ -132,7 +189,7 @@ func TestRegistry_RegisterClockSkew(t *testing.T) {
 	}
 	p, _ := protocol.RelayRegisterPayload(req)
 	req.Signature, _ = sshkey.SignFile(k.path, p)
-	_, err := reg.Register(req)
+	_, _, err := reg.Register(req)
 	if err == nil || err.Code != protocol.ErrorClockSkew {
 		t.Fatalf("err = %v, want clock_skew", err)
 	}
@@ -187,12 +244,12 @@ func TestRegistry_OpenRedeemHappyPath(t *testing.T) {
 		t.Fatalf("unexpected RelayOpen: %+v", pushed)
 	}
 
-	deliver, ok := reg.Redeem(pushed.ConnID)
+	handoff, ok := reg.Redeem(pushed.ConnID)
 	if !ok {
 		t.Fatal("Redeem failed on a fresh conn_id")
 	}
 	want := &fakeConn{}
-	deliver <- want
+	handoff.Deliver <- want
 
 	if err := <-errCh; err != nil {
 		t.Fatalf("Open returned error: %v", err)
@@ -204,6 +261,86 @@ func TestRegistry_OpenRedeemHappyPath(t *testing.T) {
 	// Single-use: redeeming again must fail.
 	if _, ok := reg.Redeem(pushed.ConnID); ok {
 		t.Fatal("conn_id was redeemable a second time")
+	}
+}
+
+// TestRegistry_HandoffAbandonedByTimeoutIsNotDeliverable is the regression
+// test for the handleData handoff leak: Redeem can win the race against
+// Open's own dial-back timeout, handing agent.go's handleData a live
+// Handoff for a conn_id whose Open has already given up. Before Handoff.Done
+// existed, handleData would still send into Deliver's one-slot buffer with
+// nobody ever left to read or close it -- a permanent fd leak, once per lost
+// race.
+//
+// This drives Registry directly rather than through a real HTTP/WebSocket
+// round trip: in production the window between Redeem succeeding and
+// handleData attempting delivery is only the time to complete a WS
+// handshake, far faster than any DialBackTimeout, so forcing that exact
+// interleaving deterministically over real sockets would itself be racy.
+// Redeeming immediately after the push and only then waiting for Open to
+// time out reproduces the same ordering without the flakiness.
+func TestRegistry_HandoffAbandonedByTimeoutIsNotDeliverable(t *testing.T) {
+	limits := Limits{DialBackTimeout: 30 * time.Millisecond, MaxPendingPerServer: 2, MaxConnsPerServer: 2}
+	reg := NewRegistry(nil, limits)
+	pushedCh := make(chan protocol.RelayOpen, 1)
+	agent := &Agent{Name: "home", Push: func(o protocol.RelayOpen) error { pushedCh <- o; return nil }, Close: func() {}}
+	reg.RegisterAgent("home", agent)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := reg.Open(context.Background(), "home", "203.0.113.5:1234", "home.relay.test")
+		errCh <- err
+	}()
+
+	var pushed protocol.RelayOpen
+	select {
+	case pushed = <-pushedCh:
+	case <-time.After(time.Second):
+		t.Fatal("RelayOpen never pushed")
+	}
+
+	handoff, ok := reg.Redeem(pushed.ConnID)
+	if !ok {
+		t.Fatal("Redeem failed on a fresh conn_id")
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected Open to time out")
+	}
+
+	// The fix: handleData's actual delivery logic (agent.go), reproduced
+	// verbatim. With Open already abandoned, the priority check must take
+	// the Done branch and never reach the send at all.
+	conn := &fakeConn{}
+	delivered := false
+	select {
+	case <-handoff.Done:
+		conn.Close()
+	default:
+		select {
+		case handoff.Deliver <- conn:
+			delivered = true
+		case <-handoff.Done:
+			conn.Close()
+		}
+	}
+	if delivered {
+		t.Fatal("delivered into a channel nobody will ever read: this is the fd leak Done exists to prevent")
+	}
+	if !conn.closed {
+		t.Fatal("abandoned connection was not closed")
+	}
+
+	// Counterfactual: the pre-fix behavior was an unconditional send with no
+	// Done check at all. Confirm that naive send still succeeds into the
+	// buffer in this exact scenario -- proving the check above is load
+	// bearing, not incidentally passing because the buffer would have
+	// rejected it anyway.
+	naiveConn := &fakeConn{}
+	select {
+	case handoff.Deliver <- naiveConn:
+	default:
+		t.Fatal("expected the one-slot buffer to still accept an unconditional send (demonstrating why Done is required)")
 	}
 }
 
@@ -259,6 +396,98 @@ func TestRegistry_MaxPendingPerServer(t *testing.T) {
 	_, err := reg.Open(context.Background(), "home", "2.2.2.2:2", "home.relay.test")
 	if err != ErrTenantAtCapacity {
 		t.Fatalf("err = %v, want ErrTenantAtCapacity", err)
+	}
+}
+
+// TestRegistry_MaxConnsPerServerHoldsAcrossRedeemedConnections is the
+// discriminating regression test for the pending double-decrement bug
+// (registry.go's Open success branch used to decrement pending a second time
+// after Redeem already had). TestRegistry_MaxPendingPerServer never redeems,
+// so it cannot see this: the bug only manifests once connections complete
+// the full Open->Redeem->deliver->Release cycle, at which point pending
+// drifts negative and both max_pending_per_server and max_conns_per_server
+// stop rejecting anything. This test fails against the pre-fix code.
+func TestRegistry_MaxConnsPerServerHoldsAcrossRedeemedConnections(t *testing.T) {
+	limits := Limits{DialBackTimeout: 500 * time.Millisecond, MaxPendingPerServer: 10, MaxConnsPerServer: 2}
+	reg := NewRegistry(nil, limits)
+	noopPush := func(protocol.RelayOpen) error { return nil }
+	agent := &Agent{Name: "home", Push: noopPush, Close: func() {}}
+	reg.RegisterAgent("home", agent)
+
+	// openRedeemDeliver installs a one-shot Push wrapper to capture the
+	// conn_id, then restores agent.Push to the harmless noop before
+	// returning. It must not accumulate wrapper layers across calls: a
+	// permanently-nested Push, still holding earlier calls' now-unread
+	// buffered channels, deadlocks the later concurrent phase below the
+	// moment two saturating Opens land on the same stale channel.
+	openRedeemDeliver := func() net.Conn {
+		t.Helper()
+		pushedCh := make(chan protocol.RelayOpen, 1)
+		agent.Push = func(o protocol.RelayOpen) error { pushedCh <- o; return nil }
+
+		resultCh := make(chan net.Conn, 1)
+		go func() {
+			c, _ := reg.Open(context.Background(), "home", "203.0.113.5:1234", "home.relay.test")
+			resultCh <- c
+		}()
+
+		var pushed protocol.RelayOpen
+		select {
+		case pushed = <-pushedCh:
+		case <-time.After(time.Second):
+			t.Fatal("RelayOpen never pushed")
+		}
+		agent.Push = noopPush
+
+		handoff, ok := reg.Redeem(pushed.ConnID)
+		if !ok {
+			t.Fatal("Redeem failed on a fresh conn_id")
+		}
+		conn := &fakeConn{}
+		handoff.Deliver <- conn
+		got := <-resultCh
+		if got != conn {
+			t.Fatal("Open did not return the delivered connection")
+		}
+		return got
+	}
+
+	// Fully cycle MaxConnsPerServer connections through Open/Redeem/Release.
+	// Under the pre-fix code, pending goes negative each time this succeeds,
+	// so the concurrent, never-redeemed opens below (which must reject once
+	// the cap is reached) instead keep succeeding.
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		openRedeemDeliver()
+		reg.Release("home")
+	}
+
+	reg.mu.Lock()
+	ts := reg.tenants["home"]
+	if ts.pending != 0 || ts.live != 0 {
+		t.Fatalf("counters did not return to zero after full cycles: pending=%d live=%d", ts.pending, ts.live)
+	}
+	reg.mu.Unlock()
+
+	// Saturate the tenant with MaxConnsPerServer concurrent, never-redeemed
+	// opens (each holds a pending slot for the whole DialBackTimeout), then
+	// assert the next Open is rejected immediately with ErrTenantAtCapacity
+	// rather than blocking for a timeout. Concurrency matters: sequential
+	// calls would each time out on their own and mask the counter bug.
+	errCh := make(chan error, limits.MaxConnsPerServer)
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		go func(i int) {
+			_, err := reg.Open(context.Background(), "home", fmt.Sprintf("203.0.113.%d:1", i), "home.relay.test")
+			errCh <- err
+		}(i)
+	}
+	time.Sleep(50 * time.Millisecond) // let all saturating opens register their pending slot
+
+	_, err := reg.Open(context.Background(), "home", "203.0.113.99:1", "home.relay.test")
+	if err != ErrTenantAtCapacity {
+		t.Fatalf("err = %v, want ErrTenantAtCapacity once pending+live reaches MaxConnsPerServer", err)
+	}
+	for i := 0; i < limits.MaxConnsPerServer; i++ {
+		<-errCh // drain the saturating opens' eventual timeouts
 	}
 }
 

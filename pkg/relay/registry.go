@@ -36,6 +36,10 @@ type Limits struct {
 // Agent is a live control connection for one registered tenant name.
 type Agent struct {
 	Name string
+	// Fingerprint is the registering key's fingerprint, recorded so a
+	// config reload can evict this agent if its name's registration has
+	// since been rebound to a different key (see ReplaceRegistrations).
+	Fingerprint string
 	// Push delivers a RelayOpen over the control connection.
 	Push func(protocol.RelayOpen) error
 	// Close tears down the control connection. Idempotent.
@@ -60,7 +64,17 @@ type tenantState struct {
 type pendingConn struct {
 	name    string
 	ch      chan net.Conn
+	done    chan struct{} // closed by Open if it abandons before Redeem delivers
 	expires time.Time
+}
+
+// Handoff is what Redeem hands the agents listener: the channel to deliver
+// the freshly dialed-back connection on, and a signal that the original
+// Open has already given up (timed out or had its context canceled) and
+// will never read from Deliver again.
+type Handoff struct {
+	Deliver chan<- net.Conn
+	Done    <-chan struct{}
 }
 
 // Registry tracks configured tenant registrations, their live control
@@ -92,6 +106,15 @@ func NewRegistry(registrations []Registration, limits Limits) *Registry {
 	return r
 }
 
+// maxNonces backstops useNonceLocked's normal 5-minute expiry: it bounds
+// memory if an authenticated peer (the only kind that can reach this point
+// post-reorder, see Register) registers with an unusual number of distinct
+// nonces within one window.
+const maxNonces = 4096
+
+// useNonceLocked records n as seen, evicting expired entries and -- if still
+// over maxNonces afterward -- the single oldest surviving entry as a
+// backstop.
 func (r *Registry) useNonceLocked(n string) bool {
 	if n == "" {
 		return false
@@ -101,52 +124,67 @@ func (r *Registry) useNonceLocked(n string) bool {
 	}
 	now := time.Now()
 	r.nonces[n] = now
+	var oldestKey string
+	var oldestTime time.Time
+	haveOldest := false
 	for k, v := range r.nonces {
 		if now.Sub(v) > 5*time.Minute {
 			delete(r.nonces, k)
+			continue
 		}
+		if !haveOldest || v.Before(oldestTime) {
+			oldestKey, oldestTime, haveOldest = k, v, true
+		}
+	}
+	if len(r.nonces) > maxNonces && haveOldest {
+		delete(r.nonces, oldestKey)
 	}
 	return true
 }
 
 // Register verifies a RelayRegisterRequest against the configured
-// registrations and returns the authoritative tenant name on success. The
-// verification order is: protocol version, timestamp window, nonce replay,
-// fingerprint known, signature valid, then the wire-supplied name checked
-// against the fingerprint's configured name (never the reverse).
-func (r *Registry) Register(req protocol.RelayRegisterRequest) (string, *RegisterError) {
+// registrations and returns the authoritative tenant name and the
+// registering key's fingerprint on success. The verification order is:
+// protocol version, timestamp window, fingerprint known, signature valid,
+// nonce replay, then the wire-supplied name checked against the
+// fingerprint's configured name (never the reverse). Nonce replay is
+// checked only after the signature verifies, not before: consuming a nonce
+// slot for an unauthenticated request would let anyone who can merely reach
+// listen.agents exhaust the (5-minute, size-capped) nonce cache without
+// ever presenting a valid key.
+func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprint string, regErr *RegisterError) {
 	if req.Version != protocol.Version {
-		return "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
+		return "", "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
 	}
 	ts, err := protocol.ParseTimestamp(req.Timestamp)
 	if err != nil || time.Since(ts) > 2*time.Minute || time.Until(ts) > 2*time.Minute {
-		return "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
-	}
-	r.mu.Lock()
-	nonceOK := r.useNonceLocked(req.Nonce)
-	r.mu.Unlock()
-	if !nonceOK {
-		return "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
+		return "", "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
 	}
 	key, _, err := sshkey.ParsePublicString(req.PublicKey)
 	if err != nil {
-		return "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unrecognized public key"}
+		return "", "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unrecognized public key"}
 	}
 	fp := sshkey.Fingerprint(key)
 	r.mu.Lock()
 	reg, known := r.byFingerprint[fp]
 	r.mu.Unlock()
 	if !known {
-		return "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unknown public key"}
+		return "", "", &RegisterError{Code: protocol.ErrorUnknownKey, Message: "unknown public key"}
 	}
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil || sshkey.Verify(reg.PublicKey, payload, req.Signature) != nil {
-		return "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
+		return "", "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
+	}
+	r.mu.Lock()
+	nonceOK := r.useNonceLocked(req.Nonce)
+	r.mu.Unlock()
+	if !nonceOK {
+		return "", "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
 	}
 	if req.Name != reg.Name {
-		return "", &RegisterError{Code: protocol.ErrorRelayNameNotAllowed, Message: "name does not match this key's registration"}
+		return "", "", &RegisterError{Code: protocol.ErrorRelayNameNotAllowed, Message: "name does not match this key's registration"}
 	}
-	return reg.Name, nil
+	return reg.Name, fp, nil
 }
 
 // RegisterAgent binds agent as the live control connection for name,
@@ -209,7 +247,8 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 		return nil, err
 	}
 	ch := make(chan net.Conn, 1)
-	r.pending[connID] = &pendingConn{name: name, ch: ch, expires: time.Now().Add(r.limits.DialBackTimeout)}
+	done := make(chan struct{})
+	r.pending[connID] = &pendingConn{name: name, ch: ch, done: done, expires: time.Now().Add(r.limits.DialBackTimeout)}
 	t.pending++
 	agent := t.agent
 	r.mu.Unlock()
@@ -223,9 +262,10 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 	defer timer.Stop()
 	select {
 	case conn := <-ch:
+		// Redeem already decremented pending for this conn_id; only account
+		// the new live connection here.
 		r.mu.Lock()
 		if ts := r.tenants[name]; ts != nil {
-			ts.pending--
 			ts.live++
 		}
 		r.mu.Unlock()
@@ -233,10 +273,12 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 	case <-timer.C:
 		r.cancelPending(connID)
 		drainPending(ch)
+		close(done)
 		return nil, fmt.Errorf("dial-back timed out")
 	case <-ctx.Done():
 		r.cancelPending(connID)
 		drainPending(ch)
+		close(done)
 		return nil, ctx.Err()
 	}
 }
@@ -273,22 +315,30 @@ func (r *Registry) cancelPending(connID string) {
 }
 
 // ReplaceRegistrations swaps the configured name/key set for a config
-// reload. A name that disappears from the new set has its live agent (if
-// any) evicted immediately, mirroring pkg/server's Reload, which drops
-// sessions for a fingerprint no longer in authorized_keys_dir rather than
-// waiting for a future touch.
+// reload. A live agent is evicted immediately if its name disappears from
+// the new set, or if its name is rebound to a different key -- mirroring
+// pkg/server's Reload, which drops sessions for a fingerprint no longer
+// authorized rather than waiting for a future touch. Evicting by name alone
+// would leave a compromised server's control connection live indefinitely
+// across a key rotation that kept the same name, since it never
+// re-registers on its own.
 func (r *Registry) ReplaceRegistrations(registrations []Registration) {
 	r.mu.Lock()
 	byFP := map[string]Registration{}
-	names := map[string]bool{}
+	fpByName := map[string]string{}
 	for _, reg := range registrations {
-		byFP[sshkey.Fingerprint(reg.PublicKey)] = reg
-		names[reg.Name] = true
+		fp := sshkey.Fingerprint(reg.PublicKey)
+		byFP[fp] = reg
+		fpByName[reg.Name] = fp
 	}
 	r.byFingerprint = byFP
 	var evicted []*Agent
 	for name, t := range r.tenants {
-		if !names[name] && t.agent != nil {
+		if t.agent == nil {
+			continue
+		}
+		newFP, stillRegistered := fpByName[name]
+		if !stillRegistered || newFP != t.agent.Fingerprint {
 			evicted = append(evicted, t.agent)
 			t.agent = nil
 		}
@@ -299,10 +349,11 @@ func (r *Registry) ReplaceRegistrations(registrations []Registration) {
 	}
 }
 
-// Redeem consumes a single-use conn_id, returning the channel to deliver the
-// freshly dialed-back data connection to. It fails for an unknown, already
-// redeemed, or expired conn_id.
-func (r *Registry) Redeem(connID string) (chan<- net.Conn, bool) {
+// Redeem consumes a single-use conn_id, returning a Handoff carrying the
+// channel to deliver the freshly dialed-back data connection to and a
+// signal for whether the original Open has already given up. It fails for
+// an unknown, already redeemed, or expired conn_id.
+func (r *Registry) Redeem(connID string) (Handoff, bool) {
 	r.mu.Lock()
 	p, exists := r.pending[connID]
 	if exists {
@@ -313,9 +364,9 @@ func (r *Registry) Redeem(connID string) (chan<- net.Conn, bool) {
 	}
 	r.mu.Unlock()
 	if !exists || time.Now().After(p.expires) {
-		return nil, false
+		return Handoff{}, false
 	}
-	return p.ch, true
+	return Handoff{Deliver: p.ch, Done: p.done}, true
 }
 
 func randomConnID() (string, error) {

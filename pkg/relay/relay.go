@@ -47,7 +47,7 @@ func New(cfg Config, log *slog.Logger) (*Relay, error) {
 	return &Relay{
 		cfg:      cfg,
 		registry: registry,
-		agents:   newAgentServer(registry, cfg.Domain),
+		agents:   newAgentServer(registry, cfg.Domain, limits),
 		public:   newPublicListener(registry, cfg.Domain, limits, cfg.Limits.MaxNewConnsPerMinute, log),
 		log:      log,
 	}, nil

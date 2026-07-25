@@ -17,10 +17,11 @@ import (
 type agentServer struct {
 	registry *Registry
 	domain   string
+	limits   Limits
 }
 
-func newAgentServer(registry *Registry, domain string) *agentServer {
-	return &agentServer{registry: registry, domain: domain}
+func newAgentServer(registry *Registry, domain string, limits Limits) *agentServer {
+	return &agentServer{registry: registry, domain: domain, limits: limits}
 }
 
 func (a *agentServer) Handler() http.Handler {
@@ -39,6 +40,12 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	// The ping-failure, read-error, and ctx.Done exits below all return
+	// without closing ws explicitly, leaking its fd on every agent
+	// disconnect and reconnect. CloseNow is a no-op after an explicit Close
+	// (registration failure, or agent.Close on eviction/Push failure), so
+	// this is safe to defer unconditionally.
+	defer ws.CloseNow()
 	ctx := r.Context()
 
 	_, data, err := ws.Read(ctx)
@@ -51,7 +58,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 		ws.Close(websocket.StatusPolicyViolation, "invalid registration message")
 		return
 	}
-	name, regErr := a.registry.Register(req)
+	name, fingerprint, regErr := a.registry.Register(req)
 	if regErr != nil {
 		b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Error: regErr.Message, Code: regErr.Code})
 		_ = ws.Write(ctx, websocket.MessageText, b)
@@ -61,15 +68,25 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	var writeMu sync.Mutex
 	var closeOnce sync.Once
-	agent := &Agent{Name: name}
+	agent := &Agent{Name: name, Fingerprint: fingerprint}
 	agent.Push = func(open protocol.RelayOpen) error {
 		b, err := json.Marshal(open)
 		if err != nil {
 			return err
 		}
+		// Bound the write so a stalled agent socket cannot block the
+		// public-listener goroutine calling Push, nor hold writeMu long
+		// enough to starve the keepalive ping below. Released before Close
+		// is invoked on failure, since Close itself writes a close frame.
+		pctx, cancel := context.WithTimeout(context.Background(), a.limits.DialBackTimeout)
+		defer cancel()
 		writeMu.Lock()
-		defer writeMu.Unlock()
-		return ws.Write(context.Background(), websocket.MessageText, b)
+		err = ws.Write(pctx, websocket.MessageText, b)
+		writeMu.Unlock()
+		if err != nil {
+			agent.Close()
+		}
+		return err
 	}
 	agent.Close = func() {
 		closeOnce.Do(func() { ws.Close(websocket.StatusNormalClosure, "replaced") })
@@ -128,7 +145,7 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing conn_id", http.StatusBadRequest)
 		return
 	}
-	deliver, ok := a.registry.Redeem(connID)
+	handoff, ok := a.registry.Redeem(connID)
 	if !ok {
 		http.Error(w, "unknown or expired conn_id", http.StatusNotFound)
 		return
@@ -138,5 +155,21 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
-	deliver <- conn
+
+	// Open may have already abandoned this conn_id (dial-back timeout or a
+	// canceled context) while the handshake above was in flight. Check
+	// first, non-blocking: Deliver's one-slot buffer would otherwise accept
+	// the send even with nobody left to ever read and close it, leaking the
+	// connection's fd for the life of the process.
+	select {
+	case <-handoff.Done:
+		conn.Close()
+		return
+	default:
+	}
+	select {
+	case handoff.Deliver <- conn:
+	case <-handoff.Done:
+		conn.Close()
+	}
 }
