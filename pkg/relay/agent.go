@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -18,6 +19,22 @@ type agentServer struct {
 	registry *Registry
 	domain   string
 	limits   Limits
+}
+
+// handoffConn lets handleData keep its hijacked HTTP handler alive until the
+// public relay side finishes splicing the connection. Returning immediately
+// after websocket.Accept can let net/http clean up request state underneath a
+// still-live WebSocket-backed net.Conn.
+type handoffConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func (c *handoffConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { close(c.done) })
+	return err
 }
 
 func newAgentServer(registry *Registry, domain string, limits Limits) *agentServer {
@@ -154,7 +171,7 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	conn := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
+	conn := &handoffConn{Conn: websocket.NetConn(context.Background(), ws, websocket.MessageBinary), done: make(chan struct{})}
 
 	// Open may have already abandoned this conn_id (dial-back timeout or a
 	// canceled context) while the handshake above was in flight. Check
@@ -171,5 +188,11 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 	case handoff.Deliver <- conn:
 	case <-handoff.Done:
 		conn.Close()
+		return
 	}
+
+	// websocket.Accept hijacks the HTTP connection. Keep this handler alive
+	// for that connection's lifetime; its peer calls conn.Close when the
+	// public splice ends, which releases this goroutine too.
+	<-conn.done
 }
