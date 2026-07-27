@@ -23,8 +23,8 @@ trap cleanup EXIT INT TERM
 
 export E2E_STATE_DIR="$e2e_state"
 export E2E_DIRECT_NETWORK="$e2e_direct_network"
-docker network create "$e2e_direct_network" >/dev/null
-e2e_direct_subnet=$(docker network inspect --format '{{(index .IPAM.Config 0).Subnet}}' "$e2e_direct_network")
+e2e_direct_subnet="192.168.200.0/24"
+docker network create --subnet="$e2e_direct_subnet" "$e2e_direct_network" >/dev/null
 e2e_direct_server_ip="${e2e_direct_subnet%%/*}"
 e2e_direct_server_ip="${e2e_direct_server_ip%.*}.2"
 export E2E_DIRECT_SERVER_IP="$e2e_direct_server_ip"
