@@ -14,13 +14,15 @@ services:
     networks:
       target: {}
       direct:
-        ipv4_address: 172.31.240.2
+        ipv4_address: ${E2E_DIRECT_SERVER_IP}
 
   relay:
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.relay
     command: ["-config", "/e2e/relay.yaml"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
     volumes:
       - ${E2E_STATE_DIR}:/e2e:ro
     networks:
@@ -33,6 +35,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     command: ["-config", "/e2e/relayed-server.yaml"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
     volumes:
       - ${E2E_STATE_DIR}:/e2e:ro
     networks: [target, relay-agent]
@@ -54,6 +58,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.client
     command: ["connect", "--no-browser", "--known-servers", "/e2e/relay-known-servers.yaml", "-i", "/e2e/client-id", "https://home.relay.test:9443"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
     restart: on-failure
     volumes:
       - ${E2E_STATE_DIR}:/e2e:ro
@@ -67,9 +73,9 @@ services:
     command:
       - |
         i=0
-        while [ "$$i" -lt 90 ]; do
-          test "$$(curl -fsS --max-time 5 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
-          test "$$(curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+        while [ "$$i" -lt 3 ]; do
+          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
+          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
           i=$$((i + 1))
           sleep 1
         done
@@ -83,9 +89,9 @@ services:
     command:
       - |
         i=0
-        while [ "$$i" -lt 90 ]; do
-          test "$$(curl -fsS --max-time 5 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
-          test "$$(curl -fsS --max-time 5 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+        while [ "$$i" -lt 3 ]; do
+          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
+          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
           i=$$((i + 1))
           sleep 1
         done
@@ -96,8 +102,7 @@ services:
 networks:
   target: {}
   direct:
-    ipam:
-      config:
-        - subnet: 172.31.240.0/24
+    external: true
+    name: ${E2E_DIRECT_NETWORK}
   relay-agent: {}
   relay-public: {}

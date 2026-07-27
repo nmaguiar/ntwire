@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"math/big"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"time"
@@ -23,18 +24,19 @@ import (
 
 func main() {
 	out := flag.String("out", "", "directory for generated E2E fixtures")
+	directSubnet := flag.String("direct-subnet", "", "Docker subnet used by the direct server")
 	flag.Parse()
 	if *out == "" {
 		fmt.Fprintln(os.Stderr, "usage: fixtures -out directory")
 		os.Exit(2)
 	}
-	if err := generate(*out); err != nil {
+	if err := generate(*out, *directSubnet); err != nil {
 		fmt.Fprintln(os.Stderr, "generate E2E fixtures:", err)
 		os.Exit(1)
 	}
 }
 
-func generate(dir string) error {
+func generate(dir, directSubnet string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -100,7 +102,11 @@ func generate(dir string) error {
 	if err := writeFile(filepath.Join(dir, "relay-known-servers.yaml"), []byte(fmt.Sprintf("servers:\n  \"home.relay.test:9443\": %q\n", relayedFP)), 0644); err != nil {
 		return err
 	}
-	if err := writeFile(filepath.Join(dir, "direct-server.yaml"), []byte(directServerConfig()), 0644); err != nil {
+	directEndpoint, err := endpointForSubnet(directSubnet)
+	if err != nil {
+		return err
+	}
+	if err := writeFile(filepath.Join(dir, "direct-server.yaml"), []byte(directServerConfig(directEndpoint)), 0644); err != nil {
 		return err
 	}
 	if err := writeFile(filepath.Join(dir, "relayed-server.yaml"), []byte(relayedServerConfig(relayFP)), 0644); err != nil {
@@ -109,8 +115,8 @@ func generate(dir string) error {
 	return writeFile(filepath.Join(dir, "relay.yaml"), []byte(relayConfig(string(relayPublic))), 0644)
 }
 
-func directServerConfig() string {
-	return `tls:
+func directServerConfig(endpoint string) string {
+	return fmt.Sprintf(`tls:
   cert_file: /e2e/direct-server-cert.pem
   key_file: /e2e/direct-server-key.pem
 listen:
@@ -120,7 +126,7 @@ auth:
   authorized_keys_dir: /e2e/keys
 network:
   tunnel_cidr: 100.64.0.0/16
-  advertised_endpoint: 172.31.240.2:51820
+  advertised_endpoint: %s
 tunnels:
   - name: fixed-http
     target: dummy:8080
@@ -134,7 +140,19 @@ tunnels:
     allow: ["*"]
     socks:
       domain_filters: ["dummy"]
-`
+`, endpoint)
+}
+
+func endpointForSubnet(subnet string) (string, error) {
+	prefix, err := netip.ParsePrefix(subnet)
+	if err != nil {
+		return "", fmt.Errorf("parse direct subnet %q: %w", subnet, err)
+	}
+	ip := prefix.Addr().Next().Next()
+	if !prefix.Contains(ip) {
+		return "", fmt.Errorf("direct subnet %q has no usable server address", subnet)
+	}
+	return netip.AddrPortFrom(ip, 51820).String(), nil
 }
 
 func relayedServerConfig(relayFingerprint string) string {

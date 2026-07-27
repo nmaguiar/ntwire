@@ -51,7 +51,7 @@ init:
   goCache: /tmp/ntwire-gocache
 
 todo:
-  - (ask):
+- (ask):
     op: option.['all'|'build'|'client'|'server'|'relay'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
   ((question)): "Operation to perform:"
 - (optionOn): op

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -145,6 +146,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	}
 	b.peers[id] = p
 	b.mu.Unlock()
+	slog.Debug("WireGuard WebSocket peer connected", "peer", id, "remote", r.RemoteAddr)
 	go b.read(p)
 	// Keep the HTTP upgrade handler alive for the WebSocket's lifetime. This
 	// is essential when the underlying net.Conn itself is relayed through a
@@ -158,10 +160,12 @@ func (b *Bind) read(p *peer) {
 	defer func() {
 		b.remove(p)
 		close(p.done)
+		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
 	}()
 	for {
 		typ, data, err := p.ws.Read(context.Background())
 		if err != nil {
+			slog.Debug("WireGuard WebSocket read failed", "peer", p.id, "error", err)
 			return
 		}
 		if typ != websocket.MessageBinary {

@@ -355,6 +355,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	v, ok := s.sessions.Get(token)
 	if !ok {
+		s.log.Debug("WebSocket fallback rejected: invalid session")
 		http.Error(w, "invalid session", http.StatusUnauthorized)
 		return
 	}
@@ -362,6 +363,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	// renewal (which mints a new session ID) so the fallback connection the
 	// client opened once at Connect time keeps working after renewal instead
 	// of being torn down (see dropSession / renew).
+	s.log.Debug("WebSocket fallback connected", "session", v.ID, "wireguard_public_key", v.WireGuardPublicKey)
 	if err := s.data.ws.WebSocket.ServeHTTP(w, r, v.WireGuardPublicKey); err != nil {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}

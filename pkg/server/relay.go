@@ -76,6 +76,19 @@ type relayConn struct {
 
 func (c *relayConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
+func (c *relayConn) SetReadDeadline(t time.Time) error {
+	// net/http uses time.Unix(1, 0) internally while hijacking a connection
+	// to abort a possible background read. websocket.NetConn implements a
+	// deadline by cancelling its read context permanently, so forwarding that
+	// sentinel makes the WebSocket that was just upgraded unusable. There is
+	// no background read for a request being upgraded, so it is safe to leave
+	// this sentinel unforwarded; normal deadlines still reach the transport.
+	if t.Equal(time.Unix(1, 0)) {
+		return nil
+	}
+	return c.Conn.SetReadDeadline(t)
+}
+
 type stringAddr string
 
 func (a stringAddr) Network() string { return "tcp" }
