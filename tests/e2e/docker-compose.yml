@@ -2,7 +2,9 @@ services:
   dummy:
     image: hashicorp/http-echo:1.0
     command: ["-listen=:8080", "-text=ntwire-e2e-ok"]
-    networks: [target]
+    networks:
+      target:
+        ipv4_address: 172.30.250.10
 
   direct-server:
     build:
@@ -74,8 +76,15 @@ services:
       - |
         i=0
         while [ "$$i" -lt 3 ]; do
-          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
-          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+          (
+            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
+            host_pid=$$!
+            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18081)" = ntwire-e2e-ok &
+            ip_pid=$$!
+            test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok &
+            socks_pid=$$!
+            wait "$$host_pid" && wait "$$ip_pid" && wait "$$socks_pid"
+          ) && exit 0
           i=$$((i + 1))
           sleep 1
         done
@@ -90,8 +99,15 @@ services:
       - |
         i=0
         while [ "$$i" -lt 3 ]; do
-          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
-          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+          (
+            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
+            host_pid=$$!
+            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18081)" = ntwire-e2e-ok &
+            ip_pid=$$!
+            test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok &
+            socks_pid=$$!
+            wait "$$host_pid" && wait "$$ip_pid" && wait "$$socks_pid"
+          ) && exit 0
           i=$$((i + 1))
           sleep 1
         done
@@ -100,7 +116,10 @@ services:
     network_mode: service:relay-client
 
 networks:
-  target: {}
+  target:
+    ipam:
+      config:
+        - subnet: 172.30.250.0/24
   direct:
     external: true
     name: ${E2E_DIRECT_NETWORK}

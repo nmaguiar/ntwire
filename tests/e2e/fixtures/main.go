@@ -133,6 +133,11 @@ tunnels:
     virtual_port: 18080
     local_port: 18080
     allow: ["*"]
+  - name: fixed-ip-http
+    target: 172.30.250.10:8080
+    virtual_port: 18081
+    local_port: 18081
+    allow: ["*"]
   - name: socks-http
     target: socks
     virtual_port: 11080
@@ -179,6 +184,11 @@ tunnels:
     target: dummy:8080
     virtual_port: 18080
     local_port: 18080
+    allow: ["*"]
+  - name: fixed-ip-http
+    target: 172.30.250.10:8080
+    virtual_port: 18081
+    local_port: 18081
     allow: ["*"]
   - name: socks-http
     target: socks
