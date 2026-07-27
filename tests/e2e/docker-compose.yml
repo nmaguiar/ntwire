@@ -1,0 +1,108 @@
+services:
+  dummy:
+    image: hashicorp/http-echo:1.0
+    command: ["-listen=:8080", "-text=ntwire-e2e-ok"]
+    networks: [target]
+
+  direct-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["-config", "/e2e/direct-server.yaml"]
+    volumes:
+      - ${E2E_STATE_DIR}:/e2e:ro
+    networks:
+      target: {}
+      direct:
+        ipv4_address: ${E2E_DIRECT_SERVER_IP}
+
+  relay:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.relay
+    command: ["-config", "/e2e/relay.yaml"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
+    volumes:
+      - ${E2E_STATE_DIR}:/e2e:ro
+    networks:
+      relay-agent: {}
+      relay-public:
+        aliases: [home.relay.test]
+
+  relayed-server:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    command: ["-config", "/e2e/relayed-server.yaml"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
+    volumes:
+      - ${E2E_STATE_DIR}:/e2e:ro
+    networks: [target, relay-agent]
+
+  direct-client:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.client
+    command: ["connect", "--no-browser", "--known-servers", "/e2e/direct-known-servers.yaml", "-i", "/e2e/client-id", "https://direct-server:8443"]
+    restart: on-failure
+    volumes:
+      - ${E2E_STATE_DIR}:/e2e:ro
+      - ${E2E_STATE_DIR}/direct-client:/home/nonroot/.ntwire
+    depends_on: [direct-server]
+    networks: [direct]
+
+  relay-client:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.client
+    command: ["connect", "--no-browser", "--known-servers", "/e2e/relay-known-servers.yaml", "-i", "/e2e/client-id", "https://home.relay.test:9443"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
+    restart: on-failure
+    volumes:
+      - ${E2E_STATE_DIR}:/e2e:ro
+      - ${E2E_STATE_DIR}/relay-client:/home/nonroot/.ntwire
+    depends_on: [relay, relayed-server]
+    networks: [relay-public]
+
+  verify-direct:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        i=0
+        while [ "$$i" -lt 3 ]; do
+          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
+          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+          i=$$((i + 1))
+          sleep 1
+        done
+        exit 1
+    depends_on: [direct-client]
+    network_mode: service:direct-client
+
+  verify-relay:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        i=0
+        while [ "$$i" -lt 3 ]; do
+          test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok && \
+          test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok && exit 0
+          i=$$((i + 1))
+          sleep 1
+        done
+        exit 1
+    depends_on: [relay-client]
+    network_mode: service:relay-client
+
+networks:
+  target: {}
+  direct:
+    external: true
+    name: ${E2E_DIRECT_NETWORK}
+  relay-agent: {}
+  relay-public: {}

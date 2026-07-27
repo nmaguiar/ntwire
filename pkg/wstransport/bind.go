@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -37,6 +38,7 @@ type peer struct {
 	id       string
 	ws       *websocket.Conn
 	endpoint endpoint
+	done     chan struct{}
 }
 type endpoint struct {
 	id      string
@@ -97,7 +99,7 @@ func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 			b.open = false
 			return nil, 0, err
 		}
-		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(b.url)}}
+		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(b.url)}, done: make(chan struct{})}
 		b.peers[p.id] = p
 		go b.read(p)
 	}
@@ -137,22 +139,33 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	if err != nil {
 		return err
 	}
-	p := &peer{id: id, ws: ws, endpoint: endpoint{id: id, address: endpointAddress(r.RemoteAddr)}}
+	p := &peer{id: id, ws: ws, endpoint: endpoint{id: id, address: endpointAddress(r.RemoteAddr)}, done: make(chan struct{})}
 	b.mu.Lock()
 	if old := b.peers[id]; old != nil {
 		_ = old.ws.Close(websocket.StatusNormalClosure, "replaced")
 	}
 	b.peers[id] = p
 	b.mu.Unlock()
+	slog.Debug("WireGuard WebSocket peer connected", "peer", id, "remote", r.RemoteAddr)
 	go b.read(p)
+	// Keep the HTTP upgrade handler alive for the WebSocket's lifetime. This
+	// is essential when the underlying net.Conn itself is relayed through a
+	// second WebSocket: returning immediately lets net/http tear down request
+	// state beneath the still-active transport.
+	<-p.done
 	return nil
 }
 
 func (b *Bind) read(p *peer) {
-	defer b.remove(p)
+	defer func() {
+		b.remove(p)
+		close(p.done)
+		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
+	}()
 	for {
 		typ, data, err := p.ws.Read(context.Background())
 		if err != nil {
+			slog.Debug("WireGuard WebSocket read failed", "peer", p.id, "error", err)
 			return
 		}
 		if typ != websocket.MessageBinary {

@@ -233,6 +233,16 @@ manifests are covered in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See
 [AGENTS.md](AGENTS.md) for the full contributor workflow, coding style, and
 commit conventions.
 
+For a full local, containerized smoke test of direct UDP tunnels and relayed
+WebSocket tunnels (including fixed-target and SOCKS5 traffic), run:
+
+```sh
+ojob tasks.yaml op=e2e
+```
+
+It requires Docker Compose and cleans up its generated test credentials and
+containers automatically.
+
 ## Security
 
 Keep private keys, session tokens, signatures, and ID/refresh tokens out of

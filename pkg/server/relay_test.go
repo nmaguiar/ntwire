@@ -24,10 +24,15 @@ import (
 
 type fakeNetConn struct {
 	net.Conn
-	closed bool
+	closed        bool
+	readDeadlines []time.Time
 }
 
 func (f *fakeNetConn) Close() error { f.closed = true; return nil }
+func (f *fakeNetConn) SetReadDeadline(t time.Time) error {
+	f.readDeadlines = append(f.readDeadlines, t)
+	return nil
+}
 
 func TestRelayListener_AcceptYieldsPushedConnWithRelayReportedAddress(t *testing.T) {
 	l := newRelayListener()
@@ -51,6 +56,25 @@ func TestRelayListener_PushAfterCloseClosesConn(t *testing.T) {
 	l.push(c)
 	if !c.closed {
 		t.Fatal("push after Close should close the connection instead of blocking forever")
+	}
+}
+
+func TestRelayConn_DoesNotForwardHTTPHijackDeadline(t *testing.T) {
+	underlying := &fakeNetConn{}
+	c := &relayConn{Conn: underlying}
+	if err := c.SetReadDeadline(time.Unix(1, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.readDeadlines) != 0 {
+		t.Fatalf("hijack deadline was forwarded: %v", underlying.readDeadlines)
+	}
+
+	want := time.Now().Add(time.Minute).Round(0)
+	if err := c.SetReadDeadline(want); err != nil {
+		t.Fatal(err)
+	}
+	if len(underlying.readDeadlines) != 1 || !underlying.readDeadlines[0].Equal(want) {
+		t.Fatalf("forwarded deadlines = %v, want [%v]", underlying.readDeadlines, want)
 	}
 }
 

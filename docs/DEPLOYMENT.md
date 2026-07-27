@@ -45,6 +45,23 @@ It starts `ntwire-server` from `deploy/docker/Dockerfile` using
 forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 `op=compose-down` when finished.
 
+## End-to-end Docker test
+
+Docker Compose is also used for the repository's black-box E2E test:
+
+```sh
+ojob tasks.yaml op=e2e
+# or: tests/e2e/run.sh
+```
+
+It creates disposable keys, certificates, and configuration outside the
+working tree, then verifies both a direct UDP/WireGuard connection and a
+relayed WebSocket/WireGuard connection. Each path reaches the same dummy HTTP
+target through a fixed tunnel and an explicitly domain-filtered SOCKS5
+tunnel. The Compose networks isolate clients from the target, so a passing
+probe must traverse ntwire. The runner removes its temporary files and Docker
+resources automatically; on failure it prints the Compose logs.
+
 ### Client image
 
 The matching client image is built from `deploy/docker/Dockerfile.client` and
