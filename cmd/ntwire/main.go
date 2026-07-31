@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/clientopts"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -125,12 +126,10 @@ func clientLogger(verbose bool, caps ui.Capabilities) *slog.Logger {
 // reopens the browser (or device flow) instead of silently refreshing.
 func logout(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
-	fs := flag.NewFlagSet("logout", flag.ExitOnError)
-	fs.String("config", configPath, "persistent client configuration")
-	cache := fs.String("token-cache", "", "token cache file")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "clear cached SSO tokens for a server", "ntwire logout https://server:8443")
+	fs := clientopts.NewFlagSet("logout", clientopts.Defaults{Settings: settings, ConfigPath: configPath})
+	setUsage(fs.FlagSet, u, "clear cached SSO tokens for a server", "ntwire logout https://server:8443")
 	fs.Parse(args)
+	cache := fs.Str("token-cache")
 	server := settings.Server
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
@@ -139,7 +138,7 @@ func logout(args []string, u *ui.UI) {
 		u.Errorf("usage: ntwire logout https://server:8443")
 		os.Exit(2)
 	}
-	if err := client.Logout(*cache, server); err != nil {
+	if err := client.Logout(cache, server); err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
 	}
@@ -149,11 +148,10 @@ func logout(args []string, u *ui.UI) {
 // port replaces the local loopback port for a running tunnel. The connect
 // process owns the listener, so this uses its token-protected local status UI.
 func port(args []string, u *ui.UI) {
-	fs := flag.NewFlagSet("port", flag.ExitOnError)
-	path := fs.String("status-file", "", "local status file")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "replace a running tunnel's local port", "ntwire port reports=8080")
+	fs := clientopts.NewFlagSet("port", clientopts.Defaults{})
+	setUsage(fs.FlagSet, u, "replace a running tunnel's local port", "ntwire port reports=8080")
 	fs.Parse(args)
+	path := fs.Str("status-file")
 	if fs.NArg() != 1 {
 		u.Errorf("usage: ntwire port [--status-file path] name=local-port")
 		os.Exit(2)
@@ -168,7 +166,7 @@ func port(args []string, u *ui.UI) {
 		u.Errorf("invalid local port")
 		os.Exit(2)
 	}
-	s, err := client.ReadStatus(*path)
+	s, err := client.ReadStatus(path)
 	if err != nil {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
@@ -314,19 +312,18 @@ type statusJSON struct {
 }
 
 func status(args []string, u *ui.UI) {
-	fs := flag.NewFlagSet("status", flag.ExitOnError)
-	path := fs.String("status-file", "", "local status file")
-	jsonOut := fs.Bool("json", false, "output as JSON")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "show the running connection", "ntwire status")
+	fs := clientopts.NewFlagSet("status", clientopts.Defaults{})
+	setUsage(fs.FlagSet, u, "show the running connection", "ntwire status")
 	fs.Parse(args)
-	s, err := client.ReadStatus(*path)
+	path := fs.Str("status-file")
+	jsonOut := fs.BoolVal("json")
+	s, err := client.ReadStatus(path)
 	if err != nil {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
 	ws, wsErr := client.FetchWebStatus(s.UIURL)
-	if *jsonOut {
+	if jsonOut {
 		out := statusJSON{Status: s}
 		if wsErr == nil {
 			out.WebStatus = &ws
@@ -372,12 +369,11 @@ func status(args []string, u *ui.UI) {
 }
 
 func disconnect(args []string, u *ui.UI) {
-	fs := flag.NewFlagSet("disconnect", flag.ExitOnError)
-	path := fs.String("status-file", "", "local status file")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "stop the running connection", "ntwire disconnect")
+	fs := clientopts.NewFlagSet("disconnect", clientopts.Defaults{})
+	setUsage(fs.FlagSet, u, "stop the running connection", "ntwire disconnect")
 	fs.Parse(args)
-	s, err := client.ReadStatus(*path)
+	path := fs.Str("status-file")
+	s, err := client.ReadStatus(path)
 	if err != nil {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
@@ -394,82 +390,65 @@ func disconnect(args []string, u *ui.UI) {
 }
 func connect(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
-	fs := flag.NewFlagSet("connect", flag.ExitOnError)
-	verbose := fs.Bool("v", false, "show connection diagnostics")
-	fs.String("config", configPath, "persistent client configuration")
-	key := fs.String("i", settings.IdentityFile, "SSH private key")
-	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
-	insecure := fs.Bool("insecure", settings.Insecure, "skip TLS certificate verification")
-	known := fs.String("known-servers", "", "known servers file")
-	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open a browser (local status UI, and SSO login falls back to the device flow)")
-	sso := fs.Bool("sso", settings.SSO, "use SSO (OIDC) authentication instead of an SSH key")
-	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
-	tokenCache := fs.String("token-cache", "", "SSO token cache file")
-	websocket := fs.Bool("websocket", false, "use the WebSocket WireGuard transport")
-	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	mappings := multiFlag{}
-	fs.Var(&mappings, "port", "name=local-port (repeatable)")
-	setUsage(fs, u, "connect tunnels", "ntwire connect server.example", "ntwire connect --sso server.example")
+	fs := clientopts.NewFlagSet("connect", clientopts.Defaults{Settings: settings, ConfigPath: configPath})
+	setUsage(fs.FlagSet, u, "connect tunnels", "ntwire connect server.example", "ntwire connect --sso server.example")
 	fs.Parse(args)
+	verbose := fs.BoolVal("v")
+	key := fs.Str("i")
+	ca := fs.Str("ca")
+	insecure := fs.BoolVal("insecure")
+	known := fs.Str("known-servers")
+	noBrowser := fs.BoolVal("no-browser")
+	sso := fs.BoolVal("sso")
+	provider := fs.Str("provider")
+	tokenCache := fs.Str("token-cache")
+	websocket := fs.BoolVal("websocket")
+	collect := fs.Str("collect-exec")
+	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
-	if *key == "" && !*sso {
-		*key = client.DefaultIdentityFile()
-	}
+	key = resolveIdentityKey(key, sso, client.DefaultIdentityFile)
 	if server == "" || fs.NArg() > 1 {
 		u.Errorf("No server is configured.\n1. Run: ntwire keygen\n2. Send ~/.ntwire/id_ed25519.pub to your administrator\n3. Run: ntwire connect <server>")
 		os.Exit(2)
 	}
-	ports := map[string]int{}
-	for n, p := range settings.Ports {
-		ports[n] = p
+	ports, perr := mergePorts(settings.Ports, mappings)
+	if perr != nil {
+		u.Errorf("%v", perr)
+		os.Exit(2)
 	}
-	for _, m := range mappings {
-		parts := strings.SplitN(m, "=", 2)
-		if len(parts) != 2 {
-			u.Errorf("invalid --port")
-			os.Exit(2)
-		}
-		var p int
-		if _, e := fmt.Sscanf(parts[1], "%d", &p); e != nil || p < 1 || p > 65535 {
-			u.Errorf("invalid --port")
-			os.Exit(2)
-		}
-		ports[parts[0]] = p
-	}
-	info, e := collectedInfo(*collect)
+	info, e := collectedInfo(collect)
 	if e != nil {
 		u.Errorf("%v", e)
 		os.Exit(2)
 	}
-	passphrase, e := resolveKeyPassphrase(*key, u)
+	passphrase, e := resolveKeyPassphrase(key, u)
 	if e != nil {
 		u.Errorf("%v", e)
 		os.Exit(1)
 	}
 	o := client.Options{
-		Ports: ports, CAFile: *ca, Insecure: *insecure, KnownServersFile: *known, NoWebUI: *noBrowser, UseWebSocket: *websocket,
-		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache, KeyPassphrase: passphrase,
+		Ports: ports, CAFile: ca, Insecure: insecure, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
+		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 	}
-	o.Logger = clientLogger(*verbose, u.ErrCaps)
-	c, e := client.ConnectWithOptions(server, *key, info, o)
+	o.Logger = clientLogger(verbose, u.ErrCaps)
+	c, e := client.ConnectWithOptions(server, key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {
-		if !trustPrompt(unknown, *known) {
+		if !trustPrompt(unknown, known) {
 			u.Errorf("server certificate was not trusted")
 			os.Exit(1)
 		}
-		c, e = client.ConnectWithOptions(server, *key, info, o)
+		c, e = client.ConnectWithOptions(server, key, info, o)
 	}
 	if e != nil {
 		u.Errorf("%v", e)
 		os.Exit(1)
 	}
-	if !*insecure {
-		if changed, err := client.UpdateSettings(configPath, client.Settings{Server: server, IdentityFile: *key, SSO: c.AuthMethod() == "oidc", Provider: *provider}); err != nil {
+	if !insecure {
+		if changed, err := client.UpdateSettings(configPath, client.Settings{Server: server, IdentityFile: key, SSO: c.AuthMethod() == "oidc", Provider: provider}); err != nil {
 			u.Warn("could not save connection settings: %v", err)
 		} else if changed {
 			u.Info("saved connection settings to %s (next time just run: ntwire connect)", configPath)
@@ -491,71 +470,63 @@ func connect(args []string, u *ui.UI) {
 	<-ch
 }
 
-type multiFlag []string
-
-func (m *multiFlag) String() string     { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(v string) error { *m = append(*m, v); return nil }
 func list(args []string, u *ui.UI) {
 	settings, configPath := settingsFor(args)
-	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	verbose := fs.Bool("v", false, "show connection diagnostics")
-	fs.String("config", configPath, "persistent client configuration")
-	key := fs.String("i", settings.IdentityFile, "SSH private key")
-	ca := fs.String("ca", settings.CAFile, "PEM CA certificate")
-	insecure := fs.Bool("insecure", settings.Insecure, "skip TLS certificate verification")
-	known := fs.String("known-servers", "", "known servers file")
-	noBrowser := fs.Bool("no-browser", settings.NoBrowser, "do not open a browser; SSO login falls back to the device flow")
-	sso := fs.Bool("sso", settings.SSO, "use SSO (OIDC) authentication instead of an SSH key")
-	provider := fs.String("provider", settings.Provider, "oidc issuer name (when the server advertises more than one)")
-	tokenCache := fs.String("token-cache", "", "SSO token cache file")
-	collect := fs.String("collect-exec", settings.CollectExec, "command that emits JSON client-info fields")
-	statusFile := fs.String("status-file", "", "local status file")
-	jsonOut := fs.Bool("json", false, "output as JSON")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "show allowed tunnels", "ntwire list server.example")
+	fs := clientopts.NewFlagSet("list", clientopts.Defaults{Settings: settings, ConfigPath: configPath})
+	setUsage(fs.FlagSet, u, "show allowed tunnels", "ntwire list server.example")
 	fs.Parse(args)
+	verbose := fs.BoolVal("v")
+	key := fs.Str("i")
+	ca := fs.Str("ca")
+	insecure := fs.BoolVal("insecure")
+	known := fs.Str("known-servers")
+	noBrowser := fs.BoolVal("no-browser")
+	sso := fs.BoolVal("sso")
+	provider := fs.Str("provider")
+	tokenCache := fs.Str("token-cache")
+	collect := fs.Str("collect-exec")
+	statusFile := fs.Str("status-file")
+	jsonOut := fs.BoolVal("json")
 	server := settings.Server
 	if fs.NArg() == 1 {
 		server = fs.Arg(0)
 	}
-	if *key == "" && !*sso {
-		*key = client.DefaultIdentityFile()
-	}
+	key = resolveIdentityKey(key, sso, client.DefaultIdentityFile)
 	if server == "" || fs.NArg() > 1 {
 		u.Errorf("usage: ntwire list [-i key | --sso] https://server:8443")
 		os.Exit(2)
 	}
-	info, err := collectedInfo(*collect)
+	info, err := collectedInfo(collect)
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(2)
 	}
-	passphrase, err := resolveKeyPassphrase(*key, u)
+	passphrase, err := resolveKeyPassphrase(key, u)
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
 	}
 	o := client.Options{
-		CAFile: *ca, Insecure: *insecure, KnownServersFile: *known,
-		SSO: *sso, Provider: *provider, NoBrowser: *noBrowser, TokenCacheFile: *tokenCache,
+		CAFile: ca, Insecure: insecure, KnownServersFile: known,
+		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache,
 		QueryOnly: true, KeyPassphrase: passphrase,
 	}
-	o.Logger = clientLogger(*verbose, u.ErrCaps)
-	r, err := client.AuthenticateWithOptions(server, *key, info, o)
+	o.Logger = clientLogger(verbose, u.ErrCaps)
+	r, err := client.AuthenticateWithOptions(server, key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(err, &unknown) {
-		if !trustPrompt(unknown, *known) {
+		if !trustPrompt(unknown, known) {
 			u.Errorf("server certificate was not trusted")
 			os.Exit(1)
 		}
-		r, err = client.AuthenticateWithOptions(server, *key, info, o)
+		r, err = client.AuthenticateWithOptions(server, key, info, o)
 	}
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
 	}
 	if len(r.Tunnels) == 0 {
-		if *jsonOut {
+		if jsonOut {
 			fmt.Fprintln(u.Out, "[]")
 			u.Warn("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
 			return
@@ -563,8 +534,8 @@ func list(args []string, u *ui.UI) {
 		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", r.Identity)
 		return
 	}
-	live := liveTunnelStatus(server, *statusFile)
-	if *jsonOut {
+	live := liveTunnelStatus(server, statusFile)
+	if jsonOut {
 		entries := make([]listEntry, 0, len(r.Tunnels))
 		for _, tunnel := range r.Tunnels {
 			e := listEntry{Name: tunnel.Name, VirtualPort: tunnel.VirtualPort, LocalPort: tunnel.LocalPort, Description: tunnel.Description}
@@ -612,6 +583,42 @@ func settingsFor(args []string) (client.Settings, string) {
 		os.Exit(2)
 	}
 	return s, path
+}
+
+// resolveIdentityKey applies connect/list's "no explicit key and not using
+// SSO -> fall back to the default identity file" rule. An --sso caller
+// deliberately leaves key empty so client.ConnectWithOptions/
+// AuthenticateWithOptions know to authenticate via OIDC instead of a key.
+// defaultIdentityFile is injected so tests don't depend on the real home
+// directory.
+func resolveIdentityKey(key string, sso bool, defaultIdentityFile func() string) string {
+	if key == "" && !sso {
+		return defaultIdentityFile()
+	}
+	return key
+}
+
+// mergePorts merges settingsPorts (the persisted config's ports: map) with
+// repeatable --port name=local-port mappings, which take precedence over a
+// same-named entry from settings. Each mapping must be name=local-port with
+// local-port in [1,65535].
+func mergePorts(settingsPorts map[string]int, mappings []string) (map[string]int, error) {
+	ports := map[string]int{}
+	for n, p := range settingsPorts {
+		ports[n] = p
+	}
+	for _, m := range mappings {
+		parts := strings.SplitN(m, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid --port")
+		}
+		var p int
+		if _, e := fmt.Sscanf(parts[1], "%d", &p); e != nil || p < 1 || p > 65535 {
+			return nil, fmt.Errorf("invalid --port")
+		}
+		ports[parts[0]] = p
+	}
+	return ports, nil
 }
 
 func collectedInfo(command string) (protocol.ClientInfo, error) {
@@ -687,17 +694,16 @@ func resolveKeyPassphrase(keyPath string, u *ui.UI) (string, error) {
 }
 
 func keygen(args []string, u *ui.UI) {
-	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	out := fs.String("o", client.DefaultGeneratedIdentityFile(), "private key output")
-	fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
-	setUsage(fs, u, "create an SSH identity", "ntwire keygen")
+	fs := clientopts.NewFlagSet("keygen", clientopts.Defaults{GeneratedIdentityFile: client.DefaultGeneratedIdentityFile()})
+	setUsage(fs.FlagSet, u, "create an SSH identity", "ntwire keygen")
 	fs.Parse(args)
-	fingerprint, err := client.GenerateIdentity(*out)
+	out := fs.Str("o")
+	fingerprint, err := client.GenerateIdentity(out)
 	if err != nil {
 		u.Errorf("keygen: %v", err)
 		os.Exit(1)
 	}
-	pub, _ := os.ReadFile(*out + ".pub")
-	u.Success("Identity created: %s", *out)
+	pub, _ := os.ReadFile(out + ".pub")
+	u.Success("Identity created: %s", out)
 	fmt.Fprintf(u.Out, "Fingerprint: %s\nSend this line to your administrator:\n%sNext: ntwire connect <server>\n", fingerprint, pub)
 }

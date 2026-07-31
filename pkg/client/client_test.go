@@ -4,15 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -310,4 +315,95 @@ func TestDisplayNameFallsBackToHostPortWhenServerNameUnset(t *testing.T) {
 	if got := c.DisplayName(); got != "home" {
 		t.Fatalf("DisplayName() = %q, want configured server name", got)
 	}
+}
+
+// TestStatusMatchesWebStatus checks that the exported Status accessor --
+// added so a caller on another goroutine, such as a GUI, has a race-free way
+// to read a Connection's live state instead of reading Response/
+// LocalAddresses directly -- returns exactly what the unexported webStatus
+// (served at GET /status) does.
+func TestStatusMatchesWebStatus(t *testing.T) {
+	c := &Connection{
+		Response: protocol.AuthResponse{TTLSeconds: 42},
+		base:     "https://ntwire.example:8443",
+	}
+	if got, want := c.Status(), c.webStatus(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Status() = %+v, want %+v (webStatus())", got, want)
+	}
+}
+
+// TestInstructionsMatchesWebInstructions is Instructions' equivalent of
+// TestStatusMatchesWebStatus.
+func TestInstructionsMatchesWebInstructions(t *testing.T) {
+	c := &Connection{
+		Response: protocol.AuthResponse{Tunnels: []protocol.Tunnel{
+			{Name: "reports", DocsURL: "https://example.com/reports"},
+		}},
+		tunnels: []*localTunnel{{name: "reports", virtualPort: 18080, localAddr: "127.0.0.1:58080"}},
+	}
+	got, want := c.Instructions(), c.webInstructions()
+	if len(got.Tunnels) != len(want.Tunnels) || len(got.Tunnels) != 1 || got.Tunnels[0].Name != want.Tunnels[0].Name {
+		t.Fatalf("Instructions() = %+v, want %+v (webInstructions())", got, want)
+	}
+}
+
+// TestRenewLoopFiresEvents drives a real renewLoop against a mock control
+// plane that fails once, then succeeds, and checks that Options.OnEvent
+// observes exactly the transitions a subscriber (a GUI connection manager)
+// needs to render "reconnecting" -> "reconnected" state: a failed renewal
+// enters backoff (EventReconnecting), the retry that recovers announces both
+// that it recovered (EventReconnected) and that the session was renewed
+// (EventRenewed, which also fires on every routine renewal with no failures
+// at all -- not exercised by the failure path alone).
+func TestRenewLoopFiresEvents(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.AuthResponse{Token: "t2", TTLSeconds: 900})
+	}))
+	defer srv.Close()
+
+	events := make(chan Event, 8)
+	c := &Connection{
+		Response: protocol.AuthResponse{Token: "t1", TTLSeconds: 1},
+		base:     srv.URL,
+		http:     srv.Client(),
+		stop:     make(chan struct{}),
+		log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		options:  Options{OnEvent: func(e Event) { events <- e }},
+	}
+	go c.renewLoop()
+	defer close(c.stop)
+
+	var got []EventKind
+	deadline := time.After(10 * time.Second)
+	for len(got) < 3 {
+		select {
+		case e := <-events:
+			got = append(got, e.Kind)
+		case <-deadline:
+			t.Fatalf("timed out waiting for events; got so far: %v", got)
+		}
+	}
+	want := []EventKind{EventReconnecting, EventReconnected, EventRenewed}
+	if len(got) != len(want) {
+		t.Fatalf("event sequence = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("event sequence = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestFireEventWithNilOnEventDoesNotPanic checks the documented contract
+// that OnEvent is optional: a Connection built without one (every existing
+// caller, since this field is new) must not panic when a lifecycle
+// transition occurs.
+func TestFireEventWithNilOnEventDoesNotPanic(t *testing.T) {
+	c := &Connection{}
+	c.fireEvent(Event{Kind: EventRenewed})
 }

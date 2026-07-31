@@ -7,10 +7,11 @@ go test ./...
 go build ./cmd/...
 ```
 
-builds and tests the client (`ntwire`), server (`ntwire-server`), and relay
-(`ntwire-relay`) together; `go build -o bin/ntwire ./cmd/ntwire` builds just
-one of them. See [AGENTS.md](../AGENTS.md) for the full contributor workflow,
-including `ojob tasks.yaml op=check`.
+builds and tests the client (`ntwire`), server (`ntwire-server`), relay
+(`ntwire-relay`), and GUI client (`ntwire-gui`) together; `go build -o
+bin/ntwire ./cmd/ntwire` builds just one of them. See
+[AGENTS.md](../AGENTS.md) for the full contributor workflow, including
+`ojob tasks.yaml op=check`.
 
 ## Release binaries and containers
 
@@ -21,6 +22,15 @@ matches the host running that component: the client archive for a
 workstation, the server archive for the host that accepts connections, and
 the relay archive for a public host relaying servers behind NAT (see
 [RELAY.md](RELAY.md)).
+
+`ntwire-gui` archives are published for Linux and Windows (amd64 and
+arm64) alongside the others; macOS ships instead as an unsigned
+`ntwire-gui.app` bundle (amd64 and arm64), built separately since its tray
+needs cgo there (see [GUI.md](GUI.md)). Being unsigned, macOS shows a
+Gatekeeper "unidentified developer" warning on first launch --
+right-click -> Open bypasses it; Windows SmartScreen similarly warns on
+an unsigned `.exe`. Both are deferred follow-up work pending a paid
+developer account.
 
 Container images for all three components are also published to Docker Hub as
 `nmaguiar/ntwire-server`, `nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`

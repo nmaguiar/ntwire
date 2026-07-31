@@ -47,7 +47,7 @@ while :; do
 	sleep 1
 done
 
-$e2e_compose up --detach verify-direct verify-relay
+$e2e_compose up --no-recreate --detach verify-direct verify-relay
 while :; do
 	completed=0
 	for service in verify-direct verify-relay; do

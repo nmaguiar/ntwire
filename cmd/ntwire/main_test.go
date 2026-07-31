@@ -229,3 +229,93 @@ func TestListColumnsFitLiveStats(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveIdentityKey(t *testing.T) {
+	defaultKey := func() string { return "/home/x/.ntwire/id_ed25519" }
+	cases := []struct {
+		name string
+		key  string
+		sso  bool
+		want string
+	}{
+		{"empty key, no sso, falls back to default", "", false, "/home/x/.ntwire/id_ed25519"},
+		{"empty key, sso, stays empty", "", true, ""},
+		{"explicit key wins over default", "/other/key", false, "/other/key"},
+		{"explicit key kept even with sso", "/other/key", true, "/other/key"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveIdentityKey(c.key, c.sso, defaultKey); got != c.want {
+				t.Errorf("resolveIdentityKey(%q, %v) = %q, want %q", c.key, c.sso, got, c.want)
+			}
+		})
+	}
+}
+
+func TestMergePorts(t *testing.T) {
+	cases := []struct {
+		name         string
+		settingsPort map[string]int
+		mappings     []string
+		want         map[string]int
+		wantErr      bool
+	}{
+		{
+			name:     "two repeated --port mappings both present",
+			mappings: []string{"a=1", "b=2"},
+			want:     map[string]int{"a": 1, "b": 2},
+		},
+		{
+			name:         "explicit --port overrides same-named settings entry, others kept",
+			settingsPort: map[string]int{"db": 9, "web": 8},
+			mappings:     []string{"db=1"},
+			want:         map[string]int{"db": 1, "web": 8},
+		},
+		{
+			name: "no settings, no mappings, empty map not nil",
+			want: map[string]int{},
+		},
+		{
+			name:     "missing '=' is an error",
+			mappings: []string{"bad"},
+			wantErr:  true,
+		},
+		{
+			name:     "port 0 is out of range",
+			mappings: []string{"a=0"},
+			wantErr:  true,
+		},
+		{
+			name:     "port 70000 is out of range",
+			mappings: []string{"a=70000"},
+			wantErr:  true,
+		},
+		{
+			name:     "non-numeric port is an error",
+			mappings: []string{"a=notaport"},
+			wantErr:  true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := mergePorts(c.settingsPort, c.mappings)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("mergePorts(%v, %v) = %v, nil; want error", c.settingsPort, c.mappings, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("mergePorts(%v, %v) unexpected error: %v", c.settingsPort, c.mappings, err)
+			}
+			if len(got) != len(c.want) {
+				t.Fatalf("mergePorts(%v, %v) = %v, want %v", c.settingsPort, c.mappings, got, c.want)
+			}
+			for k, v := range c.want {
+				if got[k] != v {
+					t.Errorf("mergePorts(%v, %v)[%q] = %d, want %d", c.settingsPort, c.mappings, k, got[k], v)
+				}
+			}
+		})
+	}
+}

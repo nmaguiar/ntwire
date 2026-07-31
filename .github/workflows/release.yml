@@ -33,6 +33,43 @@ jobs:
           version: "~> v2"
           args: release --clean
         env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+  # ntwire-gui's darwin build is not part of the `binaries` job above:
+  # internal/gui/tray needs Cocoa cgo there, which the ubuntu-hosted
+  # goreleaser job has no macOS SDK to cross-compile against (see
+  # .goreleaser.yaml's ntwire-gui entry, linux/windows only). This job
+  # builds it natively on macos-latest, wraps it in the unsigned .app
+  # bundle packaging/darwin/build-app.sh assembles, and uploads it to the
+  # same release `binaries` already created.
+  gui-darwin:
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: stable}
+      - name: Build
+        env:
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p dist
+          go build -ldflags "-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version=${GITHUB_REF_NAME#v}" \
+            -o dist/ntwire-gui ./cmd/ntwire-gui
+      - name: Assemble .app bundle
+        run: |
+          packaging/darwin/build-app.sh dist/ntwire-gui "${GITHUB_REF_NAME#v}" dist
+          ditto -c -k --sequesterRsrc --keepParent dist/ntwire-gui.app \
+            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip"
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" --clobber
+
   images:
     needs: test
     runs-on: ubuntu-latest

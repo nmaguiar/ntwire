@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
 	"github.com/nmaguiar/ntwire/pkg/instructions"
@@ -109,6 +110,55 @@ type Options struct {
 	// no session is created server-side, so repeated calls (e.g. `ntwire
 	// list`) never occupy a max_sessions_per_key slot.
 	QueryOnly bool
+
+	// OnEvent, when non-nil, is called from the connection's background
+	// renewal goroutine on control-plane lifecycle transitions (see Event).
+	// It is the only push-style hook into a Connection's state; callers that
+	// don't need push updates can poll Status instead.
+	//
+	// It is called synchronously from that goroutine, so it must not block
+	// and must not call back into this Connection (Status, DisplayName,
+	// ReplacePort, Close all take the same lock the caller may be holding
+	// indirectly) -- do no more than a non-blocking send on a buffered
+	// channel or an atomic update. It is never called from Close.
+	OnEvent func(Event)
+}
+
+// EventKind identifies which control-plane lifecycle transition an Event
+// describes.
+type EventKind int
+
+const (
+	// EventReconnecting fires once, when a scheduled renewal first fails and
+	// the connection begins retrying with backoff.
+	EventReconnecting EventKind = iota
+	// EventReconnectFailed fires for each retry attempt after the first,
+	// while still reconnecting.
+	EventReconnectFailed
+	// EventReconnected fires when a connection recovers after at least one
+	// failed renewal attempt.
+	EventReconnected
+	// EventRenewed fires on every successful renewal, including the routine
+	// case where the very first attempt in a cycle succeeds.
+	EventRenewed
+)
+
+// Event describes one control-plane lifecycle transition, delivered via
+// Options.OnEvent.
+type Event struct {
+	Kind EventKind
+	// Err is set for EventReconnecting and EventReconnectFailed.
+	Err error
+	// RetryIn is set for EventReconnecting and EventReconnectFailed.
+	RetryIn time.Duration
+	// TTLSeconds is set for EventRenewed.
+	TTLSeconds int
+}
+
+func (c *Connection) fireEvent(e Event) {
+	if c.options.OnEvent != nil {
+		c.options.OnEvent(e)
+	}
 }
 
 // UnknownCertificateError is returned for a server that has not yet been
@@ -638,7 +688,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	go c.renewLoop()
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
-		if err := openBrowser(c.UIURL); err != nil {
+		if err := browseropen.Open(c.UIURL); err != nil {
 			c.log.Warn("could not open browser; open URL manually", "url", c.UIURL, "error", err)
 		}
 	}
@@ -796,20 +846,28 @@ func (c *Connection) renewLoop() {
 		case <-t.C:
 		}
 		for delay := time.Second; ; delay = min(delay*2, time.Minute) {
-			if err := c.renew(); err == nil || c.reconnect() == nil {
+			err := c.renew()
+			if err != nil {
+				err = c.reconnect()
+			}
+			if err == nil {
 				if delay > time.Second {
 					c.log.Warn("control-plane connection reconnected", "server", c.DisplayName())
+					c.fireEvent(Event{Kind: EventReconnected})
 				}
 				c.mu.Lock()
 				newTTL := c.Response.TTLSeconds
 				c.mu.Unlock()
 				c.log.Debug("control-plane session renewed", "server", c.DisplayName(), "ttl_seconds", newTTL)
+				c.fireEvent(Event{Kind: EventRenewed, TTLSeconds: newTTL})
 				break
 			}
 			if delay == time.Second {
 				c.log.Warn("control-plane renewal failed; reconnecting", "server", c.DisplayName(), "retry_in", delay)
+				c.fireEvent(Event{Kind: EventReconnecting, Err: err, RetryIn: delay})
 			} else {
 				c.log.Debug("control-plane reconnect failed", "server", c.DisplayName(), "retry_in", delay)
+				c.fireEvent(Event{Kind: EventReconnectFailed, Err: err, RetryIn: delay})
 			}
 			select {
 			case <-c.stop:
@@ -1000,6 +1058,13 @@ type WebStatus struct {
 	Reconnections uint64      `json:"reconnections"`
 }
 
+// Status returns a race-free snapshot of this connection's live state -- the
+// same value the local status UI serves at GET /status. reconnect and renew
+// replace Response and the tunnel list wholesale under c.mu from a
+// background goroutine, so reading Response/LocalAddresses/Stack directly
+// from any other goroutine is a data race; Status is the safe alternative.
+func (c *Connection) Status() WebStatus { return c.webStatus() }
+
 func (c *Connection) webStatus() WebStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1045,6 +1110,23 @@ type WebInstructions struct {
 // endpoint: one entry per tunnel that has instructions or a docs link.
 type WebInstructionsList struct {
 	Tunnels []WebInstructions `json:"tunnels"`
+}
+
+// Instructions returns this connection's rendered per-tunnel setup
+// guidance, the same value the local status UI serves at GET /instructions.
+func (c *Connection) Instructions() WebInstructionsList { return c.webInstructions() }
+
+// DashboardURL returns this connection's local status UI address, with its
+// access token embedded -- the same URL Options.NoBrowser (or NoWebUI's
+// sibling, not auto-opening it) would otherwise leave the caller to find
+// some other way. startWebUI sets it once, synchronously, before
+// ConnectWithOptions returns, and nothing mutates it afterward; it is read
+// under c.mu anyway for consistency with Status/Instructions rather than
+// relying on that invariant holding forever.
+func (c *Connection) DashboardURL() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.UIURL
 }
 
 func (c *Connection) webInstructions() WebInstructionsList {
@@ -1107,19 +1189,6 @@ func FetchWebStatus(uiURL string) (WebStatus, error) {
 	return ws, nil
 }
 
-func openBrowser(url string) error {
-	var command string
-	var args []string
-	switch runtime.GOOS {
-	case "darwin":
-		command, args = "open", []string{url}
-	case "windows":
-		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", url}
-	default:
-		command, args = "xdg-open", []string{url}
-	}
-	return exec.Command(command, args...).Start()
-}
 func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target string) {
 	for {
 		in, e := listener.Accept()

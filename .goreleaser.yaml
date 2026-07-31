@@ -18,6 +18,21 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+  # ntwire-gui, linux/windows only: unlike the three builds above, its tray
+  # (fyne.io/systray) needs cgo on darwin (Cocoa) -- but is verified pure Go
+  # on linux (DBus StatusNotifierItem, see internal/gui/tray's package doc)
+  # and needs no cgo at all on windows. That split is exactly why this
+  # entry excludes darwin rather than listing all three: goreleaser's
+  # ubuntu-hosted release job that builds everything else here has no
+  # macOS SDK to cross-compile Cocoa cgo against. The darwin build (and its
+  # .app bundle) is produced separately, on a macos-latest runner, by
+  # release.yml's "gui-darwin" job -- see packaging/darwin/build-app.sh.
+  - id: ntwire-gui
+    main: ./cmd/ntwire-gui
+    binary: ntwire-gui
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
 archives:
   # Publish the client, server, and relay as separate downloadable assets. Docker
   # images are a deployment alternative, not a replacement for these binaries.
@@ -32,4 +47,8 @@ archives:
   - id: ntwire-relay
     ids: [ntwire-relay]
     name_template: "{{ .ProjectName }}-relay_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides: [{goos: windows, format: zip}]
+  - id: ntwire-gui
+    ids: [ntwire-gui]
+    name_template: "{{ .ProjectName }}-gui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
