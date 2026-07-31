@@ -22,6 +22,7 @@ help:
     - client
     - server
     - relay
+    - gui
     - test
     - race
     - check
@@ -52,7 +53,7 @@ init:
 
 todo:
 - (ask):
-    op: option.['all'|'build'|'client'|'server'|'relay'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
+    op: option.['all'|'build'|'client'|'server'|'relay'|'gui'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
   ((question)): "Operation to perform:"
 - (optionOn): op
   ((lowerCase)): true
@@ -67,6 +68,8 @@ todo:
     - Build server
     relay:
     - Build relay
+    gui:
+    - Build gui
     test:
     - Test
     race:
@@ -125,13 +128,13 @@ jobs:
 - name: Check formatting
   lang: shell
   exec: |
-    unformatted="$(gofmt -l $(find cmd pkg -name '*.go' -type f))"
+    unformatted="$(gofmt -l $(find cmd pkg internal -name '*.go' -type f))"
     test -z "$unformatted" || { echo "$unformatted"; exit 1; }
 
 - name: Format
   lang: shell
   exec: |
-    gofmt -w $(find cmd pkg -name '*.go' -type f)
+    gofmt -w $(find cmd pkg internal -name '*.go' -type f)
 
 - name: Vet
   lang: shell
@@ -180,6 +183,19 @@ jobs:
     test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
     mkdir -p bin "$GO_BUILD_CACHE"
     GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire-relay ./cmd/ntwire-relay
+
+# Deliberately not part of "Build binaries"/op=build/op=all: unlike the
+# three builds above, ntwire-gui's tray needs cgo on this host's platform
+# (Cocoa on macOS -- see internal/gui/tray's package doc), so a minimal
+# build environment without a C toolchain can still run every other
+# target here. Run `ojob tasks.yaml op=gui` explicitly when you want it.
+- name: Build gui
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p bin "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go build -o bin/ntwire-gui ./cmd/ntwire-gui
 
 - name: Build binaries
   to:

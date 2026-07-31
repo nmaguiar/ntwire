@@ -133,6 +133,20 @@ ASCII automatically when piped, redirected, or when `NO_COLOR` is set; pass
 `--no-color` to disable it explicitly. See [docs/LOGGING.md](docs/LOGGING.md)
 for log format/color details.
 
+### GUI client (tray app)
+
+`ntwire-gui` is a tray/menu-bar app with the same functionality, for
+holding and connecting several server profiles at once instead of one
+terminal session:
+
+```sh
+go build -o bin/ntwire-gui ./cmd/ntwire-gui   # or: ojob tasks.yaml op=gui
+./bin/ntwire-gui
+```
+
+See [docs/GUI.md](docs/GUI.md) for its two build modes (native settings
+window vs. browser fallback), profile storage, and autostart.
+
 ### SSO login
 
 When a server advertises one or more OIDC issuers, `connect`/`list` use SSO by
@@ -225,11 +239,13 @@ go test ./...
 go build ./cmd/...
 ```
 
-builds and tests the client, server, and relay together. Prebuilt container
-images are also published to Docker Hub as `nmaguiar/ntwire-server`,
-`nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`, as an alternative to
-the release binaries. Release binaries, Docker Compose, and Kubernetes
-manifests are covered in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See
+builds and tests the client, server, relay, and GUI client together (the
+GUI needs a C compiler on macOS regardless of platform; see
+[docs/GUI.md](docs/GUI.md)). Prebuilt container images are also published
+to Docker Hub as `nmaguiar/ntwire-server`, `nmaguiar/ntwire-client`, and
+`nmaguiar/ntwire-relay`, as an alternative to the release binaries.
+Release binaries, Docker Compose, and Kubernetes manifests are covered in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). See
 [AGENTS.md](AGENTS.md) for the full contributor workflow, coding style, and
 commit conventions.
 

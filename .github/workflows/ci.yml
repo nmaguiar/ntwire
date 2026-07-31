@@ -57,9 +57,33 @@ jobs:
           if [ "$GOOS" = windows ]; then suffix=.exe; fi
           go build -o "dist/ntwire${suffix}" ./cmd/ntwire
           go build -o "dist/ntwire-server${suffix}" ./cmd/ntwire-server
+          # ntwire-gui only for linux/windows here: this job runs every row
+          # on ubuntu-latest, and unlike the two builds above,
+          # internal/gui/tray needs cgo (Cocoa) on darwin -- which this
+          # runner has no macOS SDK to cross-compile against. The
+          # "gui-darwin-build-check" job below covers darwin separately,
+          # natively, on macos-latest.
+          if [ "$GOOS" != darwin ]; then
+            go build -o "dist/ntwire-gui${suffix}" ./cmd/ntwire-gui
+          fi
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: ntwire-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
+
+  gui-darwin-build-check:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      # Native build (default CGO_ENABLED=1, host arch): internal/gui/tray
+      # needs Cocoa cgo on darwin, so this is what actually catches a
+      # broken darwin build per-PR -- the ubuntu-hosted `build` job above
+      # can't, since it has no macOS SDK to cross-compile against.
+      - run: go build ./cmd/ntwire-gui
+      - run: go test ./internal/gui/...

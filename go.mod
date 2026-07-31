@@ -3,10 +3,12 @@ module github.com/nmaguiar/ntwire
 go 1.26.0
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/coder/websocket v1.8.14
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
 	golang.org/x/crypto v0.52.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.45.0
@@ -16,6 +18,7 @@ require (
 )
 
 require (
+	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
