@@ -63,6 +63,62 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	}
 }
 
+// TestHybridClientRoutesBySentinelEndpoint is the load-bearing assertion
+// behind the opportunistic direct-UDP upgrade's revert path: a client-side
+// Hybrid must route a WSSentinel-seeded peer over WebSocket, and a real
+// host:port-seeded peer over raw UDP instead -- using the exact same
+// AddPeer/UpdateEndpoint call wgnet.Stack exposes, not any Hybrid-specific
+// API, since pkg/client never touches Hybrid directly once it is built.
+func TestHybridClientRoutesBySentinelEndpoint(t *testing.T) {
+	server := NewServer()
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := server.ServeHTTP(w, r, "session"); err != nil {
+			t.Error(err)
+		}
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	client := NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	wsEP, err := client.ParseEndpoint(WSSentinel)
+	if err != nil {
+		t.Fatalf("ParseEndpoint(WSSentinel) = %v", err)
+	}
+	if _, ok := wsEP.(endpoint); !ok {
+		t.Fatalf("ParseEndpoint(WSSentinel) returned %T, want the WebSocket endpoint type", wsEP)
+	}
+	udpEP, err := client.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatalf("ParseEndpoint(host:port) = %v", err)
+	}
+	if _, ok := udpEP.(endpoint); ok {
+		t.Fatal("ParseEndpoint(host:port) returned the WebSocket endpoint type, want a UDP one")
+	}
+
+	if err := client.Send([][]byte{make([]byte, 16)}, wsEP); err != nil {
+		t.Fatalf("Send via WSSentinel endpoint = %v", err)
+	}
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
+		t.Fatalf("server never received the WSSentinel-routed send: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+}
+
 // TestClientBindSendsSNIThroughPinningTransport answers a question raised by
 // the ntwire relay design (PLAN-RELAY.md §I): the /v1/wg data-plane dial
 // goes through coder/websocket driven by the same fingerprint-pinning

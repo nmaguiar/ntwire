@@ -25,11 +25,13 @@ cannot MITM the session even if compromised. It is trusted only for
 availability, and for the client address it reports for rate limiting and
 audit logging.
 
-Relay mode is TCP-only: with no inbound UDP path available, WireGuard rides
-the existing WebSocket fallback (`/v1/wg`) instead of the direct UDP
-endpoint. `ntwire connect` detects this automatically — a server that
-advertises no UDP endpoint but does advertise a WebSocket one is used over
-WebSocket with no extra flag needed.
+By default WireGuard rides the WebSocket fallback (`/v1/wg`) in relay mode,
+since there is no inbound UDP path to the server's real address. `ntwire
+connect` detects this automatically — a server that advertises no UDP
+endpoint but does advertise a WebSocket one is used over WebSocket with no
+extra flag needed. A relayed server can optionally also offer clients an
+opportunistic upgrade to a direct UDP path that bypasses the relay's data
+plane entirely — see [below](#opportunistic-direct-udp-upgrade).
 
 ## Running a relay
 
@@ -47,6 +49,10 @@ registrations:
   - name: home
     public_key: "ssh-ed25519 AAAA... admin@laptop"
 ```
+
+`listen.reflect` is left out here deliberately: it is optional, off by default,
+and only matters to a server that opts into the direct-UDP upgrade — see
+[below](#opportunistic-direct-udp-upgrade).
 
 Point wildcard DNS (`*.relay.example.com`) at the host running `listen.public`,
 and give each registered server its own key. On that server, run
@@ -79,6 +85,64 @@ Clients connect exactly as before, using the wildcard hostname:
 ```sh
 ntwire connect https://home.relay.example.com
 ```
+
+## Opportunistic direct-UDP upgrade
+
+Relaying WireGuard over `/v1/wg`'s WebSocket fallback works everywhere, but it
+means every packet crosses the relay twice (client→relay, relay→server) over
+TCP, carrying TLS and WebSocket framing on top of WireGuard's own encryption.
+A relayed server can instead let clients try to punch a direct UDP path
+straight to it — bypassing the relay's data plane, and the TCP/TLS/WebSocket
+overhead, entirely. The control plane (auth, session renewal) still goes
+through the relay either way; only the WireGuard data plane can escape it.
+
+This only works against a NAT that maps a given local UDP port to the same
+public port regardless of destination (true of most home/office routers). A
+symmetric NAT breaks it, silently: the client keeps using the WebSocket
+fallback and nothing needs configuring differently for that case.
+
+Both sides must opt in — either alone does nothing:
+
+```yaml
+# ntwire-relay.yaml
+listen:
+  reflect: ":3480"        # UDP address-reflection endpoint; empty (default) disables it
+```
+
+```yaml
+# ntwire-server.yaml
+relay:
+  enabled: true
+  advertise_direct: true  # default false
+```
+
+With both set, the server periodically asks the relay's reflector what public
+UDP address it is currently mapped to, and caches the answer. An
+authenticated client asks the server for that address (`POST /v1/punch`),
+reflects its own address off the same relay endpoint, and both sides fire a
+short burst of packets at each other to open their NAT mappings before the
+client's real WireGuard handshake tries the direct path. If it doesn't
+connect within a couple of seconds — most commonly because of a symmetric
+NAT on one side — the client just keeps using WebSocket, and retries the
+whole exchange periodically in case network conditions change. If it does
+connect, WireGuard's own connection migration keeps using it, with a
+background health check that reverts back to WebSocket if the direct path
+later goes stale (a NAT mapping expiring, a network change).
+
+**This trades away part of what relay mode is otherwise for.** A relayed
+server's whole appeal to many operators is that its real network address
+never has to be exposed to anyone — the relay is the only thing that sees it.
+Turning on `advertise_direct` means every authenticated client learns that
+address too (and the relay's reflector logs it, for whoever can read the
+relay's logs). That's why it defaults to off and has to be opted into
+explicitly on both the relay and the server, not inferred from `relay.enabled`
+alone.
+
+One operational note: `listen.wireguard` needs to stay reachable on the
+network when `advertise_direct` is on — it's the same UDP socket the server
+uses to self-reflect and to receive a punched-through direct connection, so
+the older advice to bind it to `127.0.0.1:0` in relay mode (it used to go
+unused there) no longer applies once this is enabled.
 
 ## Trust model
 

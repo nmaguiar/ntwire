@@ -65,6 +65,15 @@ type RelayConfig struct {
 	Fingerprint  string        `yaml:"fingerprint"`
 	ReconnectMin time.Duration `yaml:"reconnect_min"`
 	ReconnectMax time.Duration `yaml:"reconnect_max"`
+	// AdvertiseDirect opts into the opportunistic direct-UDP WireGuard
+	// upgrade (see docs/RELAY.md): when true, and the relay has a UDP
+	// reflector configured, this server periodically learns its own
+	// NAT-mapped UDP address and offers it to authenticated clients via
+	// /v1/punch, letting a client that can complete NAT hole-punching bypass
+	// the relay for the data plane entirely. Default false: relay mode's
+	// whole point for many operators is that the server's real address
+	// stays hidden, and this flag is what trades that away for speed.
+	AdvertiseDirect bool `yaml:"advertise_direct"`
 }
 type OIDCConfig struct {
 	Issuers []OIDCIssuerConfig `yaml:"issuers"`
@@ -211,9 +220,13 @@ relay:
   fingerprint: ""                         # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
   reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
   reconnect_max: 1m                        # backoff ceiling; default: 1m
-  # When relay.enabled is true, consider setting listen.wireguard to
-  # "127.0.0.1:0": WireGuard rides the /v1/wg WebSocket fallback in relay
-  # mode, so the UDP socket StartDataPlane still opens is unused.
+  advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
+  # When relay.enabled is true and advertise_direct is false, consider
+  # setting listen.wireguard to "127.0.0.1:0": WireGuard rides the /v1/wg
+  # WebSocket fallback in relay mode, so the UDP socket StartDataPlane still
+  # opens is unused. Leave it reachable on the network if advertise_direct is
+  # true -- that socket is exactly what self-reflection and the direct
+  # upgrade use.
 
 authorizer:
   webhook_url: ""                         # URL that receives a JSON POST for each connection and returns an allow/deny decision; takes precedence when both hook options are set
@@ -326,6 +339,8 @@ func LoadConfig(path string) (Config, error) {
 		if c.Network.AdvertisedEndpoint != "" {
 			return c, fmt.Errorf("relay.enabled cannot be combined with network.advertised_endpoint: a relayed server has no UDP endpoint to advertise")
 		}
+	} else if c.Relay.AdvertiseDirect {
+		return c, fmt.Errorf("relay.advertise_direct requires relay.enabled: it has nothing to do for a server that isn't relaying in the first place")
 	}
 	if c.Relay.ReconnectMin == 0 {
 		c.Relay.ReconnectMin = time.Second

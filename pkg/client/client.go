@@ -84,6 +84,15 @@ type Options struct {
 	StatusFile       string
 	UseWebSocket     bool
 
+	// NoDirectUpgrade disables the opportunistic direct-UDP upgrade
+	// (directupgrade.go) that a WebSocket-fallback session otherwise
+	// attempts in the background. It has no effect when UseWebSocket is
+	// false to begin with (already the best available path).
+	NoDirectUpgrade bool
+	// DirectUpgradeTiming overrides the direct-UDP upgrade's pacing. Leave
+	// nil for the production defaults; see DirectUpgradeTiming's doc.
+	DirectUpgradeTiming *DirectUpgradeTiming
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
@@ -541,6 +550,14 @@ type Connection struct {
 	log            *slog.Logger
 	reconnections  atomic.Uint64
 	latencyMillis  atomic.Uint64
+
+	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
+	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
+	// resolved once at connect time and never mutated after, so
+	// directUpgradeLoop's goroutine can read it without locking.
+	hybrid         *wstransport.Hybrid
+	serverTunnelIP netip.Addr
+	upgradeTiming  directUpgradeTiming
 }
 
 // DisplayName returns the operator-configured listen.name this server
@@ -644,8 +661,15 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}}
+	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
+	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
+	// self-reflect, prime, and move the peer's endpoint between transports.
+	// A direct-UDP session (useWS false) already has the best available
+	// path and has nothing to upgrade to.
+	var hybrid *wstransport.Hybrid
 	if useWS {
-		stackConfig.Bind = wstransport.NewClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+		hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+		stackConfig.Bind = hybrid
 	}
 	st, err := wgnet.New(stackConfig)
 	if err != nil {
@@ -653,7 +677,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	endpoint := r.UDP
 	if useWS {
-		endpoint = "0.0.0.0:0"
+		endpoint = wstransport.WSSentinel
 	}
 	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
 	if err != nil {
@@ -666,6 +690,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	c := &Connection{
 		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
+		hybrid: hybrid, serverTunnelIP: serverIP, upgradeTiming: resolveDirectUpgradeTiming(options.DirectUpgradeTiming),
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
@@ -704,6 +729,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
+	if hybrid != nil && !options.NoDirectUpgrade {
+		go c.directUpgradeLoop()
+	}
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
 		if err := browseropen.Open(c.UIURL); err != nil {
