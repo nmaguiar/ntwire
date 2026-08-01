@@ -176,9 +176,10 @@ grants, grant matching, per-tunnel client instructions, hot-reload behavior,
 and `target: socks` proxy tunnels — is in
 [docs/CONFIGURATION.md](docs/CONFIGURATION.md#socks-proxy-tunnels).
 `ntwire-server` is a public
-OAuth client (PKCE, no client secret) and never stores IdP credentials; see
-the Google/Entra/Keycloak registration notes in
-[docs/OIDC-SETUP.md](docs/OIDC-SETUP.md).
+OAuth client (PKCE) and never authenticates itself to an IdP with a
+protected secret — a handful of IdPs still require a non-confidential
+`client_secret` value on token requests; see the Google/Entra/Keycloak
+registration notes in [docs/OIDC-SETUP.md](docs/OIDC-SETUP.md).
 
 The server watches its configuration file (and, when set, the
 authorized-keys directory) and reloads on change or `SIGHUP`; most settings

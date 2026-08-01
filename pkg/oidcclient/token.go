@@ -21,7 +21,7 @@ type ForIssuerOptions struct {
 // refresh failure.
 func TokensForIssuer(ctx context.Context, cache *Cache, serverURL string, issuer protocol.OIDCIssuerInfo, opts ForIssuerOptions) (Tokens, error) {
 	if e, ok := cache.Get(serverURL, issuer.Name); ok && e.RefreshToken != "" {
-		if tok, err := Refresh(ctx, issuer.Issuer, issuer.ClientID, e.RefreshToken, issuer.Scopes); err == nil {
+		if tok, err := Refresh(ctx, issuer.Issuer, issuer.ClientID, issuer.ClientSecret, e.RefreshToken, issuer.Scopes); err == nil {
 			if tok.RefreshToken == "" {
 				tok.RefreshToken = e.RefreshToken
 			}
@@ -30,7 +30,7 @@ func TokensForIssuer(ctx context.Context, cache *Cache, serverURL string, issuer
 		}
 	}
 	tok, err := Login(ctx, issuer.Issuer, LoginOptions{
-		ClientID: issuer.ClientID, Scopes: issuer.Scopes, NoBrowser: opts.NoBrowser,
+		ClientID: issuer.ClientID, ClientSecret: issuer.ClientSecret, Scopes: issuer.Scopes, NoBrowser: opts.NoBrowser,
 		OpenBrowser: opts.OpenBrowser, DevicePrompt: opts.DevicePrompt,
 	})
 	if err != nil {

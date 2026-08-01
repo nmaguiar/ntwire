@@ -1,10 +1,18 @@
 # SSO (OIDC) issuer setup
 
-ntwire-server never becomes a confidential OAuth client: it holds no client
-secret and only verifies ID tokens the *client* obtained, against the
-issuer's published JWKS. Register ntwire as a **public** client with the IdP,
-using PKCE and (optionally) the device flow — never a "web application" /
-confidential client type, which would expect a secret ntwire never sends.
+ntwire-server never becomes a confidential OAuth client: it verifies ID
+tokens the *client* obtained against the issuer's published JWKS, and never
+authenticates itself to the IdP with a secret it protects. Register ntwire
+as a **public** client with the IdP, using PKCE and (optionally) the device
+flow — never a "web application" / confidential client type, which expects
+a secret used to actually authenticate the server as a client.
+
+Some IdPs (Google's "Desktop app" client type, notably) still require a
+`client_secret` value on token-endpoint requests even for this public/PKCE
+registration — see the Google section below. That value isn't a
+confidentiality boundary (the IdP itself says so; it ships in every copy of
+an installed app), so ntwire treats it exactly like `client_id`: set in
+`auth.oidc.issuers[].client_secret` and advertised to clients the same way.
 
 The redirect used by the browser flow is a loopback address chosen at login
 time (`http://127.0.0.1:<random-port>/callback`); register the broadest
@@ -15,9 +23,15 @@ an ephemeral port for each login.
 
 1. Console: **APIs & Services → Credentials → Create Credentials → OAuth
    client ID**.
-2. Application type: **Desktop app** (this is Google's public-client type; it
-   requires no secret and permits loopback redirects). Note the generated
-   **Client ID** — there is no secret to record.
+2. Application type: **Desktop app** (this is Google's public-client type
+   and permits loopback redirects). Note the generated **Client ID** *and*
+   **Client Secret** — unlike most public/PKCE clients, Google's token
+   endpoint rejects the authorization-code exchange with
+   `invalid_request: client_secret is missing` for this client type if the
+   secret isn't sent, even though PKCE is used and Google itself doesn't
+   treat this value as confidential (its docs explicitly say it can ship in
+   installed-app source). Only Google's Android/iOS/Chrome-app client types
+   are exempt from this; Desktop app is not.
 3. Under **OAuth consent screen**, add the scopes `openid`, `email`,
    `profile`.
 4. Server config:
@@ -28,6 +42,7 @@ an ephemeral port for each login.
          - name: google
            issuer: https://accounts.google.com
            client_id: "<client-id>.apps.googleusercontent.com"
+           client_secret: "<client-secret>"
            scopes: [openid, email, profile]
    ```
    Google does not advertise `offline_access` in its scope list; ntwire
@@ -37,6 +52,15 @@ an ephemeral port for each login.
    type instead of Desktop app if you need `--no-browser` support; otherwise
    `ntwire connect --sso` (browser flow) works with the Desktop app client
    above.
+
+**Troubleshooting:** if `--sso` fails with
+`start device authorization: oauth2: "invalid_client" "Invalid client type."`
+even without `--no-browser`, that's usually not about the device flow at
+all — the browser (PKCE) attempt failed first for an unrelated reason (most
+often the missing `client_secret` above) and ntwire silently fell back to
+the device flow, which then fails on its own, separate client-type
+restriction. Check the actual PKCE failure before chasing the device-flow
+error.
 
 ## Microsoft Entra ID (Azure AD)
 
