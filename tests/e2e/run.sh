@@ -47,7 +47,16 @@ while :; do
 	sleep 1
 done
 
-$e2e_compose up --detach verify-direct verify-relay
+while :; do
+	if $e2e_compose up --detach --no-deps verify-direct verify-relay; then
+		break
+	fi
+	if [ "$(date +%s)" -ge "$e2e_deadline" ]; then
+		echo "timed out starting ntwire E2E probe containers" >&2
+		exit 1
+	fi
+	sleep 1
+done
 while :; do
 	completed=0
 	for service in verify-direct verify-relay; do
