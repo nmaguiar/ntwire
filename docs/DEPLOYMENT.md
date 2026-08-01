@@ -25,7 +25,7 @@ the relay archive for a public host relaying servers behind NAT (see
 
 `ntwire-gui` archives are published for Linux and Windows (amd64 and
 arm64) alongside the others; macOS ships instead as an unsigned
-`ntwire-gui.app` bundle (amd64 and arm64), built separately since its tray
+`ntwire-gui.app` bundle (arm64), built separately since its tray
 needs cgo there (see [GUI.md](GUI.md)). Being unsigned, macOS shows a
 Gatekeeper "unidentified developer" warning on first launch --
 right-click -> Open bypasses it; Windows SmartScreen similarly warns on

@@ -46,8 +46,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - arch: amd64
-            runner: macos-13
           - arch: arm64
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
