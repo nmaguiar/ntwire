@@ -37,8 +37,8 @@ func freeUDPPortForTest(t *testing.T) int {
 // wrapped receive func actually being called -- exactly as wireguard-go's
 // own receive loop would call it in production -- so tests exercising
 // Control() need something playing that role.
-func pumpReceive(fn conn.ReceiveFunc) {
-	bufs, sizes, eps := [][]byte{make([]byte, 1500)}, make([]int, 1), make([]conn.Endpoint, 1)
+func pumpReceive(batchSize int, fn conn.ReceiveFunc) {
+	bufs, sizes, eps := receiveBatch(batchSize)
 	for {
 		if _, err := fn(bufs, sizes, eps); err != nil {
 			return
@@ -54,7 +54,7 @@ func TestSelfReflectReturnsObservedAddress(t *testing.T) {
 	}
 	defer serverBind.Close()
 	for _, fn := range fns {
-		go pumpReceive(fn)
+		go pumpReceive(serverBind.BatchSize(), fn)
 	}
 	go func() {
 		for cp := range serverBind.Control() {
@@ -75,7 +75,7 @@ func TestSelfReflectReturnsObservedAddress(t *testing.T) {
 	// Stack is up. Nothing else in this narrow test does that, so it has to
 	// be pumped explicitly here for the reply to ever reach Control().
 	for _, fn := range clientFns {
-		go pumpReceive(fn)
+		go pumpReceive(clientBind.BatchSize(), fn)
 	}
 
 	addr, err := selfReflect(clientBind, "127.0.0.1:"+strconv.Itoa(int(serverPort)), 2*time.Second)
@@ -266,7 +266,7 @@ func TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	go pumpReceive(serverFns[0])
+	go pumpReceive(server.BatchSize(), serverFns[0])
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = server.ServeHTTP(w, r, "session")
 	})
@@ -316,4 +316,12 @@ func TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	if err := c.revertToWebSocket(); err == nil {
 		t.Fatal("revertToWebSocket() succeeded despite a disconnected WebSocket peer, want an error so the caller retries instead of accepting it silently")
 	}
+}
+
+func receiveBatch(batchSize int) ([][]byte, []int, []conn.Endpoint) {
+	bufs := make([][]byte, batchSize)
+	for i := range bufs {
+		bufs[i] = make([]byte, 1500)
+	}
+	return bufs, make([]int, batchSize), make([]conn.Endpoint, batchSize)
 }

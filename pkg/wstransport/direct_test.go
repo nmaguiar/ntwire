@@ -37,7 +37,7 @@ func TestFilterBindPassesWireGuardTrafficThrough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bufs, sizes, eps := [][]byte{make([]byte, 128)}, make([]int, 1), make([]conn.Endpoint, 1)
+	bufs, sizes, eps := receiveBatch(server.BatchSize())
 	n, err := waitReceive(t, serverFns[0], bufs, sizes, eps)
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestFilterBindInterceptsControlFrames(t *testing.T) {
 	// bug this test guards against: a control frame slipping through.
 	done := make(chan struct{})
 	go func() {
-		bufs, sizes, eps := [][]byte{make([]byte, 128)}, make([]int, 1), make([]conn.Endpoint, 1)
+		bufs, sizes, eps := receiveBatch(server.BatchSize())
 		_, _ = serverFns[0](bufs, sizes, eps)
 		close(done)
 	}()
@@ -116,4 +116,12 @@ func waitReceive(t *testing.T, fn conn.ReceiveFunc, bufs [][]byte, sizes []int, 
 		t.Fatal("timed out waiting for receive")
 		return 0, nil
 	}
+}
+
+func receiveBatch(batchSize int) ([][]byte, []int, []conn.Endpoint) {
+	bufs := make([][]byte, batchSize)
+	for i := range bufs {
+		bufs[i] = make([]byte, 128)
+	}
+	return bufs, make([]int, batchSize), make([]conn.Endpoint, batchSize)
 }
