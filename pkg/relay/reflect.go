@@ -51,6 +51,7 @@ func (r *reflector) handle(b []byte, addr net.Addr) {
 		return
 	}
 	if !r.rate.allow(udpAddr.IP.String()) {
+		r.log.Debug("reflector: rate limit exceeded", "peer", addr)
 		return
 	}
 	typ, _, ok := wstransport.DecodeControlFrame(b)
@@ -60,5 +61,11 @@ func (r *reflector) handle(b []byte, addr net.Addr) {
 	reply := wstransport.EncodeControlFrame(wstransport.FrameReflectResponse, []byte(addr.String()))
 	if _, err := r.conn.WriteTo(reply, addr); err != nil {
 		r.log.Debug("reflector write failed", "peer", addr, "error", err)
+		return
 	}
+	// Info, not Debug: docs/RELAY.md discloses to operators turning on
+	// advertise_direct that "the relay's reflector logs it, for whoever can
+	// read the relay's logs" -- that promise should hold at the default log
+	// level, not only when debug logging is turned on.
+	r.log.Info("reflector: address reflected", "peer", addr)
 }

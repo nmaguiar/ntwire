@@ -69,6 +69,7 @@ func (p *publicListener) handle(c net.Conn) {
 		host = c.RemoteAddr().String()
 	}
 	if !p.rate.allow(host) {
+		p.log.Debug("public listener: rate limit exceeded", "client", host)
 		return // silently reset; no reply, indistinguishable from any other close
 	}
 
@@ -94,7 +95,17 @@ func (p *publicListener) handle(c net.Conn) {
 	back, err := p.registry.Open(ctx, name, c.RemoteAddr().String(), sni)
 	if err != nil {
 		// Unknown/offline tenant and at-capacity are deliberately
-		// indistinguishable to the client: both just reset.
+		// indistinguishable to the client: both just reset. Server-side logs
+		// are not, however, since an operator needs to tell "no such tenant"
+		// apart from "tenant is over its connection cap" to act on it.
+		switch {
+		case errors.Is(err, ErrTenantUnknown):
+			p.log.Debug("public listener: tenant unknown or offline", "tenant", name, "client", host, "sni", sni)
+		case errors.Is(err, ErrTenantAtCapacity):
+			p.log.Warn("public listener: tenant at connection capacity", "tenant", name, "client", host, "sni", sni)
+		default:
+			p.log.Debug("public listener: dial-back failed", "tenant", name, "client", host, "sni", sni, "error", err)
+		}
 		return
 	}
 	defer func() {
@@ -105,7 +116,7 @@ func (p *publicListener) handle(c net.Conn) {
 	if _, err := back.Write(raw); err != nil {
 		return
 	}
-	p.log.Debug("relay connection spliced", "tenant", name, "client", host, "sni", sni)
+	p.log.Info("relay connection spliced", "tenant", name, "client", host, "sni", sni)
 	splice(c, back)
 }
 
