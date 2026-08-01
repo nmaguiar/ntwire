@@ -49,7 +49,7 @@ func registerOverControl(t *testing.T, ws *websocket.Conn, req protocol.RelayReg
 func TestAgentServer_RegisterSuccess(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -68,7 +68,7 @@ func TestAgentServer_RegisterUnknownKeyClosesConnection(t *testing.T) {
 	k := generateTestKey(t)
 	other := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -83,7 +83,7 @@ func TestAgentServer_RegisterUnknownKeyClosesConnection(t *testing.T) {
 func TestAgentServer_RegisterBadSignature(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -100,7 +100,7 @@ func TestAgentServer_RegisterBadSignature(t *testing.T) {
 func TestAgentServer_RegisterNameMismatch(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	ws := dialControl(t, srv)
@@ -115,7 +115,7 @@ func TestAgentServer_RegisterNameMismatch(t *testing.T) {
 func TestAgentServer_LastWriterWinsEviction(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	first := dialControl(t, srv)
@@ -181,7 +181,7 @@ func TestAgentServer_ControlConnClosedOnReadError(t *testing.T) {
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
 
 	var closed int32
-	srv := httptest.NewUnstartedServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewUnstartedServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	srv.Listener = &closeTrackingListener{Listener: srv.Listener, closed: &closed}
 	srv.StartTLS()
 	defer srv.Close()
@@ -209,7 +209,7 @@ func TestAgentServer_ControlConnClosedOnReadError(t *testing.T) {
 func TestAgentServer_DataConnRoundTrip(t *testing.T) {
 	k := generateTestKey(t)
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	control := dialControl(t, srv)
@@ -286,7 +286,7 @@ func TestAgentServer_PushTimesOutOnStalledWriteAndFreesWriteMu(t *testing.T) {
 	k := generateTestKey(t)
 	limits := Limits{DialBackTimeout: 300 * time.Millisecond, MaxPendingPerServer: 10, MaxConnsPerServer: 10}
 	reg := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, limits)
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", limits).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", limits, nil).Handler())
 	defer srv.Close()
 
 	control := dialControl(t, srv)
@@ -333,7 +333,7 @@ func TestAgentServer_PushTimesOutOnStalledWriteAndFreesWriteMu(t *testing.T) {
 
 func TestAgentServer_DataConnUnknownConnID(t *testing.T) {
 	reg := NewRegistry(nil, testLimits())
-	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits()).Handler())
+	srv := httptest.NewTLSServer(newAgentServer(reg, "relay.example.com", testLimits(), nil).Handler())
 	defer srv.Close()
 
 	resp, err := srv.Client().Get(srv.URL + "/v1/relay/data?conn_id=does-not-exist")

@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
@@ -19,6 +20,7 @@ type agentServer struct {
 	registry *Registry
 	domain   string
 	limits   Limits
+	log      *slog.Logger
 
 	mu          sync.Mutex
 	reflectAddr string
@@ -54,8 +56,11 @@ func (c *handoffConn) Close() error {
 	return err
 }
 
-func newAgentServer(registry *Registry, domain string, limits Limits) *agentServer {
-	return &agentServer{registry: registry, domain: domain, limits: limits}
+func newAgentServer(registry *Registry, domain string, limits Limits, log *slog.Logger) *agentServer {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &agentServer{registry: registry, domain: domain, limits: limits, log: log}
 }
 
 func (a *agentServer) Handler() http.Handler {
@@ -82,6 +87,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	defer ws.CloseNow()
 	ctx := r.Context()
 
+	remote := r.RemoteAddr
 	_, data, err := ws.Read(ctx)
 	if err != nil {
 		ws.Close(websocket.StatusPolicyViolation, "expected registration message")
@@ -89,11 +95,26 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 	var req protocol.RelayRegisterRequest
 	if json.Unmarshal(data, &req) != nil {
+		// Reachable by anyone who can open a TCP connection to listen.agents,
+		// authenticated or not -- Debug, not Warn, so an internet-facing
+		// relay doesn't fill its logs from arbitrary scanners.
+		a.log.Debug("relay registration rejected", "code", "invalid_message", "remote", remote)
 		ws.Close(websocket.StatusPolicyViolation, "invalid registration message")
 		return
 	}
 	name, fingerprint, regErr := a.registry.Register(req)
 	if regErr != nil {
+		// ErrorReplayedNonce and ErrorRelayNameNotAllowed are only reachable
+		// with a valid signature over a known key -- an authenticated client
+		// misbehaving or misconfigured, worth Warn. Everything else (bad
+		// signature, unknown key, clock skew, wrong protocol version) needs
+		// no authentication to trigger and gets the same Debug treatment as
+		// invalid_message above.
+		level := slog.LevelDebug
+		if regErr.Code == protocol.ErrorReplayedNonce || regErr.Code == protocol.ErrorRelayNameNotAllowed {
+			level = slog.LevelWarn
+		}
+		a.log.Log(ctx, level, "relay registration rejected", "name", req.Name, "code", regErr.Code, "remote", remote)
 		b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Error: regErr.Message, Code: regErr.Code})
 		_ = ws.Write(ctx, websocket.MessageText, b)
 		ws.Close(websocket.StatusPolicyViolation, regErr.Code)
@@ -128,8 +149,15 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
+	reflectAddr := a.getReflectAddr()
+	// reflect_addr records this tenant's wss-vs-direct-UDP posture at
+	// registration time: "" means every client of this tenant rides the wss
+	// tunnel exclusively; non-empty means the server also has the option to
+	// offer clients the opportunistic direct-UDP upgrade (see docs/RELAY.md).
+	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr)
+	defer a.log.Info("server disconnected", "name", name, "fingerprint", fingerprint)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: a.getReflectAddr()})
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()
@@ -176,11 +204,13 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 	connID := r.URL.Query().Get("conn_id")
 	if connID == "" {
+		a.log.Debug("relay data request missing conn_id", "remote", r.RemoteAddr)
 		http.Error(w, "missing conn_id", http.StatusBadRequest)
 		return
 	}
 	handoff, ok := a.registry.Redeem(connID)
 	if !ok {
+		a.log.Debug("relay data request: unknown or expired conn_id", "conn_id", connID, "remote", r.RemoteAddr)
 		http.Error(w, "unknown or expired conn_id", http.StatusNotFound)
 		return
 	}
@@ -188,6 +218,7 @@ func (a *agentServer) handleData(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	a.log.Debug("relay data connection established", "conn_id", connID, "remote", r.RemoteAddr)
 	conn := &handoffConn{Conn: websocket.NetConn(context.Background(), ws, websocket.MessageBinary), done: make(chan struct{})}
 
 	// Open may have already abandoned this conn_id (dial-back timeout or a

@@ -49,7 +49,7 @@ func New(cfg Config, log *slog.Logger) (*Relay, error) {
 	return &Relay{
 		cfg:      cfg,
 		registry: registry,
-		agents:   newAgentServer(registry, cfg.Domain, limits),
+		agents:   newAgentServer(registry, cfg.Domain, limits, log),
 		public:   newPublicListener(registry, cfg.Domain, limits, cfg.Limits.MaxNewConnsPerMinute, log),
 		log:      log,
 	}, nil
@@ -104,6 +104,8 @@ func (r *Relay) Start() error {
 	if reflectLn != nil {
 		go newReflector(reflectLn, r.cfg.Limits.MaxNewConnsPerMinute, r.log).serve()
 		r.log.Info("ntwire-relay UDP reflector listening", "reflect", reflectAddr)
+	} else {
+		r.log.Debug("ntwire-relay UDP reflector disabled; direct-UDP upgrade unavailable to relayed servers")
 	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
