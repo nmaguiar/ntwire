@@ -345,6 +345,7 @@ func status(args []string, u *ui.UI) {
 	}
 	if wsErr == nil {
 		kv.Add("connected", fmt.Sprintf("%t", ws.Connected))
+		kv.Add("connection", ws.ConnectionType)
 		kv.Add("ttl", fmt.Sprintf("%ds", ws.TTLSeconds))
 		kv.Add("latency", fmt.Sprintf("%dms", ws.LatencyMillis))
 		kv.Add("reconnections", fmt.Sprintf("%d", ws.Reconnections))

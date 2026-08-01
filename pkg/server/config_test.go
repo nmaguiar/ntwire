@@ -55,6 +55,98 @@ tunnels:
 	}
 }
 
+// TestLoadConfigReadsInstructionsFromFile covers the file-path convenience:
+// a single-line instructions value naming an existing file is replaced with
+// that file's content, so operators can keep longer instructions in a
+// separately maintained file instead of an inline YAML block scalar.
+func TestLoadConfigReadsInstructionsFromFile(t *testing.T) {
+	dir := t.TempDir()
+	instrPath := filepath.Join(dir, "reports.md")
+	want := "# Reports\n\nRun:\n\n```sh\ncurl http://{{.LocalHost}}:{{.LocalPort}}/reports\n```\n"
+	if err := os.WriteFile(instrPath, []byte(want), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    instructions: ` + instrPath + `
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tunnels) != 1 || got.Tunnels[0].Instructions != want {
+		t.Fatalf("Instructions = %q, want %q", got.Tunnels[0].Instructions, want)
+	}
+}
+
+// TestLoadConfigKeepsInstructionsLiteralWhenNoSuchFile guards the fallback:
+// a single-line value that happens not to name a real file is ordinary
+// short-form instructions text, not a broken file reference.
+func TestLoadConfigKeepsInstructionsLiteralWhenNoSuchFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    instructions: "See the team wiki for setup."
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "See the team wiki for setup."
+	if len(got.Tunnels) != 1 || got.Tunnels[0].Instructions != want {
+		t.Fatalf("Instructions = %q, want %q", got.Tunnels[0].Instructions, want)
+	}
+}
+
+// TestLoadConfigSkipsOversizedInstructionsFile guards against a mistyped
+// single-line instructions value accidentally naming a large file: without a
+// size cap, that file's whole content would be shipped to every client over
+// /v1/auth and /v1/renew instead of being caught at config-load time.
+func TestLoadConfigSkipsOversizedInstructionsFile(t *testing.T) {
+	dir := t.TempDir()
+	instrPath := filepath.Join(dir, "big.md")
+	if err := os.WriteFile(instrPath, make([]byte, maxInstructionsFileSize+1), 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    instructions: ` + instrPath + `
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tunnels) != 1 || got.Tunnels[0].Instructions != instrPath {
+		t.Fatalf("Instructions = %q, want the literal path %q (file too large to load)", got.Tunnels[0].Instructions, instrPath)
+	}
+}
+
 // TestLoadConfigRejectsAdvertiseDirectWithoutRelay guards against a config
 // that would silently be a no-op: relay.advertise_direct only means
 // anything for a server that is actually relaying (cmd/ntwire-server only

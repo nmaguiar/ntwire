@@ -90,7 +90,6 @@ func resolveDirectUpgradeTiming(o *DirectUpgradeTiming) directUpgradeTiming {
 	return t
 }
 
-
 // directUpgradeLoop is the background goroutine a WebSocket-fallback
 // Connection runs (unless Options.NoDirectUpgrade) to opportunistically
 // escape the relay's WebSocket data plane for a direct WireGuard UDP path,
@@ -138,6 +137,7 @@ func (c *Connection) directUpgradeLoop() {
 				wait = c.upgradeTiming.healthCheckInterval
 				continue
 			}
+			c.transport.Store(uint32(transportWSSRelay))
 			activeCandidate = ""
 			wait = c.upgradeTiming.retryInterval
 			continue
@@ -245,6 +245,7 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) string {
 		return ""
 	}
 	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", second.ServerAddr)
+	c.transport.Store(uint32(transportUDPRelayReflector))
 	return second.ServerAddr
 }
 

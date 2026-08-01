@@ -185,6 +185,42 @@ Instructions never become markup: the client parses them into a block tree and
 the status UI builds DOM nodes from it, and links whose target is not an
 absolute `http(s)` URL stay literal text.
 
+### Loading instructions from a file
+
+A single-line `instructions` value (no `\n`) that names an existing, readable
+file is read at config-load time and its content used in place of the
+literal string, resolved the same way as `auth.authorized_keys_dir` (relative
+to the current working directory `ntwire-server` was started from, or
+absolute). This is a convenience for longer instructions, so they can live in
+their own Markdown file instead of an inline YAML block scalar:
+
+```yaml
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    instructions: examples/instructions/socks-client.md
+```
+
+A multi-line value is always used as literal Markdown, since a real file path
+cannot contain a newline — the short inline form keeps working unchanged. A
+single-line value that does not name a real file (the common case: a short
+sentence like `See the team wiki.`) is likewise kept as literal text, and a
+file larger than 64KiB is skipped the same way, as a guard against
+accidentally naming the wrong file. Editing the instructions file takes
+effect on the next config reload, which requires touching the YAML file
+itself — [hot reload](#hot-reload) only watches the config file (and
+`authorized_keys_dir`), not files named by `instructions`.
+
+[`examples/instructions/`](../examples/instructions/) has ready-to-adapt
+files, all using the template fields above:
+
+| File | For a tunnel that... |
+| --- | --- |
+| [`ssh.md`](../examples/instructions/ssh.md) | forwards to an SSH server |
+| [`kubectl.md`](../examples/instructions/kubectl.md) | forwards directly to a Kubernetes API server |
+| [`socks-client.md`](../examples/instructions/socks-client.md) | is a `target: socks` proxy (curl, browsers, database clients incl. Oracle, and `kubectl`/other tools via `HTTPS_PROXY`) |
+
 ## Grant matching
 
 Grant matching stays scoped to how the caller authenticated: an SSH request is

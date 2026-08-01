@@ -550,6 +550,7 @@ type Connection struct {
 	log            *slog.Logger
 	reconnections  atomic.Uint64
 	latencyMillis  atomic.Uint64
+	transport      atomic.Uint32
 
 	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
 	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
@@ -558,6 +559,41 @@ type Connection struct {
 	hybrid         *wstransport.Hybrid
 	serverTunnelIP netip.Addr
 	upgradeTiming  directUpgradeTiming
+}
+
+type connectionTransport uint32
+
+const (
+	transportUnknown connectionTransport = iota
+	transportUDPDirect
+	transportWSSFallback
+	transportWSSRelay
+	transportUDPRelayReflector
+)
+
+func (t connectionTransport) String() string {
+	switch t {
+	case transportUDPDirect:
+		return "UDP direct"
+	case transportWSSFallback:
+		return "WSS fallback"
+	case transportWSSRelay:
+		return "WSS through relay"
+	case transportUDPRelayReflector:
+		return "UDP direct via relay reflector"
+	default:
+		return "unknown"
+	}
+}
+
+func initialTransport(useWS bool, udp string) connectionTransport {
+	if !useWS {
+		return transportUDPDirect
+	}
+	if udp == "" {
+		return transportWSSRelay
+	}
+	return transportWSSFallback
 }
 
 // DisplayName returns the operator-configured listen.name this server
@@ -695,6 +731,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
+	c.transport.Store(uint32(initialTransport(useWS, r.UDP)))
 	c.latencyMillis.Store(uint64(time.Since(authStart).Milliseconds()))
 	if c.log == nil {
 		c.log = slog.Default()
@@ -1118,11 +1155,14 @@ type WebStatus struct {
 	// ServerName is Connection.DisplayName(): the operator-configured
 	// listen.name, or the host:port connected to when that was left unset.
 	// It is what the status UI shows to tell several running clients apart.
-	ServerName    string      `json:"server_name"`
-	Tunnels       []WebTunnel `json:"tunnels"`
-	TTLSeconds    int         `json:"ttl_seconds"`
-	LatencyMillis uint64      `json:"latency_millis"`
-	Reconnections uint64      `json:"reconnections"`
+	ServerName string `json:"server_name"`
+	// ConnectionType describes the live WireGuard data path, for example
+	// "UDP direct", "WSS through relay", or "UDP direct via relay reflector".
+	ConnectionType string      `json:"connection_type"`
+	Tunnels        []WebTunnel `json:"tunnels"`
+	TTLSeconds     int         `json:"ttl_seconds"`
+	LatencyMillis  uint64      `json:"latency_millis"`
+	Reconnections  uint64      `json:"reconnections"`
 }
 
 // Status returns a race-free snapshot of this connection's live state -- the
@@ -1142,7 +1182,7 @@ func (c *Connection) webStatus() WebStatus {
 		wt.Description = granted[t.name].Description
 		tunnels = append(tunnels, wt)
 	}
-	return WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	return WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
 }
 
 // grantedByName indexes the tunnels the server granted this session by name.
