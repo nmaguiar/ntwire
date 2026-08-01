@@ -32,6 +32,7 @@ var profileField = map[string]string{
 	"websocket":     "Websocket",
 	"collect-exec":  "CollectExec",
 	"port":          "Ports",
+	"bind":          "BindAddress",
 }
 
 // schemaField is one generated form field, as served by GET /api/schema.

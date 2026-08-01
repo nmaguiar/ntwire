@@ -84,6 +84,16 @@ type Options struct {
 	StatusFile       string
 	UseWebSocket     bool
 
+	// BindAddress is the local IP address tunnel listeners bind to. Empty
+	// (the default) means 127.0.0.1: tunneled targets are reachable only
+	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
+	// for every interface) makes those targets reachable from other hosts
+	// on that network -- there is no additional access control at the
+	// listener, so this is an advanced, opt-in escape hatch, not a default
+	// any profile should carry silently. Must be a numeric IP address; a
+	// hostname is rejected rather than resolved.
+	BindAddress string
+
 	// KeyPassphrase decrypts an encrypted SSH private key at KeyPath. Callers
 	// resolve it up front (e.g. an interactive prompt) since it must survive
 	// into background reconnect, which cannot prompt.
@@ -525,6 +535,7 @@ type Connection struct {
 	UIURL          string
 	statusFile     string
 	keyPath        string
+	bindAddr       string // resolved from options.BindAddress; see resolveBindAddress
 	options        Options
 	method, issuer string // remembers how this session authenticated, for reconnect
 	log            *slog.Logger
@@ -606,6 +617,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, err
 	}
+	bindAddr, err := resolveBindAddress(options.BindAddress)
+	if err != nil {
+		return nil, err
+	}
 	key, err := wgnet.GenerateKey()
 	if err != nil {
 		return nil, err
@@ -652,7 +667,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	c := &Connection{
 		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
-		options: options, method: auth.method, issuer: auth.issuer,
+		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
 	c.latencyMillis.Store(uint64(time.Since(authStart).Milliseconds()))
@@ -664,6 +679,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		transport = "websocket"
 	}
 	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
+	if bindAddr != "127.0.0.1" && bindAddr != "::1" {
+		c.log.Warn("tunnel listeners are bound beyond loopback; tunneled targets are reachable from other hosts on this address", "bind_address", bindAddr)
+	}
 	for _, t := range r.Tunnels {
 		p, explicitPort := options.Ports[t.Name]
 		if !explicitPort {
@@ -673,7 +691,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			c.Close()
 			return nil, fmt.Errorf("invalid local port for tunnel %q", t.Name)
 		}
-		l, e := listenLocal(p, !explicitPort)
+		l, e := listenLocal(bindAddr, p, !explicitPort)
 		if e != nil {
 			c.Close()
 			return nil, e
@@ -748,23 +766,44 @@ func allowedIPsForFamily(clientIP netip.Addr) string {
 	return "0.0.0.0/0"
 }
 
+// resolveBindAddress validates Options.BindAddress and applies its default.
+// Empty resolves to the loopback-only default, 127.0.0.1. A non-empty value
+// must be a numeric IP address -- a hostname is rejected rather than
+// resolved, so a typo or a DNS response cannot silently move tunnel
+// listeners onto an unexpected interface.
+func resolveBindAddress(addr string) (string, error) {
+	if addr == "" {
+		return "127.0.0.1", nil
+	}
+	ip, err := netip.ParseAddr(addr)
+	if err != nil {
+		return "", fmt.Errorf("invalid bind address %q: must be a numeric IP address (e.g. 0.0.0.0 or a specific interface IP)", addr)
+	}
+	return ip.String(), nil
+}
+
 // listenLocal prefers port when it is supplied by the server configuration.
 // A configured local port is a convenience default, so fall back to an
-// ephemeral loopback port when another process already owns it. Explicit
-// client port mappings remain strict overrides.
-func listenLocal(port int, fallbackOnInUse bool) (net.Listener, error) {
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+// ephemeral port on the same bind address when another process already owns
+// it. Explicit client port mappings remain strict overrides.
+func listenLocal(bindAddr string, port int, fallbackOnInUse bool) (net.Listener, error) {
+	l, err := net.Listen("tcp", net.JoinHostPort(bindAddr, fmt.Sprint(port)))
 	if err == nil || !fallbackOnInUse || port == 0 || !errors.Is(err, syscall.EADDRINUSE) {
 		return l, err
 	}
-	return net.Listen("tcp", "127.0.0.1:0")
+	return net.Listen("tcp", net.JoinHostPort(bindAddr, "0"))
 }
 
-// ReplacePort atomically switches a tunnel to a new loopback listener. Existing
+// ReplacePort atomically switches a tunnel to a new listener on the
+// connection's configured bind address (loopback by default). Existing
 // connections continue on the old listener while new connections use the port.
 func (c *Connection) ReplacePort(name string, port int) (string, error) {
 	if name == "" || port < 1 || port > 65535 {
 		return "", fmt.Errorf("invalid tunnel name or local port")
+	}
+	bindAddr := c.bindAddr
+	if bindAddr == "" {
+		bindAddr = "127.0.0.1"
 	}
 	c.mu.Lock()
 	var tunnel *localTunnel
@@ -785,7 +824,7 @@ func (c *Connection) ReplacePort(name string, port int) (string, error) {
 	}
 	c.mu.Unlock()
 
-	l, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+	l, err := net.Listen("tcp", net.JoinHostPort(bindAddr, fmt.Sprint(port)))
 	if err != nil {
 		return "", err
 	}
@@ -1144,10 +1183,24 @@ func (c *Connection) webInstructions() WebInstructionsList {
 		if err != nil {
 			host = t.localAddr
 		}
+		// A tunnel bound with --bind to a wildcard address (0.0.0.0, ::)
+		// reports that literal address in t.localAddr, which is accurate
+		// for status/dashboard display but not something a copy-pasted
+		// curl command can dial (and is invalid outright on Windows).
+		// Instructions substitute the loopback host instead, since the
+		// listener always also accepts connections from this host itself.
+		instructionHost := host
+		if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+			if ip.To4() != nil {
+				instructionHost = "127.0.0.1"
+			} else {
+				instructionHost = "::1"
+			}
+		}
 		p, _ := strconv.Atoi(port)
 		wi.Blocks = instructions.Render(g.Instructions, instructions.Data{
 			Name: t.name, Description: g.Description,
-			LocalAddress: t.localAddr, LocalHost: host, LocalPort: p,
+			LocalAddress: net.JoinHostPort(instructionHost, port), LocalHost: instructionHost, LocalPort: p,
 			VirtualPort: t.virtualPort, TargetHint: g.TargetHint,
 			TunnelIP: c.Response.TunnelIP, ServerTunnelIP: c.Response.ServerTunnelIP,
 			Server: c.base,

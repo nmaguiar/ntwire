@@ -404,6 +404,7 @@ func connect(args []string, u *ui.UI) {
 	tokenCache := fs.Str("token-cache")
 	websocket := fs.BoolVal("websocket")
 	collect := fs.Str("collect-exec")
+	bind := fs.Str("bind")
 	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -432,6 +433,7 @@ func connect(args []string, u *ui.UI) {
 	o := client.Options{
 		Ports: ports, CAFile: ca, Insecure: insecure, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
+		BindAddress: bind,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

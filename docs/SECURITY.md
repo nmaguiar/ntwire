@@ -175,6 +175,39 @@ resolutions. Weigh that before granting one broadly:
   address beforehand, but, matching upstream, the peer that actually
   connects to that listener is never itself re-checked against them.
 
+## Binding tunnel listeners beyond loopback (`--bind`)
+
+By default `ntwire connect` binds every tunnel's local listener to
+`127.0.0.1`: a tunneled target is reachable only from processes on the same
+host. `--bind address` (or the persisted `bind_address` setting, or the GUI
+profile's "Bind address" advanced field) is an opt-in escape hatch for
+advanced use cases — e.g. reaching a tunnel from another device on your LAN,
+or from inside a container that isn't on the host's loopback namespace.
+
+This is a client-local trust-boundary change, not a server-side grant, so the
+server's `allow:` ACLs and hooks are unaffected and keep gating who can open
+the tunnel in the first place. What changes is *who on the local network can
+reach the already-open tunnel's local listener*:
+
+- `--bind 0.0.0.0` (or a specific non-loopback IP) makes the tunneled target
+  reachable from any host that can route to that address — other machines on
+  the same LAN, a VPN peer, or, if the interface has a public/forwarded
+  address, the internet. There is no additional authentication at the
+  listener itself; anyone who can reach it reaches the tunnel target exactly
+  as the local user could.
+- Prefer a specific interface IP over `0.0.0.0` where you can, so exposure is
+  bounded to the network segment you intend rather than every interface the
+  host has.
+- `--bind` only accepts a numeric IP address — a hostname is rejected rather
+  than resolved, so a typo or a stale DNS answer can't silently move a
+  listener onto an unexpected interface.
+- The local status UI's listener (used by `ntwire status`/`ntwire port` and
+  the browser dashboard) always stays on `127.0.0.1` regardless of `--bind`;
+  it is a control-plane endpoint, not a tunneled target.
+- Pair a non-loopback bind with host firewall rules scoped to the source
+  addresses that should reach it, the same way you would for any other
+  locally-bound service.
+
 ## Operator guidance
 
 - Never commit or log private keys, bearer tokens, ID/refresh tokens, request

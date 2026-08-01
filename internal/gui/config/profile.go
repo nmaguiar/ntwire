@@ -28,6 +28,9 @@ type Profile struct {
 	SSO         bool   `yaml:"sso"`
 	Provider    string `yaml:"provider"`
 	CollectExec string `yaml:"collect_exec"`
+	// BindAddress is the advanced, opt-in override for the loopback-only
+	// default tunnel listeners bind to; see client.Options.BindAddress.
+	BindAddress string `yaml:"bind_address"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

@@ -3,8 +3,11 @@
 ntwire is a userspace WireGuard multi-tunnel service. An SSH key or an SSO
 (OIDC) login authenticates a session, then a per-session WireGuard peer and
 gVisor netstack forward only the YAML-granted TCP targets to local
-`127.0.0.1` listeners. No host network interface or elevated privilege is
-needed.
+`127.0.0.1` listeners by default. No host network interface or elevated
+privilege is needed. Advanced users can opt a client into binding tunnel
+listeners to another address (a LAN IP, or every interface) with `--bind`;
+see [docs/SECURITY.md#binding-tunnel-listeners-beyond-loopback---bind](docs/SECURITY.md#binding-tunnel-listeners-beyond-loopback---bind)
+for the tradeoffs.
 
 This README covers installation and everyday client/server usage. For
 configuration reference, relay mode, deployment, and security details, see
@@ -111,7 +114,7 @@ If someone else already runs the server, you only need the client:
 | --- | --- |
 | `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `ntwire_ed25519`. |
 | `ntwire list [-i key \| --sso] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`, or falls back to SSO when the server advertises it. Do not add a trailing `/` to `URL`. |
-| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket]` | Starts local listeners, renews its session, and prints a token-protected status URL. A tunnel's YAML `local_port` is preferred when available; `--port` is a strict client-side override. Same key/SSO selection as `list`; `--websocket` selects fallback transport. |
+| `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket] [--bind address]` | Starts local listeners, renews its session, and prints a token-protected status URL. A tunnel's YAML `local_port` is preferred when available; `--port` is a strict client-side override. Same key/SSO selection as `list`; `--websocket` selects fallback transport. `--bind` binds tunnel listeners to an address other than `127.0.0.1` (advanced; see SECURITY.md). |
 | `ntwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
 | `ntwire logout URL` | Clears cached SSO tokens for a server, so the next connection reopens the browser (or device flow) instead of silently refreshing. |
 | `ntwire version` | Prints the build version (`dev` for an ordinary source build). |

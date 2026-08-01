@@ -15,7 +15,7 @@ var wantSurface = map[string][]string{
 	"connect": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
 		"sso", "provider", "token-cache", "websocket", "collect-exec",
-		"no-color", "port",
+		"no-color", "port", "bind",
 	},
 	"list": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
@@ -88,6 +88,7 @@ func TestDefaultsLayerFromSettings(t *testing.T) {
 			SSO:          true,
 			Provider:     "okta",
 			CollectExec:  "/usr/local/bin/collect",
+			BindAddress:  "0.0.0.0",
 		},
 		ConfigPath:            "/home/x/.ntwire/config.yaml",
 		GeneratedIdentityFile: "/home/x/.ntwire/id_ed25519",
@@ -100,6 +101,7 @@ func TestDefaultsLayerFromSettings(t *testing.T) {
 		{"connect", "sso", "true"},
 		{"connect", "provider", "okta"},
 		{"connect", "collect-exec", "/usr/local/bin/collect"},
+		{"connect", "bind", "0.0.0.0"},
 		{"connect", "config", "/home/x/.ntwire/config.yaml"},
 		{"keygen", "o", "/home/x/.ntwire/id_ed25519"},
 		{"connect", "known-servers", ""},
