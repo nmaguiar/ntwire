@@ -71,5 +71,6 @@ func (p Profile) ToClientOptions(statusFile, passphrase string) (client.Options,
 		Provider:         p.Provider,
 		NoBrowser:        false,
 		TokenCacheFile:   ExpandHome(p.TokenCacheFile),
+		BindAddress:      p.BindAddress,
 	}, nil
 }

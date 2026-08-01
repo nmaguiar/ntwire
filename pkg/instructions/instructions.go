@@ -25,11 +25,15 @@ const maxSize = 64 << 10
 // or method of whatever it is handed, so nothing wider (a Connection, an
 // AuthResponse) may be passed in its place.
 type Data struct {
-	Name           string // tunnel name
-	Description    string // tunnel description, as configured on the server
-	LocalAddress   string // bound loopback address, e.g. 127.0.0.1:58080
-	LocalHost      string // host part of LocalAddress, e.g. 127.0.0.1
-	LocalPort      int    // actually bound loopback port
+	Name        string // tunnel name
+	Description string // tunnel description, as configured on the server
+	// LocalAddress/LocalHost are always a loopback address a copy-pasted
+	// command on this host can dial, e.g. 127.0.0.1:58080 -- even when the
+	// client was started with --bind pointed at a wildcard address
+	// (0.0.0.0/::), which is not itself a dialable address.
+	LocalAddress   string
+	LocalHost      string
+	LocalPort      int    // actually bound local port
 	VirtualPort    int    // port exposed inside the WireGuard tunnel
 	TargetHint     string // server-side target, when the server discloses one
 	TunnelIP       string // this client's address inside the tunnel

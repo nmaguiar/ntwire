@@ -64,6 +64,9 @@ type Settings struct {
 	CollectExec  string         `yaml:"collect_exec"`
 	SSO          bool           `yaml:"sso"`
 	Provider     string         `yaml:"provider"`
+	// BindAddress is the advanced, opt-in override for the loopback-only
+	// default tunnel listeners bind to; see client.Options.BindAddress.
+	BindAddress string `yaml:"bind_address"`
 }
 
 func DefaultConfigFile() string {

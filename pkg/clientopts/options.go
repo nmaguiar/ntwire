@@ -191,6 +191,14 @@ var registry = []Option{
 		Label:   "Client-info collector command", Group: "Advanced", Widget: WidgetText, Advanced: true,
 	},
 	{
+		Name: "bind", Kind: KindString,
+		Usage:   "local address to bind tunnel listeners to, instead of 127.0.0.1 (numeric IP only; exposes tunneled targets beyond this host)",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: strDefault(func(s client.Settings) string { return s.BindAddress }),
+		Label:   "Bind address", Group: "Advanced", Widget: WidgetText, Advanced: true,
+		Help: "Leave empty for 127.0.0.1 (default, most secure). A LAN IP or 0.0.0.0 makes tunneled targets reachable from other hosts on that network -- there is no additional access control at the listener.",
+	},
+	{
 		Name: "port", Kind: KindKeyValue, Usage: "name=local-port (repeatable)",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Local ports", Group: "Tunnels", Widget: WidgetPortMap,

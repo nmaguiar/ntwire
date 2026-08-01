@@ -142,6 +142,7 @@ func TestReplacePortSwitchesLocalListener(t *testing.T) {
 		tunnels:        []*localTunnel{{name: "database", listener: old, localAddr: old.Addr().String()}},
 		LocalAddresses: []string{old.Addr().String()},
 		statusFile:     t.TempDir() + "/status.json",
+		bindAddr:       "127.0.0.1",
 	}
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -165,6 +166,40 @@ func TestReplacePortSwitchesLocalListener(t *testing.T) {
 	_ = c.tunnels[0].listener.Close()
 }
 
+func TestResolveBindAddress(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "empty defaults to loopback", in: "", want: "127.0.0.1"},
+		{name: "wildcard", in: "0.0.0.0", want: "0.0.0.0"},
+		{name: "specific interface", in: "192.168.1.5", want: "192.168.1.5"},
+		{name: "ipv6 loopback", in: "::1", want: "::1"},
+		{name: "ipv6 wildcard", in: "::", want: "::"},
+		{name: "hostname rejected", in: "localhost", wantErr: true},
+		{name: "garbage rejected", in: "not-an-ip", wantErr: true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := resolveBindAddress(c.in)
+			if c.wantErr {
+				if err == nil {
+					t.Fatalf("resolveBindAddress(%q) = %q, nil; want an error", c.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveBindAddress(%q) unexpected error: %v", c.in, err)
+			}
+			if got != c.want {
+				t.Fatalf("resolveBindAddress(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
 func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -178,7 +213,7 @@ func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	l, err := listenLocal(port, true)
+	l, err := listenLocal("127.0.0.1", port, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +227,7 @@ func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	l, err = listenLocal(port, true)
+	l, err = listenLocal("127.0.0.1", port, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,6 +307,34 @@ func TestWebViewsPairGrantsByNameNotPosition(t *testing.T) {
 	}
 	if code := got[0].Blocks[0].Spans[1]; code.Text != "curl http://127.0.0.1:58080/" {
 		t.Fatalf("rendered command = %q, want the reports listener's port", code.Text)
+	}
+}
+
+// A tunnel started with --bind pointed at a wildcard address reports that
+// literal address (e.g. 0.0.0.0:58080) in its status, but instructions must
+// still render a dialable loopback address -- 0.0.0.0 is not something a
+// copy-pasted curl command can connect to, and is an outright invalid
+// connect target on Windows.
+func TestWebInstructionsSubstituteLoopbackForWildcardBind(t *testing.T) {
+	c := &Connection{
+		Response: protocol.AuthResponse{
+			Tunnels: []protocol.Tunnel{
+				{Name: "reports", Instructions: "run `curl http://{{.LocalHost}}:{{.LocalPort}}/ via {{.LocalAddress}}`"},
+			},
+		},
+		tunnels: []*localTunnel{{name: "reports", virtualPort: 18080, localAddr: "0.0.0.0:58080"}},
+		base:    "https://ntwire.example:8443",
+	}
+	got := c.webInstructions().Tunnels
+	if len(got) != 1 {
+		t.Fatalf("instructions = %+v, want one tunnel", got)
+	}
+	if len(got[0].Blocks) != 1 || len(got[0].Blocks[0].Spans) != 2 {
+		t.Fatalf("blocks = %+v", got[0].Blocks)
+	}
+	want := "curl http://127.0.0.1:58080/ via 127.0.0.1:58080"
+	if code := got[0].Blocks[0].Spans[1]; code.Text != want {
+		t.Fatalf("rendered command = %q, want %q (wildcard bind substituted with loopback)", code.Text, want)
 	}
 }
 
