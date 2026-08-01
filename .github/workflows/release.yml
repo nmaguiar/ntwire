@@ -43,10 +43,14 @@ jobs:
   gui-darwin:
     needs: binaries
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: macos-latest
     strategy:
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: macos-13
+          - arch: arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
