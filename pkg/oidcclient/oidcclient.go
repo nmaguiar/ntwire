@@ -30,9 +30,14 @@ type Tokens struct {
 
 // LoginOptions configures how Login obtains tokens from one issuer.
 type LoginOptions struct {
-	ClientID  string
-	Scopes    []string
-	NoBrowser bool // skip PKCE and go straight to the device flow
+	ClientID string
+	// ClientSecret is only needed for IdPs (e.g. Google's "Desktop app"
+	// client type) whose token endpoint requires it even for a
+	// public/PKCE registration; see docs/OIDC-SETUP.md. Leave empty
+	// otherwise.
+	ClientSecret string
+	Scopes       []string
+	NoBrowser    bool // skip PKCE and go straight to the device flow
 
 	// OpenBrowser launches url in the user's browser. Defaults to the
 	// platform opener (open/xdg-open/rundll32). Tests substitute a fake that
@@ -53,6 +58,7 @@ func Login(ctx context.Context, issuerURL string, opts LoginOptions) (Tokens, er
 		return Tokens{}, fmt.Errorf("discover issuer %s: %w", issuerURL, err)
 	}
 	cfg, extraAuthOpts := buildOAuth2Config(provider, opts.ClientID, opts.Scopes)
+	cfg.ClientSecret = opts.ClientSecret
 
 	if !opts.NoBrowser {
 		tok, err := loginPKCE(ctx, cfg, opts, extraAuthOpts)
@@ -212,12 +218,12 @@ func defaultDevicePrompt(da *oauth2.DeviceAuthResponse) {
 }
 
 // Refresh silently mints a fresh ID token from a cached refresh token.
-func Refresh(ctx context.Context, issuerURL, clientID, refreshToken string, scopes []string) (Tokens, error) {
+func Refresh(ctx context.Context, issuerURL, clientID, clientSecret, refreshToken string, scopes []string) (Tokens, error) {
 	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
 		return Tokens{}, fmt.Errorf("discover issuer %s: %w", issuerURL, err)
 	}
-	cfg := &oauth2.Config{ClientID: clientID, Endpoint: provider.Endpoint(), Scopes: scopes}
+	cfg := &oauth2.Config{ClientID: clientID, ClientSecret: clientSecret, Endpoint: provider.Endpoint(), Scopes: scopes}
 	tok, err := cfg.TokenSource(ctx, &oauth2.Token{RefreshToken: refreshToken}).Token()
 	if err != nil {
 		return Tokens{}, err

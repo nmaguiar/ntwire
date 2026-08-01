@@ -28,6 +28,7 @@ The reference server serves HTTPS.
       "name": "google",
       "issuer": "https://accounts.google.com",
       "client_id": "1234-abc.apps.googleusercontent.com",
+      "client_secret": "",
       "scopes": ["openid", "email", "profile"],
       "groups_claim": ""
     }
@@ -40,7 +41,10 @@ The reference server serves HTTPS.
 least one is always present. The `tcp` capability indicates TCP tunnel
 forwarding support. `oidc_issuers` is omitted (or empty) when `oidc-auth` is
 absent, and lets a client run the login flow with zero local configuration:
-discovery, scopes, and `client_id` all come from the server.
+discovery, scopes, and `client_id` all come from the server. `client_secret`
+is empty/omitted for most issuers; it's only populated for IdPs whose token
+endpoint requires it even for a public/PKCE client (e.g. Google's "Desktop
+app" type — see docs/OIDC-SETUP.md). It is not treated as confidential.
 
 ## Authentication request
 

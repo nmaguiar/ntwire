@@ -25,7 +25,8 @@ auth:
     issuers:
       - name: google                    # stable id; shown to clients and selected with --provider
         issuer: https://accounts.google.com  # OIDC issuer URL; its /.well-known/openid-configuration and JWKS are fetched
-        client_id: 1234-abc.apps.googleusercontent.com  # public OAuth client id registered at the issuer (PKCE, no secret)
+        client_id: 1234-abc.apps.googleusercontent.com  # public OAuth client id registered at the issuer (PKCE; most IdPs need no client_secret)
+        client_secret: ""                # only needed for IdPs whose token endpoint requires it even for a public client (e.g. Google's "Desktop app" type, not a confidentiality boundary); see OIDC-SETUP.md
         scopes: [openid, email, profile] # requested OAuth scopes; default shown
         groups_claim: ""                 # ID-token claim holding group membership, e.g. "groups"; empty disables group: grants
         require_verified_email: true     # reject tokens without email_verified=true; default true, see SECURITY.md
@@ -92,9 +93,12 @@ equivalent if it needs to be bounded.
 
 Every readable non-directory file in `authorized_keys_dir` is treated as a
 public key. Tunnel names must be unique and each tunnel requires `name` and
-`target`. `ntwire-server` is a public OAuth client (PKCE, no client secret) and
-never stores IdP credentials; see the Google/Entra/Keycloak registration
-notes in [OIDC-SETUP.md](OIDC-SETUP.md).
+`target`. `ntwire-server` is a public OAuth client (PKCE) and never
+authenticates itself to an IdP with a protected secret — a handful of IdPs
+still require a non-confidential `client_secret` value on token requests
+(see [OIDC-SETUP.md](OIDC-SETUP.md#google)), which ntwire treats the same
+way as `client_id`. See the Google/Entra/Keycloak registration notes in
+[OIDC-SETUP.md](OIDC-SETUP.md).
 
 ## SOCKS proxy tunnels
 

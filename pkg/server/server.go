@@ -165,7 +165,7 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	if len(s.Config.Auth.OIDC.Issuers) > 0 {
 		caps = append(caps, "oidc-auth")
 		for _, iss := range s.Config.Auth.OIDC.Issuers {
-			issuers = append(issuers, protocol.OIDCIssuerInfo{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, Scopes: iss.Scopes, GroupsClaim: iss.GroupsClaim})
+			issuers = append(issuers, protocol.OIDCIssuerInfo{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, ClientSecret: iss.ClientSecret, Scopes: iss.Scopes, GroupsClaim: iss.GroupsClaim})
 		}
 	}
 	write(w, http.StatusOK, protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers})

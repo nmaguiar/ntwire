@@ -272,7 +272,7 @@ func TestRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Login: %v", err)
 	}
-	refreshed, err := Refresh(context.Background(), idp.server.URL, "client-1", initial.RefreshToken, []string{"openid", "email"})
+	refreshed, err := Refresh(context.Background(), idp.server.URL, "client-1", "", initial.RefreshToken, []string{"openid", "email"})
 	if err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
