@@ -37,7 +37,28 @@ type profileSlot struct {
 	item          *systray.MenuItem
 	dashboard     *slotPool
 	tunnelsHeader *systray.MenuItem
+	tunnelsShown  bool // guards tunnelsHeader.Hide(); see hideTunnelsHeader
 	tunnels       *slotPool
+}
+
+// hideTunnelsHeader hides tunnelsHeader only if it isn't already hidden.
+// Unlike the pool-backed slots (dashboard, tunnels), tunnelsHeader has no
+// acquire/release bookkeeping to make repeat Hide() calls a no-op, and
+// render/clearProfileChildren call it on every tick regardless of current
+// state. On Windows, Hide() removes the item from its parent's native menu
+// by ID; calling it again once already removed logs a spurious systray
+// error, so this tracks shown state explicitly instead.
+func (s *profileSlot) hideTunnelsHeader() {
+	if !s.tunnelsShown {
+		return
+	}
+	s.tunnelsHeader.Hide()
+	s.tunnelsShown = false
+}
+
+func (s *profileSlot) showTunnelsHeader() {
+	s.tunnelsHeader.Show()
+	s.tunnelsShown = true
 }
 
 // menu owns the tray's entire fixed structure and the live state needed to
@@ -66,20 +87,31 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 
 	profileItems := make([]Slot, maxProfiles)
 	for i := range m.slots {
+		// Build each item's full subtree before hiding anything, and hide
+		// bottom-up (leaves, then containers, then the row itself). On
+		// Windows, Hide() removes the item from its parent's native menu by
+		// ID via RemoveMenu. If a child is then added to that now-removed
+		// item, winTray.convertToSubMenu's SetMenuItemInfo call (which would
+		// attach the child's menu to the parent's id) fails and returns
+		// early without ever recording the parent's new submenu handle in
+		// winTray.menus -- so every later call for that item (Hide, or
+		// converting a grandchild) reads back a zero handle and fails with
+		// "Invalid menu handle" (Windows error 1401). See
+		// fyne.io/systray@v1.12.2/systray_windows.go's addOrUpdateMenuItem
+		// and convertToSubMenu.
 		item := systray.AddMenuItem("", "")
-		item.Hide()
 
 		dashboardItem := item.AddSubMenuItem("Open dashboard…", "Open this profile's local status page")
-		dashboardItem.Hide()
 
 		tunnelsHeader := item.AddSubMenuItem("Tunnels", "")
-		tunnelsHeader.Hide()
 		tunnelSlots := make([]Slot, maxTunnelsPerProfile)
 		for j := 0; j < maxTunnelsPerProfile; j++ {
 			row := tunnelsHeader.AddSubMenuItem("", "Click to copy the local address")
 			row.Hide()
 			tunnelSlots[j] = menuItemSlot{row}
 		}
+		tunnelsHeader.Hide()
+		dashboardItem.Hide()
 
 		m.slots[i] = profileSlot{
 			item:          item,
@@ -88,6 +120,7 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 			tunnels:       newSlotPool(tunnelSlots),
 		}
 		profileItems[i] = menuItemSlot{item}
+		item.Hide()
 	}
 	m.profiles = newSlotPool(profileItems)
 
@@ -210,7 +243,7 @@ func (m *menu) clearProfileChildren(id string) {
 	}
 	slot.dashboard.release(dashboardSlotID)
 	slot.tunnels.releaseAllExcept(nil)
-	slot.tunnelsHeader.Hide()
+	slot.hideTunnelsHeader()
 }
 
 func (m *menu) renderDashboardItem(slot *profileSlot, snap manager.Snapshot) {
@@ -253,10 +286,10 @@ func (m *menu) renderTunnels(slot *profileSlot, snap manager.Snapshot) {
 	slot.tunnels.releaseAllExcept(tunnelKeep)
 
 	if len(tunnels) == 0 {
-		slot.tunnelsHeader.Hide()
+		slot.hideTunnelsHeader()
 		return
 	}
-	slot.tunnelsHeader.Show()
+	slot.showTunnelsHeader()
 	for _, t := range tunnels {
 		row, ok := slot.tunnels.acquire(t.Name)
 		if !ok {
