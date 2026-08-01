@@ -143,6 +143,33 @@ type RelayRegisterResponse struct {
 	Domain  string `json:"domain"`
 	Error   string `json:"error,omitempty"`
 	Code    string `json:"code,omitempty"`
+	// ReflectAddr is the relay's UDP address-reflection endpoint (see
+	// pkg/relay's reflector), empty when the relay has none configured. A
+	// registered ntwire-server uses it to learn its own NAT-mapped UDP
+	// address for the opportunistic direct-connection upgrade; it is passed
+	// on to clients (via PunchResponse) rather than exposed in relay config,
+	// so a client never needs to know the relay's internals directly.
+	ReflectAddr string `json:"reflect_addr,omitempty"`
+}
+
+// PunchRequest is POSTed by an authenticated client to a relayed server's
+// /v1/punch endpoint to exchange candidate UDP addresses for an opportunistic
+// direct WireGuard connection, bypassing the relay's TCP/WebSocket fallback.
+// ClientAddr is empty on the client's first request, made only to learn
+// RelayReflectAddr; the client self-reflects off that address and POSTs
+// again with ClientAddr filled in once it knows its own NAT-mapped endpoint.
+type PunchRequest struct {
+	ClientAddr string `json:"client_addr,omitempty"`
+}
+
+// PunchResponse answers a PunchRequest. ServerAddr is the server's own most
+// recently self-reflected UDP endpoint, empty if the server has not
+// discovered one yet (or does not have direct-upgrade enabled).
+// RelayReflectAddr mirrors RelayRegisterResponse.ReflectAddr so the client
+// does not need any relay configuration of its own.
+type PunchResponse struct {
+	ServerAddr       string `json:"server_addr,omitempty"`
+	RelayReflectAddr string `json:"relay_reflect_addr,omitempty"`
 }
 
 // RelayOpen is pushed by the relay to an ntwire-server's control connection

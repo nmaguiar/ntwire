@@ -16,7 +16,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "allow:", "target:", "description:", "log_file:",
-		"instructions:", "docs_url:",
+		"instructions:", "docs_url:", "advertise_direct:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -52,6 +52,52 @@ tunnels:
 	}
 	if len(got.Tunnels) != 1 || got.Tunnels[0].LocalPort != 58080 {
 		t.Fatalf("tunnels = %+v", got.Tunnels)
+	}
+}
+
+// TestLoadConfigRejectsAdvertiseDirectWithoutRelay guards against a config
+// that would silently be a no-op: relay.advertise_direct only means
+// anything for a server that is actually relaying (cmd/ntwire-server only
+// wires RelayAgent.OnReflectAddr inside the relay.enabled branch), so a
+// standalone server setting it should be told rather than have it quietly
+// ignored.
+func TestLoadConfigRejectsAdvertiseDirectWithoutRelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+relay:
+  advertise_direct: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "advertise_direct") {
+		t.Fatalf("LoadConfig() error = %v, want an advertise_direct validation error", err)
+	}
+}
+
+func TestLoadConfigAcceptsAdvertiseDirectWithRelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+relay:
+  enabled: true
+  url: wss://relay.example.com:8444
+  name: home
+  identity_file: relay_id_ed25519
+  advertise_direct: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() = %v", err)
+	}
+	if !got.Relay.AdvertiseDirect {
+		t.Fatal("Relay.AdvertiseDirect = false, want true")
 	}
 }
 

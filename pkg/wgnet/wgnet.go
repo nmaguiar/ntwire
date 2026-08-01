@@ -13,6 +13,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -107,6 +108,107 @@ func (s *Stack) AddPeer(e Endpoint) error {
 		lines += "endpoint=" + parts[1] + "\n"
 	}
 	return s.device.IpcSet(lines)
+}
+
+// UpdateEndpoint reseeds an existing peer's endpoint without touching its
+// allowed-ips, unlike AddPeer. It is how the opportunistic direct-UDP
+// upgrade both seeds a candidate address for wireguard-go to try, and forces
+// a revert back to the WebSocket fallback endpoint if that candidate stalls
+// (see pkg/client). addr is resolved through the Bind's ParseEndpoint,
+// exactly like a normal "endpoint=" IPC line.
+func (s *Stack) UpdateEndpoint(publicKey, addr string) error {
+	public, err := decodeKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("invalid peer public key: %w", err)
+	}
+	return s.device.IpcSet("public_key=" + hex.EncodeToString(public) + "\nendpoint=" + addr + "\n")
+}
+
+// LastHandshake returns the time of the most recent completed WireGuard
+// handshake with the peer identified by publicKey, and whether that peer is
+// currently known to the device at all (found is false, err is nil, if not).
+// A known peer that has never completed a handshake reports found=true with
+// the zero Unix time (1970-01-01), not a zero time.Time -- callers comparing
+// against "how long ago" should treat any implausibly old value the same way.
+func (s *Stack) LastHandshake(publicKey string) (t time.Time, found bool, err error) {
+	public, err := decodeKey(publicKey)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("invalid peer public key: %w", err)
+	}
+	want := hex.EncodeToString(public)
+	raw, err := s.device.IpcGet()
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	var sec, nsec int64
+	cur := ""
+	for _, line := range strings.Split(raw, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "public_key":
+			cur = v
+		case "last_handshake_time_sec":
+			if cur == want {
+				found = true
+				sec, _ = strconv.ParseInt(v, 10, 64)
+			}
+		case "last_handshake_time_nsec":
+			if cur == want {
+				nsec, _ = strconv.ParseInt(v, 10, 64)
+			}
+		}
+	}
+	if !found {
+		return time.Time{}, false, nil
+	}
+	return time.Unix(sec, nsec), true, nil
+}
+
+// PeerEndpoint returns wireguard-go's current endpoint address for the peer
+// identified by publicKey -- its "ip:port" text exactly as IpcGet's
+// endpoint= line reports it -- and whether the peer is known to the device
+// at all. A known peer that has never had an endpoint seeded (AddPeer with
+// no @host:port, and never UpdateEndpoint) reports found=true with an empty
+// endpoint, since wireguard-go's IpcGet omits the endpoint= line entirely in
+// that case; one seeded with wstransport.WSSentinel reports "0.0.0.0:0",
+// since that sentinel deliberately resolves to the unspecified address (see
+// wstransport's endpointAddress) rather than a real one. Callers verifying
+// the opportunistic direct-UDP upgrade -- pkg/client's directupgrade.go --
+// compare this against the candidate they seeded, since a valid packet
+// arriving over the WebSocket fallback in the meantime makes wireguard-go's
+// own peer roaming silently move the endpoint back on its own.
+func (s *Stack) PeerEndpoint(publicKey string) (endpoint string, found bool, err error) {
+	public, err := decodeKey(publicKey)
+	if err != nil {
+		return "", false, fmt.Errorf("invalid peer public key: %w", err)
+	}
+	want := hex.EncodeToString(public)
+	raw, err := s.device.IpcGet()
+	if err != nil {
+		return "", false, err
+	}
+	cur := ""
+	for _, line := range strings.Split(raw, "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "public_key":
+			cur = v
+			if cur == want {
+				found = true
+			}
+		case "endpoint":
+			if cur == want {
+				endpoint = v
+			}
+		}
+	}
+	return endpoint, found, nil
 }
 
 func decodeKey(encoded string) ([]byte, error) {

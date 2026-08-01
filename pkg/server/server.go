@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,6 +33,7 @@ type Server struct {
 	oidc        *oidcauth.Verifiers
 	tlsManager  *TLSManager
 	auditLog    *slog.Logger
+	direct      *directUDP
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -78,6 +80,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/renew", s.renew)
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
+	m.HandleFunc("POST /v1/punch", s.punch)
 	return m
 }
 
@@ -368,6 +371,37 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}
 }
+// punch answers the opportunistic direct-UDP upgrade's candidate exchange
+// (see directudp.go). It always requires a valid session, even on a caller's
+// first, addr-less request that only wants RelayReflectAddr: an
+// unauthenticated caller has no business learning either the server's own
+// NAT-mapped candidate or the relay's reflector address.
+func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if _, ok := s.sessions.Get(token); !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	s.mu.Lock()
+	d := s.direct
+	s.mu.Unlock()
+	if d == nil {
+		http.Error(w, "direct-connection upgrade not available", http.StatusNotFound)
+		return
+	}
+	var body protocol.PunchRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body) != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
+		return
+	}
+	if body.ClientAddr != "" {
+		if addr, err := netip.ParseAddrPort(body.ClientAddr); err == nil {
+			go d.primeClient(addr.String())
+		}
+	}
+	write(w, 200, protocol.PunchResponse{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect})
+}
+
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	old, ok := s.sessions.Get(t)

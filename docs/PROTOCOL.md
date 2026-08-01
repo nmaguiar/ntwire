@@ -16,6 +16,7 @@ The reference server serves HTTPS.
 | `POST /v1/renew` | Bearer token | Replacement session and grants |
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
+| `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
 
 `GET /v1/info` returns:
 
@@ -229,12 +230,15 @@ one JSON `RelayRegisterRequest` text message to claim a tenant name:
 The relay replies with `RelayRegisterResponse`:
 
 ```json
-{"version": 1, "name": "home", "domain": "relay.example.com"}
+{"version": 1, "name": "home", "domain": "relay.example.com", "reflect_addr": "203.0.113.10:3480"}
 ```
 
 or, on failure, `{"version":1,"error":"...","code":"..."}` and closes the
 connection. `name` in the response is authoritative from the relay's own
-`registrations` config, never an echo of the request.
+`registrations` config, never an echo of the request. `reflect_addr` is the
+relay's `listen.reflect` UDP address, empty when that is not configured; see
+[below](#udp-address-reflection-and-v1punch) and
+[RELAY.md](RELAY.md#opportunistic-direct-udp-upgrade).
 
 ### Signing payload
 
@@ -285,3 +289,50 @@ The origin ntwire-server observes the relayed connection through its normal
 connection's `RemoteAddr()` reports `client_addr` from `RelayOpen`, not the
 relay's own address, so per-source-IP rate limiting and audit logging remain
 correct across a relay hop.
+
+### UDP address reflection and `/v1/punch`
+
+When `listen.reflect` is configured, the relay also answers a minimal,
+stateless UDP address-reflection protocol on that port — used by a server
+with `relay.advertise_direct` enabled, and by clients connecting to one, to
+learn their own NAT-mapped UDP address for the opportunistic direct-UDP
+upgrade (see [RELAY.md](RELAY.md#opportunistic-direct-udp-upgrade)). This is
+independent of `/v1/relay/control` and `/v1/relay/data` above: the reflector
+never authenticates callers, holds no per-sender state, and never sees
+WireGuard traffic.
+
+Every datagram in this protocol shares a 5-byte header: 4 magic bytes
+(`0x00 'N' 'T' 'W'`, chosen so byte 0 can never collide with a real
+WireGuard packet's first byte, always 1-4) followed by a 1-byte frame type.
+The reflector only ever handles two of the three defined frame types:
+
+| Frame type | Value | Direction | Payload |
+| --- | --- | --- | --- |
+| `FrameReflectRequest` | `1` | caller → reflector | none |
+| `FrameReflectResponse` | `2` | reflector → caller | the caller's observed `ip:port`, as text |
+| `FramePrime` | `3` | peer → peer, direct | none; a NAT-priming ping, never sent to the reflector |
+
+A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
+and gets back `FrameReflectResponse` with its own address as the relay
+observed it. Once both sides of a connection know each other's candidate —
+exchanged via the ordinary, already-authenticated client↔server channel
+below, not through the relay — they send a short burst of `FramePrime`
+frames directly to each other before attempting a real WireGuard handshake,
+to open both NAT mappings first.
+
+`POST /v1/punch` (Bearer token, same session as `/v1/wg`) is the
+client↔server exchange that carries those candidates:
+
+```json
+// request
+{"client_addr": "203.0.113.5:51422"}
+// response
+{"server_addr": "198.51.100.7:51820", "relay_reflect_addr": "203.0.113.10:3480"}
+```
+
+`client_addr` is empty on a client's first call, made only to learn
+`relay_reflect_addr`; it self-reflects off that address and calls again with
+`client_addr` filled in. `server_addr` is the server's own most recently
+self-reflected candidate, empty if it has none yet. A server without
+`relay.advertise_direct` enabled (or predating this feature) answers `404`
+to `/v1/punch` entirely.

@@ -278,6 +278,23 @@ trusted only for availability** (and, within that, for accurately reporting
 client addresses used for rate limiting and logging — not a security boundary
 strong enough to authorize based on).
 
+**The opportunistic direct-UDP upgrade (`relay.advertise_direct`) is a
+deliberate exception to relay mode's address-hiding property.** With it
+enabled, the server's real, currently-mapped public UDP address is served to
+*any authenticated client* via `POST /v1/punch` — there is no separate
+per-client authorization for learning it, only the same session token that
+already grants tunnel access. This matches the setting's documented purpose
+(trading address secrecy for lower latency; see
+[RELAY.md](RELAY.md#opportunistic-direct-udp-upgrade)), so it is not treated
+as a bug, but it is a real trust boundary shift operators should make
+deliberately rather than discover afterward: leave `advertise_direct` off if
+every authenticated client should not be able to learn the server's real
+network location. The relay's own reflector (`listen.reflect`) is stateless
+and unauthenticated by design — it answers any UDP packet shaped like a
+reflection request with that packet's observed source address, the same way
+a public STUN server would — so it never becomes a party to a session and
+never sees WireGuard traffic.
+
 **Operational notes:**
 
 - The relay's own `listen.agents` TLS certificate is *not* what the ntwire

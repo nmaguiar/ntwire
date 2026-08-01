@@ -19,6 +19,23 @@ type agentServer struct {
 	registry *Registry
 	domain   string
 	limits   Limits
+
+	mu          sync.Mutex
+	reflectAddr string
+}
+
+// setReflectAddr records the relay's bound UDP reflector address (or ""),
+// echoed back to each server as it registers over its control connection.
+func (a *agentServer) setReflectAddr(addr string) {
+	a.mu.Lock()
+	a.reflectAddr = addr
+	a.mu.Unlock()
+}
+
+func (a *agentServer) getReflectAddr() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.reflectAddr
 }
 
 // handoffConn lets handleData keep its hijacked HTTP handler alive until the
@@ -112,7 +129,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain})
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: a.getReflectAddr()})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()

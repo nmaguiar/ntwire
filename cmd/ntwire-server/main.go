@@ -123,6 +123,9 @@ func main() {
 			slog.Error("relay configuration error", "error", err)
 			os.Exit(2)
 		}
+		if c.Relay.AdvertiseDirect {
+			agent.OnReflectAddr = s.EnableDirectUpgrade
+		}
 		go agent.Run(context.Background())
 		defer agent.Close()
 		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())

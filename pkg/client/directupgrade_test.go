@@ -1,0 +1,319 @@
+package client
+
+import (
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
+	"golang.zx2c4.com/wireguard/conn"
+)
+
+// freeUDPPortForTest finds a currently-unused UDP port by briefly binding to
+// 127.0.0.1:0 and releasing it, mirroring pkg/wgnet's test helper of the
+// same shape (unexported there, so duplicated here rather than exported
+// purely for tests).
+func freeUDPPortForTest(t *testing.T) int {
+	t.Helper()
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	defer c.Close()
+	return c.LocalAddr().(*net.UDPAddr).Port
+}
+
+// pumpReceive drains a conn.ReceiveFunc forever, discarding whatever it
+// returns. FilterBind only intercepts control frames as a side effect of its
+// wrapped receive func actually being called -- exactly as wireguard-go's
+// own receive loop would call it in production -- so tests exercising
+// Control() need something playing that role.
+func pumpReceive(fn conn.ReceiveFunc) {
+	bufs, sizes, eps := [][]byte{make([]byte, 1500)}, make([]int, 1), make([]conn.Endpoint, 1)
+	for {
+		if _, err := fn(bufs, sizes, eps); err != nil {
+			return
+		}
+	}
+}
+
+func TestSelfReflectReturnsObservedAddress(t *testing.T) {
+	serverBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	fns, serverPort, err := serverBind.Open(0)
+	if err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	defer serverBind.Close()
+	for _, fn := range fns {
+		go pumpReceive(fn)
+	}
+	go func() {
+		for cp := range serverBind.Control() {
+			if cp.Type == wstransport.FrameReflectRequest {
+				_ = serverBind.SendControl(wstransport.FrameReflectResponse, []byte(cp.From.String()), cp.From.String())
+			}
+		}
+	}()
+
+	clientBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	clientFns, _, err := clientBind.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientBind.Close()
+	// selfReflect's reply arrives on the client's own receive func, which in
+	// production a real wireguard-go device pumps continuously once the
+	// Stack is up. Nothing else in this narrow test does that, so it has to
+	// be pumped explicitly here for the reply to ever reach Control().
+	for _, fn := range clientFns {
+		go pumpReceive(fn)
+	}
+
+	addr, err := selfReflect(clientBind, "127.0.0.1:"+strconv.Itoa(int(serverPort)), 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr == "" {
+		t.Fatal("selfReflect() returned an empty address")
+	}
+}
+
+func TestSelfReflectTimesOutWithNoResponder(t *testing.T) {
+	clientBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	if _, _, err := clientBind.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer clientBind.Close()
+
+	unusedPort := freeUDPPortForTest(t)
+	if _, err := selfReflect(clientBind, "127.0.0.1:"+strconv.Itoa(unusedPort), 300*time.Millisecond); err == nil {
+		t.Fatal("selfReflect() succeeded with no responder, want a timeout error")
+	}
+}
+
+func TestPrimeAddrSendsBurst(t *testing.T) {
+	listener, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	defer listener.Close()
+
+	clientBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	if _, _, err := clientBind.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer clientBind.Close()
+
+	primeAddr(clientBind, listener.LocalAddr().String())
+
+	_ = listener.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 128)
+	got := 0
+	for got < wstransport.PrimeBurst {
+		n, _, err := listener.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("received %d prime frames before a read error (%v), want %d", got, err, wstransport.PrimeBurst)
+		}
+		if typ, _, ok := wstransport.DecodeControlFrame(buf[:n]); ok && typ == wstransport.FramePrime {
+			got++
+		}
+	}
+}
+
+func TestPostPunchParsesSuccessResponse(t *testing.T) {
+	var gotAuth, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		_ = json.NewEncoder(w).Encode(protocol.PunchResponse{ServerAddr: "1.2.3.4:5", RelayReflectAddr: "5.6.7.8:9"})
+	}))
+	defer srv.Close()
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok"}
+	resp, err := c.postPunch("9.9.9.9:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.ServerAddr != "1.2.3.4:5" || resp.RelayReflectAddr != "5.6.7.8:9" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer tok")
+	}
+	if !strings.Contains(gotBody, "9.9.9.9:1") {
+		t.Errorf("request body = %q, want it to contain the client address", gotBody)
+	}
+}
+
+// TestPostPunch404ReturnsZeroValueNotError guards the steady state a server
+// without relay.advertise_direct enabled (or an old server predating this
+// feature) puts every client in: postPunch must treat that as "nothing to
+// do" rather than an error the retry loop would log noisily forever.
+func TestPostPunch404ReturnsZeroValueNotError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok"}
+	resp, err := c.postPunch("")
+	if err != nil {
+		t.Fatalf("postPunch() error = %v, want nil for a 404", err)
+	}
+	if resp != (protocol.PunchResponse{}) {
+		t.Fatalf("postPunch() = %+v, want the zero value", resp)
+	}
+}
+
+// peeredClientServerStacks builds two real wgnet Stacks over loopback UDP,
+// peered exactly the way pkg/server and pkg/client do in production (see
+// wgnet_test.go's TestStackRoundTripsTCPThroughWireGuardPeers), so
+// probeDirectPath's assumption about gVisor's netstack -- that a SYN to an
+// unbound port gets a prompt refusal rather than silence -- is verified
+// against the real thing rather than asserted in a comment.
+func peeredClientServerStacks(t *testing.T) (serverStack, clientStack *wgnet.Stack, serverIP netip.Addr) {
+	t.Helper()
+	serverPort := freeUDPPortForTest(t)
+	serverIP = netip.MustParseAddr("100.65.9.1")
+	clientIP := netip.MustParseAddr("100.65.9.2")
+
+	var err error
+	serverStack, err = wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	if err != nil {
+		t.Fatalf("server wgnet.New() = %v", err)
+	}
+	t.Cleanup(func() { _ = serverStack.Close() })
+	clientStack, err = wgnet.New(wgnet.Config{Addresses: []netip.Addr{clientIP}})
+	if err != nil {
+		t.Fatalf("client wgnet.New() = %v", err)
+	}
+	t.Cleanup(func() { _ = clientStack.Close() })
+
+	if err := serverStack.AddPeer(wgnet.Endpoint{PublicKey: clientStack.PublicKey(), Address: clientIP.String() + "/32"}); err != nil {
+		t.Fatalf("server.AddPeer() = %v", err)
+	}
+	if err := clientStack.AddPeer(wgnet.Endpoint{PublicKey: serverStack.PublicKey(), Address: "0.0.0.0/0@127.0.0.1:" + strconv.Itoa(serverPort)}); err != nil {
+		t.Fatalf("client.AddPeer() = %v", err)
+	}
+	return serverStack, clientStack, serverIP
+}
+
+func TestProbeDirectPathSucceedsWhenServerReachable(t *testing.T) {
+	_, clientStack, serverIP := peeredClientServerStacks(t)
+	c := &Connection{Stack: clientStack, serverTunnelIP: serverIP, upgradeTiming: defaultDirectUpgradeTiming()}
+	if !c.probeDirectPath() {
+		t.Fatal("probeDirectPath() = false, want true: an unbound port should still refuse promptly, proving round-trip connectivity over the direct path")
+	}
+}
+
+func TestProbeDirectPathFailsWhenNoServerListening(t *testing.T) {
+	unusedPort := freeUDPPortForTest(t)
+	serverIP := netip.MustParseAddr("100.65.10.1")
+	clientIP := netip.MustParseAddr("100.65.10.2")
+	peerKey, err := wgnet.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientStack, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{clientIP}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = clientStack.Close() })
+	if err := clientStack.AddPeer(wgnet.Endpoint{PublicKey: peerKey.Public, Address: "0.0.0.0/0@127.0.0.1:" + strconv.Itoa(unusedPort)}); err != nil {
+		t.Fatal(err)
+	}
+
+	timing := defaultDirectUpgradeTiming()
+	c := &Connection{Stack: clientStack, serverTunnelIP: serverIP, upgradeTiming: timing}
+	start := time.Now()
+	if c.probeDirectPath() {
+		t.Fatal("probeDirectPath() = true, want false: no server is listening at all")
+	}
+	if elapsed := time.Since(start); elapsed < timing.probeTimeout-500*time.Millisecond {
+		t.Errorf("probeDirectPath() returned after %v, suspiciously fast for a full probe timeout of %v", elapsed, timing.probeTimeout)
+	}
+}
+
+func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
+	_, clientStack, _ := peeredClientServerStacks(t)
+	c := &Connection{Stack: clientStack, upgradeTiming: defaultDirectUpgradeTiming()}
+	if c.probeDirectPath() {
+		t.Fatal("probeDirectPath() = true with no serverTunnelIP set, want false")
+	}
+}
+
+// TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected reproduces the
+// failure mode directUpgradeLoop's revert-retry logic exists for: reverting
+// is itself an UpdateEndpoint call, which fails if the WebSocket fallback
+// isn't currently connected (Bind.ParseEndpoint errors in that case -- see
+// wstransport/bind.go). Before that retry logic existed, this failure was
+// only logged at Debug and silently accepted, stranding the data plane
+// pointed at a confirmed-dead direct address with nothing left to move it.
+func TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
+	server := wstransport.NewServer()
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	go pumpReceive(serverFns[0])
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = server.ServeHTTP(w, r, "session")
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	hybrid := wstransport.NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	if _, _, err := hybrid.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer hybrid.Close()
+
+	clientStack, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{netip.MustParseAddr("100.65.30.2")}, Bind: hybrid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientStack.Close()
+	peer, err := wgnet.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientStack.AddPeer(wgnet.Endpoint{PublicKey: peer.Public, Address: "0.0.0.0/0@" + wstransport.WSSentinel}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Kill the WebSocket connection from the server side, forcing the
+	// client's own read loop to notice and remove it from its peer map --
+	// exactly what a relay/server restart or network blip would also cause.
+	server.CloseSession("session")
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := hybrid.ParseEndpoint(wstransport.WSSentinel); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("WebSocket peer never became disconnected")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	c := &Connection{Stack: clientStack, Response: protocol.AuthResponse{ServerPublicKey: peer.Public}}
+	if err := c.revertToWebSocket(); err == nil {
+		t.Fatal("revertToWebSocket() succeeded despite a disconnected WebSocket peer, want an error so the caller retries instead of accepting it silently")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"net/netip"
 	"strconv"
@@ -193,6 +194,251 @@ func TestStackRoundTripsTCPThroughWireGuardPeers(t *testing.T) {
 	}
 	if err := <-echoErr; err != nil {
 		t.Fatalf("server-side echo goroutine error = %v", err)
+	}
+}
+
+func TestLastHandshakeReportsUnknownPeer(t *testing.T) {
+	s, err := New(Config{Addresses: []netip.Addr{netip.MustParseAddr("100.65.0.1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	peer, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := s.LastHandshake(peer.Public); err != nil || found {
+		t.Fatalf("LastHandshake() for a never-added peer = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
+func TestUpdateEndpointRejectsInvalidPublicKey(t *testing.T) {
+	s, err := New(Config{Addresses: []netip.Addr{netip.MustParseAddr("100.65.0.1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.UpdateEndpoint("not-base64!!", "127.0.0.1:1"); err == nil {
+		t.Fatal("UpdateEndpoint() with an invalid public key succeeded, want an error")
+	}
+}
+
+// TestLastHandshakeAfterRoundTripAndUpdateEndpoint reuses
+// TestStackRoundTripsTCPThroughWireGuardPeers' two-Stack fixture to prove
+// LastHandshake reports a real, recent time once a handshake has actually
+// completed (not just the zero Unix epoch a never-handshaked peer reports),
+// and that UpdateEndpoint accepts a valid peer without erroring -- exactly
+// the two calls pkg/client's opportunistic direct-UDP upgrade depends on for
+// seeding a candidate and detecting whether it needs to revert.
+func TestLastHandshakeAfterRoundTripAndUpdateEndpoint(t *testing.T) {
+	serverPort := freeUDPPort(t)
+	serverIP := netip.MustParseAddr("100.65.0.1")
+	clientIP := netip.MustParseAddr("100.65.0.2")
+
+	server, err := New(Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	if err != nil {
+		t.Fatalf("server New() = %v", err)
+	}
+	defer server.Close()
+	client, err := New(Config{Addresses: []netip.Addr{clientIP}})
+	if err != nil {
+		t.Fatalf("client New() = %v", err)
+	}
+	defer client.Close()
+
+	if err := server.AddPeer(Endpoint{PublicKey: client.PublicKey(), Address: clientIP.String() + "/32"}); err != nil {
+		t.Fatalf("server.AddPeer() = %v", err)
+	}
+	if err := client.AddPeer(Endpoint{PublicKey: server.PublicKey(), Address: "0.0.0.0/0@127.0.0.1:" + strconv.Itoa(serverPort)}); err != nil {
+		t.Fatalf("client.AddPeer() = %v", err)
+	}
+
+	if _, found, err := server.LastHandshake(client.PublicKey()); err != nil || !found {
+		t.Fatalf("LastHandshake() before any traffic = (found=%v, err=%v), want (true, nil)", found, err)
+	}
+
+	ln, err := server.Listen("tcp", serverIP.String()+":9000")
+	if err != nil {
+		t.Fatalf("server.Listen() = %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			conn.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := client.DialContext(ctx, "tcp", serverIP.String()+":9000")
+	if err != nil {
+		t.Fatalf("client.DialContext() through WireGuard peer = %v", err)
+	}
+	conn.Close()
+
+	// The TCP handshake above forced a WireGuard handshake as a side
+	// effect; give the device a moment to record it before polling.
+	deadline := time.Now().Add(5 * time.Second)
+	var last time.Time
+	for time.Now().Before(deadline) {
+		last, _, err = server.LastHandshake(client.PublicKey())
+		if err != nil {
+			t.Fatalf("LastHandshake() = %v", err)
+		}
+		if time.Since(last) < time.Minute {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if time.Since(last) >= time.Minute {
+		t.Fatalf("LastHandshake() = %v, want a time within the last minute", last)
+	}
+
+	if err := client.UpdateEndpoint(server.PublicKey(), "127.0.0.1:"+strconv.Itoa(serverPort)); err != nil {
+		t.Fatalf("UpdateEndpoint() on an existing peer = %v", err)
+	}
+}
+
+// TestPeerEndpointTracksSeededValue is the assertion pkg/client's
+// opportunistic direct-UDP upgrade depends on to tell "the direct candidate
+// I seeded is still active" apart from "wireguard-go's own roaming silently
+// moved it back to whatever transport a packet last arrived on" -- a plain
+// probe cannot distinguish those two cases if both transports are live on
+// the same device, but the peer's actual recorded endpoint can.
+func TestPeerEndpointTracksSeededValue(t *testing.T) {
+	s, err := New(Config{Addresses: []netip.Addr{netip.MustParseAddr("100.65.0.1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	peer, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, found, err := s.PeerEndpoint(peer.Public); err != nil || found {
+		t.Fatalf("PeerEndpoint() for a never-added peer = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+
+	if err := s.AddPeer(Endpoint{PublicKey: peer.Public, Address: "100.65.0.2/32"}); err != nil {
+		t.Fatalf("AddPeer() = %v", err)
+	}
+	if ep, found, err := s.PeerEndpoint(peer.Public); err != nil || !found || ep != "" {
+		t.Fatalf("PeerEndpoint() for a peer added with no @host:port = (ep=%q, found=%v, err=%v), want (\"\", true, nil)", ep, found, err)
+	}
+
+	if err := s.UpdateEndpoint(peer.Public, "127.0.0.1:51000"); err != nil {
+		t.Fatalf("UpdateEndpoint() = %v", err)
+	}
+	if ep, found, err := s.PeerEndpoint(peer.Public); err != nil || !found || ep != "127.0.0.1:51000" {
+		t.Fatalf("PeerEndpoint() after UpdateEndpoint(\"127.0.0.1:51000\") = (ep=%q, found=%v, err=%v), want (\"127.0.0.1:51000\", true, nil)", ep, found, err)
+	}
+
+	if err := s.UpdateEndpoint(peer.Public, "0.0.0.0:0"); err != nil {
+		t.Fatalf("UpdateEndpoint() = %v", err)
+	}
+	if ep, found, err := s.PeerEndpoint(peer.Public); err != nil || !found || ep != "0.0.0.0:0" {
+		t.Fatalf("PeerEndpoint() after UpdateEndpoint(\"0.0.0.0:0\") = (ep=%q, found=%v, err=%v), want (\"0.0.0.0:0\", true, nil)", ep, found, err)
+	}
+}
+
+// TestUpdateEndpointPreservesAllowedIPs guards against the single most
+// destructive possible regression in this area: UpdateEndpoint's IpcSet
+// payload is deliberately just "public_key=...\nendpoint=...\n", with no
+// replace_allowed_ips or allowed_ip line, on the assumption that wireguard-go
+// only touches a peer's allowed-ips when one of those is present (see
+// device/uapi.go). If that assumption were ever wrong, every tunnel would
+// die the instant the opportunistic direct-UDP upgrade seeded a candidate --
+// silently, since UpdateEndpoint itself would still return nil. This proves
+// it empirically with a real TCP round trip through the tunnel, both before
+// and after an UpdateEndpoint call, reusing
+// TestStackRoundTripsTCPThroughWireGuardPeers' two-Stack fixture.
+func TestUpdateEndpointPreservesAllowedIPs(t *testing.T) {
+	serverPort := freeUDPPort(t)
+	serverIP := netip.MustParseAddr("100.65.0.1")
+	clientIP := netip.MustParseAddr("100.65.0.2")
+
+	server, err := New(Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	if err != nil {
+		t.Fatalf("server New() = %v", err)
+	}
+	defer server.Close()
+	client, err := New(Config{Addresses: []netip.Addr{clientIP}})
+	if err != nil {
+		t.Fatalf("client New() = %v", err)
+	}
+	defer client.Close()
+
+	if err := server.AddPeer(Endpoint{PublicKey: client.PublicKey(), Address: clientIP.String() + "/32"}); err != nil {
+		t.Fatalf("server.AddPeer() = %v", err)
+	}
+	if err := client.AddPeer(Endpoint{PublicKey: server.PublicKey(), Address: "0.0.0.0/0@127.0.0.1:" + strconv.Itoa(serverPort)}); err != nil {
+		t.Fatalf("client.AddPeer() = %v", err)
+	}
+
+	ln, err := server.Listen("tcp", serverIP.String()+":9001")
+	if err != nil {
+		t.Fatalf("server.Listen() = %v", err)
+	}
+	defer ln.Close()
+	echo := func() error {
+		conn, err := ln.Accept()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+		buf := make([]byte, 4)
+		if _, err := conn.Read(buf); err != nil {
+			return err
+		}
+		_, err = conn.Write(buf)
+		return err
+	}
+	roundTrip := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		conn, err := client.DialContext(ctx, "tcp", serverIP.String()+":9001")
+		if err != nil {
+			return fmt.Errorf("dial: %w", err)
+		}
+		defer conn.Close()
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			return fmt.Errorf("write: %w", err)
+		}
+		reply := make([]byte, 4)
+		if _, err := conn.Read(reply); err != nil {
+			return fmt.Errorf("read: %w", err)
+		}
+		if !bytes.Equal(reply, []byte("ping")) {
+			return fmt.Errorf("echoed payload = %q, want %q", reply, "ping")
+		}
+		return nil
+	}
+
+	echoErr := make(chan error, 1)
+	go func() { echoErr <- echo() }()
+	if err := roundTrip(); err != nil {
+		t.Fatalf("round trip before UpdateEndpoint failed: %v", err)
+	}
+	if err := <-echoErr; err != nil {
+		t.Fatalf("server-side echo before UpdateEndpoint failed: %v", err)
+	}
+
+	// Re-seed the client's peer endpoint to the exact same address it
+	// already has -- UpdateEndpoint doesn't know or care that this is a
+	// no-op destination; what matters is whether its bare
+	// "public_key=...\nendpoint=...\n" IPC write leaves allowed-ips intact.
+	if err := client.UpdateEndpoint(server.PublicKey(), "127.0.0.1:"+strconv.Itoa(serverPort)); err != nil {
+		t.Fatalf("UpdateEndpoint() = %v", err)
+	}
+
+	go func() { echoErr <- echo() }()
+	if err := roundTrip(); err != nil {
+		t.Fatalf("round trip after UpdateEndpoint failed (allowed-ips likely cleared): %v", err)
+	}
+	if err := <-echoErr; err != nil {
+		t.Fatalf("server-side echo after UpdateEndpoint failed: %v", err)
 	}
 }
 

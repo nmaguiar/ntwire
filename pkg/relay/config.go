@@ -16,6 +16,14 @@ type Config struct {
 	Listen struct {
 		Public string `yaml:"public"`
 		Agents string `yaml:"agents"`
+		// Reflect is an optional UDP address-reflection endpoint (see
+		// pkg/relay's reflector). Empty disables it, which is also the
+		// default: it only matters to a registered server that opts into
+		// the direct-connection upgrade via relay.advertise_direct, and
+		// enabling it is a deliberate operator choice since it lets such a
+		// server (and its clients) learn their own public UDP mapping
+		// through the relay.
+		Reflect string `yaml:"reflect"`
 	} `yaml:"listen"`
 	TLS struct {
 		CertFile  string `yaml:"cert_file"`
@@ -54,6 +62,7 @@ func SampleConfig() string {
 listen:
   public: ":443"                          # raw TCP; client TLS is spliced through, never terminated here
   agents: ":8444"                          # HTTPS endpoint ntwire-servers dial outbound to and register on
+  reflect: ""                              # optional UDP address-reflection endpoint, e.g. ":3480"; empty disables it (default). Only needed by servers using relay.advertise_direct -- see docs/RELAY.md
 
 tls:                                        # applies to listen.agents only
   cert_file: ""                            # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate

@@ -104,6 +104,13 @@ type RelayAgent struct {
 	log      *slog.Logger
 	client   *http.Client
 
+	// OnReflectAddr, if set, is called with RelayRegisterResponse.ReflectAddr
+	// after each successful registration (including re-registration after a
+	// reconnect), and with "" if the relay reports none. Set only when the
+	// caller wants the opportunistic direct-UDP upgrade (relay.advertise_direct);
+	// see EnableDirectUpgrade for why that gate matters.
+	OnReflectAddr func(addr string)
+
 	mu     sync.Mutex
 	closed bool
 }
@@ -185,6 +192,9 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 		return false, fmt.Errorf("relay registration rejected: %s (%s)", resp.Error, resp.Code)
 	}
 	a.log.Info("relay registered", "name", resp.Name, "domain", resp.Domain)
+	if a.OnReflectAddr != nil {
+		a.OnReflectAddr(resp.ReflectAddr)
+	}
 
 	// Mirror the relay's own keepalive (pkg/relay/agent.go): without a ping
 	// of our own, a dead path (relay process gone, NAT rebinding) is only

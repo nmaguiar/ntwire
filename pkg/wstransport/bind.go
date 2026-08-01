@@ -52,7 +52,33 @@ type Hybrid struct {
 	WebSocket *Bind
 }
 
-func NewHybrid() *Hybrid { return &Hybrid{UDP: conn.NewStdNetBind(), WebSocket: NewServer()} }
+// NewHybrid wraps its UDP bind in a FilterBind so a caller that type-asserts
+// h.UDP can send/receive the magic-prefixed control frames used by the
+// opportunistic direct-connection upgrade (see pkg/server's directudp.go),
+// without disturbing normal WireGuard traffic on the same socket.
+func NewHybrid() *Hybrid { return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewServer()} }
+
+// WSSentinel is the placeholder endpoint address a client-side Hybrid (see
+// NewHybridClient) uses to mean "the WebSocket fallback" rather than a real
+// host:port. wgnet.AddPeer's initial seed and later
+// wgnet.Stack.UpdateEndpoint calls both pass it straight to ParseEndpoint,
+// which is how a stalled direct-UDP attempt reverts to WebSocket without
+// redialing anything. It is not a valid net.SplitHostPort input, so it can
+// never collide with a genuine UDP endpoint string.
+const WSSentinel = "ws:relay"
+
+// NewHybridClient builds a client-side Hybrid: WebSocket to url as the
+// initial and fallback transport, plus a raw UDP bind (also wrapped in a
+// FilterBind, for the same opportunistic-upgrade control frames NewHybrid's
+// server side handles) for the opportunistic direct-UDP upgrade. Unlike a
+// server-side Hybrid -- which never seeds a peer endpoint explicitly, so its
+// ParseEndpoint only ever needs to produce a UDP endpoint -- a client seeds
+// its single peer's endpoint at AddPeer time and again on every upgrade
+// attempt or revert, so ParseEndpoint must be able to produce either
+// endpoint type. See WSSentinel.
+func NewHybridClient(url string, client *http.Client, header http.Header) *Hybrid {
+	return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewClient(url, client, header)}
+}
 func (h *Hybrid) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, actual, err := h.UDP.Open(port)
 	if err != nil {
@@ -73,7 +99,17 @@ func (h *Hybrid) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	return h.UDP.Send(bufs, ep)
 }
-func (h *Hybrid) ParseEndpoint(s string) (conn.Endpoint, error) { return h.UDP.ParseEndpoint(s) }
+// ParseEndpoint resolves s to a UDP endpoint, except for WSSentinel, which
+// resolves to the WebSocket bind's single "remote" endpoint instead. A
+// server-side Hybrid never passes WSSentinel, so this is a no-op change for
+// that case; a client-side Hybrid (NewHybridClient) uses it to move its
+// peer's endpoint between transports without redialing either one.
+func (h *Hybrid) ParseEndpoint(s string) (conn.Endpoint, error) {
+	if s == WSSentinel {
+		return h.WebSocket.ParseEndpoint(s)
+	}
+	return h.UDP.ParseEndpoint(s)
+}
 func (h *Hybrid) BatchSize() int                                { return h.UDP.BatchSize() }
 
 func NewClient(url string, client *http.Client, header http.Header) *Bind {

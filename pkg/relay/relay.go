@@ -20,11 +20,13 @@ type Relay struct {
 	public   *publicListener
 	log      *slog.Logger
 
-	mu        sync.Mutex
-	publicLn  net.Listener
-	agentsLn  net.Listener
-	agentsSrv *http.Server
-	tlsFP     string
+	mu          sync.Mutex
+	publicLn    net.Listener
+	agentsLn    net.Listener
+	agentsSrv   *http.Server
+	tlsFP       string
+	reflectLn   net.PacketConn
+	reflectAddr string
 }
 
 // New constructs a Relay from a loaded Config. It performs no I/O; call
@@ -73,11 +75,25 @@ func (r *Relay) Start() error {
 	}
 	tlsAgentsLn := tls.NewListener(agentsLn, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
 
+	var reflectLn net.PacketConn
+	var reflectAddr string
+	if r.cfg.Listen.Reflect != "" {
+		reflectLn, err = net.ListenPacket("udp", r.cfg.Listen.Reflect)
+		if err != nil {
+			_ = publicLn.Close()
+			_ = agentsLn.Close()
+			return fmt.Errorf("listen.reflect: %w", err)
+		}
+		reflectAddr = reflectLn.LocalAddr().String()
+	}
+
 	srv := &http.Server{Handler: r.agents.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
 	r.mu.Lock()
 	r.publicLn, r.agentsLn, r.agentsSrv, r.tlsFP = publicLn, agentsLn, srv, fp
+	r.reflectLn, r.reflectAddr = reflectLn, reflectAddr
 	r.mu.Unlock()
+	r.agents.setReflectAddr(reflectAddr)
 
 	go r.public.serve(publicLn)
 	go func() {
@@ -85,6 +101,10 @@ func (r *Relay) Start() error {
 			r.log.Error("relay agents listener stopped", "error", err)
 		}
 	}()
+	if reflectLn != nil {
+		go newReflector(reflectLn, r.cfg.Limits.MaxNewConnsPerMinute, r.log).serve()
+		r.log.Info("ntwire-relay UDP reflector listening", "reflect", reflectAddr)
+	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
 }
@@ -108,6 +128,14 @@ func (r *Relay) AgentsAddr() net.Addr {
 		return nil
 	}
 	return r.agentsLn.Addr()
+}
+
+// ReflectAddr returns the bound address of listen.reflect, or "" if it is
+// not configured.
+func (r *Relay) ReflectAddr() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.reflectAddr
 }
 
 // Fingerprint returns the relay's own listen.agents TLS certificate
@@ -141,6 +169,9 @@ func (r *Relay) Close() error {
 	}
 	if r.agentsSrv != nil {
 		_ = r.agentsSrv.Close()
+	}
+	if r.reflectLn != nil {
+		_ = r.reflectLn.Close()
 	}
 	return nil
 }
