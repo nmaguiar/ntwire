@@ -13,14 +13,15 @@ details.card{padding:0}.card-head{display:flex;flex-wrap:wrap;gap:.6rem .75rem;a
   <section class="hero" aria-labelledby="title">
     <p class="eyebrow">local tunnel console</p>
     <h1 id="title">ntwire</h1>
+    <p id="server" class="server-addr"></p>
     <p class="lede">Monitor connection health, traffic totals, and local tunnel ports from this private browser view.</p>
-    <div class="status-row"><span id="state" class="badge">Loading…</span><span id="server" class="server-addr"></span></div>
+    <div class="status-row"><span id="state" class="badge">Loading…</span><span id="transport" class="badge">Loading transport…</span></div>
     <div id="health"></div><p id="message" role="status"></p>
   </section>
   <div id="app" class="empty">Loading connection status…</div>
 </main>
 <script>
-const app=document.getElementById('app'),message=document.getElementById('message'),state=document.getElementById('state'),token=new URLSearchParams(location.search).get('token');
+const app=document.getElementById('app'),message=document.getElementById('message'),state=document.getElementById('state'),transport=document.getElementById('transport'),title=document.getElementById('title'),token=new URLSearchParams(location.search).get('token');
 const trafficHistory=new Map(),healthHistory=[],historyLimit=60;
 // refresh() rebuilds every card from scratch, so which sections are collapsed
 // has to live outside the DOM. Collapsed rather than open, so tunnels stay
@@ -85,6 +86,6 @@ input.type='number';input.min='1';input.max='65535';input.value=t.local_address.
 title.append(h,desc);addrRow.append(addr,copyButton(t.local_address,'Copy local address'));head.append(title,addrRow,chevron);
 const ins=instructions.get(t.name);if(ins)body.append(howto(ins));
 body.append(statsToggle,form);card.append(head,body);li.append(card);return li}
-async function refresh(){try{const q='?token='+encodeURIComponent(token),[r,ri]=await Promise.all([fetch('/status'+q),fetch('/instructions'+q).catch(()=>null)]);if(!r.ok)throw Error();await readInstructions(ri);const s=await r.json(),names=new Set(s.tunnels.map(t=>t.name));trafficHistory.forEach((_,name)=>{if(!names.has(name))trafficHistory.delete(name)});healthHistory.push({latency:s.latency_millis||0,time:Date.now()});if(healthHistory.length>historyLimit)healthHistory.shift();const health=document.querySelector('#health');health.replaceChildren(globalStats(s.tunnels),healthChart(healthHistory,s.reconnections||0));state.textContent=s.connected?'Connected':'Disconnected';state.classList.toggle('connected',!!s.connected);document.querySelector('#server').textContent=s.server_name||'';document.title=s.server_name?`ntwire · ${s.server_name}`:'ntwire status';app.replaceChildren();if(!s.tunnels.length){app.className='empty';app.textContent='No tunnels are available for this session.';return}app.className='';const list=document.createElement('ul');list.className='grid';s.tunnels.forEach(t=>list.append(item(t,recordTraffic(t))));app.append(list)}catch{state.textContent='Unavailable';state.classList.remove('connected');app.className='empty';app.textContent='Connection status is unavailable.'}}
+async function refresh(){try{const q='?token='+encodeURIComponent(token),[r,ri]=await Promise.all([fetch('/status'+q),fetch('/instructions'+q).catch(()=>null)]);if(!r.ok)throw Error();await readInstructions(ri);const s=await r.json(),names=new Set(s.tunnels.map(t=>t.name));trafficHistory.forEach((_,name)=>{if(!names.has(name))trafficHistory.delete(name)});healthHistory.push({latency:s.latency_millis||0,time:Date.now()});if(healthHistory.length>historyLimit)healthHistory.shift();const health=document.querySelector('#health');health.replaceChildren(globalStats(s.tunnels),healthChart(healthHistory,s.reconnections||0));state.textContent=s.connected?'Connected':'Disconnected';state.classList.toggle('connected',!!s.connected);transport.textContent=s.connection_type||'Transport unavailable';title.textContent=s.server_name||'ntwire';document.querySelector('#server').textContent=s.server;document.title=s.server_name?`ntwire · ${s.server_name}`:'ntwire status';app.replaceChildren();if(!s.tunnels.length){app.className='empty';app.textContent='No tunnels are available for this session.';return}app.className='';const list=document.createElement('ul');list.className='grid';s.tunnels.forEach(t=>list.append(item(t,recordTraffic(t))));app.append(list)}catch{state.textContent='Unavailable';state.classList.remove('connected');transport.textContent='Transport unavailable';app.className='empty';app.textContent='Connection status is unavailable.'}}
 refresh();setInterval(refresh,5000);
 </script>

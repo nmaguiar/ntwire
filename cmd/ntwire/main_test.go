@@ -182,7 +182,7 @@ func TestStatusJSONOmitsWebStatusWhenUnavailable(t *testing.T) {
 		t.Fatalf("Marshal() error: %v", err)
 	}
 	got := string(b)
-	for _, field := range []string{"connected", "ttl_seconds", "latency_millis", "reconnections", "tunnels"} {
+	for _, field := range []string{"connected", "connection_type", "ttl_seconds", "latency_millis", "reconnections", "tunnels"} {
 		if strings.Contains(got, `"`+field+`"`) {
 			t.Errorf("Marshal() = %s, want no %q field when WebStatus is nil", got, field)
 		}

@@ -113,6 +113,13 @@ type TunnelConfig struct {
 	// status UI, describing how to point a tool at this tunnel. It is
 	// expanded as a Go template on the client, where the real loopback port
 	// is known: see pkg/client/instructions for the available fields.
+	//
+	// As a convenience for longer instructions, a value with no "\n" is
+	// treated as a candidate file path: LoadConfig reads it (relative to the
+	// current working directory, like auth.authorized_keys_dir) and uses its
+	// content in place of the literal string. A single-line value that does
+	// not name an existing file is kept as-is, so short inline instructions
+	// still work unchanged.
 	Instructions string `yaml:"instructions"`
 	// DocsURL is an optional http(s) link offered next to Instructions for
 	// users who want the full setup documentation.
@@ -236,6 +243,12 @@ authorizer:
 admin:
   web_ui_token: ""                         # optional secret that enables the server dashboard at /?token=...; leave empty to disable it
 
+# A tunnel's instructions can also be kept in its own file: a single-line
+# instructions value with no newline (e.g. "instructions: examples/instructions/ssh.md")
+# is tried as a file path, and if it names an existing file, that file's
+# content is used instead of the literal string. See "Loading instructions
+# from a file" in docs/CONFIGURATION.md and examples/instructions/ for
+# ready-to-adapt files (SSH, kubectl, and SOCKS-proxy clients).
 tunnels:
   - name: reports                          # unique identifier shown to clients
     target: reports.internal:8080          # host:port the server proxies to after traffic reaches its virtual port
@@ -282,6 +295,36 @@ log:
 audit:
   log_file: ""                             # optional path for a dedicated JSON-lines audit log (auth_allowed, session_disconnected, session_expired, session_revoked); in addition to, not instead of, the main log
 `
+}
+
+// maxInstructionsFileSize bounds what loadInstructionsFile will read. Without
+// it, a tunnel's instructions -- previously bounded by whatever an operator
+// typed into YAML -- could balloon to the size of any file on disk the
+// server process can read; pkg/instructions.Render truncates to the same
+// size, but only after the oversized text has already been shipped to every
+// client over /v1/auth and /v1/renew.
+const maxInstructionsFileSize = 64 << 10
+
+// loadInstructionsFile resolves TunnelConfig.Instructions as a file path when
+// it looks like one rather than inline Markdown: a single-line value (no
+// "\n") that names an existing, readable regular file no larger than
+// maxInstructionsFileSize. Multi-line values are always literal text, since a
+// real file path cannot contain a newline -- this is what lets an operator
+// switch from an inline snippet to a longer, separately maintained file
+// without an extra config key. Any error (missing file, a directory,
+// permissions, too large) leaves t.Instructions untouched, so the original
+// string is used as literal instructions text.
+func loadInstructionsFile(t *TunnelConfig) {
+	if t.Instructions == "" || strings.Contains(t.Instructions, "\n") {
+		return
+	}
+	fi, err := os.Stat(t.Instructions)
+	if err != nil || fi.IsDir() || fi.Size() > maxInstructionsFileSize {
+		return
+	}
+	if b, err := os.ReadFile(t.Instructions); err == nil {
+		t.Instructions = string(b)
+	}
 }
 
 func LoadConfig(path string) (Config, error) {
@@ -349,7 +392,9 @@ func LoadConfig(path string) (Config, error) {
 		c.Relay.ReconnectMax = time.Minute
 	}
 	seen := map[string]bool{}
-	for _, t := range c.Tunnels {
+	for i := range c.Tunnels {
+		t := &c.Tunnels[i]
+		loadInstructionsFile(t)
 		if t.Name == "" || t.Target == "" {
 			return c, fmt.Errorf("tunnels require name and target")
 		}

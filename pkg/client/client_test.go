@@ -58,6 +58,26 @@ func TestSelectTransport(t *testing.T) {
 	}
 }
 
+func TestInitialTransport(t *testing.T) {
+	cases := []struct {
+		name  string
+		useWS bool
+		udp   string
+		want  string
+	}{
+		{"direct UDP", false, "vpn.example:51820", "UDP direct"},
+		{"WebSocket fallback", true, "vpn.example:51820", "WSS fallback"},
+		{"relay WebSocket", true, "", "WSS through relay"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := initialTransport(tc.useWS, tc.udp).String(); got != tc.want {
+				t.Fatalf("initialTransport(%t, %q) = %q, want %q", tc.useWS, tc.udp, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveServerTunnelIP(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -392,6 +412,14 @@ func TestStatusMatchesWebStatus(t *testing.T) {
 	}
 	if got, want := c.Status(), c.webStatus(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Status() = %+v, want %+v (webStatus())", got, want)
+	}
+}
+
+func TestWebStatusReportsLiveConnectionTransport(t *testing.T) {
+	c := &Connection{}
+	c.transport.Store(uint32(transportUDPRelayReflector))
+	if got := c.webStatus().ConnectionType; got != "UDP direct via relay reflector" {
+		t.Fatalf("ConnectionType = %q", got)
 	}
 }
 
