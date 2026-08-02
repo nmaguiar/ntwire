@@ -41,6 +41,45 @@ func fakeReflector(t *testing.T) string {
 	return pc.LocalAddr().String()
 }
 
+func TestAdvertisedUDPEndpointResolvesHostname(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	s.Config.Network.AdvertisedEndpoint = "localhost:51820"
+	got := s.advertisedUDPEndpoint()
+	host, port, err := net.SplitHostPort(got)
+	if err != nil {
+		t.Fatalf("advertisedUDPEndpoint() = %q, not host:port: %v", got, err)
+	}
+	if port != "51820" {
+		t.Fatalf("port = %q, want 51820", port)
+	}
+	if host != "127.0.0.1" && host != "::1" {
+		t.Fatalf("host = %q, want a resolved loopback literal", host)
+	}
+}
+
+func TestAdvertisedUDPEndpointPassesThroughLiteralIP(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	s.Config.Network.AdvertisedEndpoint = "203.0.113.5:51820"
+	if got := s.advertisedUDPEndpoint(); got != "203.0.113.5:51820" {
+		t.Fatalf("advertisedUDPEndpoint() = %q, want unchanged literal IP", got)
+	}
+}
+
+func TestAdvertisedUDPEndpointEmptyStaysEmpty(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	if got := s.advertisedUDPEndpoint(); got != "" {
+		t.Fatalf("advertisedUDPEndpoint() = %q, want empty", got)
+	}
+}
+
+func TestAdvertisedUDPEndpointUnresolvableHostReturnsEmpty(t *testing.T) {
+	s, _, _ := newTestServer(t, nil)
+	s.Config.Network.AdvertisedEndpoint = "this-host-does-not-exist.invalid:51820"
+	if got := s.advertisedUDPEndpoint(); got != "" {
+		t.Fatalf("advertisedUDPEndpoint() = %q, want empty on DNS failure", got)
+	}
+}
+
 func TestPunchRequiresValidSession(t *testing.T) {
 	s, _, _ := newTestServer(t, nil)
 	req := httptest.NewRequest(http.MethodPost, "/v1/punch", bytes.NewReader([]byte(`{}`)))
