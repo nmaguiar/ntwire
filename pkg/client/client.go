@@ -551,6 +551,10 @@ type Connection struct {
 	reconnections  atomic.Uint64
 	latencyMillis  atomic.Uint64
 	transport      atomic.Uint32
+	// transportReason explains why the initial transport isn't direct UDP
+	// (see selectTransport); empty when it is. Surfaced by TransportReason
+	// so the connect CLI can tell the user why, not just that.
+	transportReason string
 
 	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
 	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
@@ -594,6 +598,24 @@ func initialTransport(useWS bool, udp string) connectionTransport {
 		return transportWSSRelay
 	}
 	return transportWSSFallback
+}
+
+// ConnectionType reports the current WireGuard data-plane transport in
+// human-readable form (e.g. "UDP direct", "WSS through relay"), including any
+// opportunistic direct-UDP upgrade directupgrade.go has since completed.
+func (c *Connection) ConnectionType() string {
+	return connectionTransport(c.transport.Load()).String()
+}
+
+// TransportReason explains why the connection did not start on direct UDP,
+// or "" if it did. It reflects only the initial choice made in
+// ConnectWithOptions -- once connected, directupgrade.go's background loop
+// logs its own reasons (at Warn, on the CLI's default log level) if an
+// opportunistic upgrade attempt fails or a successful upgrade later reverts.
+func (c *Connection) TransportReason() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.transportReason
 }
 
 // DisplayName returns the operator-configured listen.name this server
@@ -739,8 +761,17 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	transport := "udp"
 	if useWS {
 		transport = "websocket"
+		// transportReason is left empty when the caller passed --websocket:
+		// they already know why. It's only worth surfacing (in the connect
+		// CLI's banner, and as Warn-level noise if the background
+		// direct-upgrade loop then fails) for the auto-selected case, where
+		// the server simply never advertised a UDP endpoint -- the
+		// surprising, often-support-question-worthy one.
+		if !options.UseWebSocket {
+			c.transportReason = "server did not advertise a direct UDP WireGuard endpoint"
+		}
 	}
-	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
+	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "reason", c.transportReason, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
 	if bindAddr != "127.0.0.1" && bindAddr != "::1" {
 		c.log.Warn("tunnel listeners are bound beyond loopback; tunneled targets are reachable from other hosts on this address", "bind_address", bindAddr)
 	}
