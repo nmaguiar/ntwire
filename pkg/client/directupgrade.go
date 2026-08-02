@@ -110,6 +110,13 @@ func (c *Connection) directUpgradeLoop() {
 	}
 
 	var activeCandidate string // "" means "not currently on the direct path"
+	// lastReason remembers the most recently logged failure/revert
+	// explanation so a steady-state cause (e.g. "server has not enabled
+	// direct UDP upgrade support") is announced once at Warn -- visible on
+	// the CLI's default log level -- rather than repeated every
+	// retryInterval for the life of the connection. A changed reason is
+	// worth a fresh Warn; an unchanged one drops to Debug.
+	var lastReason string
 	wait := c.upgradeTiming.initialDelay
 	for {
 		select {
@@ -119,11 +126,13 @@ func (c *Connection) directUpgradeLoop() {
 		}
 
 		if activeCandidate != "" {
-			if c.directPathHealthy(activeCandidate) {
+			healthy, reason := c.directPathHealthy(activeCandidate)
+			if healthy {
 				wait = c.upgradeTiming.healthCheckInterval
+				lastReason = ""
 				continue
 			}
-			c.log.Info("direct UDP path stalled or was reclaimed by the WebSocket fallback; reverting", "server", c.DisplayName())
+			c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting to WebSocket fallback", "candidate", activeCandidate)
 			if err := c.revertToWebSocket(); err != nil {
 				// activeCandidate deliberately stays set: this branch is the
 				// only place anything re-seeds the peer's endpoint away from
@@ -143,12 +152,38 @@ func (c *Connection) directUpgradeLoop() {
 			continue
 		}
 
-		activeCandidate = c.tryDirectUpgrade(bind)
+		var reason string
+		activeCandidate, reason = c.tryDirectUpgrade(bind)
 		if activeCandidate != "" {
 			wait = c.upgradeTiming.healthCheckInterval
+			lastReason = ""
 		} else {
 			wait = c.upgradeTiming.retryInterval
+			c.logUpgradeReason(&lastReason, reason, "direct UDP upgrade not established; staying on WebSocket relay")
 		}
+	}
+}
+
+// logUpgradeReason reports why the direct-UDP path isn't up. An empty reason
+// means the caller has nothing worth reporting (e.g. the connection is
+// closing) and logs nothing. A reason identical to *lastReason is a
+// steady-state condition already announced, so it repeats only at Debug;
+// anything new -- the first occurrence, or a change from one cause to
+// another -- gets Warn, the CLI's default level, so it's visible without -v.
+// That promotion is skipped when the session started on WebSocket because
+// the caller passed --websocket: failing to escape a transport the user
+// deliberately chose isn't news, so it stays at Debug regardless.
+func (c *Connection) logUpgradeReason(lastReason *string, reason, msg string, extra ...any) {
+	if reason == "" {
+		return
+	}
+	args := append([]any{"server", c.DisplayName(), "reason", reason}, extra...)
+	if reason != *lastReason && !c.options.UseWebSocket {
+		c.log.Warn(msg, args...)
+		*lastReason = reason
+	} else {
+		c.log.Debug(msg, args...)
+		*lastReason = reason
 	}
 }
 
@@ -178,16 +213,22 @@ func (c *Connection) stackAndServerKey() (stack *wgnet.Stack, serverPub string, 
 // silently moves the peer's endpoint back to WebSocket, after which
 // probeDirectPath would keep reporting success (just routed over WS instead)
 // and this connection would never notice it had quietly fallen back.
-func (c *Connection) directPathHealthy(candidate string) bool {
+func (c *Connection) directPathHealthy(candidate string) (healthy bool, reason string) {
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
-		return false
+		return false, "" // connection is closing; nothing to report
 	}
 	ep, found, err := stack.PeerEndpoint(serverPub)
-	if err != nil || !found || ep != candidate {
-		return false
+	if err != nil || !found {
+		return false, "WireGuard peer endpoint is no longer available"
 	}
-	return c.probeDirectPath()
+	if ep != candidate {
+		return false, fmt.Sprintf("a WebSocket packet roamed the WireGuard peer back to %s", ep)
+	}
+	if !c.probeDirectPath() {
+		return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
+	}
+	return true, ""
 }
 
 // tryDirectUpgrade runs one full candidate-exchange-and-punch attempt. It
@@ -200,53 +241,56 @@ func (c *Connection) directPathHealthy(candidate string) bool {
 // peer's endpoint silently moves back to WebSocket and the probe would
 // still report success, just routed over the transport this was trying to
 // escape. PeerEndpoint is what actually distinguishes the two.
-func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) string {
+//
+// The second return value explains a "" candidate: it's empty only when
+// there's genuinely nothing to report (the connection is closing
+// mid-attempt), and otherwise names the specific stage that failed so
+// directUpgradeLoop can tell the user why the session is staying on
+// WebSocket -- distinguishing, in particular, "the server doesn't offer this
+// at all" (the common, permanent case for a relay-only deployment) from a
+// transient NAT/network condition worth retrying.
+func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) (candidate string, reason string) {
 	first, err := c.postPunch("")
 	if err != nil {
-		c.log.Debug("direct-upgrade candidate exchange failed", "error", err)
-		return ""
+		return "", fmt.Sprintf("could not reach the relay's punch endpoint: %v", err)
 	}
 	if first.RelayReflectAddr == "" {
-		return "" // server has no direct-upgrade support, or hasn't opted in
+		return "", "server has not enabled direct UDP upgrade support"
 	}
 
 	selfAddr, err := selfReflect(bind, first.RelayReflectAddr, c.upgradeTiming.reflectTimeout)
 	if err != nil {
-		c.log.Debug("direct-upgrade self-reflection failed", "error", err)
-		return ""
+		return "", fmt.Sprintf("NAT self-reflection via the relay failed: %v", err)
 	}
 
 	second, err := c.postPunch(selfAddr)
 	if err != nil {
-		c.log.Debug("direct-upgrade candidate exchange failed", "error", err)
-		return ""
+		return "", fmt.Sprintf("could not reach the relay's punch endpoint: %v", err)
 	}
 	if second.ServerAddr == "" {
-		return "" // server has no self-reflected candidate yet
+		return "", "server has not published a self-reflected candidate address yet"
 	}
 
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
-		return "" // connection closed while this attempt was in flight
+		return "", "" // connection closed while this attempt was in flight
 	}
 
 	primeAddr(bind, second.ServerAddr)
 	if err := stack.UpdateEndpoint(serverPub, second.ServerAddr); err != nil {
-		c.log.Debug("direct-upgrade endpoint seed failed", "error", err)
-		return ""
+		return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", second.ServerAddr, err)
 	}
 	if !c.probeDirectPath() {
 		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
-		return ""
+		return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", second.ServerAddr, c.upgradeTiming.probeTimeout)
 	}
 	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != second.ServerAddr {
-		c.log.Debug("direct-upgrade probe succeeded but the peer's endpoint is not the seeded candidate; a WebSocket packet likely roamed it back already", "endpoint", ep, "candidate", second.ServerAddr)
 		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
-		return ""
+		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", second.ServerAddr)
 	}
 	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", second.ServerAddr)
 	c.transport.Store(uint32(transportUDPRelayReflector))
-	return second.ServerAddr
+	return second.ServerAddr, ""
 }
 
 // revertToWebSocket re-seeds the peer's endpoint back to the WebSocket

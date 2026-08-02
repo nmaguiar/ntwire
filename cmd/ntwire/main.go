@@ -465,6 +465,9 @@ func connect(args []string, u *ui.UI) {
 		fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(t.Name), c.LocalAddresses[i])
 	}
 	u.Success("connected to %s; press Ctrl-C to disconnect", c.DisplayName())
+	if reason := c.TransportReason(); reason != "" {
+		u.Info("using %s: %s (will keep trying for a direct UDP path; run: ntwire status to see the current transport)", c.ConnectionType(), reason)
+	}
 	if c.UIURL != "" {
 		fmt.Fprintf(u.Out, "%s %s\n", u.OutPal.Muted.Sprint("status:"), c.UIURL)
 	}
