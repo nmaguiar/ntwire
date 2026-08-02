@@ -376,6 +376,9 @@ func (s *Server) dropSession(v Session) {
 	if s.data != nil && s.data.ws != nil && v.WireGuardPublicKey != "" {
 		s.data.ws.WebSocket.CloseSession(v.WireGuardPublicKey)
 	}
+	if u := s.udpr.Load(); u != nil && v.WireGuardPublicKey != "" {
+		u.release(v.WireGuardPublicKey)
+	}
 }
 
 // reapLoop takes d explicitly (rather than reading s.data on each iteration)

@@ -126,6 +126,16 @@ func main() {
 		if c.Relay.AdvertiseDirect {
 			agent.OnReflectAddr = s.EnableDirectUpgrade
 		}
+		// Unconditional, unlike AdvertiseDirect above: the UDP-relay
+		// forwarding tier never reveals this server's real address (the
+		// relay stays in the data path throughout), so there is no matching
+		// trust step-change to opt into. See RelayConfig.AdvertiseDirect's
+		// doc comment.
+		agent.OnUDPRelayAddr = func(addr string) {
+			if addr != "" {
+				s.EnableUDPRelay(agent, addr)
+			}
+		}
 		go agent.Run(context.Background())
 		defer agent.Close()
 		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())

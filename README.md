@@ -25,7 +25,7 @@ the [documentation index](docs/README.md).
 | YAML/key-directory hot reload and Compose/Kubernetes deployment assets | Listener address and tunnel-CIDR changes require a restart; tunnel additions/removals/repoints and an explicit TLS cert/key file pair reload live. |
 | Optional webhook or executable authorization hook | |
 | `target: socks` tunnels: an embedded SOCKS4/5 CONNECT and BIND proxy with CIDR/domain/ASN/only-local/reverse destination filters | UDP ASSOCIATE is recognized but refused. Unfiltered SOCKS tunnels deny all destinations unless `allow_all: true` is set. |
-| `ntwire-relay`: lets an ntwire-server behind NAT (no inbound connectivity) dial out to a public relay instead of listening directly | Relay mode is TCP-only: WireGuard always rides the WebSocket fallback, never UDP. |
+| `ntwire-relay`: lets an ntwire-server behind NAT (no inbound connectivity) dial out to a public relay instead of listening directly | WireGuard defaults to the WebSocket fallback in relay mode. If the relay offers it, clients transparently upgrade to a relay-mediated native-UDP path (the relay stays in the data path; no server address exposure) and, if the server operator further opts in, can escalate again to a fully direct UDP path that bypasses the relay entirely. |
 
 ## Quick start
 

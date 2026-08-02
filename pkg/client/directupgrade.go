@@ -42,6 +42,12 @@ type directUpgradeTiming struct {
 	healthCheckInterval time.Duration
 	reflectTimeout      time.Duration
 	probeTimeout        time.Duration
+	// relayBindKeepalive paces this client's FrameRelayBind resends while
+	// riding the UDP-relay forwarding rung: it both refreshes this leg's own
+	// NAT mapping and refreshes the relay's idle timeout for the session,
+	// independent of whatever WireGuard's own persistent-keepalive is (or
+	// isn't) configured to do.
+	relayBindKeepalive time.Duration
 }
 
 func defaultDirectUpgradeTiming() directUpgradeTiming {
@@ -51,6 +57,7 @@ func defaultDirectUpgradeTiming() directUpgradeTiming {
 		healthCheckInterval: 20 * time.Second,
 		reflectTimeout:      3 * time.Second,
 		probeTimeout:        3 * time.Second,
+		relayBindKeepalive:  15 * time.Second,
 	}
 }
 
@@ -65,6 +72,7 @@ type DirectUpgradeTiming struct {
 	HealthCheckInterval time.Duration
 	ReflectTimeout      time.Duration
 	ProbeTimeout        time.Duration
+	RelayBindKeepalive  time.Duration
 }
 
 func resolveDirectUpgradeTiming(o *DirectUpgradeTiming) directUpgradeTiming {
@@ -87,16 +95,31 @@ func resolveDirectUpgradeTiming(o *DirectUpgradeTiming) directUpgradeTiming {
 	if o.ProbeTimeout > 0 {
 		t.probeTimeout = o.ProbeTimeout
 	}
+	if o.RelayBindKeepalive > 0 {
+		t.relayBindKeepalive = o.RelayBindKeepalive
+	}
 	return t
 }
 
+// upgradeRung is directUpgradeLoop's position on the relay upgrade ladder:
+// each rung trades more privacy (the server's real address, or at least
+// more of the relay's visibility into traffic timing) for less overhead,
+// and the loop only ever moves one rung at a time in either direction.
+type upgradeRung int
+
+const (
+	rungNone     upgradeRung = iota // on the WebSocket fallback
+	rungUDPRelay                    // WireGuard riding UDP forwarded through the relay's UDP-relay tier
+	rungDirect                      // full escape, bypassing the relay's data plane entirely
+)
+
 // directUpgradeLoop is the background goroutine a WebSocket-fallback
 // Connection runs (unless Options.NoDirectUpgrade) to opportunistically
-// escape the relay's WebSocket data plane for a direct WireGuard UDP path,
-// and to revert if that path later stalls. It never tears down the
-// WebSocket transport -- Hybrid keeps both alive -- so a revert is just
-// re-seeding the peer's endpoint back to wstransport.WSSentinel, not a
-// reconnect.
+// climb the relay upgrade ladder -- WSS, to UDP-relay forwarding, to a full
+// direct-UDP escape -- and to revert one rung at a time if the current one
+// later stalls. It never tears down the WebSocket transport -- Hybrid keeps
+// it alive throughout -- so every rung change is just re-seeding the peer's
+// endpoint, never a reconnect.
 func (c *Connection) directUpgradeLoop() {
 	c.mu.Lock()
 	hybrid := c.hybrid
@@ -109,7 +132,15 @@ func (c *Connection) directUpgradeLoop() {
 		return
 	}
 
-	var activeCandidate string // "" means "not currently on the direct path"
+	rung := rungNone
+	var relayCandidate, directCandidate string
+	var relayStop chan struct{} // non-nil while a UDP-relay bind keepalive goroutine is running
+	// nextDirectAttempt paces opportunistic escalation from rungUDPRelay to
+	// rungDirect at retryInterval, independent of the faster
+	// healthCheckInterval the loop otherwise ticks at once upgraded -- a
+	// zero value is always due, so the first health-check tick after
+	// reaching rungUDPRelay also tries escalating.
+	var nextDirectAttempt time.Time
 	// lastReason remembers the most recently logged failure/revert
 	// explanation so a steady-state cause (e.g. "server has not enabled
 	// direct UDP upgrade support") is announced once at Warn -- visible on
@@ -117,49 +148,121 @@ func (c *Connection) directUpgradeLoop() {
 	// retryInterval for the life of the connection. A changed reason is
 	// worth a fresh Warn; an unchanged one drops to Debug.
 	var lastReason string
+	stopRelayKeepalive := func() {
+		if relayStop != nil {
+			close(relayStop)
+			relayStop = nil
+		}
+	}
 	wait := c.upgradeTiming.initialDelay
 	for {
 		select {
 		case <-c.stop:
+			stopRelayKeepalive()
 			return
 		case <-time.After(wait):
 		}
 
-		if activeCandidate != "" {
-			healthy, reason := c.directPathHealthy(activeCandidate)
+		switch rung {
+		case rungNone:
+			var relayReason, relayToken string
+			relayCandidate, relayToken, relayReason = c.tryUDPRelayUpgrade(bind)
+			if relayCandidate != "" {
+				relayStop = make(chan struct{})
+				go c.udpRelayKeepaliveLoop(bind, relayToken, relayCandidate, relayStop)
+				rung = rungUDPRelay
+				nextDirectAttempt = time.Time{}
+				wait = c.upgradeTiming.healthCheckInterval
+				lastReason = ""
+				continue
+			}
+			if relayReason != udpRelayUnavailableReason {
+				wait = c.upgradeTiming.retryInterval
+				c.logUpgradeReason(&lastReason, relayReason, "UDP relay path not established; staying on WebSocket relay")
+				continue
+			}
+			// The relay offers no UDP-relay tier at all (not merely a
+			// failed attempt at this one) -- fall through to the existing
+			// full-escape attempt on this same tick. Without this, a relay
+			// that offers listen.reflect but not listen.udp_relay -- every
+			// relay running before this tier existed -- would silently
+			// lose the full-escape feature, since this rung would never
+			// become available for it to wait on.
+			var directReason string
+			directCandidate, directReason = c.tryDirectUpgrade(bind, wstransport.WSSentinel)
+			if directCandidate != "" {
+				rung = rungDirect
+				wait = c.upgradeTiming.healthCheckInterval
+				lastReason = ""
+				continue
+			}
+			wait = c.upgradeTiming.retryInterval
+			c.logUpgradeReason(&lastReason, directReason, "direct UDP upgrade not established; staying on WebSocket relay")
+
+		case rungUDPRelay:
+			healthy, reason := c.pathHealthy(relayCandidate)
+			if !healthy {
+				c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
+				if err := c.setEndpoint(wstransport.WSSentinel); err != nil {
+					c.log.Warn("reverting to WebSocket fallback failed; will retry", "server", c.DisplayName(), "error", err)
+					wait = c.upgradeTiming.healthCheckInterval
+					continue
+				}
+				c.transport.Store(uint32(transportWSSRelay))
+				stopRelayKeepalive()
+				relayCandidate = ""
+				rung = rungNone
+				wait = c.upgradeTiming.retryInterval
+				continue
+			}
+			if nextDirectAttempt.After(time.Now()) {
+				wait = c.upgradeTiming.healthCheckInterval
+				lastReason = ""
+				continue
+			}
+			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+			var directReason string
+			directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
+			if directCandidate != "" {
+				rung = rungDirect
+			}
+			_ = directReason // staying on the already-healthy relay rung isn't itself news; nothing to log
+			wait = c.upgradeTiming.healthCheckInterval
+			lastReason = ""
+
+		case rungDirect:
+			healthy, reason := c.pathHealthy(directCandidate)
 			if healthy {
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
 				continue
 			}
-			c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting to WebSocket fallback", "candidate", activeCandidate)
-			if err := c.revertToWebSocket(); err != nil {
-				// activeCandidate deliberately stays set: this branch is the
+			// Revert exactly one rung: back to the UDP-relay path if it's
+			// still warm (its keepalive kept running underneath the whole
+			// time this connection rode the direct path), else all the way
+			// to the WebSocket fallback.
+			fallback, nextRung, nextTransport := wstransport.WSSentinel, rungNone, transportWSSRelay
+			if relayCandidate != "" {
+				fallback, nextRung, nextTransport = relayCandidate, rungUDPRelay, transportUDPRelay
+			}
+			c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting", "candidate", directCandidate, "fallback", fallback)
+			if err := c.setEndpoint(fallback); err != nil {
+				// directCandidate deliberately stays set: this branch is the
 				// only place anything re-seeds the peer's endpoint away from
 				// the now-confirmed-dead direct address, so leaving it blank
 				// here would strand the data plane there until a fresh
-				// upgrade attempt happened to succeed -- which, if /v1/punch
-				// is what's unavailable, might be never. Keeping it set
+				// upgrade attempt happened to succeed. Keeping it set
 				// re-enters this same branch next tick and retries the
 				// revert instead of wandering off to try a new upgrade.
-				c.log.Warn("reverting to WebSocket fallback failed; will retry", "server", c.DisplayName(), "error", err)
+				c.log.Warn("reverting direct UDP path failed; will retry", "server", c.DisplayName(), "error", err)
 				wait = c.upgradeTiming.healthCheckInterval
 				continue
 			}
-			c.transport.Store(uint32(transportWSSRelay))
-			activeCandidate = ""
+			c.transport.Store(uint32(nextTransport))
+			directCandidate = ""
+			rung = nextRung
+			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
 			wait = c.upgradeTiming.retryInterval
-			continue
-		}
-
-		var reason string
-		activeCandidate, reason = c.tryDirectUpgrade(bind)
-		if activeCandidate != "" {
-			wait = c.upgradeTiming.healthCheckInterval
-			lastReason = ""
-		} else {
-			wait = c.upgradeTiming.retryInterval
-			c.logUpgradeReason(&lastReason, reason, "direct UDP upgrade not established; staying on WebSocket relay")
 		}
 	}
 }
@@ -205,15 +308,21 @@ func (c *Connection) stackAndServerKey() (stack *wgnet.Stack, serverPub string, 
 	return c.Stack, c.Response.ServerPublicKey, true
 }
 
-// directPathHealthy reports whether the direct-UDP path is both (a) the
-// peer's actual current endpoint and (b) reachable right now. Checking only
-// probeDirectPath is not enough: WireGuard's own peer roaming is symmetric,
-// so a single authenticated packet arriving over the WebSocket fallback --
-// entirely possible while both transports stay live on the same device --
-// silently moves the peer's endpoint back to WebSocket, after which
-// probeDirectPath would keep reporting success (just routed over WS instead)
-// and this connection would never notice it had quietly fallen back.
-func (c *Connection) directPathHealthy(candidate string) (healthy bool, reason string) {
+// pathHealthy reports whether candidate -- either rung's confirmed address --
+// is both (a) the peer's actual current endpoint and (b) reachable right
+// now. It is reused unmodified for both the UDP-relay rung and the full
+// direct-escape rung: checking only probeDirectPath is not enough for
+// either, since WireGuard's own peer roaming is symmetric, so a single
+// authenticated packet arriving over the WebSocket fallback -- entirely
+// possible while every transport stays live on the same device -- silently
+// moves the peer's endpoint back to WebSocket, after which probeDirectPath
+// would keep reporting success (just routed over WS instead) with nothing
+// else noticing the quiet fallback. The active probe additionally catches a
+// failure mode unique to the relay rung -- the relay's own session for
+// candidate silently expiring (idle timeout, relay restart) -- since the
+// shared relay address itself never changes even when the session behind it
+// is gone, so PeerEndpoint alone can't detect that.
+func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string) {
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
 		return false, "" // connection is closing; nothing to report
@@ -249,7 +358,14 @@ func (c *Connection) directPathHealthy(candidate string) (healthy bool, reason s
 // WebSocket -- distinguishing, in particular, "the server doesn't offer this
 // at all" (the common, permanent case for a relay-only deployment) from a
 // transient NAT/network condition worth retrying.
-func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) (candidate string, reason string) {
+//
+// fallback is the endpoint a failed attempt re-seeds the peer to, mid-way
+// through: wstransport.WSSentinel when called from the WebSocket rung, but
+// the still-warm UDP-relay candidate when this is an opportunistic
+// escalation attempt from that rung -- a failed escalation must not drop the
+// connection all the way back to WebSocket when the relay rung underneath it
+// was never unhealthy to begin with.
+func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback string) (candidate string, reason string) {
 	first, err := c.postPunch("")
 	if err != nil {
 		return "", fmt.Sprintf("could not reach the relay's punch endpoint: %v", err)
@@ -281,11 +397,11 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) (candidate s
 		return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", second.ServerAddr, err)
 	}
 	if !c.probeDirectPath() {
-		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		_ = stack.UpdateEndpoint(serverPub, fallback)
 		return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", second.ServerAddr, c.upgradeTiming.probeTimeout)
 	}
 	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != second.ServerAddr {
-		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		_ = stack.UpdateEndpoint(serverPub, fallback)
 		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", second.ServerAddr)
 	}
 	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", second.ServerAddr)
@@ -293,21 +409,24 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind) (candidate s
 	return second.ServerAddr, ""
 }
 
-// revertToWebSocket re-seeds the peer's endpoint back to the WebSocket
-// fallback. The WebSocket connection itself was never closed, so this takes
-// effect on the very next packet with no reconnect involved -- except that
-// UpdateEndpoint itself can fail if that connection is not currently live
-// (Bind.ParseEndpoint errors when its WebSocket peer isn't connected; see
-// wstransport/bind.go), in which case the caller must keep retrying rather
-// than silently accepting the peer staying pointed at a dead direct address.
+// setEndpoint re-seeds the peer's endpoint to addr: wstransport.WSSentinel to
+// fall back to the WebSocket fallback, or a UDP-relay/direct candidate
+// address to (re)ascend to that rung. Whichever transport is already live
+// underneath is never closed or redialed -- Hybrid keeps every rung's
+// transport alive throughout the connection's life -- so this always takes
+// effect on the very next packet with no reconnect involved. Except that
+// UpdateEndpoint itself can fail if the target transport is not currently
+// live (Bind.ParseEndpoint errors when its WebSocket peer isn't connected;
+// see wstransport/bind.go), in which case the caller must keep retrying
+// rather than silently accepting the peer staying pointed at a dead address.
 // A closed Connection is reported as success, not a failure to retry:
 // directUpgradeLoop's own c.stop check will end the loop on its next tick.
-func (c *Connection) revertToWebSocket() error {
+func (c *Connection) setEndpoint(addr string) error {
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
 		return nil
 	}
-	return stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+	return stack.UpdateEndpoint(serverPub, addr)
 }
 
 // probeDirectPath actively confirms the current WireGuard peer endpoint is
@@ -420,6 +539,148 @@ func (c *Connection) postPunch(clientAddr string) (protocol.PunchResponse, error
 	var out protocol.PunchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.PunchResponse{}, err
+	}
+	return out, nil
+}
+
+// udpRelayUnavailableReason marks tryUDPRelayUpgrade's "the relay does not
+// offer this tier at all" outcome, distinct from every other failure reason
+// it can return. It is the one reason directUpgradeLoop treats as licensing
+// an immediate, same-tick fallthrough to the existing full-escape attempt
+// rather than simply retrying this rung next cycle -- without that
+// distinction, a relay that offers listen.reflect but not listen.udp_relay
+// (every relay running before this tier existed) would silently lose the
+// full-escape feature, since the loop would otherwise wait forever on a rung
+// that can never become available for it.
+const udpRelayUnavailableReason = "relay does not offer a UDP relay tier"
+
+// tryUDPRelayUpgrade runs one attempt to bind onto the relay's UDP-relay
+// forwarding tier: request a session, bind this leg, and confirm end to end
+// -- the same two-check shape tryDirectUpgrade uses (PeerEndpoint plus an
+// active probe), for the same reason: probeDirectPath alone can't tell this
+// rung apart from a WebSocket packet having silently roamed the peer back.
+// It returns the relay's shared client-facing address as candidate and the
+// session token on success; the caller keeps resending FrameRelayBind with
+// that token as a keepalive for as long as this rung stays active (see
+// udpRelayKeepaliveLoop). reason explains a "" candidate, and is
+// udpRelayUnavailableReason specifically when the relay offers no such tier
+// at all.
+func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate, token, reason string) {
+	resp, err := c.postUDPRelay()
+	if err != nil {
+		return "", "", fmt.Sprintf("could not reach the relay's UDP-relay endpoint: %v", err)
+	}
+	if resp.RelayAddr == "" || resp.Token == "" {
+		return "", "", udpRelayUnavailableReason
+	}
+
+	// Control is shared with priming pings, reflection replies, and any
+	// earlier, already timed-out bind attempt -- see selfReflect's identical
+	// reasoning for draining first.
+	drainControl(bind)
+	if err := bind.SendControl(wstransport.FrameRelayBind, []byte(resp.Token), resp.RelayAddr); err != nil {
+		return "", "", fmt.Sprintf("failed to send UDP-relay bind to %s: %v", resp.RelayAddr, err)
+	}
+	// A FrameRelayBindAck only shortens detecting a bad/expired token; a
+	// missing ack isn't fatal on its own, since the end-to-end probe below
+	// is what actually confirms the path either way, exactly as it does for
+	// the full escape.
+	waitForBindAck(bind, c.upgradeTiming.reflectTimeout)
+
+	stack, serverPub, ok := c.stackAndServerKey()
+	if !ok {
+		return "", "", "" // connection closed while this attempt was in flight
+	}
+	if err := stack.UpdateEndpoint(serverPub, resp.RelayAddr); err != nil {
+		return "", "", fmt.Sprintf("failed to seed the local WireGuard endpoint with the relay's UDP-relay address %s: %v", resp.RelayAddr, err)
+	}
+	if !c.probeDirectPath() {
+		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		return "", "", fmt.Sprintf("UDP relay path via %s did not respond within %s", resp.RelayAddr, c.upgradeTiming.probeTimeout)
+	}
+	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != resp.RelayAddr {
+		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		return "", "", fmt.Sprintf("UDP relay path via %s answered but a WebSocket packet already roamed the WireGuard peer back", resp.RelayAddr)
+	}
+	c.log.Info("upgraded to UDP via relay", "server", c.DisplayName(), "relay_addr", resp.RelayAddr)
+	c.transport.Store(uint32(transportUDPRelay))
+	return resp.RelayAddr, resp.Token, ""
+}
+
+// udpRelayKeepaliveLoop resends FrameRelayBind to addr with token every
+// relayBindKeepalive, until stop is closed. This is the client's half of the
+// UDP-relay session's keepalive; it both refreshes this leg's own NAT
+// mapping and refreshes the relay's idle timeout for the session, and is
+// unrelated to whatever WireGuard's own persistent-keepalive is (or isn't)
+// configured to do. A send failure is not itself fatal here -- the next
+// health check (pathHealthy, via probeDirectPath) is what actually decides
+// whether the rung is still usable.
+func (c *Connection) udpRelayKeepaliveLoop(bind *wstransport.FilterBind, token, addr string, stop <-chan struct{}) {
+	ticker := time.NewTicker(c.upgradeTiming.relayBindKeepalive)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			if err := bind.SendControl(wstransport.FrameRelayBind, []byte(token), addr); err != nil {
+				c.log.Debug("udp relay: bind keepalive send failed", "addr", addr, "error", err)
+			}
+		case <-stop:
+			return
+		}
+	}
+}
+
+// waitForBindAck waits up to timeout for a FrameRelayBindAck on bind's
+// control channel, discarding any other control frame it sees in the
+// meantime (a priming ping or reflection reply arriving at the same time).
+// It never reports an error: a missing ack is not fatal to the caller, which
+// falls through to its own end-to-end probe either way.
+func waitForBindAck(bind *wstransport.FilterBind, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case cp := <-bind.Control():
+			if cp.Type == wstransport.FrameRelayBindAck {
+				return
+			}
+		case <-timer.C:
+			return
+		}
+	}
+}
+
+// postUDPRelay requests a UDP-relay forwarding session from the server's
+// /v1/udp-relay endpoint. A 404 (this server isn't relaying, or the relay it
+// uses has no UDP-relay tier configured) is reported as a zero
+// UDPRelayResponse with no error -- an expected, common steady state, not a
+// failure worth logging on every retry, exactly like postPunch's treatment
+// of its own 404.
+func (c *Connection) postUDPRelay() (protocol.UDPRelayResponse, error) {
+	c.mu.Lock()
+	base, token := c.base, c.token
+	c.mu.Unlock()
+	b, _ := json.Marshal(protocol.UDPRelayRequest{})
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/udp-relay", bytes.NewReader(b))
+	if err != nil {
+		return protocol.UDPRelayResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return protocol.UDPRelayResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return protocol.UDPRelayResponse{}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return protocol.UDPRelayResponse{}, fmt.Errorf("udp-relay request failed: %s", resp.Status)
+	}
+	var out protocol.UDPRelayResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.UDPRelayResponse{}, err
 	}
 	return out, nil
 }

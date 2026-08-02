@@ -35,6 +35,7 @@ type Server struct {
 	tlsManager  *TLSManager
 	auditLog    *slog.Logger
 	direct      *directUDP
+	udpr        atomic.Pointer[udpRelay]
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -82,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	m.HandleFunc("POST /v1/punch", s.punch)
+	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	return m
 }
 
@@ -408,6 +410,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}
 }
+
 // punch answers the opportunistic direct-UDP upgrade's candidate exchange
 // (see directudp.go). It always requires a valid session, even on a caller's
 // first, addr-less request that only wants RelayReflectAddr: an
@@ -437,6 +440,30 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	write(w, 200, protocol.PunchResponse{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect})
+}
+
+// udpRelayHandler answers a client's request for a session on the relay's
+// UDP-relay forwarding tier (see pkg/server/udprelay.go) -- the middle rung
+// between the WebSocket fallback and the full direct-UDP escape /v1/punch
+// answers. Like punch, it always requires a valid session: an
+// unauthenticated caller has no business obtaining a forwarding session. A
+// 404 (tier not available, or this server isn't relaying at all) is the
+// expected steady state when relay.enabled is false or the relay hasn't
+// enabled listen.udp_relay -- postUDPRelay on the client side treats it
+// exactly like a 404 from /v1/punch, not an error worth logging.
+func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	sess, ok := s.sessions.Get(token)
+	if !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	u := s.udpr.Load()
+	if u == nil || sess.WireGuardPublicKey == "" {
+		http.Error(w, "udp relay tier not available", http.StatusNotFound)
+		return
+	}
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
