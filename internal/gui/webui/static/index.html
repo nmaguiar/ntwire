@@ -45,6 +45,8 @@ legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-
 .modal .warn{color:var(--danger-strong);font-weight:700}
 .empty{color:var(--muted)}
 .hidden{display:none !important}
+.unreachable-banner{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;gap:1rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.75rem 1rem;background:var(--danger);color:#fff;font-weight:700;box-shadow:var(--shadow)}
+.unreachable-banner button{border:0;border-radius:10px;background:#fff;color:var(--danger);padding:.45rem .8rem;font-weight:700;font-size:.85rem;cursor:pointer}
 details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:.5rem 0}
 </style>
 <main>
@@ -536,9 +538,28 @@ async function refreshSchema() {
   schema = await api('GET', '/api/schema');
 }
 
+const maxEventFailures = 5;
+
+function showUnreachable() {
+  if (document.querySelector('.unreachable-banner')) return;
+  const banner = document.createElement('div');
+  banner.className = 'unreachable-banner';
+  const text = document.createElement('span');
+  text.textContent = `Lost contact with the ntwire background process after ${maxEventFailures} attempts. You can close this tab.`;
+  const closeBtn = document.createElement('button');
+  closeBtn.textContent = 'Close tab';
+  closeBtn.addEventListener('click', () => window.close());
+  banner.append(text, closeBtn);
+  document.body.prepend(banner);
+  window.close();
+}
+
 function connectEvents() {
+  let failures = 0;
   const es = new EventSource(q('/api/events'));
+  es.onopen = () => { failures = 0; };
   es.onmessage = (ev) => {
+    failures = 0;
     try {
       const update = JSON.parse(ev.data);
       profiles.set(update.ProfileID, update.Snapshot);
@@ -546,7 +567,14 @@ function connectEvents() {
       renderPrompts();
     } catch {}
   };
-  es.onerror = () => { /* EventSource retries on its own */ };
+  es.onerror = () => {
+    // EventSource retries on its own; give up only after repeated failures.
+    failures++;
+    if (failures >= maxEventFailures) {
+      es.close();
+      showUnreachable();
+    }
+  };
 }
 
 (async function init() {
