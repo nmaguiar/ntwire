@@ -24,7 +24,36 @@ const (
 	// address; the receiver may ignore it entirely, its only purpose is to
 	// open a local NAT pinhole before WireGuard's own handshake arrives.
 	FramePrime byte = 3
+	// FrameRelayBind is sent by a client or server to the relay's UDP-relay
+	// tier to claim (first send) or refresh (every resend) one leg of a
+	// session, carrying the session token as its payload. A resend is
+	// simultaneously a keepalive (refreshes both the sender's NAT mapping
+	// and the relay's idle timeout) and a rebind signal: if the sender's
+	// observed source address has changed since the last bind (a NAT
+	// remapping mid-session), the relay re-locks to the new address rather
+	// than treating it as a new session, since the token alone is what
+	// authenticates the claim, not the address it arrives from.
+	FrameRelayBind byte = 4
+	// FrameRelayBindAck is the relay's reply to a FrameRelayBind. It only
+	// confirms the local half of the handshake, not that the session's other
+	// leg is bound too -- forwarding still doesn't start until both are.
+	FrameRelayBindAck byte = 5
 )
+
+// MaxRelayDatagram bounds a single datagram the UDP-relay tier will forward:
+// WireGuard's own MTU (1420, see pkg/wgnet) plus its largest per-packet
+// overhead (message type, indices, Poly1305 tag -- well under 64 bytes),
+// rounded up for headroom. This is deliberately much tighter than
+// ValidDatagram's 16-65535 range, which bounds a WebSocket message frame,
+// not a raw UDP payload arriving on an internet-facing, TURN-like forwarding
+// socket -- an amplification vector ValidDatagram was never designed to cap.
+const MaxRelayDatagram = 1500
+
+// ValidRelayDatagram reports whether b is small enough for the UDP-relay
+// tier to forward. Unlike ValidDatagram, there is no lower bound: a
+// zero-length or tiny datagram is merely useless, not a risk, and WireGuard
+// itself will simply discard whatever this tier happens to pass through.
+func ValidRelayDatagram(b []byte) bool { return len(b) > 0 && len(b) <= MaxRelayDatagram }
 
 const controlHeaderLen = 5 // magic(4) + frame type(1)
 

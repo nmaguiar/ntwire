@@ -29,9 +29,12 @@ By default WireGuard rides the WebSocket fallback (`/v1/wg`) in relay mode,
 since there is no inbound UDP path to the server's real address. `ntwire
 connect` detects this automatically — a server that advertises no UDP
 endpoint but does advertise a WebSocket one is used over WebSocket with no
-extra flag needed. A relayed server can optionally also offer clients an
-opportunistic upgrade to a direct UDP path that bypasses the relay's data
-plane entirely — see [below](#opportunistic-direct-udp-upgrade).
+extra flag needed. If the relay offers it, the client tries an opportunistic
+upgrade to native UDP that stays relayed — see
+[below](#relay-mediated-udp-forwarding) — before ever attempting the further
+opportunistic upgrade to a fully direct UDP path that bypasses the relay's
+data plane entirely — see
+[below](#opportunistic-direct-udp-upgrade).
 
 ## Running a relay
 
@@ -86,13 +89,64 @@ Clients connect exactly as before, using the wildcard hostname:
 ntwire connect https://home.relay.example.com
 ```
 
-## Opportunistic direct-UDP upgrade
+## Relay-mediated UDP forwarding
 
 Relaying WireGuard over `/v1/wg`'s WebSocket fallback works everywhere, but it
 means every packet crosses the relay twice (client→relay, relay→server) over
 TCP, carrying TLS and WebSocket framing on top of WireGuard's own encryption.
-A relayed server can instead let clients try to punch a direct UDP path
-straight to it — bypassing the relay's data plane, and the TCP/TLS/WebSocket
+A relay can offer a middle option: it forwards WireGuard's own UDP datagrams
+directly between client and server, without the TCP/TLS/WebSocket overhead —
+but, unlike the fully direct upgrade described
+[below](#opportunistic-direct-udp-upgrade), the relay stays in the data path
+the whole time. The server's real address is never revealed to a client, so
+this carries none of that upgrade's privacy trade-off — a registered server
+uses it automatically whenever the relay offers it, with nothing to configure
+on the server side:
+
+```yaml
+# ntwire-relay.yaml
+listen:
+  udp_relay: ":3481"             # shared, client-facing UDP address; empty (default) disables the tier
+  udp_relay_ports: "20000-20063" # inclusive range of per-session server-leg ports, bound eagerly at startup
+limits:
+  udp_relay_idle_timeout: 60s              # default; reclaims a session no client/server has kept alive
+  max_udp_relay_sessions_per_server: 64     # default; independent of the pool-wide port count
+```
+
+The relay allocates one dedicated UDP port from `udp_relay_ports` per active
+session (TURN-style), so a firewall in front of the relay only ever needs a
+static rule for that range — never a rule per session. Size the range to the
+number of concurrent sessions you actually expect, not maximally: every port
+in it is bound (and costs a listening goroutine plus a firewall-rule slot) the
+moment the relay starts, whether or not a session ever uses it. The
+client-facing side is different: every client relay-wide shares the single
+`listen.udp_relay` socket, since the relay demultiplexes inbound client
+datagrams by a token-locked source address once a session is bound, not by
+port — a client's NAT only ever needs to reach one address.
+
+A session is only forwarded once *both* the server's and the client's leg
+have completed a token-verified bind; a datagram addressed to a half-bound
+session is dropped, never buffered. This is a symmetric pair-relay (a
+TURN-style permission model), not an open reflector: nothing is forwarded
+anywhere until both ends have proven they hold the same session token. Each
+side resends its bind periodically as a keepalive, refreshing both its own
+NAT mapping and the relay's idle timer for the session; `udp_relay_idle_timeout`
+is the backstop that reclaims a session whose teardown message never arrives
+(a crash, or a control-connection drop with no reconnect).
+
+Because this tier never exposes the server's real address, it needs no
+`advertise_direct`-style opt-in flag on the server — see that option's doc
+comment in [CONFIGURATION.md](CONFIGURATION.md) for the asymmetry versus the
+fully direct upgrade below. A client always tries this tier first (if the
+relay offers it) and only escalates further to the fully direct path if
+`advertise_direct` is also on and that path turns out healthier; falling back
+lands on whichever of these two rungs is still warm, not always straight back
+to WebSocket.
+
+## Opportunistic direct-UDP upgrade
+
+A relayed server can also let clients try to punch a direct UDP path straight
+to it — bypassing the relay's data plane, not just the TCP/TLS/WebSocket
 overhead, entirely. The control plane (auth, session renewal) still goes
 through the relay either way; only the WireGuard data plane can escape it.
 

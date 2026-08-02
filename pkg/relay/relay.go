@@ -27,6 +27,12 @@ type Relay struct {
 	tlsFP       string
 	reflectLn   net.PacketConn
 	reflectAddr string
+
+	udpRelayLn   net.PacketConn            // shared client-facing socket
+	udpRelayPool map[uint16]net.PacketConn // pooled server-leg sockets, one per listen.udp_relay_ports port
+	udpRelayAddr string
+	udpSessions  *udpSessionTable
+	udpSweepStop chan struct{}
 }
 
 // New constructs a Relay from a loaded Config. It performs no I/O; call
@@ -40,10 +46,12 @@ func New(cfg Config, log *slog.Logger) (*Relay, error) {
 		return nil, err
 	}
 	limits := Limits{
-		HandshakeTimeout:    cfg.Limits.HandshakeTimeout,
-		DialBackTimeout:     cfg.Limits.DialBackTimeout,
-		MaxPendingPerServer: cfg.Limits.MaxPendingPerServer,
-		MaxConnsPerServer:   cfg.Limits.MaxConnsPerServer,
+		HandshakeTimeout:             cfg.Limits.HandshakeTimeout,
+		DialBackTimeout:              cfg.Limits.DialBackTimeout,
+		MaxPendingPerServer:          cfg.Limits.MaxPendingPerServer,
+		MaxConnsPerServer:            cfg.Limits.MaxConnsPerServer,
+		UDPRelayIdleTimeout:          cfg.Limits.UDPRelayIdleTimeout,
+		MaxUDPRelaySessionsPerServer: cfg.Limits.MaxUDPRelaySessionsPerServer,
 	}
 	registry := NewRegistry(regs, limits)
 	return &Relay{
@@ -87,13 +95,71 @@ func (r *Relay) Start() error {
 		reflectAddr = reflectLn.LocalAddr().String()
 	}
 
+	// abortUDPRelay closes everything opened so far (including whatever
+	// UDP-relay pool ports were already bound) on any failure below,
+	// matching the all-or-nothing sequential-close style the block above
+	// uses for publicLn/agentsLn/reflectLn.
+	abortUDPRelay := func(pool map[uint16]net.PacketConn, ln net.PacketConn) {
+		_ = publicLn.Close()
+		_ = agentsLn.Close()
+		if reflectLn != nil {
+			_ = reflectLn.Close()
+		}
+		if ln != nil {
+			_ = ln.Close()
+		}
+		for _, pc := range pool {
+			_ = pc.Close()
+		}
+	}
+
+	var udpRelayLn net.PacketConn
+	var udpRelayAddr string
+	var udpRelayPool map[uint16]net.PacketConn
+	if r.cfg.Listen.UDPRelay != "" {
+		minPort, maxPort, perr := parsePortRange(r.cfg.Listen.UDPRelayPorts)
+		if perr != nil {
+			abortUDPRelay(nil, nil)
+			return fmt.Errorf("listen.udp_relay_ports: %w", perr)
+		}
+		udpRelayLn, err = net.ListenPacket("udp", r.cfg.Listen.UDPRelay)
+		if err != nil {
+			abortUDPRelay(nil, nil)
+			return fmt.Errorf("listen.udp_relay: %w", err)
+		}
+		udpRelayAddr = udpRelayLn.LocalAddr().String()
+		udpRelayPool = make(map[uint16]net.PacketConn, int(maxPort-minPort)+1)
+		for port := minPort; ; port++ {
+			pc, perr := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+			if perr != nil {
+				abortUDPRelay(udpRelayPool, udpRelayLn)
+				return fmt.Errorf("listen.udp_relay_ports: binding port %d: %w", port, perr)
+			}
+			udpRelayPool[port] = pc
+			if port == maxPort {
+				break
+			}
+		}
+	}
+
 	srv := &http.Server{Handler: r.agents.Handler(), ReadHeaderTimeout: 10 * time.Second}
+
+	var udpSessions *udpSessionTable
+	var udpSweepStop chan struct{}
+	if udpRelayLn != nil {
+		alloc := newPortAllocator(udpRelayPool)
+		udpSessions = newUDPSessionTable(alloc, Limits{MaxUDPRelaySessionsPerServer: r.cfg.Limits.MaxUDPRelaySessionsPerServer})
+		udpSweepStop = make(chan struct{})
+	}
 
 	r.mu.Lock()
 	r.publicLn, r.agentsLn, r.agentsSrv, r.tlsFP = publicLn, agentsLn, srv, fp
 	r.reflectLn, r.reflectAddr = reflectLn, reflectAddr
+	r.udpRelayLn, r.udpRelayPool, r.udpRelayAddr, r.udpSessions, r.udpSweepStop = udpRelayLn, udpRelayPool, udpRelayAddr, udpSessions, udpSweepStop
 	r.mu.Unlock()
 	r.agents.setReflectAddr(reflectAddr)
+	r.agents.setUDPRelayAddr(udpRelayAddr)
+	r.agents.setUDPSessions(udpSessions)
 
 	go r.public.serve(publicLn)
 	go func() {
@@ -106,6 +172,17 @@ func (r *Relay) Start() error {
 		r.log.Info("ntwire-relay UDP reflector listening", "reflect", reflectAddr)
 	} else {
 		r.log.Debug("ntwire-relay UDP reflector disabled; direct-UDP upgrade unavailable to relayed servers")
+	}
+	if udpRelayLn != nil {
+		dr := newDatagramRelay(udpSessions, udpRelayLn, r.cfg.Limits.MaxNewConnsPerMinute, r.log)
+		go udpSessions.runIdleSweep(udpSweepStop, r.cfg.Limits.UDPRelayIdleTimeout)
+		go dr.serveClientLeg()
+		for port, pc := range udpRelayPool {
+			go dr.serveServerLeg(pc, port)
+		}
+		r.log.Info("ntwire-relay UDP-relay tier listening", "udp_relay", udpRelayAddr, "port_pool", r.cfg.Listen.UDPRelayPorts, "pool_size", len(udpRelayPool))
+	} else {
+		r.log.Debug("ntwire-relay UDP-relay tier disabled; relayed servers only offer WebSocket and (if enabled) direct-UDP upgrade")
 	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
@@ -138,6 +215,14 @@ func (r *Relay) ReflectAddr() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.reflectAddr
+}
+
+// UDPRelayAddr returns the bound address of the UDP-relay tier's shared
+// client-facing socket (listen.udp_relay), or "" if it is not configured.
+func (r *Relay) UDPRelayAddr() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.udpRelayAddr
 }
 
 // Fingerprint returns the relay's own listen.agents TLS certificate
@@ -174,6 +259,15 @@ func (r *Relay) Close() error {
 	}
 	if r.reflectLn != nil {
 		_ = r.reflectLn.Close()
+	}
+	if r.udpSweepStop != nil {
+		close(r.udpSweepStop)
+	}
+	if r.udpRelayLn != nil {
+		_ = r.udpRelayLn.Close()
+	}
+	for _, pc := range r.udpRelayPool {
+		_ = pc.Close()
 	}
 	return nil
 }

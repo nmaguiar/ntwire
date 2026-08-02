@@ -112,18 +112,20 @@ type Error struct {
 }
 
 const (
-	ErrorInvalidRequest      = "invalid_request"
-	ErrorClockSkew           = "clock_skew"
-	ErrorReplayedNonce       = "replayed_nonce"
-	ErrorUnknownKey          = "unknown_key"
-	ErrorBadSignature        = "bad_signature"
-	ErrorRateLimited         = "rate_limited"
-	ErrorNotAllowed          = "not_allowed"
-	ErrorMaxSessions         = "max_sessions"
-	ErrorOIDCInvalidToken    = "oidc_invalid_token"
-	ErrorNoCapacity          = "no_capacity"
-	ErrorInvalidWireGuardKey = "invalid_wireguard_key"
-	ErrorRelayNameNotAllowed = "relay_name_not_allowed"
+	ErrorInvalidRequest           = "invalid_request"
+	ErrorClockSkew                = "clock_skew"
+	ErrorReplayedNonce            = "replayed_nonce"
+	ErrorUnknownKey               = "unknown_key"
+	ErrorBadSignature             = "bad_signature"
+	ErrorRateLimited              = "rate_limited"
+	ErrorNotAllowed               = "not_allowed"
+	ErrorMaxSessions              = "max_sessions"
+	ErrorOIDCInvalidToken         = "oidc_invalid_token"
+	ErrorNoCapacity               = "no_capacity"
+	ErrorInvalidWireGuardKey      = "invalid_wireguard_key"
+	ErrorRelayNameNotAllowed      = "relay_name_not_allowed"
+	ErrorUDPRelayPoolExhausted    = "udp_relay_pool_exhausted"
+	ErrorUDPRelayTenantAtCapacity = "udp_relay_tenant_at_capacity"
 )
 
 // RelayRegisterRequest is sent by an ntwire-server over its long-lived
@@ -157,6 +159,13 @@ type RelayRegisterResponse struct {
 	// on to clients (via PunchResponse) rather than exposed in relay config,
 	// so a client never needs to know the relay's internals directly.
 	ReflectAddr string `json:"reflect_addr,omitempty"`
+	// UDPRelayAddr is the relay's shared client-facing UDP address for the
+	// UDP-relay forwarding tier (see pkg/relay's datagramRelay), empty when
+	// the relay has none configured (listen.udp_relay unset). Unlike
+	// ReflectAddr, a registered server acts on this unconditionally -- the
+	// tier never reveals the server's real address to a client, so there is
+	// no advertise_direct-style opt-in gating it. See docs/RELAY.md.
+	UDPRelayAddr string `json:"udp_relay_addr,omitempty"`
 }
 
 // PunchRequest is POSTed by an authenticated client to a relayed server's
@@ -179,13 +188,68 @@ type PunchResponse struct {
 	RelayReflectAddr string `json:"relay_reflect_addr,omitempty"`
 }
 
+// UDPRelayRequest is POSTed by a client to a relayed server's
+// POST /v1/udp-relay endpoint to obtain (or, on a repeat call for the same
+// WireGuard identity, be reminded of) a session on the relay's UDP
+// forwarding tier -- the middle rung between the WebSocket fallback and the
+// full direct-UDP escape (POST /v1/punch). Unlike /v1/punch, this tier never
+// reveals the server's real address to the client: the relay stays in the
+// data path for the session's whole life, forwarding between two UDP legs
+// it allocated, so it carries the same trust exposure as the default
+// WSS-through-relay path -- see docs/SECURITY.md. Empty: there is nothing
+// for the client to supply, unlike PunchRequest's ClientAddr exchange.
+type UDPRelayRequest struct{}
+
+// UDPRelayResponse answers UDPRelayRequest. All fields empty means "this
+// rung isn't available right now" (no live relay connection, the relay
+// doesn't offer the tier, or allocation failed) -- treated by the client
+// exactly like a 404 from /v1/punch, not a hard error.
+type UDPRelayResponse struct {
+	RelayAddr string `json:"relay_addr,omitempty"`
+	Token     string `json:"token,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Code      string `json:"code,omitempty"`
+}
+
 // RelayOpen is pushed by the relay to an ntwire-server's control connection
 // each time an inbound client TCP connection is accepted with that server's
 // SNI name, instructing it to dial back a data connection carrying ConnID.
+// It carries no "type" discriminator field, unlike the UDP-relay allocation
+// messages below -- it predates that convention, and every relay/server pair
+// must keep dispatching an untyped message as RelayOpen so a relay or server
+// upgraded ahead of its peer degrades gracefully. See docs/PROTOCOL.md.
 type RelayOpen struct {
 	ConnID     string `json:"conn_id"`
 	ClientAddr string `json:"client_addr"` // real client ip:port
 	SNI        string `json:"sni"`
+}
+
+// RelayUDPAllocateRequest/Response multiplex a request/response pair over
+// the same long-lived /v1/relay/control WebSocket used for the one-shot
+// registration handshake and the one-way RelayOpen pushes. RequestID
+// correlates a reply to its request, since that connection can now carry
+// more than one concurrent request at a time (one per connecting client
+// asking the server for a UDP-relay session).
+type RelayUDPAllocateRequest struct {
+	Type      string `json:"type"` // "udp_allocate"
+	RequestID string `json:"request_id"`
+}
+type RelayUDPAllocateResponse struct {
+	Type       string `json:"type"` // "udp_allocate_reply"
+	RequestID  string `json:"request_id"`
+	Token      string `json:"token,omitempty"`
+	ServerAddr string `json:"server_addr,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Code       string `json:"code,omitempty"`
+}
+
+// RelayUDPRelease is a one-way, best-effort hint that a UDP-relay session is
+// done and its relay-side port can be reclaimed immediately rather than
+// waiting out the idle timeout; the idle timeout is the backstop if it never
+// arrives (process crash, or a control connection already down).
+type RelayUDPRelease struct {
+	Type  string `json:"type"` // "udp_release"
+	Token string `json:"token"`
 }
 
 // RelayRegisterPayload is a byte-exact, length-prefixed encoding, structured

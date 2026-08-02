@@ -73,6 +73,14 @@ type RelayConfig struct {
 	// the relay for the data plane entirely. Default false: relay mode's
 	// whole point for many operators is that the server's real address
 	// stays hidden, and this flag is what trades that away for speed.
+	//
+	// There is deliberately no equivalent flag gating the relay's UDP-relay
+	// forwarding tier (see docs/RELAY.md): that tier keeps the relay in the
+	// data path for the session's whole life, so it never reveals this
+	// server's real address the way AdvertiseDirect does. It carries the
+	// same trust exposure as the default WSS-through-relay path, not a new
+	// one, so cmd/ntwire-server enables it unconditionally whenever the
+	// relay itself offers it (RelayRegisterResponse.UDPRelayAddr != "").
 	AdvertiseDirect bool `yaml:"advertise_direct"`
 }
 type OIDCConfig struct {

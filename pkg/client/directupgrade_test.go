@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -175,6 +176,75 @@ func TestPostPunch404ReturnsZeroValueNotError(t *testing.T) {
 	}
 }
 
+func TestPostUDPRelayParsesSuccessResponse(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(protocol.UDPRelayResponse{RelayAddr: "1.2.3.4:5", Token: "tok-1"})
+	}))
+	defer srv.Close()
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok"}
+	resp, err := c.postUDPRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RelayAddr != "1.2.3.4:5" || resp.Token != "tok-1" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer tok")
+	}
+}
+
+// TestPostUDPRelay404ReturnsZeroValueNotError guards the steady state a
+// server whose relay offers no UDP-relay tier (or an old server predating
+// this feature) puts every client in: postUDPRelay must treat that as
+// "nothing to do" rather than an error the retry loop would log noisily
+// forever, exactly like postPunch's identical treatment of its own 404.
+func TestPostUDPRelay404ReturnsZeroValueNotError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok"}
+	resp, err := c.postUDPRelay()
+	if err != nil {
+		t.Fatalf("postUDPRelay() error = %v, want nil for a 404", err)
+	}
+	if resp != (protocol.UDPRelayResponse{}) {
+		t.Fatalf("postUDPRelay() = %+v, want the zero value", resp)
+	}
+}
+
+// TestTryUDPRelayUpgradeReportsUnavailableReason guards
+// directUpgradeLoop's same-tick fallthrough rule: a server with no
+// UDP-relay tier available must produce exactly udpRelayUnavailableReason,
+// not some other failure string, since that specific value is what licenses
+// falling through to the full-escape attempt on the same tick.
+func TestTryUDPRelayUpgradeReportsUnavailableReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	clientBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	if _, _, err := clientBind.Open(0); err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	defer clientBind.Close()
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok", upgradeTiming: defaultDirectUpgradeTiming(), log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	candidate, token, reason := c.tryUDPRelayUpgrade(clientBind)
+	if candidate != "" || token != "" {
+		t.Fatalf("tryUDPRelayUpgrade() = (%q, %q, %q), want empty candidate/token", candidate, token, reason)
+	}
+	if reason != udpRelayUnavailableReason {
+		t.Fatalf("tryUDPRelayUpgrade() reason = %q, want %q", reason, udpRelayUnavailableReason)
+	}
+}
+
 // peeredClientServerStacks builds two real wgnet Stacks over loopback UDP,
 // peered exactly the way pkg/server and pkg/client do in production (see
 // wgnet_test.go's TestStackRoundTripsTCPThroughWireGuardPeers), so
@@ -252,14 +322,14 @@ func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
 	}
 }
 
-// TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected reproduces the
+// TestSetEndpointReturnsErrorWhenWebSocketDisconnected reproduces the
 // failure mode directUpgradeLoop's revert-retry logic exists for: reverting
 // is itself an UpdateEndpoint call, which fails if the WebSocket fallback
 // isn't currently connected (Bind.ParseEndpoint errors in that case -- see
 // wstransport/bind.go). Before that retry logic existed, this failure was
 // only logged at Debug and silently accepted, stranding the data plane
 // pointed at a confirmed-dead direct address with nothing left to move it.
-func TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
+func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	server := wstransport.NewServer()
 	serverFns, _, err := server.Open(0)
 	if err != nil {
@@ -313,8 +383,8 @@ func TestRevertToWebSocketReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	}
 
 	c := &Connection{Stack: clientStack, Response: protocol.AuthResponse{ServerPublicKey: peer.Public}}
-	if err := c.revertToWebSocket(); err == nil {
-		t.Fatal("revertToWebSocket() succeeded despite a disconnected WebSocket peer, want an error so the caller retries instead of accepting it silently")
+	if err := c.setEndpoint(wstransport.WSSentinel); err == nil {
+		t.Fatal("setEndpoint() succeeded despite a disconnected WebSocket peer, want an error so the caller retries instead of accepting it silently")
 	}
 }
 

@@ -234,7 +234,7 @@ one JSON `RelayRegisterRequest` text message to claim a tenant name:
 The relay replies with `RelayRegisterResponse`:
 
 ```json
-{"version": 1, "name": "home", "domain": "relay.example.com", "reflect_addr": "203.0.113.10:3480"}
+{"version": 1, "name": "home", "domain": "relay.example.com", "reflect_addr": "203.0.113.10:3480", "udp_relay_addr": "203.0.113.10:3481"}
 ```
 
 or, on failure, `{"version":1,"error":"...","code":"..."}` and closes the
@@ -242,7 +242,13 @@ connection. `name` in the response is authoritative from the relay's own
 `registrations` config, never an echo of the request. `reflect_addr` is the
 relay's `listen.reflect` UDP address, empty when that is not configured; see
 [below](#udp-address-reflection-and-v1punch) and
-[RELAY.md](RELAY.md#opportunistic-direct-udp-upgrade).
+[RELAY.md](RELAY.md#opportunistic-direct-udp-upgrade). `udp_relay_addr` is the
+relay's shared client-facing UDP address for the UDP-relay forwarding tier,
+empty when `listen.udp_relay` is not configured; see
+[below](#relay-mediated-udp-forwarding-and-v1udp-relay) and
+[RELAY.md](RELAY.md#relay-mediated-udp-forwarding). Unlike `reflect_addr`,
+a registered server acts on a non-empty `udp_relay_addr` unconditionally —
+there is no `advertise_direct`-style opt-in to check first.
 
 ### Signing payload
 
@@ -294,6 +300,91 @@ connection's `RemoteAddr()` reports `client_addr` from `RelayOpen`, not the
 relay's own address, so per-source-IP rate limiting and audit logging remain
 correct across a relay hop.
 
+### Control-message dispatch: the `type`-sniff convention
+
+`RelayOpen` above carries no `"type"` field — it predates every other message
+that can arrive on this same control connection. Every message added since
+(`RelayUDPAllocateRequest`/`Response`, `RelayUDPRelease`, described next) does
+carry one, and the receiving side dispatches by sniffing it: a message with a
+recognized `"type"` is handled as that message; a message with no `"type"`
+field at all falls through and is unmarshaled as `RelayOpen`, unchanged from
+today. This is the general convention for any future control-connection
+message type, not just the ones this document currently describes — it lets
+a relay and server mismatched by one version keep working for whichever
+message shapes they both understand, rather than one side failing to parse
+the connection at all.
+
+### Relay-mediated UDP forwarding and `/v1/udp-relay`
+
+When `listen.udp_relay` is configured, the relay also lets a registered
+server allocate one UDP-relay session per connecting client over this same
+control connection — the middle rung between the WebSocket fallback and the
+full direct-UDP escape described next (see
+[RELAY.md](RELAY.md#relay-mediated-udp-forwarding) for the design and the
+anti-amplification/TURN-style permission model). The server sends
+`RelayUDPAllocateRequest`:
+
+```json
+{"type": "udp_allocate", "request_id": "base64url-random-value"}
+```
+
+and the relay replies `RelayUDPAllocateResponse`, correlated by `request_id`
+(the connection can carry more than one concurrent allocation in flight, one
+per connecting client):
+
+```json
+{"type": "udp_allocate_reply", "request_id": "base64url-random-value", "token": "base64url-random-value", "server_addr": "203.0.113.10:20017"}
+```
+
+or, on failure (the pool is exhausted, or this tenant is already at
+`limits.max_udp_relay_sessions_per_server`), an error/code pair instead of
+`token`/`server_addr`: `{"type":"udp_allocate_reply","request_id":"...","error":"...","code":"udp_relay_pool_exhausted"}`
+or `code: "udp_relay_tenant_at_capacity"`. `server_addr` is one of the
+relay's pooled `listen.udp_relay_ports` addresses, dedicated to this session
+until it is released or idle-swept.
+
+The server then binds its own leg by sending a `FrameRelayBind` datagram (see
+the frame table [below](#udp-address-reflection-and-v1punch)) carrying
+`token` to `server_addr`, and resends it periodically as a keepalive — this
+is the same `send-then-keepalive` shape `FramePrime` uses for the direct-UDP
+upgrade, just carrying a token instead of being an empty ping. When the
+server's session for a client ends, it sends `RelayUDPRelease` (one-way,
+best-effort — the relay's `limits.udp_relay_idle_timeout` sweep is the
+backstop if it never arrives):
+
+```json
+{"type": "udp_release", "token": "base64url-random-value"}
+```
+
+`POST /v1/udp-relay` (Bearer token, same session as `/v1/wg`) is the
+client-facing endpoint that triggers this allocation — empty request body
+(`UDPRelayRequest`), keyed server-side by the client's WireGuard public key
+so a repeat call (every retry cycle, every `/v1/renew`) is idempotent and
+returns the same session rather than consuming a second one:
+
+```json
+// response
+{"relay_addr": "203.0.113.10:3481", "token": "base64url-random-value"}
+```
+
+All fields empty means the tier isn't available right now — no live relay
+connection, the relay doesn't offer `listen.udp_relay`, or this server
+predates the feature — and the client treats that exactly like a `404` from
+`/v1/punch`, not a hard error. Note that none of this allocation dance
+touches raw UDP itself: the server learns its assigned port entirely over
+the already-TLS-protected control connection, and the client learns
+`relay_addr`/`token` entirely over the already-TLS-protected `/v1/udp-relay`
+call — the first UDP datagram either side ever sends is the bind frame
+itself, sent only once each already holds a token minted over TLS, which is
+also why the port-restricted-NAT "who sends the first packet" ordering
+concern that a naive raw-UDP-first design would have to worry about does
+not apply here.
+
+Once both the server's and the client's leg have completed a bind for the
+same token, the relay forwards ordinary WireGuard datagrams between them
+verbatim; a datagram for a session with only one leg bound is dropped, never
+buffered.
+
 ### UDP address reflection and `/v1/punch`
 
 When `listen.reflect` is configured, the relay also answers a minimal,
@@ -315,6 +406,8 @@ The reflector only ever handles two of the three defined frame types:
 | `FrameReflectRequest` | `1` | caller → reflector | none |
 | `FrameReflectResponse` | `2` | reflector → caller | the caller's observed `ip:port`, as text |
 | `FramePrime` | `3` | peer → peer, direct | none; a NAT-priming ping, never sent to the reflector |
+| `FrameRelayBind` | `4` | server/client → relay | the session `token` |
+| `FrameRelayBindAck` | `5` | relay → server/client | none; sent only for a bind with a valid, live token |
 
 A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
 and gets back `FrameReflectResponse` with its own address as the relay
@@ -323,6 +416,13 @@ exchanged via the ordinary, already-authenticated client↔server channel
 below, not through the relay — they send a short burst of `FramePrime`
 frames directly to each other before attempting a real WireGuard handshake,
 to open both NAT mappings first.
+
+`FrameRelayBind`/`FrameRelayBindAck` belong to the UDP-relay forwarding tier
+described [above](#relay-mediated-udp-forwarding-and-v1udp-relay), not the
+reflector — they carry a session token rather than being addressed by the
+reflector's request/response shape, and each is sent to one of the tier's
+own sockets (`listen.udp_relay` from the client, or the session's own pooled
+`listen.udp_relay_ports` address from the server), never to `reflect_addr`.
 
 `POST /v1/punch` (Bearer token, same session as `/v1/wg`) is the
 client↔server exchange that carries those candidates:

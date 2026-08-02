@@ -295,6 +295,27 @@ reflection request with that packet's observed source address, the same way
 a public STUN server would — so it never becomes a party to a session and
 never sees WireGuard traffic.
 
+**The relay-mediated UDP forwarding tier (`listen.udp_relay`) is, by
+contrast, not a trust step-change at all.** Unlike `advertise_direct`, the
+relay stays in the data path for the session's entire life and the server's
+real address is never revealed to a client — the trust exposure is
+identical to the default WSS-through-relay path (the relay sees ciphertext
+volume and timing, nothing else), which is exactly why it needs no matching
+opt-in flag on the server (see [RELAY.md](RELAY.md#relay-mediated-udp-forwarding)
+and `RelayConfig.AdvertiseDirect`'s doc comment in `pkg/server/config.go`).
+The one genuinely unauthenticated surface this tier exposes is the shared
+client-facing socket (`listen.udp_relay`) accepting a `FrameRelayBind` from
+any source address — a bind carrying an unknown or expired token is simply
+dropped with no reply, indistinguishable from an ordinary lost packet, and
+only a bind with a valid, live token gets a `FrameRelayBindAck`. The same
+rate limiter the reflector already uses (`pkg/relay/public.go`'s
+`newRateLimiter`) caps how often an unrecognized sender's bind attempts are
+even looked up, bounding this to a much smaller blast radius than the
+dial-back amplification vector below: guessing or replaying a token costs the
+relay a lookup, never an outbound connection to a tenant's origin server, and
+a session's token is only ever handed to the two parties (client and origin
+server) that already completed authenticated allocation over TLS.
+
 **Operational notes:**
 
 - The relay's own `listen.agents` TLS certificate is *not* what the ntwire
