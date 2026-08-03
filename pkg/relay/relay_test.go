@@ -55,6 +55,36 @@ func (l *chanListener) Close() error {
 }
 func (l *chanListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 
+func TestUDPRelayPoolListenAddrPreservesRelayHost(t *testing.T) {
+	tests := []struct {
+		name   string
+		listen string
+		port   uint16
+		want   string
+	}{
+		{name: "IPv4", listen: "141.227.176.130:5000", port: 5001, want: "141.227.176.130:5001"},
+		{name: "IPv6", listen: "[2001:db8::1]:5000", port: 5002, want: "[2001:db8::1]:5002"},
+		{name: "wildcard", listen: ":5000", port: 5003, want: ":5003"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := udpRelayPoolListenAddr(tt.listen, tt.port)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("udpRelayPoolListenAddr(%q, %d) = %q, want %q", tt.listen, tt.port, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUDPRelayPoolListenAddrRejectsMalformedListenAddress(t *testing.T) {
+	if _, err := udpRelayPoolListenAddr("141.227.176.130", 5001); err == nil {
+		t.Fatal("udpRelayPoolListenAddr accepted an address without a port")
+	}
+}
+
 func generateOriginCert(t *testing.T, dnsName string) (tls.Certificate, string) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

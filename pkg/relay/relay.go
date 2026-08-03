@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -130,7 +131,12 @@ func (r *Relay) Start() error {
 		udpRelayAddr = udpRelayLn.LocalAddr().String()
 		udpRelayPool = make(map[uint16]net.PacketConn, int(maxPort-minPort)+1)
 		for port := minPort; ; port++ {
-			pc, perr := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+			poolAddr, perr := udpRelayPoolListenAddr(r.cfg.Listen.UDPRelay, port)
+			if perr != nil {
+				abortUDPRelay(udpRelayPool, udpRelayLn)
+				return fmt.Errorf("listen.udp_relay_ports: %w", perr)
+			}
+			pc, perr := net.ListenPacket("udp", poolAddr)
 			if perr != nil {
 				abortUDPRelay(udpRelayPool, udpRelayLn)
 				return fmt.Errorf("listen.udp_relay_ports: binding port %d: %w", port, perr)
@@ -186,6 +192,19 @@ func (r *Relay) Start() error {
 	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
+}
+
+// udpRelayPoolListenAddr returns the server-leg address for a pooled relay
+// port. It must retain listen.udp_relay's host: the allocated address is sent
+// to the relayed server, which uses it as a real UDP destination. Binding a
+// pool port to ":<port>" and advertising LocalAddr instead leaks an
+// unspecified address (0.0.0.0 or [::]) to that server.
+func udpRelayPoolListenAddr(udpRelay string, port uint16) (string, error) {
+	host, _, err := net.SplitHostPort(udpRelay)
+	if err != nil {
+		return "", fmt.Errorf("parse listen.udp_relay %q: %w", udpRelay, err)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(int(port))), nil
 }
 
 // PublicAddr returns the bound address of listen.public, useful for tests
