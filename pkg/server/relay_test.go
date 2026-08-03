@@ -59,6 +59,46 @@ func TestRelayListener_PushAfterCloseClosesConn(t *testing.T) {
 	}
 }
 
+func TestRelayPoolSharesOneListenerAcrossConfiguredEndpoints(t *testing.T) {
+	pool, err := NewRelayPool(RelayConfig{
+		Enabled: true, Name: "home", IdentityFile: "unused-in-construction",
+		Endpoints: []RelayEndpoint{
+			{URL: "wss://relay-a.example.test:8444"},
+			{URL: "wss://relay-b.example.test:8444"},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	if len(pool.members) != 2 || pool.members[0].agent.Listener() != pool.Listener() || pool.members[1].agent.Listener() != pool.Listener() {
+		t.Fatal("relay pool members must feed the same server listener")
+	}
+}
+
+func TestRelayPoolKeepsPreferredMemberStableWhenAnotherRegisters(t *testing.T) {
+	pool, err := NewRelayPool(RelayConfig{
+		Enabled: true, Name: "home", IdentityFile: "unused-in-construction",
+		Endpoints: []RelayEndpoint{{URL: "wss://relay-a.example.test:8444"}, {URL: "wss://relay-b.example.test:8444"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var reflectCalls []string
+	pool.OnReflectAddr = func(addr string) { reflectCalls = append(reflectCalls, addr) }
+	a, b := pool.members[0], pool.members[1]
+	pool.update(a, true, protocol.RelayRegisterResponse{Domain: "relay.example.test", ReflectAddr: "a:3480"})
+	pool.update(b, true, protocol.RelayRegisterResponse{Domain: "relay.example.test", ReflectAddr: "b:3480"})
+	if len(reflectCalls) != 1 || reflectCalls[0] != "a:3480" {
+		t.Fatalf("preferred callback calls = %v, want [a:3480]", reflectCalls)
+	}
+	pool.update(a, false, protocol.RelayRegisterResponse{})
+	if len(reflectCalls) != 2 || reflectCalls[1] != "b:3480" {
+		t.Fatalf("failover callback calls = %v, want [a:3480 b:3480]", reflectCalls)
+	}
+}
+
 func TestRelayConn_DoesNotForwardHTTPHijackDeadline(t *testing.T) {
 	underlying := &fakeNetConn{}
 	c := &relayConn{Conn: underlying}

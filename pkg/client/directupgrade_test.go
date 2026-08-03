@@ -171,8 +171,22 @@ func TestPostPunch404ReturnsZeroValueNotError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("postPunch() error = %v, want nil for a 404", err)
 	}
-	if resp != (protocol.PunchResponse{}) {
+	if resp.ServerAddr != "" || resp.RelayReflectAddr != "" || len(resp.Candidates) != 0 {
 		t.Fatalf("postPunch() = %+v, want the zero value", resp)
+	}
+}
+
+func TestDirectCandidateForReflectorPrefersMatchingPoolPair(t *testing.T) {
+	resp := protocol.PunchResponse{
+		ServerAddr: "legacy:1", RelayReflectAddr: "legacy:2",
+		Candidates: []protocol.DirectCandidate{
+			{RelayReflectAddr: "relay-a:1", ServerAddr: "server-a:1"},
+			{RelayReflectAddr: "relay-b:1", ServerAddr: "server-b:1"},
+		},
+	}
+	reflector, server := directCandidateForReflector(resp, "relay-b:1")
+	if reflector != "relay-b:1" || server != "server-b:1" {
+		t.Fatalf("pair = (%q, %q), want relay-b/server-b", reflector, server)
 	}
 }
 
