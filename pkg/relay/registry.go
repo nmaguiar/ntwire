@@ -31,6 +31,13 @@ type Limits struct {
 	DialBackTimeout     time.Duration
 	MaxPendingPerServer int
 	MaxConnsPerServer   int
+	// UDPRelayIdleTimeout and MaxUDPRelaySessionsPerServer belong to the
+	// UDP-relay forwarding tier (see udpsession.go); they are not used by
+	// Registry itself, but live here so callers construct one Limits value,
+	// matching HandshakeTimeout's existing precedent of living here despite
+	// only the public listener using it.
+	UDPRelayIdleTimeout          time.Duration
+	MaxUDPRelaySessionsPerServer int
 }
 
 // Agent is a live control connection for one registered tenant name.

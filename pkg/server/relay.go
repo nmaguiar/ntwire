@@ -110,9 +110,27 @@ type RelayAgent struct {
 	// caller wants the opportunistic direct-UDP upgrade (relay.advertise_direct);
 	// see EnableDirectUpgrade for why that gate matters.
 	OnReflectAddr func(addr string)
+	// OnUDPRelayAddr, if set, is called with
+	// RelayRegisterResponse.UDPRelayAddr after each successful registration,
+	// and with "" if the relay reports none. Unlike OnReflectAddr this is
+	// wired unconditionally by cmd/ntwire-server: the UDP-relay tier never
+	// reveals the server's real address, so it carries no advertise_direct-
+	// style trust step-change to opt into. See pkg/server/udprelay.go.
+	OnUDPRelayAddr func(addr string)
 
 	mu     sync.Mutex
 	closed bool
+
+	// wsMu guards ws (the live control connection, nil while disconnected)
+	// and serializes every write to it -- registration, the keepalive ping,
+	// and now AllocateUDPSession/ReleaseUDPSession calls originating from
+	// concurrent /v1/udp-relay HTTP handler goroutines, not just runOnce's
+	// own loop.
+	wsMu sync.Mutex
+	ws   *websocket.Conn
+
+	pendingMu     sync.Mutex
+	pendingAllocs map[string]chan protocol.RelayUDPAllocateResponse
 }
 
 func NewRelayAgent(cfg RelayConfig, log *slog.Logger) (*RelayAgent, error) {
@@ -123,7 +141,7 @@ func NewRelayAgent(cfg RelayConfig, log *slog.Logger) (*RelayAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RelayAgent{cfg: cfg, listener: newRelayListener(), log: log, client: client}, nil
+	return &RelayAgent{cfg: cfg, listener: newRelayListener(), log: log, client: client, pendingAllocs: map[string]chan protocol.RelayUDPAllocateResponse{}}, nil
 }
 
 // Listener returns the net.Listener to pass to http.Server.ServeTLS.
@@ -195,12 +213,28 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	if a.OnReflectAddr != nil {
 		a.OnReflectAddr(resp.ReflectAddr)
 	}
+	if a.OnUDPRelayAddr != nil {
+		a.OnUDPRelayAddr(resp.UDPRelayAddr)
+	}
+
+	// Publish ws for AllocateUDPSession/ReleaseUDPSession to use, and clear
+	// it (and fail anything still waiting on a reply) on the way out --
+	// those calls can originate from concurrent /v1/udp-relay HTTP handler
+	// goroutines with no other way to know a reconnect is in progress.
+	a.wsMu.Lock()
+	a.ws = ws
+	a.wsMu.Unlock()
+	defer func() {
+		a.wsMu.Lock()
+		a.ws = nil
+		a.wsMu.Unlock()
+		a.failPendingAllocs()
+	}()
 
 	// Mirror the relay's own keepalive (pkg/relay/agent.go): without a ping
 	// of our own, a dead path (relay process gone, NAT rebinding) is only
 	// ever caught by whatever the OS's default TCP keepalive happens to
 	// notice, rather than promptly triggering Run's reconnect.
-	var writeMu sync.Mutex
 	readErr := make(chan error, 1)
 	go func() {
 		for {
@@ -209,12 +243,7 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 				readErr <- err
 				return
 			}
-			var open protocol.RelayOpen
-			if json.Unmarshal(data, &open) != nil {
-				continue
-			}
-			a.log.Debug("relay open received", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
-			go a.handleOpen(ctx, open)
+			a.handleControlMessage(ctx, data)
 		}
 	}()
 
@@ -224,9 +253,9 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 		select {
 		case <-ticker.C:
 			pctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			writeMu.Lock()
+			a.wsMu.Lock()
 			err := ws.Ping(pctx)
-			writeMu.Unlock()
+			a.wsMu.Unlock()
 			cancel()
 			if err != nil {
 				return true, fmt.Errorf("ping: %w", err)
@@ -237,6 +266,134 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 			return true, ctx.Err()
 		}
 	}
+}
+
+// handleControlMessage dispatches one message read from the relay's control
+// connection. A typed "udp_allocate_reply" is delivered to the matching
+// AllocateUDPSession call; anything else is dispatched as an untyped
+// RelayOpen push, exactly as before this feature existed -- RelayOpen
+// carries no "type" field by design, see docs/PROTOCOL.md.
+func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte) {
+	var msg struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(data, &msg) == nil && msg.Type == "udp_allocate_reply" {
+		var resp protocol.RelayUDPAllocateResponse
+		if json.Unmarshal(data, &resp) != nil {
+			return
+		}
+		a.pendingMu.Lock()
+		ch := a.pendingAllocs[resp.RequestID]
+		delete(a.pendingAllocs, resp.RequestID)
+		a.pendingMu.Unlock()
+		if ch != nil {
+			ch <- resp
+		}
+		return
+	}
+	var open protocol.RelayOpen
+	if json.Unmarshal(data, &open) != nil {
+		return
+	}
+	a.log.Debug("relay open received", "conn_id", open.ConnID, "client_addr", open.ClientAddr)
+	go a.handleOpen(ctx, open)
+}
+
+// failPendingAllocs unblocks every AllocateUDPSession call still waiting on
+// a reply when the control connection drops, so a reconnect in progress
+// doesn't leave an HTTP handler goroutine hanging until its own timeout. A
+// closed channel delivers a zero-value RelayUDPAllocateResponse to the
+// waiting call, which -- empty Token, empty ServerAddr, empty Error --
+// AllocateUDPSession reports the same way it would report the tier being
+// simply unavailable, not a hard error.
+func (a *RelayAgent) failPendingAllocs() {
+	a.pendingMu.Lock()
+	pending := a.pendingAllocs
+	a.pendingAllocs = map[string]chan protocol.RelayUDPAllocateResponse{}
+	a.pendingMu.Unlock()
+	for _, ch := range pending {
+		close(ch)
+	}
+}
+
+// AllocateUDPSession requests a new UDP-relay session from the relay over
+// the live control connection, blocking until the relay replies or ctx is
+// canceled. An empty token/serverAddr with a nil error means the tier is
+// unavailable right now (no live control connection, the relay declined, or
+// the connection dropped mid-request) -- the caller (the server's
+// /v1/udp-relay HTTP handler, via udpRelay.sessionFor) treats that exactly
+// like PunchResponse's empty case, not a hard failure.
+func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr string, err error) {
+	a.wsMu.Lock()
+	ws := a.ws
+	a.wsMu.Unlock()
+	if ws == nil {
+		return "", "", nil
+	}
+
+	reqID, err := randomRequestID()
+	if err != nil {
+		return "", "", err
+	}
+	ch := make(chan protocol.RelayUDPAllocateResponse, 1)
+	a.pendingMu.Lock()
+	a.pendingAllocs[reqID] = ch
+	a.pendingMu.Unlock()
+	defer func() {
+		a.pendingMu.Lock()
+		delete(a.pendingAllocs, reqID)
+		a.pendingMu.Unlock()
+	}()
+
+	b, err := json.Marshal(protocol.RelayUDPAllocateRequest{Type: "udp_allocate", RequestID: reqID})
+	if err != nil {
+		return "", "", err
+	}
+	a.wsMu.Lock()
+	writeErr := ws.Write(ctx, websocket.MessageText, b)
+	a.wsMu.Unlock()
+	if writeErr != nil {
+		return "", "", nil
+	}
+
+	select {
+	case resp, ok := <-ch:
+		if !ok || resp.Error != "" {
+			return "", "", nil
+		}
+		return resp.Token, resp.ServerAddr, nil
+	case <-ctx.Done():
+		return "", "", ctx.Err()
+	}
+}
+
+// ReleaseUDPSession sends a best-effort, fire-and-forget hint that a
+// UDP-relay session is done. If there is no live control connection, this is
+// a silent no-op: the relay's own idle timeout is the backstop.
+func (a *RelayAgent) ReleaseUDPSession(token string) {
+	a.wsMu.Lock()
+	ws := a.ws
+	a.wsMu.Unlock()
+	if ws == nil {
+		return
+	}
+	b, err := json.Marshal(protocol.RelayUDPRelease{Type: "udp_release", Token: token})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a.wsMu.Lock()
+	_ = ws.Write(ctx, websocket.MessageText, b)
+	a.wsMu.Unlock()
+}
+
+func randomRequestID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // handleOpen dials the relay's data endpoint for one RelayOpen and pushes

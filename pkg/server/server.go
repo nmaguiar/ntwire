@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -34,6 +35,7 @@ type Server struct {
 	tlsManager  *TLSManager
 	auditLog    *slog.Logger
 	direct      *directUDP
+	udpr        atomic.Pointer[udpRelay]
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -81,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	m.HandleFunc("POST /v1/punch", s.punch)
+	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	return m
 }
 
@@ -331,7 +334,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name})
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact
@@ -349,6 +352,42 @@ func websocketURL(r *http.Request) string {
 		scheme = "ws"
 	}
 	return (&url.URL{Scheme: scheme, Host: r.Host, Path: "/v1/wg"}).String()
+}
+
+// advertisedUDPEndpoint resolves network.advertised_endpoint's host to a
+// literal IP. It is sent to clients as AuthResponse.UDP and, on the client,
+// passed straight into wireguard-go's "endpoint=" UAPI line (see
+// wgnet.Stack.AddPeer), which is parsed with netip.ParseAddr and never does
+// DNS resolution itself -- a hostname there fails with an opaque IPC error
+// instead of connecting. Resolved on every call rather than once at startup
+// so dynamic DNS (e.g. a home server behind a changing IP) stays usable
+// across reconnects without a server restart.
+func (s *Server) advertisedUDPEndpoint() string {
+	hostport := s.Config.Network.AdvertisedEndpoint
+	if hostport == "" {
+		return ""
+	}
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		s.log.Warn("network.advertised_endpoint is not a valid host:port", "value", hostport, "error", err)
+		return ""
+	}
+	if _, err := netip.ParseAddr(host); err == nil {
+		return hostport // already a literal IP; skip the DNS round trip
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(context.Background(), host)
+	if err != nil || len(ips) == 0 {
+		s.log.Warn("failed to resolve network.advertised_endpoint", "host", host, "error", err)
+		return ""
+	}
+	ip := ips[0].IP
+	for _, addr := range ips {
+		if v4 := addr.IP.To4(); v4 != nil {
+			ip = v4
+			break
+		}
+	}
+	return net.JoinHostPort(ip.String(), port)
 }
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	if s.data == nil || s.data.ws == nil {
@@ -371,6 +410,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}
 }
+
 // punch answers the opportunistic direct-UDP upgrade's candidate exchange
 // (see directudp.go). It always requires a valid session, even on a caller's
 // first, addr-less request that only wants RelayReflectAddr: an
@@ -400,6 +440,30 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	write(w, 200, protocol.PunchResponse{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect})
+}
+
+// udpRelayHandler answers a client's request for a session on the relay's
+// UDP-relay forwarding tier (see pkg/server/udprelay.go) -- the middle rung
+// between the WebSocket fallback and the full direct-UDP escape /v1/punch
+// answers. Like punch, it always requires a valid session: an
+// unauthenticated caller has no business obtaining a forwarding session. A
+// 404 (tier not available, or this server isn't relaying at all) is the
+// expected steady state when relay.enabled is false or the relay hasn't
+// enabled listen.udp_relay -- postUDPRelay on the client side treats it
+// exactly like a 404 from /v1/punch, not an error worth logging.
+func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	sess, ok := s.sessions.Get(token)
+	if !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	u := s.udpr.Load()
+	if u == nil || sess.WireGuardPublicKey == "" {
+		http.Error(w, "udp relay tier not available", http.StatusNotFound)
+		return
+	}
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +515,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.Config.Network.AdvertisedEndpoint, Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

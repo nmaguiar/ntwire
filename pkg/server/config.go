@@ -73,6 +73,14 @@ type RelayConfig struct {
 	// the relay for the data plane entirely. Default false: relay mode's
 	// whole point for many operators is that the server's real address
 	// stays hidden, and this flag is what trades that away for speed.
+	//
+	// There is deliberately no equivalent flag gating the relay's UDP-relay
+	// forwarding tier (see docs/RELAY.md): that tier keeps the relay in the
+	// data path for the session's whole life, so it never reveals this
+	// server's real address the way AdvertiseDirect does. It carries the
+	// same trust exposure as the default WSS-through-relay path, not a new
+	// one, so cmd/ntwire-server enables it unconditionally whenever the
+	// relay itself offers it (RelayRegisterResponse.UDPRelayAddr != "").
 	AdvertiseDirect bool `yaml:"advertise_direct"`
 }
 type OIDCConfig struct {
@@ -217,7 +225,7 @@ auth:
 
 network:
   tunnel_cidr: 100.64.0.0/16              # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
-  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; must be empty when relay.enabled is true
+  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
 
 relay:
   enabled: false                          # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)

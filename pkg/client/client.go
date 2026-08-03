@@ -84,10 +84,12 @@ type Options struct {
 	StatusFile       string
 	UseWebSocket     bool
 
-	// NoDirectUpgrade disables the opportunistic direct-UDP upgrade
+	// NoDirectUpgrade disables the opportunistic upgrade ladder
 	// (directupgrade.go) that a WebSocket-fallback session otherwise
-	// attempts in the background. It has no effect when UseWebSocket is
-	// false to begin with (already the best available path).
+	// attempts in the background -- both the UDP-relay forwarding rung and
+	// the full direct-UDP escape above it. It has no effect when
+	// UseWebSocket is false to begin with (already the best available
+	// path).
 	NoDirectUpgrade bool
 	// DirectUpgradeTiming overrides the direct-UDP upgrade's pacing. Leave
 	// nil for the production defaults; see DirectUpgradeTiming's doc.
@@ -572,6 +574,13 @@ const (
 	transportUDPDirect
 	transportWSSFallback
 	transportWSSRelay
+	// transportUDPRelay is the middle rung of the relay upgrade ladder (see
+	// directupgrade.go): WireGuard traffic rides UDP forwarded through the
+	// relay's UDP-relay tier, rather than WebSocket/TCP -- faster than
+	// transportWSSRelay, but unlike transportUDPRelayReflector it never
+	// reveals the server's real address, since the relay stays in the data
+	// path throughout.
+	transportUDPRelay
 	transportUDPRelayReflector
 )
 
@@ -583,6 +592,8 @@ func (t connectionTransport) String() string {
 		return "WSS fallback"
 	case transportWSSRelay:
 		return "WSS through relay"
+	case transportUDPRelay:
+		return "UDP via relay"
 	case transportUDPRelayReflector:
 		return "UDP direct via relay reflector"
 	default:

@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,8 +23,10 @@ type agentServer struct {
 	limits   Limits
 	log      *slog.Logger
 
-	mu          sync.Mutex
-	reflectAddr string
+	mu           sync.Mutex
+	reflectAddr  string
+	udpRelayAddr string
+	sessions     *udpSessionTable // nil until Relay.Start wires it (or forever, if listen.udp_relay is unset)
 }
 
 // setReflectAddr records the relay's bound UDP reflector address (or ""),
@@ -38,6 +41,38 @@ func (a *agentServer) getReflectAddr() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.reflectAddr
+}
+
+// setUDPRelayAddr records the relay's shared client-facing UDP-relay address
+// (or ""), echoed back to each server as it registers, mirroring
+// setReflectAddr.
+func (a *agentServer) setUDPRelayAddr(addr string) {
+	a.mu.Lock()
+	a.udpRelayAddr = addr
+	a.mu.Unlock()
+}
+
+func (a *agentServer) getUDPRelayAddr() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.udpRelayAddr
+}
+
+// setUDPSessions wires the UDP-relay tier's session table, once Relay.Start
+// has bound its port pool. Registrations completed before this call (there
+// should be none in practice -- Start finishes wiring before the agents
+// listener serves any traffic) simply see no UDP-relay tier available, the
+// same as a relay with listen.udp_relay unset.
+func (a *agentServer) setUDPSessions(sessions *udpSessionTable) {
+	a.mu.Lock()
+	a.sessions = sessions
+	a.mu.Unlock()
+}
+
+func (a *agentServer) getUDPSessions() *udpSessionTable {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.sessions
 }
 
 // handoffConn lets handleData keep its hijacked HTTP handler alive until the
@@ -150,14 +185,18 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
 	reflectAddr := a.getReflectAddr()
+	udpRelayAddr := a.getUDPRelayAddr()
 	// reflect_addr records this tenant's wss-vs-direct-UDP posture at
 	// registration time: "" means every client of this tenant rides the wss
 	// tunnel exclusively; non-empty means the server also has the option to
 	// offer clients the opportunistic direct-UDP upgrade (see docs/RELAY.md).
-	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr)
+	// udp_relay_addr is independent of that: it never leaks the server's
+	// real address, so it is acted on unconditionally rather than needing an
+	// advertise_direct-style opt-in.
+	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr, "udp_relay_addr", udpRelayAddr)
 	defer a.log.Info("server disconnected", "name", name, "fingerprint", fingerprint)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr})
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()
@@ -168,10 +207,12 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	readErr := make(chan error, 1)
 	go func() {
 		for {
-			if _, _, err := ws.Read(ctx); err != nil {
+			_, data, err := ws.Read(ctx)
+			if err != nil {
 				readErr <- err
 				return
 			}
+			a.handleControlMessage(ctx, name, &writeMu, ws, data)
 		}
 	}()
 
@@ -194,6 +235,75 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// controlMessageType sniffs the "type" discriminator on a message read from
+// a tenant's live control connection after registration.
+type controlMessageType struct {
+	Type string `json:"type"`
+}
+
+// handleControlMessage dispatches one message read from a tenant's live
+// control connection after registration. A message with no "type" field, or
+// one this relay version does not recognize, is silently ignored: RelayOpen
+// predates this dispatch convention and is a one-way push from the relay to
+// the server, never something the relay itself reads back, so an untyped or
+// unrecognized message here has never carried meaning and stays that way --
+// a relay/server version mismatch degrades gracefully rather than erroring.
+// See docs/PROTOCOL.md.
+func (a *agentServer) handleControlMessage(ctx context.Context, name string, writeMu *sync.Mutex, ws *websocket.Conn, data []byte) {
+	var msg controlMessageType
+	if json.Unmarshal(data, &msg) != nil {
+		return
+	}
+	switch msg.Type {
+	case "udp_allocate":
+		a.handleUDPAllocate(ctx, name, writeMu, ws, data)
+	case "udp_release":
+		var req protocol.RelayUDPRelease
+		if json.Unmarshal(data, &req) == nil {
+			if sessions := a.getUDPSessions(); sessions != nil {
+				sessions.Release(req.Token)
+			}
+		}
+	}
+}
+
+// handleUDPAllocate answers a RelayUDPAllocateRequest by minting a UDP-relay
+// session for the requesting tenant and replying over the same control
+// connection, correlated by RequestID. An empty Token/ServerAddr with a
+// non-empty Error means the tier is unavailable or this tenant is at
+// capacity -- the server treats that exactly like PunchResponse's empty
+// case, not as a hard failure.
+func (a *agentServer) handleUDPAllocate(ctx context.Context, name string, writeMu *sync.Mutex, ws *websocket.Conn, data []byte) {
+	var req protocol.RelayUDPAllocateRequest
+	if json.Unmarshal(data, &req) != nil {
+		return
+	}
+	resp := protocol.RelayUDPAllocateResponse{Type: "udp_allocate_reply", RequestID: req.RequestID}
+	sessions := a.getUDPSessions()
+	switch {
+	case sessions == nil:
+		resp.Error = "udp relay tier not configured on this relay"
+	default:
+		token, serverAddr, err := sessions.Allocate(name)
+		switch {
+		case errors.Is(err, ErrPoolExhausted):
+			resp.Error, resp.Code = err.Error(), protocol.ErrorUDPRelayPoolExhausted
+		case errors.Is(err, ErrUDPRelayTenantAtCapacity):
+			resp.Error, resp.Code = err.Error(), protocol.ErrorUDPRelayTenantAtCapacity
+		case err != nil:
+			resp.Error = err.Error()
+		default:
+			resp.Token, resp.ServerAddr = token, serverAddr
+		}
+	}
+	b, _ := json.Marshal(resp)
+	pctx, cancel := context.WithTimeout(ctx, a.limits.DialBackTimeout)
+	defer cancel()
+	writeMu.Lock()
+	_ = ws.Write(pctx, websocket.MessageText, b)
+	writeMu.Unlock()
 }
 
 // handleData redeems a conn_id minted by Registry.Open and, on success,
