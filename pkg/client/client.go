@@ -263,10 +263,10 @@ func TrustServer(path, host, fingerprint string) error {
 
 func httpClient(url string, o Options) (*http.Client, error) {
 	if !strings.HasPrefix(strings.ToLower(url), "https://") {
-		return http.DefaultClient, nil
+		return resilientHTTPClient(nil), nil
 	}
 	if o.Insecure {
-		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}}}, nil
+		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}), nil
 	} // #nosec G402 -- explicit CLI escape hatch
 	if o.CAFile != "" {
 		b, err := os.ReadFile(o.CAFile)
@@ -277,7 +277,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		if !pool.AppendCertsFromPEM(b) {
 			return nil, fmt.Errorf("no certificate found in %s", o.CAFile)
 		}
-		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}}}, nil
+		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}), nil
 	}
 	path := o.KnownServersFile
 	if path == "" {
@@ -288,7 +288,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		_ = yaml.Unmarshal(b, &v)
 	}
 	host := strings.TrimPrefix(strings.SplitN(url, "/", 4)[2], "")
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, VerifyConnection: func(cs tls.ConnectionState) error { // #nosec G402 -- verification is the pin below
+	return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, VerifyConnection: func(cs tls.ConnectionState) error { // #nosec G402 -- verification is the pin below
 		if len(cs.PeerCertificates) == 0 {
 			return fmt.Errorf("server supplied no certificate")
 		}
@@ -298,7 +298,68 @@ func httpClient(url string, o Options) (*http.Client, error) {
 			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
 		}
 		return nil
-	}}}}, nil
+	}}), nil
+}
+
+// resilientHTTPClient races resolved addresses for a shared relay hostname.
+// A normal net.Dialer retries same-family DNS answers serially, which leaves
+// a client stuck behind one failed relay replica. The hostname and TLS SNI
+// remain unchanged; only the TCP address selection becomes pool-aware.
+func resilientHTTPClient(tlsConfig *tls.Config) *http.Client {
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: tlsConfig, DialContext: raceResolvedDial}
+	return &http.Client{Transport: transport}
+}
+
+func raceResolvedDial(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) != nil {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil || len(addrs) < 2 {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	child, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan result, len(addrs))
+	for i, ip := range addrs {
+		go func(i int, ip net.IP) {
+			if i > 0 {
+				t := time.NewTimer(time.Duration(i) * 150 * time.Millisecond)
+				defer t.Stop()
+				select {
+				case <-child.Done():
+					results <- result{err: child.Err()}
+					return
+				case <-t.C:
+				}
+			}
+			conn, dialErr := (&net.Dialer{}).DialContext(child, network, net.JoinHostPort(ip.String(), port))
+			results <- result{conn: conn, err: dialErr}
+		}(i, ip.IP)
+	}
+	var first error
+	for range addrs {
+		select {
+		case r := <-results:
+			if r.err == nil {
+				return r.conn, nil
+			}
+			if first == nil && !errors.Is(r.err, context.Canceled) {
+				first = r.err
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if first == nil {
+		first = fmt.Errorf("all resolved addresses for %s failed", host)
+	}
+	return nil, first
 }
 
 func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (protocol.AuthResponse, error) {

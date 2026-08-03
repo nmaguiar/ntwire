@@ -370,11 +370,12 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback str
 	if err != nil {
 		return "", fmt.Sprintf("could not reach the relay's punch endpoint: %v", err)
 	}
-	if first.RelayReflectAddr == "" {
+	reflectAddr, _ := directCandidateForReflector(first, "")
+	if reflectAddr == "" {
 		return "", "server has not enabled direct UDP upgrade support"
 	}
 
-	selfAddr, err := selfReflect(bind, first.RelayReflectAddr, c.upgradeTiming.reflectTimeout)
+	selfAddr, err := selfReflect(bind, reflectAddr, c.upgradeTiming.reflectTimeout)
 	if err != nil {
 		return "", fmt.Sprintf("NAT self-reflection via the relay failed: %v", err)
 	}
@@ -383,7 +384,8 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback str
 	if err != nil {
 		return "", fmt.Sprintf("could not reach the relay's punch endpoint: %v", err)
 	}
-	if second.ServerAddr == "" {
+	_, serverAddr := directCandidateForReflector(second, reflectAddr)
+	if serverAddr == "" {
 		return "", "server has not published a self-reflected candidate address yet"
 	}
 
@@ -392,21 +394,34 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback str
 		return "", "" // connection closed while this attempt was in flight
 	}
 
-	primeAddr(bind, second.ServerAddr)
-	if err := stack.UpdateEndpoint(serverPub, second.ServerAddr); err != nil {
-		return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", second.ServerAddr, err)
+	primeAddr(bind, serverAddr)
+	if err := stack.UpdateEndpoint(serverPub, serverAddr); err != nil {
+		return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", serverAddr, err)
 	}
 	if !c.probeDirectPath() {
 		_ = stack.UpdateEndpoint(serverPub, fallback)
-		return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", second.ServerAddr, c.upgradeTiming.probeTimeout)
+		return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", serverAddr, c.upgradeTiming.probeTimeout)
 	}
-	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != second.ServerAddr {
+	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != serverAddr {
 		_ = stack.UpdateEndpoint(serverPub, fallback)
-		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", second.ServerAddr)
+		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", serverAddr)
 	}
-	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", second.ServerAddr)
+	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", serverAddr)
 	c.transport.Store(uint32(transportUDPRelayReflector))
-	return second.ServerAddr, ""
+	return serverAddr, ""
+}
+
+// directCandidateForReflector selects a matching active-active candidate,
+// falling back to the legacy scalar fields for servers predating the pool
+// extension. A supplied reflector is preferred to avoid mixing mappings from
+// destination-dependent NATs.
+func directCandidateForReflector(resp protocol.PunchResponse, reflector string) (string, string) {
+	for _, candidate := range resp.Candidates {
+		if reflector == "" || candidate.RelayReflectAddr == reflector {
+			return candidate.RelayReflectAddr, candidate.ServerAddr
+		}
+	}
+	return resp.RelayReflectAddr, resp.ServerAddr
 }
 
 // setEndpoint re-seeds the peer's endpoint to addr: wstransport.WSSentinel to
