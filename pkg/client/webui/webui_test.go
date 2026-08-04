@@ -27,6 +27,16 @@ func TestStatusPageShowsLatencyTransportHistory(t *testing.T) {
 	}
 }
 
+func TestStatusPageAttachesTargetGrid(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page), "list.append(item(t,recordTraffic(t))));app.append(list)") {
+		t.Error("status page creates target cards but does not attach their grid to the app container")
+	}
+}
+
 func mustFiles(t *testing.T) fs.FS {
 	t.Helper()
 	f, err := Files()
