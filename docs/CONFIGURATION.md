@@ -1,5 +1,14 @@
 # Server configuration reference
 
+## Client HTTPS proxy settings
+
+The `ntwire` client uses `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` by default
+for HTTPS control traffic. Set `https_proxy: http://proxy.example:8080` in
+`~/.ntwire/config.yaml`, or pass `--https-proxy URL`, to use one explicit
+HTTP(S) proxy instead. Set `no_system_proxy: true` or pass
+`--no-system-proxy` to connect directly and ignore those environment
+variables. An explicit `https_proxy` takes precedence over `no_system_proxy`.
+
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.
@@ -26,7 +35,6 @@ auth:
       - name: google                    # stable id; shown to clients and selected with --provider
         issuer: https://accounts.google.com  # OIDC issuer URL; its /.well-known/openid-configuration and JWKS are fetched
         client_id: 1234-abc.apps.googleusercontent.com  # public OAuth client id registered at the issuer (PKCE; most IdPs need no client_secret)
-        client_secret: ""                # only needed for IdPs whose token endpoint requires it even for a public client (e.g. Google's "Desktop app" type, not a confidentiality boundary); see OIDC-SETUP.md
         scopes: [openid, email, profile] # requested OAuth scopes; default shown
         groups_claim: ""                 # ID-token claim holding group membership, e.g. "groups"; empty disables group: grants
         require_verified_email: true     # reject tokens without email_verified=true; default true, see SECURITY.md
@@ -93,12 +101,11 @@ equivalent if it needs to be bounded.
 
 Every readable non-directory file in `authorized_keys_dir` is treated as a
 public key. Tunnel names must be unique and each tunnel requires `name` and
-`target`. `ntwire-server` is a public OAuth client (PKCE) and never
-authenticates itself to an IdP with a protected secret — a handful of IdPs
-still require a non-confidential `client_secret` value on token requests
-(see [OIDC-SETUP.md](OIDC-SETUP.md#google)), which ntwire treats the same
-way as `client_id`. See the Google/Entra/Keycloak registration notes in
-[OIDC-SETUP.md](OIDC-SETUP.md).
+`target`. ntwire-server never authenticates itself to an IdP. A
+`client_secret` is not supported in server configuration and is never exposed
+by `/v1/info`; if a provider requires it for a public client, configure it in
+that client's `NTWIRE_OIDC_CLIENT_SECRET` environment variable. See the
+Google/Entra/Keycloak registration notes in [OIDC-SETUP.md](OIDC-SETUP.md).
 
 ## SOCKS proxy tunnels
 
