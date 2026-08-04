@@ -49,6 +49,8 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 		Ports:          ports,
 		CAFile:         settings.CAFile,
 		Insecure:       settings.Insecure,
+		HTTPSProxy:     settings.HTTPSProxy,
+		NoSystemProxy:  settings.NoSystemProxy,
 		SSO:            settings.SSO,
 		Provider:       settings.Provider,
 		CollectExec:    settings.CollectExec,

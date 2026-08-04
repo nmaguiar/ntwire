@@ -78,6 +78,46 @@ func TestInitialTransport(t *testing.T) {
 	}
 }
 
+func TestProxyFunc(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://server.example/v1/info", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := proxyFunc(Options{HTTPSProxy: "https://proxy.example:8443"})
+	if err != nil {
+		t.Fatalf("proxyFunc() error = %v", err)
+	}
+	u, err := proxy(req)
+	if err != nil || u.String() != "https://proxy.example:8443" {
+		t.Fatalf("explicit proxy = %v, %v", u, err)
+	}
+
+	proxy, err = proxyFunc(Options{HTTPSProxy: "https://proxy.example:8443", NoSystemProxy: true})
+	if err != nil {
+		t.Fatalf("proxyFunc(explicit, no system) error = %v", err)
+	}
+	u, err = proxy(req)
+	if err != nil || u == nil {
+		t.Fatalf("explicit proxy did not take precedence: %v, %v", u, err)
+	}
+
+	proxy, err = proxyFunc(Options{NoSystemProxy: true})
+	if err != nil {
+		t.Fatalf("proxyFunc(no system) error = %v", err)
+	}
+	if proxy != nil {
+		t.Fatal("no-system-proxy returned a proxy function")
+	}
+}
+
+func TestProxyFuncRejectsInvalidProxyURL(t *testing.T) {
+	for _, proxy := range []string{"proxy.example:8080", "socks5://proxy.example:1080", "https:///missing-host"} {
+		if _, err := proxyFunc(Options{HTTPSProxy: proxy}); err == nil {
+			t.Errorf("proxyFunc(%q) accepted an invalid proxy URL", proxy)
+		}
+	}
+}
+
 func TestResolveServerTunnelIP(t *testing.T) {
 	cases := []struct {
 		name           string

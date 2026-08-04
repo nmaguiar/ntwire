@@ -140,6 +140,20 @@ var registry = []Option{
 		Label:   "Skip TLS certificate verification", Group: "TLS", Widget: WidgetToggle, Advanced: true,
 	},
 	{
+		Name: "https-proxy", Kind: KindString, Usage: "explicit HTTP(S) proxy URL for HTTPS control traffic",
+		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
+		Default: strDefault(func(s client.Settings) string { return s.HTTPSProxy }),
+		Label:   "HTTPS proxy", Group: "Connection", Widget: WidgetText, Advanced: true,
+		Help: "Overrides HTTPS_PROXY and HTTP_PROXY for this ntwire connection. Use http:// or https://, optionally with credentials.",
+	},
+	{
+		Name: "no-system-proxy", Kind: KindBool, Usage: "ignore HTTP(S)_PROXY and NO_PROXY environment variables",
+		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
+		Default: boolDefault(func(s client.Settings) bool { return s.NoSystemProxy }),
+		Label:   "Ignore system proxy", Group: "Connection", Widget: WidgetToggle, Advanced: true,
+		Help: "Connect directly instead of using HTTP_PROXY, HTTPS_PROXY, or NO_PROXY. An explicit HTTPS proxy still takes precedence.",
+	},
+	{
 		Name: "known-servers", Kind: KindString, Usage: "known servers file",
 		Bind:  []Binding{{Command: "connect"}, {Command: "list"}},
 		Label: "Known servers file", Group: "TLS", Widget: WidgetPath, Advanced: true,

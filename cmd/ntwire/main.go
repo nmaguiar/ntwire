@@ -398,6 +398,8 @@ func connect(args []string, u *ui.UI) {
 	key := fs.Str("i")
 	ca := fs.Str("ca")
 	insecure := fs.BoolVal("insecure")
+	httpsProxy := fs.Str("https-proxy")
+	noSystemProxy := fs.BoolVal("no-system-proxy")
 	known := fs.Str("known-servers")
 	noBrowser := fs.BoolVal("no-browser")
 	sso := fs.BoolVal("sso")
@@ -432,7 +434,7 @@ func connect(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	o := client.Options{
-		Ports: ports, CAFile: ca, Insecure: insecure, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
+		Ports: ports, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind,
 	}
@@ -485,6 +487,8 @@ func list(args []string, u *ui.UI) {
 	key := fs.Str("i")
 	ca := fs.Str("ca")
 	insecure := fs.BoolVal("insecure")
+	httpsProxy := fs.Str("https-proxy")
+	noSystemProxy := fs.BoolVal("no-system-proxy")
 	known := fs.Str("known-servers")
 	noBrowser := fs.BoolVal("no-browser")
 	sso := fs.BoolVal("sso")
@@ -513,7 +517,7 @@ func list(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	o := client.Options{
-		CAFile: ca, Insecure: insecure, KnownServersFile: known,
+		CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache,
 		QueryOnly: true, KeyPassphrase: passphrase,
 	}

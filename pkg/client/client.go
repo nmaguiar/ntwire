@@ -76,9 +76,16 @@ func Authenticate(url, keyPath string, info protocol.ClientInfo) (protocol.AuthR
 
 // Options controls the client-side TLS and connection lifecycle.
 type Options struct {
-	Ports            map[string]int
-	CAFile           string
-	Insecure         bool
+	Ports    map[string]int
+	CAFile   string
+	Insecure bool
+	// HTTPSProxy is an explicit HTTP or HTTPS proxy URL for the HTTPS
+	// control plane. When set, it takes precedence over proxy environment
+	// variables. Authentication credentials in the URL are supported.
+	HTTPSProxy string
+	// NoSystemProxy bypasses HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. It has no
+	// effect when HTTPSProxy is set.
+	NoSystemProxy    bool
 	KnownServersFile string
 	NoWebUI          bool
 	StatusFile       string
@@ -262,11 +269,15 @@ func TrustServer(path, host, fingerprint string) error {
 }
 
 func httpClient(url string, o Options) (*http.Client, error) {
+	proxy, err := proxyFunc(o)
+	if err != nil {
+		return nil, err
+	}
 	if !strings.HasPrefix(strings.ToLower(url), "https://") {
-		return resilientHTTPClient(nil), nil
+		return resilientHTTPClient(nil, proxy), nil
 	}
 	if o.Insecure {
-		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}), nil
+		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, proxy), nil
 	} // #nosec G402 -- explicit CLI escape hatch
 	if o.CAFile != "" {
 		b, err := os.ReadFile(o.CAFile)
@@ -277,7 +288,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		if !pool.AppendCertsFromPEM(b) {
 			return nil, fmt.Errorf("no certificate found in %s", o.CAFile)
 		}
-		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}), nil
+		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, proxy), nil
 	}
 	path := o.KnownServersFile
 	if path == "" {
@@ -298,15 +309,31 @@ func httpClient(url string, o Options) (*http.Client, error) {
 			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
 		}
 		return nil
-	}}), nil
+	}}, proxy), nil
+}
+
+// proxyFunc selects the HTTPS control-plane proxy. An explicit proxy wins;
+// otherwise callers may opt out of the process-wide proxy environment.
+func proxyFunc(o Options) (func(*http.Request) (*urlpkg.URL, error), error) {
+	if o.HTTPSProxy != "" {
+		proxyURL, err := urlpkg.Parse(o.HTTPSProxy)
+		if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
+			return nil, fmt.Errorf("invalid HTTPS proxy %q: must be an http:// or https:// URL", o.HTTPSProxy)
+		}
+		return http.ProxyURL(proxyURL), nil
+	}
+	if o.NoSystemProxy {
+		return nil, nil
+	}
+	return http.ProxyFromEnvironment, nil
 }
 
 // resilientHTTPClient races resolved addresses for a shared relay hostname.
 // A normal net.Dialer retries same-family DNS answers serially, which leaves
 // a client stuck behind one failed relay replica. The hostname and TLS SNI
 // remain unchanged; only the TCP address selection becomes pool-aware.
-func resilientHTTPClient(tlsConfig *tls.Config) *http.Client {
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, TLSClientConfig: tlsConfig, DialContext: raceResolvedDial}
+func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error)) *http.Client {
+	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: raceResolvedDial}
 	return &http.Client{Transport: transport}
 }
 
@@ -520,7 +547,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	tok, err := oidcclient.TokensForIssuer(context.Background(), cache, base, issuer, oidcclient.ForIssuerOptions{NoBrowser: o.NoBrowser})
+	tok, err := oidcclient.TokensForIssuer(context.Background(), cache, base, issuer, oidcclient.ForIssuerOptions{NoBrowser: o.NoBrowser, ClientSecret: os.Getenv("NTWIRE_OIDC_CLIENT_SECRET")})
 	if err != nil {
 		return protocol.AuthResponse{}, fmt.Errorf("sso login: %w", err)
 	}

@@ -22,17 +22,19 @@ import (
 // ToClientOptions always sets NoWebUI:true, NoBrowser:false, and --config
 // has no GUI equivalent at all (gui.yaml is not config.yaml).
 var profileField = map[string]string{
-	"i":             "IdentityFile",
-	"ca":            "CAFile",
-	"insecure":      "Insecure",
-	"known-servers": "KnownServersFile",
-	"sso":           "SSO",
-	"provider":      "Provider",
-	"token-cache":   "TokenCacheFile",
-	"websocket":     "Websocket",
-	"collect-exec":  "CollectExec",
-	"port":          "Ports",
-	"bind":          "BindAddress",
+	"i":               "IdentityFile",
+	"ca":              "CAFile",
+	"insecure":        "Insecure",
+	"https-proxy":     "HTTPSProxy",
+	"no-system-proxy": "NoSystemProxy",
+	"known-servers":   "KnownServersFile",
+	"sso":             "SSO",
+	"provider":        "Provider",
+	"token-cache":     "TokenCacheFile",
+	"websocket":       "Websocket",
+	"collect-exec":    "CollectExec",
+	"port":            "Ports",
+	"bind":            "BindAddress",
 }
 
 // schemaField is one generated form field, as served by GET /api/schema.

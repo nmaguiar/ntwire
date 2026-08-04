@@ -27,6 +27,17 @@ func TestToClientOptionsSetsNoWebUITrueAndNoBrowserFalse(t *testing.T) {
 	}
 }
 
+func TestToClientOptionsIncludesHTTPSProxyControls(t *testing.T) {
+	p := Profile{HTTPSProxy: "http://proxy.example:8080", NoSystemProxy: true}
+	o, err := p.ToClientOptions("/tmp/status.json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.HTTPSProxy != p.HTTPSProxy || !o.NoSystemProxy {
+		t.Errorf("proxy options = %+v, want profile values", o)
+	}
+}
+
 func TestToClientOptionsCopiesPortsAndPassphrase(t *testing.T) {
 	p := Profile{Ports: map[string]int{"web": 8080, "db": 5432}}
 	o, err := p.ToClientOptions("/tmp/status.json", "hunter2")

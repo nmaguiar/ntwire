@@ -9,10 +9,9 @@ a secret used to actually authenticate the server as a client.
 
 Some IdPs (Google's "Desktop app" client type, notably) still require a
 `client_secret` value on token-endpoint requests even for this public/PKCE
-registration — see the Google section below. That value isn't a
-confidentiality boundary (the IdP itself says so; it ships in every copy of
-an installed app), so ntwire treats it exactly like `client_id`: set in
-`auth.oidc.issuers[].client_secret` and advertised to clients the same way.
+registration — see the Google section below. Never put that value in
+`auth.oidc.issuers`: `/v1/info` is public. Set it locally in the client
+environment as `NTWIRE_OIDC_CLIENT_SECRET` instead.
 
 The redirect used by the browser flow is a loopback address chosen at login
 time (`http://127.0.0.1:<random-port>/callback`); register the broadest
@@ -34,7 +33,7 @@ an ephemeral port for each login.
    are exempt from this; Desktop app is not.
 3. Under **OAuth consent screen**, add the scopes `openid`, `email`,
    `profile`.
-4. Server config:
+4. Server config (without a secret):
    ```yaml
    auth:
      oidc:
@@ -42,9 +41,10 @@ an ephemeral port for each login.
          - name: google
            issuer: https://accounts.google.com
            client_id: "<client-id>.apps.googleusercontent.com"
-           client_secret: "<client-secret>"
            scopes: [openid, email, profile]
    ```
+   Before running the client, set `NTWIRE_OIDC_CLIENT_SECRET` to the generated
+   secret in that client's environment. Do not add it to the server config.
    Google does not advertise `offline_access` in its scope list; ntwire
    detects this and requests a refresh token via `access_type=offline`
    automatically — no extra configuration needed.

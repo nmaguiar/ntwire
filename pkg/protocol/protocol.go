@@ -54,18 +54,11 @@ type OIDCAuthRequest struct {
 // OIDCIssuerInfo advertises an issuer to clients so they can run the login
 // flow with zero local configuration.
 type OIDCIssuerInfo struct {
-	Name     string `json:"name"`
-	Issuer   string `json:"issuer"`
-	ClientID string `json:"client_id"`
-	// ClientSecret is only set for IdPs (e.g. Google's "Desktop app" client
-	// type) whose token endpoint requires it alongside PKCE even for a
-	// registration the IdP itself classifies as a public/installed-app
-	// client; see docs/OIDC-SETUP.md. It is not a confidentiality boundary —
-	// ntwire-server treats it exactly like ClientID, not as a secret it
-	// protects.
-	ClientSecret string   `json:"client_secret,omitempty"`
-	Scopes       []string `json:"scopes,omitempty"`
-	GroupsClaim  string   `json:"groups_claim,omitempty"`
+	Name        string   `json:"name"`
+	Issuer      string   `json:"issuer"`
+	ClientID    string   `json:"client_id"`
+	Scopes      []string `json:"scopes,omitempty"`
+	GroupsClaim string   `json:"groups_claim,omitempty"`
 }
 
 type InfoResponse struct {
