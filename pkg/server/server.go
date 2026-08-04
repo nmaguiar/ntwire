@@ -442,7 +442,11 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 			go d.primeClient(addr.String())
 		}
 	}
-	write(w, 200, protocol.PunchResponse{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect})
+	candidate := protocol.DirectCandidate{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect}
+	// Preserve scalar fields for clients that predate relay pools while making
+	// the pairing explicit for newer clients. RelayPool can later publish more
+	// than one matching mapping without another wire-format change.
+	write(w, 200, protocol.PunchResponse{ServerAddr: candidate.ServerAddr, RelayReflectAddr: candidate.RelayReflectAddr, Candidates: []protocol.DirectCandidate{candidate}})
 }
 
 // udpRelayHandler answers a client's request for a session on the relay's

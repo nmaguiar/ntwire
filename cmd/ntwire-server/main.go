@@ -118,28 +118,26 @@ func main() {
 	}
 	h := &http.Server{Addr: c.Listen.HTTPS, Handler: s.Handler(), TLSConfig: tlsManager.Config(), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second}
 	if c.Relay.Enabled {
-		agent, err := server.NewRelayAgent(c.Relay, slog.Default())
+		pool, err := server.NewRelayPool(c.Relay, slog.Default())
 		if err != nil {
 			slog.Error("relay configuration error", "error", err)
 			os.Exit(2)
 		}
 		if c.Relay.AdvertiseDirect {
-			agent.OnReflectAddr = s.EnableDirectUpgrade
+			pool.OnReflectAddr = s.EnableDirectUpgrade
 		}
 		// Unconditional, unlike AdvertiseDirect above: the UDP-relay
 		// forwarding tier never reveals this server's real address (the
 		// relay stays in the data path throughout), so there is no matching
 		// trust step-change to opt into. See RelayConfig.AdvertiseDirect's
 		// doc comment.
-		agent.OnUDPRelayAddr = func(addr string) {
-			if addr != "" {
-				s.EnableUDPRelay(agent, addr)
-			}
+		pool.OnUDPRelayAddr = func(agent *server.RelayAgent, addr string) {
+			s.EnableUDPRelay(agent, addr)
 		}
-		go agent.Run(context.Background())
-		defer agent.Close()
-		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
-		if err = h.ServeTLS(agent.Listener(), "", ""); err != nil {
+		go pool.Run(context.Background())
+		defer pool.Close()
+		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_endpoints", len(c.Relay.Endpoints), "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
+		if err = h.ServeTLS(pool.Listener(), "", ""); err != nil {
 			slog.Error("server stopped", "error", err)
 			os.Exit(1)
 		}

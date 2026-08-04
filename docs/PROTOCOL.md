@@ -434,6 +434,12 @@ client↔server exchange that carries those candidates:
 {"server_addr": "198.51.100.7:51820", "relay_reflect_addr": "203.0.113.10:3480"}
 ```
 
+An active-active relay server may additionally return `candidates`, an
+ordered array of `{ "server_addr", "relay_reflect_addr" }` pairs. Each pair
+must be used together: a symmetric NAT can give the server a different public
+mapping for different relay reflectors. The scalar fields remain the first
+pair for backwards compatibility.
+
 `client_addr` is empty on a client's first call, made only to learn
 `relay_reflect_addr`; it self-reflects off that address and calls again with
 `client_addr` filled in. `server_addr` is the server's own most recently

@@ -117,6 +117,10 @@ type RelayAgent struct {
 	// reveals the server's real address, so it carries no advertise_direct-
 	// style trust step-change to opt into. See pkg/server/udprelay.go.
 	OnUDPRelayAddr func(addr string)
+	// OnRegistration/OnDisconnected expose control-plane membership to
+	// RelayPool. They must not block; both run from the agent's Run goroutine.
+	OnRegistration func(protocol.RelayRegisterResponse)
+	OnDisconnected func()
 
 	mu     sync.Mutex
 	closed bool
@@ -134,6 +138,12 @@ type RelayAgent struct {
 }
 
 func NewRelayAgent(cfg RelayConfig, log *slog.Logger) (*RelayAgent, error) {
+	return newRelayAgent(cfg, log, nil)
+}
+
+// newRelayAgent optionally attaches an agent to a shared listener. RelayPool
+// uses this so several independent relays feed the one http.Server instance.
+func newRelayAgent(cfg RelayConfig, log *slog.Logger, listener *relayListener) (*RelayAgent, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -141,7 +151,10 @@ func NewRelayAgent(cfg RelayConfig, log *slog.Logger) (*RelayAgent, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RelayAgent{cfg: cfg, listener: newRelayListener(), log: log, client: client, pendingAllocs: map[string]chan protocol.RelayUDPAllocateResponse{}}, nil
+	if listener == nil {
+		listener = newRelayListener()
+	}
+	return &RelayAgent{cfg: cfg, listener: listener, log: log, client: client, pendingAllocs: map[string]chan protocol.RelayUDPAllocateResponse{}}, nil
 }
 
 // Listener returns the net.Listener to pass to http.Server.ServeTLS.
@@ -224,11 +237,20 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	a.wsMu.Lock()
 	a.ws = ws
 	a.wsMu.Unlock()
+	// Publish only after ws is available: a RelayPool callback can enable the
+	// UDP-relay tier immediately, and its first allocation must not observe a
+	// transient nil control connection.
+	if a.OnRegistration != nil {
+		a.OnRegistration(resp)
+	}
 	defer func() {
 		a.wsMu.Lock()
 		a.ws = nil
 		a.wsMu.Unlock()
 		a.failPendingAllocs()
+		if a.OnDisconnected != nil {
+			a.OnDisconnected()
+		}
 	}()
 
 	// Mirror the relay's own keepalive (pkg/relay/agent.go): without a ping
