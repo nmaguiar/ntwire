@@ -103,14 +103,12 @@ type OIDCIssuerConfig struct {
 	Name     string `yaml:"name"`
 	Issuer   string `yaml:"issuer"`
 	ClientID string `yaml:"client_id"`
-	// ClientSecret is only needed for IdPs whose token endpoint requires it
-	// even for a public/PKCE client registration (e.g. Google's "Desktop
-	// app" client type); see docs/OIDC-SETUP.md. Leave empty for IdPs that
-	// don't require it (Entra, Keycloak, ...).
-	ClientSecret         string   `yaml:"client_secret"`
-	Scopes               []string `yaml:"scopes"`
-	GroupsClaim          string   `yaml:"groups_claim"`
-	RequireVerifiedEmail *bool    `yaml:"require_verified_email"`
+	// DeprecatedClientSecret is retained only to give an actionable error for
+	// unsafe legacy configuration. It must never be sent by the server.
+	DeprecatedClientSecret string   `yaml:"client_secret"`
+	Scopes                 []string `yaml:"scopes"`
+	GroupsClaim            string   `yaml:"groups_claim"`
+	RequireVerifiedEmail   *bool    `yaml:"require_verified_email"`
 }
 
 func (c OIDCIssuerConfig) RequireVerified() bool {
@@ -231,7 +229,8 @@ auth:
     # - name: google                      # stable provider ID shown to clients and selected with --provider
     #   issuer: https://accounts.google.com # issuer URL; its discovery document and JWKS are fetched
     #   client_id: 1234-abc.apps.googleusercontent.com # public OAuth client ID (PKCE; most IdPs need no client secret)
-    #   client_secret: ""                  # only needed for IdPs whose token endpoint requires it even for a public client (e.g. Google's "Desktop app" type); see docs/OIDC-SETUP.md
+    # Do not add client_secret here. It is rejected to prevent disclosure via
+    # unauthenticated server metadata; see docs/OIDC-SETUP.md for Google.
     #   scopes: [openid, email, profile]  # requested OAuth scopes; defaults to these three when omitted
     #   groups_claim: groups               # ID-token claim with group membership; empty disables group: grants
     #   require_verified_email: true       # reject tokens lacking email_verified=true; default: true
@@ -389,6 +388,9 @@ func LoadConfig(path string) (Config, error) {
 		iss := &c.Auth.OIDC.Issuers[i]
 		if iss.Name == "" || iss.Issuer == "" || iss.ClientID == "" {
 			return c, fmt.Errorf("auth.oidc.issuers require name, issuer, and client_id")
+		}
+		if iss.DeprecatedClientSecret != "" {
+			return c, fmt.Errorf("auth.oidc.issuers[%q].client_secret is no longer supported: rotate the exposed secret, remove it from server configuration, and configure it only on each client if your IdP requires one", iss.Name)
 		}
 		if seenIssuers[iss.Name] {
 			return c, fmt.Errorf("duplicate oidc issuer %q", iss.Name)

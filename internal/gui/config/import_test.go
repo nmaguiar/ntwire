@@ -17,7 +17,7 @@ func writeCLIConfig(t *testing.T, dir, body string) string {
 
 func TestImportFromCLICreatesOneProfile(t *testing.T) {
 	dir := t.TempDir()
-	path := writeCLIConfig(t, dir, "server: https://home.example:8443\nidentity_file: /home/x/key\nports:\n  web: 8080\n")
+	path := writeCLIConfig(t, dir, "server: https://home.example:8443\nidentity_file: /home/x/key\nhttps_proxy: http://proxy.example:8080\nno_system_proxy: true\nports:\n  web: 8080\n")
 
 	var cfg Config
 	imported, err := ImportFromCLI(&cfg, path)
@@ -39,6 +39,9 @@ func TestImportFromCLICreatesOneProfile(t *testing.T) {
 	}
 	if p.ID == "" {
 		t.Error("imported profile has no ID")
+	}
+	if p.HTTPSProxy != "http://proxy.example:8080" || !p.NoSystemProxy {
+		t.Errorf("imported proxy settings = %+v", p)
 	}
 	if !cfg.Settings.ImportedCLIConfig {
 		t.Error("Settings.ImportedCLIConfig = false, want true after import")

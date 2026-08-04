@@ -55,6 +55,26 @@ tunnels:
 	}
 }
 
+func TestLoadConfigRejectsOIDCClientSecret(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  oidc:
+    issuers:
+      - name: google
+        issuer: https://accounts.google.com
+        client_id: client-id
+        client_secret: exposed-secret
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "client_secret is no longer supported") {
+		t.Fatalf("LoadConfig() error = %v, want client_secret rejection", err)
+	}
+}
+
 func TestLoadConfigAcceptsActiveActiveRelayEndpoints(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ntwire.yaml")
 	config := `

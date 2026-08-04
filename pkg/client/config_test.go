@@ -58,3 +58,17 @@ func TestNormalizeServerURL(t *testing.T) {
 		t.Fatal("non-HTTP scheme accepted")
 	}
 }
+
+func TestLoadSettingsReadsHTTPSProxyControls(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("https_proxy: http://proxy.example:8080\nno_system_proxy: true\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HTTPSProxy != "http://proxy.example:8080" || !got.NoSystemProxy {
+		t.Errorf("LoadSettings() = %+v, want HTTPS proxy controls", got)
+	}
+}

@@ -19,6 +19,8 @@ type Profile struct {
 	Ports            map[string]int `yaml:"ports"`
 	CAFile           string         `yaml:"ca_file"`
 	Insecure         bool           `yaml:"insecure"`
+	HTTPSProxy       string         `yaml:"https_proxy"`
+	NoSystemProxy    bool           `yaml:"no_system_proxy"`
 	KnownServersFile string         `yaml:"known_servers_file"`
 	TokenCacheFile   string         `yaml:"token_cache_file"`
 	// Websocket forces the WebSocket WireGuard transport. Leave false for

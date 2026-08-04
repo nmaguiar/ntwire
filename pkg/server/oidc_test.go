@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -219,7 +220,7 @@ func TestInfoAdvertisesOIDCIssuers(t *testing.T) {
 	idp := newFakeIdP(t)
 	cfg := Config{}
 	cfg.Auth.SessionTTL = time.Minute
-	cfg.Auth.OIDC.Issuers = []OIDCIssuerConfig{{Name: "test", Issuer: idp.server.URL, ClientID: "client-1"}}
+	cfg.Auth.OIDC.Issuers = []OIDCIssuerConfig{{Name: "test", Issuer: idp.server.URL, ClientID: "client-1", DeprecatedClientSecret: "must-not-leak"}}
 	s := New(cfg, nil)
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
@@ -229,8 +230,15 @@ func TestInfoAdvertisesOIDCIssuers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte("client_secret")) || bytes.Contains(body, []byte("must-not-leak")) {
+		t.Fatalf("/v1/info disclosed an OIDC client secret: %s", body)
+	}
 	var out protocol.InfoResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(body, &out); err != nil {
 		t.Fatal(err)
 	}
 	found := false
