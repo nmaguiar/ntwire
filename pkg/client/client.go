@@ -563,6 +563,7 @@ type Connection struct {
 	// resolved once at connect time and never mutated after, so
 	// directUpgradeLoop's goroutine can read it without locking.
 	hybrid         *wstransport.Hybrid
+	multipath      *wstransport.MultipathBind
 	serverTunnelIP netip.Addr
 	upgradeTiming  directUpgradeTiming
 }
@@ -736,9 +737,15 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	// A direct-UDP session (useWS false) already has the best available
 	// path and has nothing to upgrade to.
 	var hybrid *wstransport.Hybrid
+	var multipath *wstransport.MultipathBind
 	if useWS {
-		hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
-		stackConfig.Bind = hybrid
+		if r.Multipath {
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+			stackConfig.Bind = multipath
+		} else {
+			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+			stackConfig.Bind = hybrid
+		}
 	}
 	st, err := wgnet.New(stackConfig)
 	if err != nil {
@@ -746,7 +753,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	endpoint := r.UDP
 	if useWS {
-		endpoint = wstransport.WSSentinel
+		if multipath != nil {
+			endpoint = wstransport.MultipathSentinel
+		} else {
+			endpoint = wstransport.WSSentinel
+		}
 	}
 	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
 	if err != nil {
@@ -759,7 +770,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	c := &Connection{
 		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
-		hybrid: hybrid, serverTunnelIP: serverIP, upgradeTiming: resolveDirectUpgradeTiming(options.DirectUpgradeTiming),
+		hybrid: hybrid, multipath: multipath, serverTunnelIP: serverIP, upgradeTiming: resolveDirectUpgradeTiming(options.DirectUpgradeTiming),
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
@@ -1200,11 +1211,13 @@ type WebStatus struct {
 	ServerName string `json:"server_name"`
 	// ConnectionType describes the live WireGuard data path, for example
 	// "UDP direct", "WSS through relay", or "UDP direct via relay reflector".
-	ConnectionType string      `json:"connection_type"`
-	Tunnels        []WebTunnel `json:"tunnels"`
-	TTLSeconds     int         `json:"ttl_seconds"`
-	LatencyMillis  uint64      `json:"latency_millis"`
-	Reconnections  uint64      `json:"reconnections"`
+	ConnectionType string                   `json:"connection_type"`
+	Tunnels        []WebTunnel              `json:"tunnels"`
+	TTLSeconds     int                      `json:"ttl_seconds"`
+	LatencyMillis  uint64                   `json:"latency_millis"`
+	Reconnections  uint64                   `json:"reconnections"`
+	Paths          []wstransport.PathStatus `json:"paths,omitempty"`
+	Duplication    bool                     `json:"duplication_active,omitempty"`
 }
 
 // Status returns a race-free snapshot of this connection's live state -- the
@@ -1224,7 +1237,12 @@ func (c *Connection) webStatus() WebStatus {
 		wt.Description = granted[t.name].Description
 		tunnels = append(tunnels, wt)
 	}
-	return WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	if c.multipath != nil {
+		status.Paths = c.multipath.Paths()
+		_, _, status.Duplication = c.multipath.Scheduler().Select()
+	}
+	return status
 }
 
 // grantedByName indexes the tunnels the server granted this session by name.

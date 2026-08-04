@@ -164,6 +164,9 @@ func (s *Server) statsFor(ip, name string) *serverTunnelStats {
 }
 func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	caps := []string{"tcp"}
+	if s.Config.Relay.Enabled {
+		caps = append(caps, "multipath")
+	}
 	var issuers []protocol.OIDCIssuerInfo
 	if s.Config.Auth.AuthorizedKeysDir != "" {
 		caps = append(caps, "ssh-auth")
@@ -334,7 +337,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: s.Config.Relay.Enabled})
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact

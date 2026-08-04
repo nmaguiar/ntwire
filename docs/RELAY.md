@@ -36,6 +36,29 @@ opportunistic upgrade to a fully direct UDP path that bypasses the relay's
 data plane entirely — see
 [below](#opportunistic-direct-udp-upgrade).
 
+## Multipath relay transport
+
+Relay-mode servers that support it advertise the `multipath` capability. When
+both peers support it, WSS stays live for the session while UDP-relay and
+direct UDP become candidates for one stable logical WireGuard endpoint. This
+prevents native endpoint roaming from selecting whichever duplicate packet
+arrived most recently. Handshake and control packets use the selected primary;
+only encrypted WireGuard transport packets may also go to one healthy
+alternate.
+
+Candidates are probed once a second. The primary is the healthy path with the
+best RTT/loss score. A second copy is used only after at least 5% rolling probe
+loss on the primary, or when its p95 latency is above 150 ms and at least 50 ms
+worse than the alternate. Three missed probes make a candidate unhealthy, but
+it remains registered and is re-probed so recovery does not require a session
+reconnect. Receivers suppress repeated type-4 WireGuard transport packets by
+receiver index and counter in a short bounded cache; handshake packets are
+never suppressed.
+
+Probe/ack controls have fixed-size payloads and invalid or oversized frames
+are ignored. There are no tuning options in v1. A server without `multipath`
+uses the original WSS → UDP-relay → direct-UDP endpoint upgrade ladder.
+
 ## Running a relay
 
 Run `ntwire-relay --config path/to/ntwire-relay.yaml`; the default path is
