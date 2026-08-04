@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
@@ -196,7 +197,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr, "udp_relay_addr", udpRelayAddr)
 	defer a.log.Info("server disconnected", "name", name, "fingerprint", fingerprint)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr})
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr, RelayVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1}})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()

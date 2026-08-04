@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
@@ -462,6 +463,7 @@ func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 	req := protocol.RelayRegisterRequest{
 		Version: protocol.Version, PublicKey: pub, Name: a.cfg.Name,
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n),
+		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1},
 	}
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil {

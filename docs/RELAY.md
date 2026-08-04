@@ -46,6 +46,12 @@ arrived most recently. Handshake and control packets use the selected primary;
 only encrypted WireGuard transport packets may also go to one healthy
 alternate.
 
+`multipath-v1` is negotiated in the authenticated client/server response. The
+server also sends its version and supported transport capabilities when it
+registers with the relay; the relay returns its own version/capabilities. An
+older peer omits the capability and stays on the legacy transport rather than
+being placed on a stable endpoint it cannot route.
+
 Candidates are probed once a second. The primary is the healthy path with the
 best RTT/loss score. A second copy is used only after at least 5% rolling probe
 loss on the primary, or when its p95 latency is above 150 ms and at least 50 ms

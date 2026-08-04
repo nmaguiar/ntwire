@@ -181,6 +181,17 @@ func (c *Connection) directUpgradeLoop() {
 				c.logUpgradeReason(&lastReason, relayReason, "UDP relay path not established; staying on WebSocket relay")
 				continue
 			}
+			c.mu.Lock()
+			multipath := c.multipath != nil
+			c.mu.Unlock()
+			if multipath {
+				// Direct UDP needs the server to register a client-specific
+				// direct path too. Do not replace the stable endpoint while
+				// this relay session is using multipath.
+				wait = c.upgradeTiming.retryInterval
+				c.logUpgradeReason(&lastReason, "relay offers no UDP relay tier", "UDP relay path not established; staying on WebSocket relay")
+				continue
+			}
 			// The relay offers no UDP-relay tier at all (not merely a
 			// failed attempt at this one) -- fall through to the existing
 			// full-escape attempt on this same tick. Without this, a relay
@@ -221,6 +232,14 @@ func (c *Connection) directUpgradeLoop() {
 				continue
 			}
 			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+			c.mu.Lock()
+			multipath := c.multipath != nil
+			c.mu.Unlock()
+			if multipath {
+				wait = c.upgradeTiming.healthCheckInterval
+				lastReason = ""
+				continue
+			}
 			var directReason string
 			directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
 			if directCandidate != "" {
@@ -323,6 +342,15 @@ func (c *Connection) stackAndServerKey() (stack *wgnet.Stack, serverPub string, 
 // shared relay address itself never changes even when the session behind it
 // is gone, so PeerEndpoint alone can't detect that.
 func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string) {
+	c.mu.Lock()
+	multipath := c.multipath != nil
+	c.mu.Unlock()
+	if multipath {
+		if !c.probeDirectPath() {
+			return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
+		}
+		return true, ""
+	}
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
 		return false, "" // connection is closing; nothing to report
@@ -606,16 +634,29 @@ func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate
 	if !ok {
 		return "", "", "" // connection closed while this attempt was in flight
 	}
-	if err := stack.UpdateEndpoint(serverPub, resp.RelayAddr); err != nil {
+	c.mu.Lock()
+	multipath, hybrid := c.multipath, c.hybrid
+	c.mu.Unlock()
+	if multipath != nil {
+		ep, e := hybrid.UDP.ParseEndpoint(resp.RelayAddr)
+		if e != nil {
+			return "", "", fmt.Sprintf("failed to parse the relay UDP candidate %s: %v", resp.RelayAddr, e)
+		}
+		multipath.RegisterPath("udp-relay", wstransport.PathUDPRelay, ep)
+	} else if err := stack.UpdateEndpoint(serverPub, resp.RelayAddr); err != nil {
 		return "", "", fmt.Sprintf("failed to seed the local WireGuard endpoint with the relay's UDP-relay address %s: %v", resp.RelayAddr, err)
 	}
 	if !c.probeDirectPath() {
-		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		if multipath == nil {
+			_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+		}
 		return "", "", fmt.Sprintf("UDP relay path via %s did not respond within %s", resp.RelayAddr, c.upgradeTiming.probeTimeout)
 	}
-	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != resp.RelayAddr {
-		_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
-		return "", "", fmt.Sprintf("UDP relay path via %s answered but a WebSocket packet already roamed the WireGuard peer back", resp.RelayAddr)
+	if multipath == nil {
+		if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != resp.RelayAddr {
+			_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
+			return "", "", fmt.Sprintf("UDP relay path via %s answered but a WebSocket packet already roamed the WireGuard peer back", resp.RelayAddr)
+		}
 	}
 	c.log.Info("upgraded to UDP via relay", "server", c.DisplayName(), "relay_addr", resp.RelayAddr)
 	c.transport.Store(uint32(transportUDPRelay))

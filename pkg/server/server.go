@@ -212,7 +212,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
 	s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
 	}, grants)
 }
 
@@ -254,7 +254,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
 	}, grants)
 }
 
@@ -262,14 +262,15 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 // once a request has already been authenticated (SSH signature verified, or
 // OIDC ID token verified).
 type sessionRequest struct {
-	Method             string
-	Identity           string
-	Fingerprint        string   // ssh only
-	Comment            string   // ssh only
-	Issuer             string   // oidc only
-	Groups             []string // oidc only
-	WireGuardPublicKey string
-	Info               protocol.ClientInfo
+	Method                string
+	Identity              string
+	Fingerprint           string   // ssh only
+	Comment               string   // ssh only
+	Issuer                string   // oidc only
+	Groups                []string // oidc only
+	WireGuardPublicKey    string
+	Info                  protocol.ClientInfo
+	TransportCapabilities []string
 	// QueryOnly: see protocol.AuthRequest.QueryOnly.
 	QueryOnly bool
 }
@@ -329,15 +330,32 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		serverKey = s.data.stack.PublicKey()
 		serverTunnelIP = s.data.serverIP.String()
 	}
+	multipath := s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil && hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV1)
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
+		Multipath: multipath,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: s.Config.Relay.Enabled})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath)})
+}
+
+func hasCapability(caps []string, want string) bool {
+	for _, got := range caps {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+func transportCapabilities(multipath bool) []string {
+	if multipath {
+		return []string{protocol.CapabilityMultipathV1}
+	}
+	return nil
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact
@@ -470,7 +488,7 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "udp relay tier not available", http.StatusNotFound)
 		return
 	}
-	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey))
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -517,12 +535,13 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
+		Multipath: old.Multipath,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

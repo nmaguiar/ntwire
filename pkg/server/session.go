@@ -20,6 +20,7 @@ type Session struct {
 	Groups                                    []string
 	Tunnels                                   []protocol.Tunnel
 	LatencyMillis, Reconnections              uint64
+	Multipath                                 bool
 	Expires                                   time.Time
 }
 type Sessions struct {
@@ -47,6 +48,7 @@ type CreateParams struct {
 	WireGuardPublicKey, TunnelIP string
 	Tunnels                      []protocol.Tunnel
 	LatencyMillis, Reconnections uint64
+	Multipath                    bool
 	TTL                          time.Duration
 }
 
@@ -58,7 +60,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
 	return v
