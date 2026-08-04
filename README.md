@@ -183,6 +183,9 @@ OAuth client (PKCE) and never authenticates itself to an IdP with a
 protected secret — a handful of IdPs still require a non-confidential
 `client_secret` value on token requests; see the Google/Entra/Keycloak
 registration notes in [docs/OIDC-SETUP.md](docs/OIDC-SETUP.md).
+For an end-to-end HTTPS and relay deployment, including authorization and
+operational validation, see
+[docs/OIDC-RELAY-DEPLOYMENT.md](docs/OIDC-RELAY-DEPLOYMENT.md).
 
 The server watches its configuration file (and, when set, the
 authorized-keys directory) and reloads on change or `SIGHUP`; most settings
@@ -212,7 +215,8 @@ ntwire connect https://home.relay.example.com
 ```
 
 See [docs/RELAY.md](docs/RELAY.md) for running a relay and pointing a server
-at one.
+at one. For SSO deployments through a relay, see
+[docs/OIDC-RELAY-DEPLOYMENT.md](docs/OIDC-RELAY-DEPLOYMENT.md).
 
 ## Authorization hooks
 
