@@ -345,6 +345,16 @@ func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
 // pointed at a confirmed-dead direct address with nothing left to move it.
 func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	server := wstransport.NewServer()
+	connected := make(chan struct{})
+	server.OnPeerConnected = func(id string, _ conn.Endpoint) {
+		if id == "session" {
+			select {
+			case <-connected:
+			default:
+				close(connected)
+			}
+		}
+	}
 	serverFns, _, err := server.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -379,6 +389,11 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	}
 	if err := clientStack.AddPeer(wgnet.Endpoint{PublicKey: peer.Public, Address: "0.0.0.0/0@" + wstransport.WSSentinel}); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WebSocket peer never became connected on the server")
 	}
 
 	// Kill the WebSocket connection from the server side, forcing the
