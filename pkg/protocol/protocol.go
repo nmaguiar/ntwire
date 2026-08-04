@@ -98,6 +98,10 @@ type AuthResponse struct {
 	WebSocket       string   `json:"websocket_endpoint,omitempty"`
 	Identity        string   `json:"identity,omitempty"`
 	Method          string   `json:"method,omitempty"`
+	// Multipath is set only by relay-mode servers that implement the stable
+	// candidate transport. Older peers omit it, keeping the legacy endpoint
+	// upgrade ladder wire-compatible.
+	Multipath bool `json:"multipath,omitempty"`
 	// ServerName is the operator-configured listen.name, letting a client
 	// distinguish several servers it is connected to at once. Empty when
 	// unset; clients fall back to the host:port they connected to.

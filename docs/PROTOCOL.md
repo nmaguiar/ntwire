@@ -23,7 +23,7 @@ The reference server serves HTTPS.
 ```json
 {
   "version": 1,
-  "capabilities": ["ssh-auth", "oidc-auth", "tcp"],
+  "capabilities": ["ssh-auth", "oidc-auth", "tcp", "multipath"],
   "oidc_issuers": [
     {
       "name": "google",

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"golang.zx2c4.com/wireguard/conn"
@@ -56,7 +57,9 @@ type Hybrid struct {
 // h.UDP can send/receive the magic-prefixed control frames used by the
 // opportunistic direct-connection upgrade (see pkg/server's directudp.go),
 // without disturbing normal WireGuard traffic on the same socket.
-func NewHybrid() *Hybrid { return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewServer()} }
+func NewHybrid() *Hybrid {
+	return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewServer()}
+}
 
 // WSSentinel is the placeholder endpoint address a client-side Hybrid (see
 // NewHybridClient) uses to mean "the WebSocket fallback" rather than a real
@@ -79,6 +82,28 @@ const WSSentinel = "ws:relay"
 func NewHybridClient(url string, client *http.Client, header http.Header) *Hybrid {
 	return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewClient(url, client, header)}
 }
+
+// NewMultipathHybridClient returns the existing carrier pair plus the stable
+// logical bind used by capable relay peers. WSS is registered first and is
+// immediately usable; UDP candidates are added only after their authenticated
+// setup succeeds.
+func NewMultipathHybridClient(url string, client *http.Client, header http.Header) (*Hybrid, *MultipathBind) {
+	h := NewHybridClient(url, client, header)
+	m := NewMultipathBind(h, "relay-server")
+	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
+	// has connected it. Register the fallback from MultipathBind.Open instead,
+	// after h.Open has established the peer.
+	m.onOpen = func() error {
+		ep, err := h.WebSocket.ParseEndpoint(WSSentinel)
+		if err != nil {
+			return err
+		}
+		m.RegisterPath("wss", PathWSS, ep)
+		m.Scheduler().ProbeResult("wss", time.Millisecond, true, time.Now())
+		return nil
+	}
+	return h, m
+}
 func (h *Hybrid) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, actual, err := h.UDP.Open(port)
 	if err != nil {
@@ -99,6 +124,7 @@ func (h *Hybrid) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	return h.UDP.Send(bufs, ep)
 }
+
 // ParseEndpoint resolves s to a UDP endpoint, except for WSSentinel, which
 // resolves to the WebSocket bind's single "remote" endpoint instead. A
 // server-side Hybrid never passes WSSentinel, so this is a no-op change for
@@ -110,7 +136,7 @@ func (h *Hybrid) ParseEndpoint(s string) (conn.Endpoint, error) {
 	}
 	return h.UDP.ParseEndpoint(s)
 }
-func (h *Hybrid) BatchSize() int                                { return h.UDP.BatchSize() }
+func (h *Hybrid) BatchSize() int { return h.UDP.BatchSize() }
 
 func NewClient(url string, client *http.Client, header http.Header) *Bind {
 	return &Bind{url: url, client: client, header: header}
