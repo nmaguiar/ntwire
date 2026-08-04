@@ -14,6 +14,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
+	"golang.zx2c4.com/wireguard/conn"
 )
 
 type dataPlane struct {
@@ -24,6 +25,7 @@ type dataPlane struct {
 	listeners map[string]*tunnelListener // keyed by tunnel name
 	stop      chan struct{}
 	ws        *wstransport.Hybrid
+	multipath *wstransport.ServerMultipathBind
 }
 
 // tunnelListener pairs a live listener with the tunnel config it was opened
@@ -101,11 +103,18 @@ func (s *Server) StartDataPlane() error {
 		return err
 	}
 	ws := wstransport.NewHybrid()
-	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: ws})
+	var bind conn.Bind = ws
+	var multipath *wstransport.ServerMultipathBind
+	if s.Config.Relay.Enabled {
+		multipath = wstransport.NewServerMultipathBind(ws)
+		bind = multipath
+		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) { multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep) }
+	}
+	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
 	if err != nil {
 		return err
 	}
-	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws, listeners: map[string]*tunnelListener{}}
+	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {

@@ -24,11 +24,12 @@ type Bind struct {
 	client *http.Client
 	header http.Header
 
-	mu      sync.Mutex
-	open    bool
-	done    chan struct{}
-	packets chan packet
-	peers   map[string]*peer
+	mu              sync.Mutex
+	open            bool
+	done            chan struct{}
+	packets         chan packet
+	peers           map[string]*peer
+	OnPeerConnected func(string, conn.Endpoint)
 }
 
 type packet struct {
@@ -208,6 +209,9 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	}
 	b.peers[id] = p
 	b.mu.Unlock()
+	if b.OnPeerConnected != nil {
+		b.OnPeerConnected(id, p.endpoint)
+	}
 	slog.Debug("WireGuard WebSocket peer connected", "peer", id, "remote", r.RemoteAddr)
 	go b.read(p)
 	// Keep the HTTP upgrade handler alive for the WebSocket's lifetime. This
