@@ -190,6 +190,18 @@ type PunchRequest struct {
 type PunchResponse struct {
 	ServerAddr       string `json:"server_addr,omitempty"`
 	RelayReflectAddr string `json:"relay_reflect_addr,omitempty"`
+	// Candidates is an ordered set of matching reflector/server mappings for
+	// an active-active relay pool. Keeping the legacy fields above lets older
+	// clients use the first candidate unchanged.
+	Candidates []DirectCandidate `json:"candidates,omitempty"`
+}
+
+// DirectCandidate is one destination-specific NAT-punch pair. ServerAddr is
+// only valid with its matching RelayReflectAddr, because symmetric NATs may
+// allocate a different mapping for every reflector destination.
+type DirectCandidate struct {
+	ServerAddr       string `json:"server_addr,omitempty"`
+	RelayReflectAddr string `json:"relay_reflect_addr,omitempty"`
 }
 
 // UDPRelayRequest is POSTed by a client to a relayed server's

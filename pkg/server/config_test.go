@@ -55,6 +55,37 @@ tunnels:
 	}
 }
 
+func TestLoadConfigAcceptsActiveActiveRelayEndpoints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+relay:
+  enabled: true
+  name: home
+  identity_file: relay_id
+  endpoints:
+    - url: wss://relay-a.example.test:8444
+      fingerprint: SHA256:a
+    - url: wss://relay-b.example.test:8444
+      fingerprint: SHA256:b
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Relay.Endpoints) != 2 || got.Relay.URL != "" {
+		t.Fatalf("relay endpoints = %+v, url = %q", got.Relay.Endpoints, got.Relay.URL)
+	}
+}
+
 // TestLoadConfigReadsInstructionsFromFile covers the file-path convenience:
 // a single-line instructions value naming an existing file is replaced with
 // that file's content, so operators can keep longer instructions in a

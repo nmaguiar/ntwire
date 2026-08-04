@@ -112,6 +112,61 @@ Clients connect exactly as before, using the wildcard hostname:
 ntwire connect https://home.relay.example.com
 ```
 
+## High availability and recovery
+
+`relay.url` remains the single-relay configuration. To run an active-active
+relay pool, replace it with `relay.endpoints`; the server registers with every
+member and accepts dial-backs from any healthy member:
+
+```yaml
+relay:
+  enabled: true
+  name: home
+  identity_file: /etc/ntwire/relay_id_ed25519
+  endpoints:
+    - url: "wss://relay-a.internal.example:8444"
+      fingerprint: "SHA256:..."
+    - url: "wss://relay-b.internal.example:8444"
+      fingerprint: "SHA256:..."
+```
+
+All pool members must carry the same `registrations` entry for the tenant and
+serve the same wildcard client domain (`home.relay.example.com` in this
+guide). Publish multiple A/AAAA records for that hostname, or place replicas
+behind an L4 load balancer that preserves the TLS ClientHello. The client
+races resolved addresses, keeps the first healthy route, and re-resolves on a
+failure; no new `ntwire connect` syntax is needed.
+
+The recovery contract is deliberately practical: local tunnel listeners and
+the WireGuard identity remain in place, and new requests recover through a
+healthy relay automatically. A relay/server/network failure can reset an
+already-open TCP stream; callers must retry idempotent operations. The client
+first falls back between direct UDP, UDP via relay, and WebSocket relay, then
+re-authenticates through another resolved relay address when necessary.
+
+### Kubernetes relay replicas
+
+Run relay replicas as separate failure domains (different nodes/zones where
+available), each with the same tenant registrations and a reachable
+`listen.agents` service. Expose `listen.public` through a TCP/L4 Service or
+LoadBalancer, never a TLS-terminating HTTP Ingress: the relay must inspect and
+splice the original ClientHello. Publish the shared wildcard DNS name to all
+replicas/load-balancer addresses. Give `listen.udp_relay`, `listen.reflect`,
+and the UDP relay port range their own UDP Service/L4 rules on every replica;
+UDP forwarding sessions are replica-local and clients reallocate after a
+replica loss.
+
+### Kubernetes server replicas
+
+Do not scale one relay tenant by simply running two independent
+`ntwire-server` pods with the same relay name: registrations are
+last-writer-wins and each pod has separate sessions, WireGuard state, and
+tunnel IP allocation. Use one active server replica per tenant today. A
+future active-active server deployment requires shared session/IP ownership
+and deterministic WireGuard peer routing; until then use Kubernetes restart,
+anti-affinity, persistent identity/certificate storage, and a PodDisruption-
+Budget to improve availability of the single active server.
+
 ## Relay-mediated UDP forwarding
 
 Relaying WireGuard over `/v1/wg`'s WebSocket fallback works everywhere, but it

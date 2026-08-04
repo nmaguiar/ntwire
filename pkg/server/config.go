@@ -58,13 +58,18 @@ type Config struct {
 // outbound control connection and serves its unchanged Handler() over
 // dial-back data connections.
 type RelayConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	URL          string        `yaml:"url"`
-	Name         string        `yaml:"name"`
-	IdentityFile string        `yaml:"identity_file"`
-	Fingerprint  string        `yaml:"fingerprint"`
-	ReconnectMin time.Duration `yaml:"reconnect_min"`
-	ReconnectMax time.Duration `yaml:"reconnect_max"`
+	Enabled      bool   `yaml:"enabled"`
+	URL          string `yaml:"url"`
+	Name         string `yaml:"name"`
+	IdentityFile string `yaml:"identity_file"`
+	Fingerprint  string `yaml:"fingerprint"`
+	// Endpoints enables active-active relay operation. Every endpoint is an
+	// agents listener for the same relay tenant/domain; ntwire-server keeps a
+	// control connection to each one. URL/Fingerprint remain supported for a
+	// single-relay deployment and must not be combined with Endpoints.
+	Endpoints    []RelayEndpoint `yaml:"endpoints"`
+	ReconnectMin time.Duration   `yaml:"reconnect_min"`
+	ReconnectMax time.Duration   `yaml:"reconnect_max"`
 	// AdvertiseDirect opts into the opportunistic direct-UDP WireGuard
 	// upgrade (see docs/RELAY.md): when true, and the relay has a UDP
 	// reflector configured, this server periodically learns its own
@@ -82,6 +87,14 @@ type RelayConfig struct {
 	// one, so cmd/ntwire-server enables it unconditionally whenever the
 	// relay itself offers it (RelayRegisterResponse.UDPRelayAddr != "").
 	AdvertiseDirect bool `yaml:"advertise_direct"`
+}
+
+// RelayEndpoint is one independently reachable relay agents endpoint. Its
+// TLS pin is deliberately per endpoint: an HA pool commonly uses distinct
+// certificates even though clients enter through one shared wildcard name.
+type RelayEndpoint struct {
+	URL         string `yaml:"url"`
+	Fingerprint string `yaml:"fingerprint"`
 }
 type OIDCConfig struct {
 	Issuers []OIDCIssuerConfig `yaml:"issuers"`
@@ -233,6 +246,14 @@ relay:
   name: home                              # tenant label; must match this key's registrations[] entry on the relay
   identity_file: /etc/ntwire/relay_id_ed25519 # private key used to sign relay registration, separate from auth.authorized_keys_dir; generate with: ntwire-server -generate-relay-key /etc/ntwire/relay_id_ed25519
   fingerprint: ""                         # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
+  # For active-active relay HA, replace url/fingerprint above with endpoints.
+  # Every endpoint must register the same tenant name and serve the same
+  # wildcard client domain; clients race that shared DNS name on failure.
+  # endpoints:
+  #   - url: "wss://relay-a.example.com:8444"
+  #     fingerprint: "SHA256:..."
+  #   - url: "wss://relay-b.example.com:8444"
+  #     fingerprint: "SHA256:..."
   reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
   reconnect_max: 1m                        # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
@@ -384,8 +405,25 @@ func LoadConfig(path string) (Config, error) {
 		return c, fmt.Errorf("network.tunnel_cidr: %w", e)
 	}
 	if c.Relay.Enabled {
-		if c.Relay.URL == "" || c.Relay.Name == "" || c.Relay.IdentityFile == "" {
-			return c, fmt.Errorf("relay.enabled requires relay.url, relay.name, and relay.identity_file")
+		if c.Relay.Name == "" || c.Relay.IdentityFile == "" {
+			return c, fmt.Errorf("relay.enabled requires relay.name and relay.identity_file")
+		}
+		if len(c.Relay.Endpoints) > 0 {
+			if c.Relay.URL != "" || c.Relay.Fingerprint != "" {
+				return c, fmt.Errorf("relay.endpoints cannot be combined with relay.url or relay.fingerprint")
+			}
+			seenRelayURLs := map[string]bool{}
+			for _, endpoint := range c.Relay.Endpoints {
+				if endpoint.URL == "" {
+					return c, fmt.Errorf("relay.endpoints require url")
+				}
+				if seenRelayURLs[endpoint.URL] {
+					return c, fmt.Errorf("duplicate relay endpoint %q", endpoint.URL)
+				}
+				seenRelayURLs[endpoint.URL] = true
+			}
+		} else if c.Relay.URL == "" {
+			return c, fmt.Errorf("relay.enabled requires relay.url or relay.endpoints")
 		}
 		if c.Network.AdvertisedEndpoint != "" {
 			return c, fmt.Errorf("relay.enabled cannot be combined with network.advertised_endpoint: a relayed server has no UDP endpoint to advertise")
