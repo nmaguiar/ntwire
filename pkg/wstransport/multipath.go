@@ -27,6 +27,7 @@ type MultipathBind struct {
 	mu        sync.RWMutex
 	paths     map[string]conn.Endpoint
 	endpoint  multipathEndpoint
+	onOpen    func() error
 }
 
 type multipathEndpoint struct{ id string }
@@ -57,6 +58,12 @@ func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, actual, err := m.base.Open(port)
 	if err != nil {
 		return nil, 0, err
+	}
+	if m.onOpen != nil {
+		if err := m.onOpen(); err != nil {
+			_ = m.base.Close()
+			return nil, 0, err
+		}
 	}
 	wrapped := make([]conn.ReceiveFunc, len(fns))
 	for i, fn := range fns {

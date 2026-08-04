@@ -119,6 +119,53 @@ func TestHybridClientRoutesBySentinelEndpoint(t *testing.T) {
 	}
 }
 
+// TestMultipathHybridClientRegistersWSSAfterOpen protects the relay-only
+// startup order: before Open, the client Bind has no WebSocket peer and
+// ParseEndpoint rejects WSSentinel. The multipath wrapper must therefore add
+// its WSS path only after opening the underlying Hybrid, or all WireGuard
+// packets fail with no healthy multipath candidate.
+func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
+	server := NewServer()
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := server.ServeHTTP(w, r, "session"); err != nil {
+			t.Error(err)
+		}
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	_, _, err = client.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if primary, _, _ := client.Scheduler().Select(); primary != "wss" {
+		t.Fatalf("primary path after Open = %q, want wss", primary)
+	}
+	ep, err := client.ParseEndpoint(MultipathSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
+		t.Fatalf("Send via multipath WSS = %v", err)
+	}
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
+		t.Fatalf("server receive: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+}
+
 // TestClientBindSendsSNIThroughPinningTransport answers a question raised by
 // the ntwire relay design (PLAN-RELAY.md §I): the /v1/wg data-plane dial
 // goes through coder/websocket driven by the same fingerprint-pinning

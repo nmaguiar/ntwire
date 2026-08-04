@@ -90,10 +90,17 @@ func NewHybridClient(url string, client *http.Client, header http.Header) *Hybri
 func NewMultipathHybridClient(url string, client *http.Client, header http.Header) (*Hybrid, *MultipathBind) {
 	h := NewHybridClient(url, client, header)
 	m := NewMultipathBind(h, "relay-server")
-	ep, err := h.WebSocket.ParseEndpoint(WSSentinel)
-	if err == nil {
+	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
+	// has connected it. Register the fallback from MultipathBind.Open instead,
+	// after h.Open has established the peer.
+	m.onOpen = func() error {
+		ep, err := h.WebSocket.ParseEndpoint(WSSentinel)
+		if err != nil {
+			return err
+		}
 		m.RegisterPath("wss", PathWSS, ep)
 		m.Scheduler().ProbeResult("wss", time.Millisecond, true, time.Now())
+		return nil
 	}
 	return h, m
 }
