@@ -11,6 +11,10 @@ import (
 
 const Version = 1
 
+// CapabilityMultipathV1 opts a client into stable relay-path selection rather
+// than WireGuard's native endpoint roaming.
+const CapabilityMultipathV1 = "multipath-v1"
+
 type ClientInfo struct {
 	OS            string            `json:"os,omitempty"`
 	Arch          string            `json:"arch,omitempty"`
@@ -22,13 +26,14 @@ type ClientInfo struct {
 	Extra         map[string]string `json:"extra,omitempty"`
 }
 type AuthRequest struct {
-	Version            int        `json:"version"`
-	PublicKey          string     `json:"public_key"`
-	WireGuardPublicKey string     `json:"wireguard_public_key"`
-	Timestamp          string     `json:"timestamp"`
-	Nonce              string     `json:"nonce"`
-	Info               ClientInfo `json:"client_info"`
-	Signature          string     `json:"signature"`
+	Version               int        `json:"version"`
+	PublicKey             string     `json:"public_key"`
+	WireGuardPublicKey    string     `json:"wireguard_public_key"`
+	Timestamp             string     `json:"timestamp"`
+	Nonce                 string     `json:"nonce"`
+	Info                  ClientInfo `json:"client_info"`
+	Signature             string     `json:"signature"`
+	TransportCapabilities []string   `json:"transport_capabilities,omitempty"`
 	// QueryOnly asks the server to report the caller's allowed tunnels
 	// without establishing a tunnel session: no WireGuard peer/IP is
 	// allocated and the request does not count against
@@ -41,12 +46,13 @@ type AuthRequest struct {
 // There is no nonce: the ID token carries its own exp/iat, and the existing
 // per-source-IP rate limit bounds replay of a still-valid token.
 type OIDCAuthRequest struct {
-	Version            int        `json:"version"`
-	IssuerName         string     `json:"issuer_name"`
-	IDToken            string     `json:"id_token"`
-	WireGuardPublicKey string     `json:"wireguard_public_key"`
-	Timestamp          string     `json:"timestamp"`
-	Info               ClientInfo `json:"client_info"`
+	Version               int        `json:"version"`
+	IssuerName            string     `json:"issuer_name"`
+	IDToken               string     `json:"id_token"`
+	WireGuardPublicKey    string     `json:"wireguard_public_key"`
+	Timestamp             string     `json:"timestamp"`
+	Info                  ClientInfo `json:"client_info"`
+	TransportCapabilities []string   `json:"transport_capabilities,omitempty"`
 	// QueryOnly: see AuthRequest.QueryOnly.
 	QueryOnly bool `json:"query_only,omitempty"`
 }
@@ -94,7 +100,8 @@ type AuthResponse struct {
 	// Multipath is set only by relay-mode servers that implement the stable
 	// candidate transport. Older peers omit it, keeping the legacy endpoint
 	// upgrade ladder wire-compatible.
-	Multipath bool `json:"multipath,omitempty"`
+	Multipath             bool     `json:"multipath,omitempty"`
+	TransportCapabilities []string `json:"transport_capabilities,omitempty"`
 	// ServerName is the operator-configured listen.name, letting a client
 	// distinguish several servers it is connected to at once. Empty when
 	// unset; clients fall back to the host:port they connected to.
@@ -131,12 +138,14 @@ const (
 // domain separator (see RelayRegisterPayload) because it binds a Name field
 // that SigningPayload does not cover.
 type RelayRegisterRequest struct {
-	Version   int    `json:"version"`
-	PublicKey string `json:"public_key"` // authorized_keys line
-	Name      string `json:"name"`       // requested tenant label
-	Timestamp string `json:"timestamp"`
-	Nonce     string `json:"nonce"`
-	Signature string `json:"signature"`
+	Version       int      `json:"version"`
+	PublicKey     string   `json:"public_key"` // authorized_keys line
+	Name          string   `json:"name"`       // requested tenant label
+	Timestamp     string   `json:"timestamp"`
+	Nonce         string   `json:"nonce"`
+	Signature     string   `json:"signature"`
+	ServerVersion string   `json:"server_version,omitempty"`
+	Capabilities  []string `json:"capabilities,omitempty"`
 }
 
 // RelayRegisterResponse answers a RelayRegisterRequest. Name is the
@@ -162,7 +171,9 @@ type RelayRegisterResponse struct {
 	// ReflectAddr, a registered server acts on this unconditionally -- the
 	// tier never reveals the server's real address to a client, so there is
 	// no advertise_direct-style opt-in gating it. See docs/RELAY.md.
-	UDPRelayAddr string `json:"udp_relay_addr,omitempty"`
+	UDPRelayAddr string   `json:"udp_relay_addr,omitempty"`
+	RelayVersion string   `json:"relay_version,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // PunchRequest is POSTed by an authenticated client to a relayed server's

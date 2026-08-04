@@ -213,7 +213,8 @@ ntwire connect https://home.relay.example.com
 ```
 
 See [docs/RELAY.md](docs/RELAY.md) for running a relay and pointing a server
-at one.
+at one. For SSO deployments through a relay, see
+[docs/OIDC-RELAY-DEPLOYMENT.md](docs/OIDC-RELAY-DEPLOYMENT.md).
 
 ## Authorization hooks
 

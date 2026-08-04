@@ -554,7 +554,8 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	r := protocol.OIDCAuthRequest{
 		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
-		QueryOnly: o.QueryOnly,
+		TransportCapabilities: []string{protocol.CapabilityMultipathV1},
+		QueryOnly:             o.QueryOnly,
 	}
 	b, _ := json.Marshal(r)
 	resp, err := h.Post(base+"/v1/auth/oidc", "application/json", bytes.NewReader(b))
@@ -595,7 +596,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, QueryOnly: o.QueryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: []string{protocol.CapabilityMultipathV1}, QueryOnly: o.QueryOnly}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -827,7 +828,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	var hybrid *wstransport.Hybrid
 	var multipath *wstransport.MultipathBind
 	if useWS {
-		if r.Multipath {
+		if r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1) {
 			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
 			stackConfig.Bind = multipath
 		} else {
@@ -921,6 +922,15 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	return c, nil
+}
+
+func hasTransportCapability(caps []string, want string) bool {
+	for _, got := range caps {
+		if got == want {
+			return true
+		}
+	}
+	return false
 }
 
 // selectTransport decides whether the WireGuard data plane uses the

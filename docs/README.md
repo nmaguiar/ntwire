@@ -13,6 +13,7 @@ links out to.
 | [GUI.md](GUI.md) | `ntwire-gui`: the tray/menu-bar client, its two build modes, profile storage, and autostart |
 | [LOGGING.md](LOGGING.md) | Text vs. Logstash-format JSON logs, the container default, and terminal color/UTF-8 behavior |
 | [OIDC-SETUP.md](OIDC-SETUP.md) | Registering ntwire as a public OAuth client with Google, Microsoft Entra ID, or Keycloak |
+| [OIDC-RELAY-DEPLOYMENT.md](OIDC-RELAY-DEPLOYMENT.md) | Deploying OIDC securely over direct HTTPS or `ntwire-relay` |
 | [PROTOCOL.md](PROTOCOL.md) | The wire-level control protocol: endpoints, signing payloads, and relay registration |
 | [SECURITY.md](SECURITY.md) | The TLS trust model, OIDC threat model, and operator guidance |
 | [UI-THEME.md](UI-THEME.md) | Design tokens and guidance for the client status UI |
