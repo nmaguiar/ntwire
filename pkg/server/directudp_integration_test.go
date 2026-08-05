@@ -28,6 +28,10 @@ import (
 // both transports stay live on the same device and either one answering
 // makes a probe succeed.
 //
+// See TestForcedWebSocketNeverUpgrades for the companion case: a client that
+// passed --websocket (Options.UseWebSocket) must never leave it, even though
+// the same server/relay would otherwise offer the ladder.
+//
 // This test lives in pkg/server rather than pkg/client because verifying
 // the revert path requires closing only the server's UDP transport while
 // leaving its WebSocket transport live -- s.data.ws.UDP is unexported, and
@@ -123,6 +127,99 @@ func TestDirectUpgradeEndToEnd(t *testing.T) {
 	pollPeerEndpoint(t, conn, serverPub, 15*time.Second, func(ep string) bool {
 		return ep == "0.0.0.0:0"
 	})
+}
+
+// TestForcedWebSocketNeverUpgrades is the regression case for a client that
+// forced WebSocket via Options.UseWebSocket (--websocket on the CLI): even
+// against a server/relay pair fully capable of the UDP-relay and direct-UDP
+// rungs (the same setup TestDirectUpgradeEndToEnd escalates through), the
+// connection must stay on the WebSocket fallback ("ws:relay") for the
+// caller-chosen transport's whole lifetime -- directUpgradeLoop must not even
+// start.
+func TestForcedWebSocketNeverUpgrades(t *testing.T) {
+	fastTiming := &client.DirectUpgradeTiming{
+		InitialDelay: 100 * time.Millisecond, RetryInterval: 200 * time.Millisecond,
+		HealthCheckInterval: 200 * time.Millisecond, ReflectTimeout: 2 * time.Second, ProbeTimeout: 1 * time.Second,
+	}
+
+	relayCfg := relay.Config{Domain: "relay.test"}
+	relayCfg.Listen.Public = "127.0.0.1:0"
+	relayCfg.Listen.Agents = "127.0.0.1:0"
+	relayCfg.Listen.Reflect = "127.0.0.1:0"
+	relayCfg.TLS.Ephemeral = true
+	relayCfg.Limits.HandshakeTimeout = 5 * time.Second
+	relayCfg.Limits.DialBackTimeout = 3 * time.Second
+	relayCfg.Limits.MaxNewConnsPerMinute = 1000
+	r, err := relay.New(relayCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	reflectAddr := r.ReflectAddr()
+	if reflectAddr == "" {
+		t.Fatal("relay did not bind listen.reflect")
+	}
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if _, err := sshkey.GenerateIdentityFile(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	authorizedLine, err := os.ReadFile(keyPath + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keysDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(keysDir, "test.pub"), authorizedLine, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	scfg := Config{}
+	scfg.Auth.AuthorizedKeysDir = keysDir
+	scfg.Auth.SessionTTL = time.Minute
+	scfg.Network.TunnelCIDR = "100.66.0.0/16"
+	scfg.Listen.WireGuard = "127.0.0.1:0"
+	s := New(scfg, nil)
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.EnableDirectUpgrade(reflectAddr)
+
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "linux"}, client.Options{
+		Insecure: true, NoWebUI: true, UseWebSocket: true,
+		StatusFile: filepath.Join(dir, "status.json"), DirectUpgradeTiming: fastTiming,
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+
+	// WSSentinel ("ws:relay") isn't a parseable host:port, so
+	// endpointAddress falls back to the unspecified 0.0.0.0:0 -- that is
+	// what PeerEndpoint() reports the whole time this connection rides the
+	// WebSocket fallback. If directUpgradeLoop had started despite
+	// UseWebSocket being forced, this deadline is comfortably longer than
+	// fastTiming's initialDelay + retryInterval, giving it ample opportunity
+	// to escalate the endpoint to something else.
+	serverPub := conn.Response.ServerPublicKey
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		ep, _, err := conn.Stack.PeerEndpoint(serverPub)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ep != "0.0.0.0:0" {
+			t.Fatalf("PeerEndpoint() = %q, want the WebSocket sentinel's 0.0.0.0:0 to stay put since UseWebSocket was forced", ep)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // pollPeerEndpoint polls Stack.PeerEndpoint until ok reports satisfied or
