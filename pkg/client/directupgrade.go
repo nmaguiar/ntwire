@@ -114,7 +114,8 @@ const (
 )
 
 // directUpgradeLoop is the background goroutine a WebSocket-fallback
-// Connection runs (unless Options.NoDirectUpgrade) to opportunistically
+// Connection runs (unless Options.NoDirectUpgrade, or the caller forced
+// Options.UseWebSocket and is meant to stay on it) to opportunistically
 // climb the relay upgrade ladder -- WSS, to UDP-relay forwarding, to a full
 // direct-UDP escape -- and to revert one rung at a time if the current one
 // later stalls. It never tears down the WebSocket transport -- Hybrid keeps
@@ -292,15 +293,16 @@ func (c *Connection) directUpgradeLoop() {
 // steady-state condition already announced, so it repeats only at Debug;
 // anything new -- the first occurrence, or a change from one cause to
 // another -- gets Warn, the CLI's default level, so it's visible without -v.
-// That promotion is skipped when the session started on WebSocket because
-// the caller passed --websocket: failing to escape a transport the user
-// deliberately chose isn't news, so it stays at Debug regardless.
+// directUpgradeLoop never runs at all when the caller passed --websocket (see
+// client.go's launch site), so this is only ever reached for a session that
+// auto-selected WebSocket (e.g. a relay-only server) and is still eligible to
+// climb the ladder.
 func (c *Connection) logUpgradeReason(lastReason *string, reason, msg string, extra ...any) {
 	if reason == "" {
 		return
 	}
 	args := append([]any{"server", c.DisplayName(), "reason", reason}, extra...)
-	if reason != *lastReason && !c.options.UseWebSocket {
+	if reason != *lastReason {
 		c.log.Warn(msg, args...)
 		*lastReason = reason
 	} else {

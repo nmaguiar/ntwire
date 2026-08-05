@@ -94,9 +94,11 @@ type Options struct {
 	// NoDirectUpgrade disables the opportunistic upgrade ladder
 	// (directupgrade.go) that a WebSocket-fallback session otherwise
 	// attempts in the background -- both the UDP-relay forwarding rung and
-	// the full direct-UDP escape above it. It has no effect when
-	// UseWebSocket is false to begin with (already the best available
-	// path).
+	// the full direct-UDP escape above it. It only matters for a session
+	// that auto-selected WebSocket (e.g. a relay-only server) rather than
+	// one forced into it via UseWebSocket -- the latter already skips the
+	// ladder unconditionally, since a caller-forced transport is meant to
+	// stay put.
 	NoDirectUpgrade bool
 	// DirectUpgradeTiming overrides the direct-UDP upgrade's pacing. Leave
 	// nil for the production defaults; see DirectUpgradeTiming's doc.
@@ -908,7 +910,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
-	if hybrid != nil && !options.NoDirectUpgrade {
+	if hybrid != nil && !options.NoDirectUpgrade && !options.UseWebSocket {
 		go c.directUpgradeLoop()
 	}
 	c.startWebUI()
