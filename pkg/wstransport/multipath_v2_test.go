@@ -46,18 +46,7 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 	if err != nil {
 		t.Skipf("loopback UDP unavailable: %v", err)
 	}
-	for _, fn := range fns {
-		go func(fn conn.ReceiveFunc) {
-			bufs := [][]byte{make([]byte, 2048)}
-			sizes := make([]int, 1)
-			eps := make([]conn.Endpoint, 1)
-			for {
-				if _, err := fn(bufs, sizes, eps); err != nil {
-					return
-				}
-			}
-		}(fn)
-	}
+	startServerMultipathReceivers(t, m, fns)
 	serverAddr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(serverPort)}
 
 	primaryEP, err := base.ParseEndpoint(primary.LocalAddr().String())
@@ -100,12 +89,17 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 		t.Fatal("peer.v2 is false after RegisterPath(..., true) -- server-side v2 gating never activated")
 	}
 	deadline := time.Now().Add(2 * time.Second)
+	pathsHealthy := false
 	for time.Now().Before(deadline) {
 		status := p.scheduler.Status()
 		if len(status) == 2 && status[0].Healthy && status[1].Healthy {
+			pathsHealthy = true
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if !pathsHealthy {
+		t.Fatalf("primary and candidate did not become healthy after probe acknowledgements: %+v", p.scheduler.Status())
 	}
 
 	// Simulate the client mirroring a real WireGuard transport packet: the

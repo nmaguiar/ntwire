@@ -58,6 +58,29 @@ func (f *fakeBind) reset() {
 	f.sent, f.dests = nil, nil
 }
 
+// startServerMultipathReceivers drains the wrapped bind with buffers sized
+// according to the underlying conn.Bind contract. StdNetBind receives one
+// datagram at a time on macOS, but uses batched UDP reads on Linux.
+func startServerMultipathReceivers(t *testing.T, bind conn.Bind, fns []conn.ReceiveFunc) {
+	t.Helper()
+	batchSize := bind.BatchSize()
+	for _, fn := range fns {
+		go func(fn conn.ReceiveFunc) {
+			bufs := make([][]byte, batchSize)
+			for i := range bufs {
+				bufs[i] = make([]byte, 2048)
+			}
+			sizes := make([]int, batchSize)
+			eps := make([]conn.Endpoint, batchSize)
+			for {
+				if _, err := fn(bufs, sizes, eps); err != nil {
+					return
+				}
+			}
+		}(fn)
+	}
+}
+
 // TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy is the
 // server-side counterpart to bind_test.go's
 // TestMultipathHybridClientRegistersWSSAfterOpen: RegisterPath must fire a
@@ -178,18 +201,7 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 	if err != nil {
 		t.Skipf("loopback UDP unavailable: %v", err)
 	}
-	for _, fn := range fns {
-		go func(fn conn.ReceiveFunc) {
-			bufs := [][]byte{make([]byte, 2048)}
-			sizes := make([]int, 1)
-			eps := make([]conn.Endpoint, 1)
-			for {
-				if _, err := fn(bufs, sizes, eps); err != nil {
-					return
-				}
-			}
-		}(fn)
-	}
+	startServerMultipathReceivers(t, m, fns)
 
 	serverAddr := pooled.LocalAddr().String() // exactly udprelay.go's serverAddr
 	ep, err := base.ParseEndpoint(serverAddr)
