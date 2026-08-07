@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,10 +15,12 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"golang.org/x/term"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 )
@@ -145,11 +148,14 @@ func logout(args []string, u *ui.UI) {
 	u.Success("logged out of %s", server)
 }
 
-// port replaces the local loopback port for a running tunnel. The connect
-// process owns the listener, so this uses its token-protected local status UI.
+// port replaces the local loopback address for a running tunnel. The
+// connect process owns the listener, so this uses its token-protected
+// local status UI. The mapping accepts name=local-port (host unchanged) or
+// name=host:local-port (IPv6 as name=[::1]:local-port), the same syntax as
+// connect's --port.
 func port(args []string, u *ui.UI) {
 	fs := clientopts.NewFlagSet("port", clientopts.Defaults{})
-	setUsage(fs.FlagSet, u, "replace a running tunnel's local port", "ntwire port reports=8080")
+	setUsage(fs.FlagSet, u, "replace a running tunnel's local address", "ntwire port reports=8080", "ntwire port reports=127.70.0.1:8080")
 	fs.Parse(args)
 	path := fs.Str("status-file")
 	if fs.NArg() != 1 {
@@ -158,12 +164,23 @@ func port(args []string, u *ui.UI) {
 	}
 	parts := strings.SplitN(fs.Arg(0), "=", 2)
 	if len(parts) != 2 || parts[0] == "" {
-		u.Errorf("invalid port mapping; use name=local-port")
+		u.Errorf("invalid port mapping; use name=local-port or name=host:local-port")
 		os.Exit(2)
 	}
-	var localPort int
-	if _, err := fmt.Sscanf(parts[1], "%d", &localPort); err != nil || localPort < 1 || localPort > 65535 {
-		u.Errorf("invalid local port")
+	var localHost string
+	localPort, err := strconv.Atoi(parts[1])
+	if err != nil {
+		var portStr string
+		localHost, portStr, err = net.SplitHostPort(parts[1])
+		if err == nil && localHost == "" {
+			err = fmt.Errorf("missing host before ':'")
+		}
+		if err == nil {
+			localPort, err = strconv.Atoi(portStr)
+		}
+	}
+	if err != nil || localPort < 1 || localPort > 65535 {
+		u.Errorf("invalid local port; use name=local-port or name=host:local-port")
 		os.Exit(2)
 	}
 	s, err := client.ReadStatus(path)
@@ -177,8 +194,15 @@ func port(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	uu.Path = "/tunnels/" + url.PathEscape(parts[0])
-	b := strings.NewReader(fmt.Sprintf(`{"local_port":%d}`, localPort))
-	req, err := http.NewRequest(http.MethodPut, uu.String(), b)
+	body, err := json.Marshal(struct {
+		LocalPort int    `json:"local_port"`
+		LocalHost string `json:"local_host,omitempty"`
+	}{LocalPort: localPort, LocalHost: localHost})
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(1)
+	}
+	req, err := http.NewRequest(http.MethodPut, uu.String(), bytes.NewReader(body))
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
@@ -418,7 +442,7 @@ func connect(args []string, u *ui.UI) {
 		u.Errorf("No server is configured.\n1. Run: ntwire keygen\n2. Send ~/.ntwire/id_ed25519.pub to your administrator\n3. Run: ntwire connect <server>")
 		os.Exit(2)
 	}
-	ports, perr := mergePorts(settings.Ports, mappings)
+	ports, hosts, perr := mergePorts(settings.Ports, settings.Hosts, mappings)
 	if perr != nil {
 		u.Errorf("%v", perr)
 		os.Exit(2)
@@ -434,7 +458,7 @@ func connect(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	o := client.Options{
-		Ports: ports, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
+		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind,
 	}
@@ -608,27 +632,49 @@ func resolveIdentityKey(key string, sso bool, defaultIdentityFile func() string)
 	return key
 }
 
-// mergePorts merges settingsPorts (the persisted config's ports: map) with
-// repeatable --port name=local-port mappings, which take precedence over a
-// same-named entry from settings. Each mapping must be name=local-port with
-// local-port in [1,65535].
-func mergePorts(settingsPorts map[string]int, mappings []string) (map[string]int, error) {
+// mergePorts merges settingsPorts/settingsHosts (the persisted config's
+// ports: and hosts: maps) with repeatable --port mappings, which take
+// precedence over same-named settings entries. Each mapping is either
+// name=local-port or name=host:local-port (IPv6 as name=[::1]:local-port),
+// with local-port required to be in [1,65535] either way -- a bare host
+// with no port (name=127.70.0.1) is rejected as ambiguous rather than
+// guessed at. A mapping that includes a host sets that tunnel's local host
+// override; a port-only mapping leaves any existing settings-level host
+// override for that tunnel in place.
+func mergePorts(settingsPorts map[string]int, settingsHosts map[string]string, mappings []string) (map[string]int, map[string]string, error) {
 	ports := map[string]int{}
 	for n, p := range settingsPorts {
 		ports[n] = p
 	}
+	hosts := map[string]string{}
+	for n, h := range settingsHosts {
+		hosts[n] = h
+	}
 	for _, m := range mappings {
 		parts := strings.SplitN(m, "=", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid --port")
+		if len(parts) != 2 || parts[0] == "" {
+			return nil, nil, fmt.Errorf("invalid --port %q: want name=local-port or name=host:local-port", m)
 		}
-		var p int
-		if _, e := fmt.Sscanf(parts[1], "%d", &p); e != nil || p < 1 || p > 65535 {
-			return nil, fmt.Errorf("invalid --port")
+		name, value := parts[0], parts[1]
+		if p, e := strconv.Atoi(value); e == nil {
+			if p < 1 || p > 65535 {
+				return nil, nil, fmt.Errorf("invalid --port %q: local-port must be in 1..65535", m)
+			}
+			ports[name] = p
+			continue
 		}
-		ports[parts[0]] = p
+		host, portStr, e := net.SplitHostPort(value)
+		if e != nil || host == "" {
+			return nil, nil, fmt.Errorf("invalid --port %q: want name=local-port or name=host:local-port", m)
+		}
+		p, e := strconv.Atoi(portStr)
+		if e != nil || p < 1 || p > 65535 {
+			return nil, nil, fmt.Errorf("invalid --port %q: local-port must be in 1..65535", m)
+		}
+		ports[name] = p
+		hosts[name] = host
 	}
-	return ports, nil
+	return ports, hosts, nil
 }
 
 func collectedInfo(command string) (protocol.ClientInfo, error) {

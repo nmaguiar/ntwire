@@ -19,7 +19,7 @@ import (
 type Handle interface {
 	Status() client.WebStatus
 	Instructions() client.WebInstructionsList
-	ReplacePort(name string, port int) (string, error)
+	ReplaceListener(name, host string, port int) (string, error)
 	AuthMethod() string
 	DisplayName() string
 	DashboardURL() string

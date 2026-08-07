@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,12 +122,20 @@ type AuthorizerConfig struct {
 	Timeout    time.Duration `yaml:"timeout"`
 }
 type TunnelConfig struct {
-	Name        string   `yaml:"name"`
-	Target      string   `yaml:"target"`
-	Description string   `yaml:"description"`
-	VirtualPort int      `yaml:"virtual_port"`
-	LocalPort   int      `yaml:"local_port"`
-	Allow       []string `yaml:"allow"`
+	Name        string `yaml:"name"`
+	Target      string `yaml:"target"`
+	Description string `yaml:"description"`
+	VirtualPort int    `yaml:"virtual_port"`
+	LocalPort   int    `yaml:"local_port"`
+	// LocalHost is an optional preferred loopback address for the client's
+	// local listener for this tunnel (e.g. "127.70.0.1"), so distinct
+	// tunnels can share a memorable port without colliding. Must be a
+	// loopback address (127.0.0.0/8 or ::1): the client, not the server,
+	// controls whether tunneled targets are reachable beyond localhost.
+	// The client may override it and falls back to 127.0.0.1 if the
+	// address cannot be bound (e.g. on macOS, without a lo0 alias).
+	LocalHost string   `yaml:"local_host"`
+	Allow     []string `yaml:"allow"`
 
 	// Instructions is optional Markdown shown to clients in their local
 	// status UI, describing how to point a tool at this tunnel. It is
@@ -283,6 +292,7 @@ tunnels:
     description: Reporting service         # optional free-text description shown to clients
     virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
     local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+    local_host: ""                           # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
     docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
     instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
       Fetch a report through the tunnel:
@@ -455,6 +465,12 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if t.LocalPort < 0 || t.LocalPort > 65535 {
 			return c, fmt.Errorf("tunnel %q requires local_port in 0..65535", t.Name)
+		}
+		if t.LocalHost != "" {
+			ip, e := netip.ParseAddr(t.LocalHost)
+			if e != nil || !ip.IsLoopback() {
+				return c, fmt.Errorf("tunnel %q: local_host must be a loopback IP address (127.0.0.0/8 or ::1)", t.Name)
+			}
 		}
 		if t.DocsURL != "" && !instructions.SafeURL(t.DocsURL) {
 			return c, fmt.Errorf("tunnel %q requires an absolute http(s) docs_url", t.Name)

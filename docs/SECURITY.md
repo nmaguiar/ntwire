@@ -208,6 +208,33 @@ reach the already-open tunnel's local listener*:
   addresses that should reach it, the same way you would for any other
   locally-bound service.
 
+## Server-suggested loopback address (`local_host`) stays loopback-only
+
+A server can suggest a specific loopback address for a tunnel's local
+listener via `tunnels[].local_host` (see
+[CONFIGURATION.md](CONFIGURATION.md#tunnel-local-address-and-port)), e.g.
+`127.70.0.1`, so two tunnels can share a memorable port without colliding.
+This is a convenience, not a trust boundary the server controls: unlike
+`--bind` above, which is a deliberate client-side opt-in, `local_host` is
+data the server sends unprompted on every authentication and renewal.
+
+To keep that asymmetry safe, `local_host` is restricted to `127.0.0.0/8` and
+`::1` at two independent points:
+
+- The server refuses to start with a non-loopback `local_host` in its
+  config (`pkg/server/config.go`'s `LoadConfig` validation) — an operator
+  cannot configure this even by mistake.
+- The client re-validates it anyway before using it, and ignores (with a
+  logged warning) any `local_host` that isn't loopback. This defense in
+  depth means a compromised or buggy server cannot use `local_host` to move
+  a client's tunnel listener onto a LAN-reachable interface — only the
+  client's own `--bind` can do that, and only because the client itself
+  chose it.
+
+An explicit client-side host override (`--port name=host:port`, or the GUI/
+config equivalent) is not restricted to loopback, matching `--bind`'s
+permissiveness: the user is choosing their own exposure, same as always.
+
 ## Operator guidance
 
 - Never commit or log private keys, bearer tokens, ID/refresh tokens, request

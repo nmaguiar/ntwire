@@ -137,6 +137,7 @@ tunnels:
     target: 172.30.250.10:8080
     virtual_port: 18081
     local_port: 18081
+    local_host: 127.70.0.1
     allow: ["*"]
   - name: socks-http
     target: socks
@@ -189,6 +190,7 @@ tunnels:
     target: 172.30.250.10:8080
     virtual_port: 18081
     local_port: 18081
+    local_host: 127.70.0.1
     allow: ["*"]
   - name: socks-http
     target: socks

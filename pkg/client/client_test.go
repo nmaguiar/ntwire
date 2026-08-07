@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -226,6 +227,61 @@ func TestReplacePortSwitchesLocalListener(t *testing.T) {
 	_ = c.tunnels[0].listener.Close()
 }
 
+// TestReplaceListenerHostOnlyChangeIsNotANoOp guards against ReplaceListener
+// treating a host-only change as a no-op because it only compared ports:
+// an empty host must default to the tunnel's *current* bound host, not
+// c.bindAddr, and a same-port different-host request must actually rebind.
+func TestReplaceListenerHostOnlyChangeIsNotANoOp(t *testing.T) {
+	old, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skip("sandbox does not permit loopback listeners")
+		}
+		t.Fatal(err)
+	}
+	defer old.Close()
+	port := old.Addr().(*net.TCPAddr).Port
+	c := &Connection{
+		Stack:          &wgnet.Stack{},
+		tunnels:        []*localTunnel{{name: "database", listener: old, localAddr: old.Addr().String()}},
+		LocalAddresses: []string{old.Addr().String()},
+		statusFile:     t.TempDir() + "/status.json",
+		// A non-loopback bindAddr that must NOT leak into the replacement
+		// when host is left empty -- otherwise a port-only change would
+		// silently relocate the tunnel back to this address.
+		bindAddr: "0.0.0.0",
+	}
+
+	// Same port, no host given: must be a true no-op against the tunnel's
+	// actual current host (127.0.0.1), not bindAddr.
+	got, err := c.ReplaceListener("database", "", port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != old.Addr().String() {
+		t.Fatalf("no-op replacement = %q, want unchanged %q", got, old.Addr().String())
+	}
+
+	// Same port number, different address family (::1 instead of
+	// 127.0.0.1): must actually rebind, not be mistaken for a no-op
+	// because the port half of localAddr matches.
+	got, err = c.ReplaceListener("database", "::1", port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := net.JoinHostPort("::1", strconv.Itoa(port))
+	if got != want {
+		t.Fatalf("host-only replacement = %q, want %q", got, want)
+	}
+	if _, err := net.Dial("tcp", got); err != nil {
+		t.Fatalf("new listener is not accepting after host-only replacement: %v", err)
+	}
+	if _, err := net.Dial("tcp", old.Addr().String()); err == nil {
+		t.Fatal("old 127.0.0.1 listener still accepts connections after a host-only replacement")
+	}
+	_ = c.tunnels[0].listener.Close()
+}
+
 func TestResolveBindAddress(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -260,6 +316,68 @@ func TestResolveBindAddress(t *testing.T) {
 	}
 }
 
+func TestResolveTunnelHost(t *testing.T) {
+	cases := []struct {
+		name            string
+		serverLocalHost string
+		hosts           map[string]string
+		explicitBind    bool
+		bindAddr        string
+		wantHost        string
+		wantSoft        bool
+		wantRejected    string
+	}{
+		{
+			name:     "no overrides, no server suggestion: bindAddr default",
+			bindAddr: "127.0.0.1",
+			wantHost: "127.0.0.1", wantSoft: true,
+		},
+		{
+			name:            "server local_host wins over bindAddr default",
+			serverLocalHost: "127.70.0.1",
+			bindAddr:        "127.0.0.1",
+			wantHost:        "127.70.0.1", wantSoft: true,
+		},
+		{
+			name:         "explicit --bind wins over server local_host",
+			explicitBind: true,
+			bindAddr:     "0.0.0.0",
+			wantHost:     "0.0.0.0", wantSoft: false,
+		},
+		{
+			name:            "explicit client host wins over --bind and server local_host",
+			hosts:           map[string]string{"db": "127.71.0.1"},
+			serverLocalHost: "127.70.0.1",
+			explicitBind:    true,
+			bindAddr:        "0.0.0.0",
+			wantHost:        "127.71.0.1", wantSoft: true,
+		},
+		{
+			name:            "non-loopback server local_host is rejected and falls back to bindAddr",
+			serverLocalHost: "10.0.0.5",
+			bindAddr:        "127.0.0.1",
+			wantHost:        "127.0.0.1", wantSoft: true,
+			wantRejected: "10.0.0.5",
+		},
+		{
+			name:            "server local_host that fails to parse is rejected",
+			serverLocalHost: "not-an-ip",
+			bindAddr:        "127.0.0.1",
+			wantHost:        "127.0.0.1", wantSoft: true,
+			wantRejected: "not-an-ip",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			host, soft, rejected := resolveTunnelHost("db", c.serverLocalHost, c.hosts, c.explicitBind, c.bindAddr)
+			if host != c.wantHost || soft != c.wantSoft || rejected != c.wantRejected {
+				t.Fatalf("resolveTunnelHost() = (%q, %v, %q), want (%q, %v, %q)",
+					host, soft, rejected, c.wantHost, c.wantSoft, c.wantRejected)
+			}
+		})
+	}
+}
+
 func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -273,9 +391,12 @@ func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	l, err := listenLocal("127.0.0.1", port, true)
+	l, firstErr, err := listenLocal("127.0.0.1", port, false, true, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if firstErr != nil {
+		t.Fatalf("firstErr = %v, want nil for an unoccupied configured port", firstErr)
 	}
 	if got := l.Addr().(*net.TCPAddr).Port; got != port {
 		t.Fatalf("configured port = %d, want %d", got, port)
@@ -287,14 +408,135 @@ func TestListenLocalUsesConfiguredPortAndFallsBackWhenOccupied(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer occupied.Close()
-	l, err = listenLocal("127.0.0.1", port, true)
+	l, firstErr, err = listenLocal("127.0.0.1", port, false, true, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	if firstErr == nil {
+		t.Fatal("firstErr = nil, want the occupied-port error to be reported for logging")
+	}
 	if got := l.Addr().(*net.TCPAddr).Port; got == port {
 		t.Fatalf("fallback retained occupied port %d", port)
 	}
+}
+
+// TestListenLocalHardPortDoesNotFallBack checks that a strict (client
+// --port) port mapping never falls back to an ephemeral port: its failure
+// must abort the connect, not silently move the tunnel.
+func TestListenLocalHardPortDoesNotFallBack(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		if errors.Is(err, syscall.EPERM) {
+			t.Skip("sandbox does not permit loopback listeners")
+		}
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+	port := occupied.Addr().(*net.TCPAddr).Port
+
+	l, _, err := listenLocal("127.0.0.1", port, false, false, nil)
+	if err == nil {
+		_ = l.Close()
+		t.Fatal("listenLocal(softPort=false) on an occupied port = nil error, want the bind error returned as-is")
+	}
+}
+
+// TestListenLocalSoftHostFallsBackToLoopback exercises the platform-
+// independent half of the fallback chain that a real CI machine can't:
+// binding a non-127.0.0.1 loopback alias (e.g. 127.70.0.1) only works on
+// Linux, so this injects a listen func that rejects any other address and
+// delegates to the real net.Listen for 127.0.0.1, letting each step of the
+// chain be forced deterministically by occupying (or freeing) real ports.
+func TestListenLocalSoftHostFallsBackToLoopback(t *testing.T) {
+	onlyLoopback := func(network, address string) (net.Listener, error) {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		if host != "127.0.0.1" {
+			return nil, fmt.Errorf("simulated: cannot assign requested address")
+		}
+		return net.Listen(network, address)
+	}
+
+	t.Run("soft host, soft port falls back past an occupied fallback port to 127.0.0.1:0", func(t *testing.T) {
+		occupied, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			if errors.Is(err, syscall.EPERM) {
+				t.Skip("sandbox does not permit loopback listeners")
+			}
+			t.Fatal(err)
+		}
+		defer occupied.Close()
+		port := occupied.Addr().(*net.TCPAddr).Port
+
+		l, firstErr, err := listenLocal("127.70.0.1", port, true, true, onlyLoopback)
+		if err != nil {
+			t.Fatalf("listenLocal() error = %v", err)
+		}
+		defer l.Close()
+		if firstErr == nil {
+			t.Fatal("firstErr = nil, want the initial 127.70.0.1 failure reported")
+		}
+		addr := l.Addr().(*net.TCPAddr)
+		if addr.IP.String() != "127.0.0.1" {
+			t.Fatalf("bound host = %q, want 127.0.0.1", addr.IP)
+		}
+		if addr.Port == port {
+			t.Fatalf("bound port = %d, want a different (ephemeral) port since %d was occupied on 127.0.0.1 too", addr.Port, port)
+		}
+	})
+
+	t.Run("soft host, hard port keeps the exact port on the fallback host", func(t *testing.T) {
+		probe, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := probe.Addr().(*net.TCPAddr).Port
+		_ = probe.Close()
+
+		l, firstErr, err := listenLocal("127.70.0.1", port, true, false, onlyLoopback)
+		if err != nil {
+			t.Fatalf("listenLocal() error = %v", err)
+		}
+		defer l.Close()
+		if firstErr == nil {
+			t.Fatal("firstErr = nil, want the initial 127.70.0.1 failure reported")
+		}
+		addr := l.Addr().(*net.TCPAddr)
+		if addr.IP.String() != "127.0.0.1" || addr.Port != port {
+			t.Fatalf("bound = %s, want 127.0.0.1:%d (host softened, port held exact)", addr, port)
+		}
+	})
+
+	t.Run("hard port with no free fallback host:port fails outright", func(t *testing.T) {
+		occupied, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer occupied.Close()
+		port := occupied.Addr().(*net.TCPAddr).Port
+
+		_, _, err = listenLocal("127.70.0.1", port, true, false, onlyLoopback)
+		if err == nil {
+			t.Fatal("listenLocal() = nil error, want failure: the hard port is occupied on the only fallback host too")
+		}
+	})
+
+	t.Run("hard host does not fall back", func(t *testing.T) {
+		probe, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := probe.Addr().(*net.TCPAddr).Port
+		_ = probe.Close()
+
+		_, _, err = listenLocal("127.70.0.1", port, false, true, onlyLoopback)
+		if err == nil {
+			t.Fatal("listenLocal(softHost=false) = nil error, want the 127.70.0.1 failure returned as-is")
+		}
+	})
 }
 
 func TestStatusRoundTrip(t *testing.T) {

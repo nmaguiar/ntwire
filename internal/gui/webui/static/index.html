@@ -221,17 +221,24 @@ function renderTunnelList(profileID, tunnels) {
     label.className = 'server';
     label.textContent = `${t.name} → ${t.local_address}`;
     const input = document.createElement('input');
-    input.type = 'number';
-    input.min = '1';
-    input.max = '65535';
-    input.style.width = '6rem';
-    input.value = (t.local_address.split(':').pop());
+    input.type = 'text';
+    input.style.width = '10rem';
+    input.title = 'port, or host:port (e.g. 127.70.0.1:5432)';
+    input.value = t.local_address;
     const apply = document.createElement('button');
     apply.className = 'secondary';
-    apply.textContent = 'Change port';
+    apply.textContent = 'Change';
     apply.addEventListener('click', async () => {
       try {
-        await api('PUT', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}`, {local_port: Number(input.value)});
+        const raw = input.value.trim();
+        const i = raw.lastIndexOf(':');
+        const body = i < 0
+          ? {local_port: Number(raw)}
+          : {local_host: raw.slice(0, i).replace(/^\[|\]$/g, ''), local_port: Number(raw.slice(i + 1))};
+        if (!Number.isInteger(body.local_port) || body.local_port < 1 || body.local_port > 65535) {
+          throw new Error(`invalid port in ${JSON.stringify(raw)}`);
+        }
+        await api('PUT', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}`, body);
         setMessage(`Rebound "${t.name}".`);
       } catch (e) { setMessage(e.message); }
     });
@@ -243,7 +250,7 @@ function renderTunnelList(profileID, tunnels) {
 
 // --- generated form -------------------------------------------------------
 
-function fieldControl(f, value) {
+function fieldControl(f, value, profile) {
   if (f.widget === 'toggle') {
     const label = document.createElement('label');
     label.className = 'toggle';
@@ -258,11 +265,16 @@ function fieldControl(f, value) {
   label.append(f.label);
   let input;
   if (f.widget === 'portmap') {
+    // The Ports field pairs with a same-named Hosts field that has no
+    // schema entry of its own (there is deliberately one CLI flag, --port
+    // name=[host:]local-port, not two) -- so this widget reads and writes
+    // both profile.Ports and profile.Hosts together.
     input = document.createElement('textarea');
     input.name = f.field;
-    input.placeholder = 'name=local-port, one per line';
+    input.placeholder = 'name=local-port or name=127.70.0.1:local-port, one per line';
+    const hosts = (profile && profile.Hosts) || {};
     if (value && typeof value === 'object') {
-      input.value = Object.entries(value).map(([k, v]) => `${k}=${v}`).join('\n');
+      input.value = Object.entries(value).map(([k, v]) => hosts[k] ? `${k}=${hosts[k]}:${v}` : `${k}=${v}`).join('\n');
     }
   } else {
     input = document.createElement('input');
@@ -308,7 +320,7 @@ function renderGeneratedFields(profile) {
       const legend = document.createElement('legend');
       legend.textContent = group;
       fs.append(legend);
-      basic.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined)));
+      basic.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined, profile)));
       if (group === 'Tunnels' && profile) {
         const preview = document.createElement('button');
         preview.type = 'button';
@@ -326,7 +338,7 @@ function renderGeneratedFields(profile) {
       summary.textContent = group + ' (advanced)';
       details.append(summary);
       const fs = document.createElement('fieldset');
-      advanced.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined)));
+      advanced.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined, profile)));
       details.append(fs);
       generatedFields.append(details);
     }
@@ -350,18 +362,32 @@ function closeForm() {
   formPanel.classList.add('hidden');
 }
 
+// parsePortMap accepts "name=port" or "name=host:port" (IPv6 as
+// "name=[::1]:port") per line, mirroring cmd/ntwire's --port flag, and
+// returns the two profile fields it feeds: Ports (map[string]int) and
+// Hosts (map[string]string).
 function parsePortMap(text) {
-  const out = {};
+  const ports = {}, hosts = {};
   for (const line of (text || '').split('\n')) {
     const t = line.trim();
     if (!t) continue;
     const i = t.indexOf('=');
-    if (i < 0) throw new Error(`invalid port mapping ${JSON.stringify(t)}, want name=port`);
-    const port = Number(t.slice(i + 1));
+    if (i < 0) throw new Error(`invalid port mapping ${JSON.stringify(t)}, want name=port or name=host:port`);
+    const name = t.slice(0, i);
+    let value = t.slice(i + 1);
+    let host = '';
+    const j = value.lastIndexOf(':');
+    if (j >= 0) {
+      host = value.slice(0, j).replace(/^\[|\]$/g, '');
+      value = value.slice(j + 1);
+      if (!host) throw new Error(`invalid host in ${JSON.stringify(t)}`);
+    }
+    const port = Number(value);
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid port in ${JSON.stringify(t)}`);
-    out[t.slice(0, i)] = port;
+    ports[name] = port;
+    if (host) hosts[name] = host;
   }
-  return out;
+  return {ports, hosts};
 }
 
 form.addEventListener('submit', async (e) => {
@@ -377,7 +403,11 @@ form.addEventListener('submit', async (e) => {
       const el = form.elements[f.field];
       if (!el) continue;
       if (f.widget === 'toggle') body[f.field] = el.checked;
-      else if (f.widget === 'portmap') body[f.field] = parsePortMap(el.value);
+      else if (f.widget === 'portmap') {
+        const {ports, hosts} = parsePortMap(el.value);
+        body[f.field] = ports;
+        body.Hosts = hosts;
+      }
       else body[f.field] = el.value;
     }
     if (editingID) {

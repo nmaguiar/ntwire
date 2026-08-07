@@ -213,9 +213,10 @@ var registry = []Option{
 		Help: "Leave empty for 127.0.0.1 (default, most secure). A LAN IP or 0.0.0.0 makes tunneled targets reachable from other hosts on that network -- there is no additional access control at the listener.",
 	},
 	{
-		Name: "port", Kind: KindKeyValue, Usage: "name=local-port (repeatable)",
+		Name: "port", Kind: KindKeyValue, Usage: "name=[host:]local-port (repeatable)",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Local ports", Group: "Tunnels", Widget: WidgetPortMap,
+		Help: "name=local-port, or name=host:local-port (IPv6 as name=[::1]:local-port) to also pin the tunnel's loopback address, e.g. 127.70.0.1 -- lets distinct tunnels share a memorable port without colliding. Falls back to 127.0.0.1 if the address can't be bound; on macOS a non-default 127.x.x.x address needs `sudo ifconfig lo0 alias <address> up` first (Linux binds it out of the box).",
 	},
 	{
 		Name: "status-file", Kind: KindString, Usage: "local status file",

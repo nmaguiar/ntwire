@@ -79,7 +79,7 @@ services:
           (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
-            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18081)" = ntwire-e2e-ok &
+            test "$$(curl -fsS --max-time 2 http://127.70.0.1:18081)" = ntwire-e2e-ok &
             ip_pid=$$!
             test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok &
             socks_pid=$$!
@@ -102,7 +102,7 @@ services:
           (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
-            test "$$(curl -fsS --max-time 2 http://127.0.0.1:18081)" = ntwire-e2e-ok &
+            test "$$(curl -fsS --max-time 2 http://127.70.0.1:18081)" = ntwire-e2e-ok &
             ip_pid=$$!
             test "$$(curl -fsS --max-time 2 --socks5-hostname 127.0.0.1:11080 http://dummy:8080)" = ntwire-e2e-ok &
             socks_pid=$$!

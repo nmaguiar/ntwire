@@ -254,11 +254,13 @@ func TestResolveIdentityKey(t *testing.T) {
 
 func TestMergePorts(t *testing.T) {
 	cases := []struct {
-		name         string
-		settingsPort map[string]int
-		mappings     []string
-		want         map[string]int
-		wantErr      bool
+		name          string
+		settingsPort  map[string]int
+		settingsHosts map[string]string
+		mappings      []string
+		want          map[string]int
+		wantHosts     map[string]string
+		wantErr       bool
 	}{
 		{
 			name:     "two repeated --port mappings both present",
@@ -295,25 +297,69 @@ func TestMergePorts(t *testing.T) {
 			mappings: []string{"a=notaport"},
 			wantErr:  true,
 		},
+		{
+			name:      "host:port sets both port and host",
+			mappings:  []string{"db=127.70.0.1:5432"},
+			want:      map[string]int{"db": 5432},
+			wantHosts: map[string]string{"db": "127.70.0.1"},
+		},
+		{
+			name:      "IPv6 host:port",
+			mappings:  []string{"db=[::1]:5432"},
+			want:      map[string]int{"db": 5432},
+			wantHosts: map[string]string{"db": "::1"},
+		},
+		{
+			name:          "port-only mapping leaves an existing settings host untouched",
+			settingsHosts: map[string]string{"db": "127.70.0.1"},
+			mappings:      []string{"db=5432"},
+			want:          map[string]int{"db": 5432},
+			wantHosts:     map[string]string{"db": "127.70.0.1"},
+		},
+		{
+			name:          "host:port overrides a same-named settings host",
+			settingsHosts: map[string]string{"db": "127.70.0.1"},
+			mappings:      []string{"db=127.71.0.1:5432"},
+			want:          map[string]int{"db": 5432},
+			wantHosts:     map[string]string{"db": "127.71.0.1"},
+		},
+		{
+			name:     "bare host with no port is ambiguous",
+			mappings: []string{"db=127.70.0.1"},
+			wantErr:  true,
+		},
+		{
+			name:     "host:0 is out of range like bare 0",
+			mappings: []string{"db=127.70.0.1:0"},
+			wantErr:  true,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := mergePorts(c.settingsPort, c.mappings)
+			got, gotHosts, err := mergePorts(c.settingsPort, c.settingsHosts, c.mappings)
 			if c.wantErr {
 				if err == nil {
-					t.Fatalf("mergePorts(%v, %v) = %v, nil; want error", c.settingsPort, c.mappings, got)
+					t.Fatalf("mergePorts(%v, %v, %v) = %v, %v, nil; want error", c.settingsPort, c.settingsHosts, c.mappings, got, gotHosts)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("mergePorts(%v, %v) unexpected error: %v", c.settingsPort, c.mappings, err)
+				t.Fatalf("mergePorts(%v, %v, %v) unexpected error: %v", c.settingsPort, c.settingsHosts, c.mappings, err)
 			}
 			if len(got) != len(c.want) {
-				t.Fatalf("mergePorts(%v, %v) = %v, want %v", c.settingsPort, c.mappings, got, c.want)
+				t.Fatalf("mergePorts(%v, %v, %v) = %v, want %v", c.settingsPort, c.settingsHosts, c.mappings, got, c.want)
 			}
 			for k, v := range c.want {
 				if got[k] != v {
-					t.Errorf("mergePorts(%v, %v)[%q] = %d, want %d", c.settingsPort, c.mappings, k, got[k], v)
+					t.Errorf("mergePorts(%v, %v, %v)[%q] = %d, want %d", c.settingsPort, c.settingsHosts, c.mappings, k, got[k], v)
+				}
+			}
+			if len(gotHosts) != len(c.wantHosts) {
+				t.Fatalf("mergePorts(%v, %v, %v) hosts = %v, want %v", c.settingsPort, c.settingsHosts, c.mappings, gotHosts, c.wantHosts)
+			}
+			for k, v := range c.wantHosts {
+				if gotHosts[k] != v {
+					t.Errorf("mergePorts(%v, %v, %v) hosts[%q] = %q, want %q", c.settingsPort, c.settingsHosts, c.mappings, k, gotHosts[k], v)
 				}
 			}
 		})

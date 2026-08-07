@@ -3,6 +3,8 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"sort"
 	"sync"
@@ -39,7 +41,14 @@ type Manager struct {
 	mu       sync.Mutex
 	settings config.Settings
 	sessions map[string]*session
-	ports    map[int]string // explicit local port -> owning profile ID, for connected profiles only
+	// reservations holds each profile's explicitly-configured local
+	// listener addresses ("host:port"), keyed by profile ID then tunnel
+	// name. It starts as what was requested (reservePorts, before
+	// authenticating) and is corrected to what was actually bound once
+	// known (reconcileAllPortReservations/reconcilePortReservation), since
+	// the per-tunnel loopback fallback in pkg/client's listenLocal can
+	// silently move a listener off its requested address.
+	reservations map[string]map[string]string
 
 	subMu   sync.Mutex
 	subs    map[int]chan Update
@@ -77,12 +86,12 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 	}
 
 	m := &Manager{
-		connector:  connector,
-		configPath: configPath,
-		settings:   cfg.Settings,
-		sessions:   map[string]*session{},
-		ports:      map[int]string{},
-		subs:       map[int]chan Update{},
+		connector:    connector,
+		configPath:   configPath,
+		settings:     cfg.Settings,
+		sessions:     map[string]*session{},
+		reservations: map[string]map[string]string{},
+		subs:         map[int]chan Update{},
 	}
 	for _, p := range cfg.Profiles {
 		m.sessions[p.ID] = newSession(p)
@@ -324,11 +333,12 @@ func (m *Manager) AnswerPassphrase(id, passphrase string, cancel bool) error {
 	return nil
 }
 
-// ReplacePort changes a connected profile's local listener for one tunnel,
-// as `ntwire port` does against a CLI session's local status UI -- except
-// this calls the already-exported client.Connection.ReplacePort directly,
-// with no HTTP round trip needed.
-func (m *Manager) ReplacePort(id, tunnelName string, port int) (string, error) {
+// ReplaceListener changes a connected profile's local listener for one
+// tunnel, as `ntwire port` does against a CLI session's local status UI --
+// except this calls the already-exported client.Connection.ReplaceListener
+// directly, with no HTTP round trip needed. An empty host keeps the
+// tunnel's currently bound host unchanged.
+func (m *Manager) ReplaceListener(id, tunnelName, host string, port int) (string, error) {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	if !ok || s.handle == nil {
@@ -337,8 +347,9 @@ func (m *Manager) ReplacePort(id, tunnelName string, port int) (string, error) {
 	}
 	handle := s.handle
 	m.mu.Unlock()
-	addr, err := handle.ReplacePort(tunnelName, port)
+	addr, err := handle.ReplaceListener(tunnelName, host, port)
 	if err == nil {
+		m.reconcilePortReservation(id, tunnelName, addr)
 		m.publish(id)
 	}
 	return addr, err
@@ -463,35 +474,107 @@ func (m *Manager) publish(id string) {
 }
 
 // reservePorts refuses to hand out a profile's explicit local ports when
-// another connected profile already holds one of them, and otherwise claims
-// them. Checking before authenticating means a collision never wastes a
-// max_sessions_per_key slot.
-func (m *Manager) reservePorts(id string, ports map[string]int) error {
+// another connected profile already holds a conflicting address, and
+// otherwise claims them. Checking before authenticating means a collision
+// never wastes a max_sessions_per_key slot.
+//
+// The address reserved per tunnel is the best guess available before
+// authenticating: an explicit per-tunnel hosts[name], else the profile's
+// BindAddress, else 127.0.0.1 -- the eventual default when neither is set
+// and the server offers no local_host, or the fallback address when it
+// does but the client can't bind it. A server-supplied local_host is
+// unknown at this point, so a profile relying on one for its only
+// collision avoidance is not guarded here; reconcileAllPortReservations
+// corrects the guess once the real address is known.
+func (m *Manager) reservePorts(id string, ports map[string]int, hosts map[string]string, bindAddress string) error {
+	requested := make(map[string]string, len(ports))
+	for name, port := range ports {
+		host := hosts[name]
+		if host == "" {
+			host = bindAddress
+		}
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		requested[name] = net.JoinHostPort(host, fmt.Sprint(port))
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for name, port := range ports {
-		if owner, ok := m.ports[port]; ok && owner != id {
-			ownerName := owner
-			if s, ok2 := m.sessions[owner]; ok2 {
-				ownerName = s.profile.Name
+	for name, addr := range requested {
+		for otherID, res := range m.reservations {
+			if otherID == id {
+				continue
 			}
-			return fmt.Errorf("gui: local port %d (tunnel %q) is already used by profile %q", port, name, ownerName)
+			for otherName, otherAddr := range res {
+				if addressesConflict(addr, otherAddr) {
+					ownerName := otherID
+					if s, ok := m.sessions[otherID]; ok {
+						ownerName = s.profile.Name
+					}
+					return fmt.Errorf("gui: local address %s (tunnel %q) conflicts with tunnel %q already used by profile %q", addr, name, otherName, ownerName)
+				}
+			}
 		}
 	}
-	for _, port := range ports {
-		m.ports[port] = id
-	}
+	m.reservations[id] = requested
 	return nil
 }
 
 func (m *Manager) releasePorts(id string) {
 	m.mu.Lock()
+	delete(m.reservations, id)
+	m.mu.Unlock()
+}
+
+// reconcileAllPortReservations records every one of id's tunnels at the
+// address it actually bound, once a connect attempt finishes -- not just
+// the ones already tracked from an explicit client-side Ports entry. This
+// also catches a tunnel with no explicit override at all: one profile
+// relying purely on a server-suggested local_host/local_port can still
+// fall back (e.g. on macOS, without a lo0 alias) to an address a second
+// profile's own guess collides with, and only a real post-connect address
+// on both sides makes that collision visible to reservePorts. See the
+// Manager.reservations doc comment.
+func (m *Manager) reconcileAllPortReservations(id string, status client.WebStatus) {
+	m.mu.Lock()
 	defer m.mu.Unlock()
-	for port, owner := range m.ports {
-		if owner == id {
-			delete(m.ports, port)
+	res, ok := m.reservations[id]
+	if !ok {
+		return
+	}
+	for _, t := range status.Tunnels {
+		res[t.Name] = t.LocalAddress
+	}
+}
+
+// reconcilePortReservation is reconcileAllPortReservations for a single
+// tunnel, used after a runtime ReplaceListener rebinds it.
+func (m *Manager) reconcilePortReservation(id, tunnelName, actualAddr string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if res, ok := m.reservations[id]; ok {
+		if _, tracked := res[tunnelName]; tracked {
+			res[tunnelName] = actualAddr
 		}
 	}
+}
+
+// addressesConflict reports whether two "host:port" addresses would
+// collide if both were bound: same port, and either the same host or one
+// of them is a wildcard (0.0.0.0 or ::), which claims every host on that
+// port.
+func addressesConflict(a, b string) bool {
+	ah, ap, aerr := net.SplitHostPort(a)
+	bh, bp, berr := net.SplitHostPort(b)
+	if aerr != nil || berr != nil || ap != bp {
+		return false
+	}
+	if ah == bh {
+		return true
+	}
+	aip, aerr2 := netip.ParseAddr(ah)
+	bip, berr2 := netip.ParseAddr(bh)
+	return (aerr2 == nil && aip.IsUnspecified()) || (berr2 == nil && bip.IsUnspecified())
 }
 
 func (m *Manager) setFailed(id string, err error) {
@@ -532,7 +615,7 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 	}
 	opts.OnEvent = func(e client.Event) { m.handleEvent(id, e) }
 
-	if err := m.reservePorts(id, p.Ports); err != nil {
+	if err := m.reservePorts(id, p.Ports, p.Hosts, p.BindAddress); err != nil {
 		m.setFailed(id, err)
 		return
 	}
@@ -549,7 +632,7 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 			m.setFailed(id, err)
 			return
 		}
-		if err := m.reservePorts(id, p.Ports); err != nil {
+		if err := m.reservePorts(id, p.Ports, p.Hosts, p.BindAddress); err != nil {
 			m.setFailed(id, err)
 			return
 		}
@@ -574,6 +657,12 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 	s.prompt = nil
 	s.handle = handle
 	m.mu.Unlock()
+	// A tunnel's real bound address can differ from what was requested (the
+	// per-tunnel loopback fallback in pkg/client's listenLocal is exactly
+	// for that), so the provisional reservation above is corrected to the
+	// truth now that it's known -- otherwise a later profile's reservePorts
+	// check compares against a request that never actually came true.
+	m.reconcileAllPortReservations(id, handle.Status())
 	m.publish(id)
 }
 
