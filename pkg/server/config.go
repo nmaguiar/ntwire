@@ -88,6 +88,22 @@ type RelayConfig struct {
 	// one, so cmd/ntwire-server enables it unconditionally whenever the
 	// relay itself offers it (RelayRegisterResponse.UDPRelayAddr != "").
 	AdvertiseDirect bool `yaml:"advertise_direct"`
+	// Multipath overrides multipath-v2's passive throughput-sampling tuning
+	// (see wstransport.V2Options, which this mirrors field-for-field). Every
+	// field left at its zero value keeps that setting's production default;
+	// only takes effect for a session that also negotiates
+	// CapabilityMultipathV2 in the first place.
+	Multipath MultipathConfig `yaml:"multipath"`
+}
+
+// MultipathConfig is RelayConfig.Multipath's field set -- see its doc
+// comment and wstransport.V2Options for what each knob does.
+type MultipathConfig struct {
+	MirrorRateBytesPerSec int           `yaml:"mirror_rate_bytes_per_sec"`
+	MinDeliveryRatio      float64       `yaml:"min_delivery_ratio"`
+	SwitchMargin          time.Duration `yaml:"switch_margin"`
+	MinDwell              time.Duration `yaml:"min_dwell"`
+	ReportInterval        time.Duration `yaml:"report_interval"`
 }
 
 // RelayEndpoint is one independently reachable relay agents endpoint. Its
@@ -265,6 +281,16 @@ relay:
   reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
   reconnect_max: 1m                        # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
+  # multipath: overrides multipath-v2's passive throughput-sampling tuning;
+  # only takes effect for a session that negotiates multipath-v2 in the
+  # first place. Every field defaults sensibly when left unset -- these are
+  # advanced knobs, not something most deployments need to touch.
+  # multipath:
+  #   mirror_rate_bytes_per_sec: 16384        # bandwidth cap for opportunistic standby-candidate sampling; default: 16384 (16 KB/s)
+  #   min_delivery_ratio: 0.85                # minimum acceptable fraction of mirrored bytes a candidate must deliver before it's penalized; default: 0.85
+  #   switch_margin: 30ms                     # how much better a challenger's score must be before a delivery-ratio-driven switch is considered; default: 30ms
+  #   min_dwell: 5s                           # minimum time an incumbent must hold primary before such a switch is allowed; default: 5s
+  #   report_interval: 1s                     # how often mirrored-traffic counters are exchanged; default: 1s
   # When relay.enabled is true and advertise_direct is false, consider
   # setting listen.wireguard to "127.0.0.1:0": WireGuard rides the /v1/wg
   # WebSocket fallback in relay mode, so the UDP socket StartDataPlane still

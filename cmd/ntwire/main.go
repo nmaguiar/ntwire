@@ -13,6 +13,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.org/x/term"
 	"log/slog"
 	"net"
@@ -268,6 +269,25 @@ func tunnelStatusRow(t client.WebTunnel) []string {
 	return []string{t.Name, t.LocalAddress, status, connsSummary(t.Stats), trafficSummary(t.Stats)}
 }
 
+// pathStatusRow builds one row of a NAME | KIND | STATUS | RTT | LOSS |
+// DELIVERY table for a multipath candidate. DELIVERY renders "-" rather than
+// a percentage when DeliveryRatio is negative -- the scheduler's sentinel
+// for "no comparable mirrored-traffic sample yet", not "confirmed zero".
+func pathStatusRow(p wstransport.PathStatus) []string {
+	status := "unhealthy"
+	if p.Healthy {
+		status = "healthy"
+	}
+	if p.Primary {
+		status += " (primary)"
+	}
+	delivery := "-"
+	if p.DeliveryRatio >= 0 {
+		delivery = fmt.Sprintf("%.0f%%", p.DeliveryRatio*100)
+	}
+	return []string{p.Name, string(p.Kind), status, fmt.Sprintf("%dms", p.RTT.Milliseconds()), fmt.Sprintf("%.1f%%", p.Loss*100), delivery}
+}
+
 // listColumns is factored out of list() so a test can render the exact
 // column widths list() uses and catch overflow that would break the
 // DESCRIPTION column's alignment (see TestListColumnsFitLiveStats).
@@ -388,6 +408,23 @@ func status(args []string, u *ui.UI) {
 		}
 		for _, tn := range ws.Tunnels {
 			t.Rows = append(t.Rows, tunnelStatusRow(tn))
+		}
+		fmt.Fprint(u.Out, t.Render(u))
+	}
+	if wsErr == nil && len(ws.Paths) > 0 {
+		fmt.Fprintln(u.Out)
+		t := ui.Table{
+			Columns: []ui.Column{
+				{Header: "PATH", Width: 12, Align: "left"},
+				{Header: "KIND", Width: 10, Align: "left"},
+				{Header: "STATUS", Width: 18, Align: "left"},
+				{Header: "RTT", Width: 8, Align: "right"},
+				{Header: "LOSS", Width: 7, Align: "right"},
+				{Header: "DELIVERY", Sep: "  "},
+			},
+		}
+		for _, p := range ws.Paths {
+			t.Rows = append(t.Rows, pathStatusRow(p))
 		}
 		fmt.Fprint(u.Out, t.Render(u))
 	}

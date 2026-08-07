@@ -330,17 +330,20 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		serverKey = s.data.stack.PublicKey()
 		serverTunnelIP = s.data.serverIP.String()
 	}
-	multipath := s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil && hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV1)
+	multipathV1 := hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV1)
+	multipathV2 := hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV2)
+	multipath := s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil && multipathV1
+	multipathV2 = multipath && multipathV2
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
-		Multipath: multipath,
+		Multipath: multipath, MultipathV2: multipathV2,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath)})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2)})
 }
 
 func hasCapability(caps []string, want string) bool {
@@ -351,11 +354,19 @@ func hasCapability(caps []string, want string) bool {
 	}
 	return false
 }
-func transportCapabilities(multipath bool) []string {
-	if multipath {
-		return []string{protocol.CapabilityMultipathV1}
+
+// transportCapabilities echoes back which multipath capability this session
+// actually negotiated -- multipathV2 is only ever true alongside multipath
+// (see establishSession), so it's always sent together with
+// CapabilityMultipathV1, never alone.
+func transportCapabilities(multipath, multipathV2 bool) []string {
+	if !multipath {
+		return nil
 	}
-	return nil
+	if multipathV2 {
+		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2}
+	}
+	return []string{protocol.CapabilityMultipathV1}
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact
@@ -488,7 +499,7 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "udp relay tier not available", http.StatusNotFound)
 		return
 	}
-	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath))
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.MultipathV2))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -535,13 +546,13 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
-		Multipath: old.Multipath,
+		Multipath: old.Multipath, MultipathV2: old.MultipathV2,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath)})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

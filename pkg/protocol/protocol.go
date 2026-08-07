@@ -15,6 +15,16 @@ const Version = 1
 // than WireGuard's native endpoint roaming.
 const CapabilityMultipathV1 = "multipath-v1"
 
+// CapabilityMultipathV2 opts a multipath-v1 client into passive,
+// bandwidth-capped throughput sampling of standby candidates on top of v1's
+// RTT/loss-only selection (see pkg/wstransport's ServerMultipathBind/
+// MultipathBind). Always sent alongside CapabilityMultipathV1, never alone:
+// a peer that understands only v1 simply never recognizes this string and
+// falls back to v1 behavior untouched (hasCapability is a plain membership
+// check on both sides, so an unrecognized capability string is always safe
+// to ignore).
+const CapabilityMultipathV2 = "multipath-v2"
+
 type ClientInfo struct {
 	OS            string            `json:"os,omitempty"`
 	Arch          string            `json:"arch,omitempty"`

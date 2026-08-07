@@ -144,7 +144,7 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, V2Options{})
 	clientFns, _, err := client.Open(0)
 	if err != nil {
 		t.Fatal(err)

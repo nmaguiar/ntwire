@@ -66,11 +66,11 @@ func (f *fakeBind) reset() {
 // no synthetic seeding left anywhere in this path (see A5).
 func TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy(t *testing.T) {
 	base := &fakeBind{}
-	m := NewServerMultipathBind(base)
+	m := NewServerMultipathBind(base, V2Options{})
 	defer m.Close()
 
 	ep := fakeEndpoint{id: "client-udp-relay"}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false)
 
 	deadline := time.Now().Add(time.Second)
 	var frame []byte
@@ -114,11 +114,11 @@ func TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy(t *testi
 // WireGuard -- while passing an ordinary WireGuard packet through unchanged.
 func TestServerMultipathWrapInterceptsWSSControlFrames(t *testing.T) {
 	base := &fakeBind{}
-	m := NewServerMultipathBind(base)
+	m := NewServerMultipathBind(base, V2Options{})
 	defer m.Close()
 
 	wssEP := fakeEndpoint{id: "wss-peer"}
-	m.RegisterPath("peer-1", "wss", PathWSS, wssEP)
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false)
 	base.reset() // discard the immediate probe RegisterPath just sent
 
 	probe := EncodeControlFrame(FramePathProbe, bytes.Repeat([]byte{0x09}, pathProbeSize))
@@ -172,7 +172,7 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 	defer pooled.Close()
 
 	base := conn.NewStdNetBind()
-	m := NewServerMultipathBind(base)
+	m := NewServerMultipathBind(base, V2Options{})
 	defer m.Close()
 	fns, _, err := m.Open(0)
 	if err != nil {
@@ -196,7 +196,7 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false)
 
 	_ = pooled.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 2048)

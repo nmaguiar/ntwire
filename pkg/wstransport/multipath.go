@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -38,6 +39,24 @@ type MultipathBind struct {
 	probes    map[string]outstandingProbe
 	stop      chan struct{}
 	closeOnce sync.Once
+
+	// v2 is true iff this session negotiated CapabilityMultipathV2, gating
+	// the passive throughput-sampling subsystem. Constant for the bind's
+	// whole life, set once at construction.
+	v2   bool
+	opts V2Options
+
+	// mirror bounds how much real primary traffic gets opportunistically
+	// duplicated to the standby candidate purely to sample it (see Send);
+	// nil unless v2. recvMu/recvCounters accumulate what actually arrived
+	// per candidate between report ticks (see wrapReceive/reportLoop).
+	// attempts tracks the send side of the same exchange -- how much this
+	// bind itself mirrored -- so an incoming report can be turned into a
+	// delivery ratio (see handlePathControl).
+	mirror       *mirrorLimiter
+	recvMu       sync.Mutex
+	recvCounters map[string]*recvCounter
+	attempts     *mirrorAccounting
 }
 
 // outstandingProbe is one in-flight FramePathProbe this side is waiting on an
@@ -68,8 +87,21 @@ func (e multipathEndpoint) DstToBytes() []byte  { return []byte(e.id) }
 func (e multipathEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
 func (e multipathEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
-func NewMultipathBind(base conn.Bind, id string) *MultipathBind {
-	m := &MultipathBind{base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second), paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id}, probes: make(map[string]outstandingProbe), stop: make(chan struct{})}
+func NewMultipathBind(base conn.Bind, id string, v2 bool, opts V2Options) *MultipathBind {
+	opts = resolveV2Options(opts)
+	m := &MultipathBind{
+		base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second),
+		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
+		probes: make(map[string]outstandingProbe), stop: make(chan struct{}),
+		v2: v2, opts: opts,
+	}
+	if v2 {
+		m.scheduler.SetV2Options(opts)
+		m.mirror = newMirrorLimiter(opts.MirrorRateBytesPerSec)
+		m.recvCounters = make(map[string]*recvCounter)
+		m.attempts = newMirrorAccounting()
+		go m.reportLoop()
+	}
 	go m.probeLoop()
 	return m
 }
@@ -128,7 +160,24 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					m.handlePathControl(typ, payload, eps[i])
 					continue
 				}
-				if m.cache.Seen(b, time.Now()) {
+				seen := m.cache.Seen(b, time.Now())
+				if seen && m.v2 {
+					// A packet DuplicateCache recognizes as a repeat is
+					// exactly what mirroring produces: the same encrypted
+					// packet arriving twice, once via primary and once via
+					// the mirrored copy. Count it here (attributed to
+					// whichever candidate this specific copy arrived on)
+					// before it's dropped below, so reportLoop can summarize
+					// what each candidate is actually delivering. This is a
+					// heuristic signal, not an exact measurement: dedup
+					// doesn't track which copy is "the" mirror, so on the
+					// rare packet where the primary's own copy happens to
+					// arrive second, it gets counted as if it were mirrored
+					// traffic -- EWMA smoothing in ReportDeliveryRatio absorbs
+					// that noise rather than needing it prevented here.
+					m.countMirrored(eps[i], len(b))
+				}
+				if seen {
 					continue
 				}
 				eps[out] = m.endpoint
@@ -162,9 +211,31 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		return err
 	}
 	// Type 4 is WireGuard transport. All handshake/control types remain
-	// single-path even when the scheduler asks for duplication.
-	if duplicate && len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4 && second != nil {
-		return m.base.Send(bufs, second)
+	// single-path even when the scheduler asks for duplication or mirroring.
+	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
+		return nil
+	}
+	if duplicate {
+		if second != nil {
+			return m.base.Send(bufs, second)
+		}
+		return nil
+	}
+	if m.v2 {
+		// Select only returns alternate alongside duplicate=true; v2's
+		// continuous (not just reactive) mirroring asks the scheduler
+		// directly for a standby candidate to sample instead, rate-capped
+		// and strictly best-effort -- a mirror failure must never fail the
+		// primary send above.
+		if name, ok := m.scheduler.MirrorCandidate(); ok {
+			m.mu.RLock()
+			mirrorEP := m.paths[name]
+			m.mu.RUnlock()
+			if mirrorEP != nil && m.mirror.Allow(len(bufs[0])) {
+				_ = m.base.Send(bufs, mirrorEP)
+				m.attempts.recordAttempt(name, len(bufs[0]))
+			}
+		}
 	}
 	return nil
 }
@@ -190,7 +261,21 @@ func (m *MultipathBind) BatchSize() int { return m.base.BatchSize() }
 // matching outstanding probe, if any, and feeds a real RTT into the
 // scheduler.
 func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endpoint) {
-	if !ValidPathControl(typ, payload) {
+	switch typ {
+	case FramePathProbe, FramePathAck:
+		if !ValidPathControl(typ, payload) {
+			return
+		}
+	case FrameThroughputReport:
+		// m.attempts/m.mirror/m.recvCounters are only ever initialized when
+		// v2 is set (see NewMultipathBind); a peer sending this frame to a
+		// non-v2 session -- buggy, or the relay/peer being less than fully
+		// trusted per docs/SECURITY.md -- must be rejected here rather than
+		// reaching those nil fields below.
+		if !m.v2 || !ValidThroughputReport(payload) {
+			return
+		}
+	default:
 		return
 	}
 	switch typ {
@@ -213,6 +298,22 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		m.probeMu.Unlock()
 		if found {
 			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
+		}
+	case FrameThroughputReport:
+		name, ok := m.nameForEndpoint(ep)
+		if !ok {
+			return
+		}
+		report, ok := DecodeThroughputReport(payload)
+		if !ok {
+			return
+		}
+		// Compare against what this side itself attempted to mirror in the
+		// comparable window; if nothing was attempted, there is nothing
+		// meaningful to compute a ratio from -- skip rather than manufacture
+		// one (see mirrorAccounting.attemptedLastWindow's doc comment).
+		if attempted, ok := m.attempts.attemptedLastWindow(name); ok {
+			m.scheduler.ReportDeliveryRatio(name, float64(report.BytesReceived)/float64(attempted))
 		}
 	}
 }
@@ -334,6 +435,15 @@ type PathStatus struct {
 	Loss        float64
 	LastSuccess time.Time
 	Primary     bool
+	// DeliveryRatio is an EWMA-smoothed fraction, in [0,1], of mirrored bytes
+	// sent to this candidate that the peer actually reported receiving back
+	// (see Scheduler.ReportDeliveryRatio) -- a relative "is this candidate
+	// dropping traffic under its current load" signal, not an absolute
+	// bits/sec estimate: a mirror sample is deliberately bandwidth-capped, so
+	// it could never prove an absolute throughput ceiling. -1 means "no
+	// comparable sample yet", not "confirmed total loss" -- see
+	// Scheduler.score's doc comment.
+	DeliveryRatio float64
 }
 
 type candidate struct {
@@ -347,15 +457,69 @@ type candidate struct {
 	rttNext int
 }
 
-// Scheduler implements the fixed v1 selection policy. It is intentionally
-// independent from sockets so both UDP and WebSocket carriers use identical
-// health decisions and it is straightforward to test deterministically.
+// Scheduler implements the v1 (RTT/loss) selection policy, extended in v2
+// with an optional throughput term (see score) and the hysteresis that term
+// requires (see selectLocked). It is intentionally independent from sockets
+// so both UDP and WebSocket carriers use identical health decisions and it
+// is straightforward to test deterministically.
 type Scheduler struct {
 	mu         sync.RWMutex
 	candidates map[string]*candidate
+
+	// v2 tuning knobs; defaulted at construction, overridable via
+	// SetV2Options. maxThroughputPenalty is deliberately not
+	// caller-configurable -- it exists to keep the throughput term's
+	// contribution to score bounded relative to the existing loss term's,
+	// not to be tuned per deployment.
+	minDeliveryRatio     float64
+	maxThroughputPenalty time.Duration
+	switchMargin         time.Duration
+	minDwell             time.Duration
+
+	// primary holds the hysteresis-committed incumbent name and when it was
+	// last (re)selected, swapped atomically rather than guarded by mu: Select
+	// is called on every packet send, concurrently, from wireguard-go's
+	// pooled encryption/send workers, and must stay a cheap read lock in the
+	// common (no-switch) case. Committing a primary change is the rare
+	// event, so it pays its own atomic store instead of forcing every caller
+	// through an exclusive lock.
+	primary atomic.Pointer[primaryState]
 }
 
-func NewScheduler() *Scheduler { return &Scheduler{candidates: make(map[string]*candidate)} }
+// primaryState is Scheduler.primary's payload: the hysteresis-committed
+// incumbent and when it was last (re)selected.
+type primaryState struct {
+	name  string
+	since time.Time
+}
+
+func NewScheduler() *Scheduler {
+	return &Scheduler{
+		candidates:           make(map[string]*candidate),
+		minDeliveryRatio:     defaultMinDeliveryRatio,
+		maxThroughputPenalty: defaultMaxThroughputPenalty,
+		switchMargin:         defaultSwitchMargin,
+		minDwell:             defaultMinDwell,
+	}
+}
+
+// SetV2Options overrides this scheduler's throughput-scoring/hysteresis
+// tunables. Call resolveV2Options on the caller-supplied config first (see
+// its doc comment) so a zero field here reliably means "use the production
+// default", not "leave whatever this scheduler happened to start with".
+func (s *Scheduler) SetV2Options(opts V2Options) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if opts.MinDeliveryRatio > 0 {
+		s.minDeliveryRatio = opts.MinDeliveryRatio
+	}
+	if opts.SwitchMargin > 0 {
+		s.switchMargin = opts.SwitchMargin
+	}
+	if opts.MinDwell > 0 {
+		s.minDwell = opts.MinDwell
+	}
+}
 
 func (s *Scheduler) Register(name string, kind PathKind) {
 	s.mu.Lock()
@@ -364,7 +528,7 @@ func (s *Scheduler) Register(name string, kind PathKind) {
 		p.Kind = kind
 		return
 	}
-	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind}}
+	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind, DeliveryRatio: -1}}
 }
 
 // ProbeResult records one completed or timed-out probe. Three failures make a
@@ -404,6 +568,41 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 	p.Loss = p.loss()
 }
 
+// ReportDeliveryRatio records one comparable sample of how much mirrored
+// traffic a candidate actually delivered: ratio is bytesReceived (from an
+// incoming FrameThroughputReport) divided by however many bytes the sender
+// itself attempted to mirror to this candidate in a comparable window (see
+// MultipathBind/ServerMultipathBind's mirrorAccounting) -- computed by the
+// caller, not here, since only the caller knows its own send-side
+// accounting. Clamped to [0,1] and EWMA-smoothed, the same idiom
+// ProbeResult uses for RTT. Deliberately never called when nothing
+// comparable was attempted (a caller with no attempted-bytes sample for the
+// window simply skips the call) -- that silence is what keeps
+// DeliveryRatio's -1 "no data yet" sentinel meaningful; passing a
+// manufactured ratio like 0 or 1 for missing data would corrupt score's
+// neutral-when-unknown handling. LastSuccess intentionally stays
+// probe-driven, not report-driven: a report reflects goodput, not
+// reachability.
+func (s *Scheduler) ReportDeliveryRatio(name string, ratio float64) {
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.candidates[name]
+	if p == nil {
+		return
+	}
+	if p.DeliveryRatio < 0 {
+		p.DeliveryRatio = ratio
+	} else {
+		p.DeliveryRatio = (p.DeliveryRatio*7 + ratio) / 8
+	}
+}
+
 func (p *candidate) loss() float64 {
 	if p.used == 0 {
 		return 1
@@ -431,19 +630,47 @@ func (p *candidate) p95() time.Duration {
 	return v[(len(v)*95+99)/100-1]
 }
 
-func score(p *candidate) time.Duration {
-	// Loss dominates jitter: a one-percent loss penalty is 100ms.
-	return p.RTT + time.Duration(p.Loss*10_000_000_000)
+// score ranks a candidate: lower is better. Loss dominates jitter (a
+// one-percent loss penalty is 100ms). A delivery-ratio shortfall below the
+// scheduler's minimum adds a further, capped penalty -- but only once a
+// comparable sample exists: DeliveryRatio < 0 means "no data yet" and is
+// scored as neutral, never as if the candidate had confirmed total loss. The
+// alternative (treating no-data-yet as zero) would make every freshly
+// registered v2 candidate unusable until its first mirrored sample happened
+// to land and be reported back.
+func (s *Scheduler) score(p *candidate) time.Duration {
+	sc := p.RTT + time.Duration(p.Loss*10_000_000_000)
+	if p.DeliveryRatio >= 0 && p.DeliveryRatio < s.minDeliveryRatio {
+		shortfall := (s.minDeliveryRatio - p.DeliveryRatio) / s.minDeliveryRatio
+		sc += time.Duration(shortfall * float64(s.maxThroughputPenalty))
+	}
+	return sc
 }
 
 // Select returns the primary path and, when required, exactly one alternate.
-// Empty strings mean that no healthy candidate exists.
+// Empty strings mean that no healthy candidate exists. It holds only a read
+// lock: selectLocked commits hysteresis bookkeeping via Scheduler.primary's
+// atomic pointer, not under mu, so this stays a cheap, non-exclusive read in
+// the common case despite being called on every send from wireguard-go's
+// pooled, concurrent encryption/send workers -- an exclusive lock here would
+// serialize all of them through one mutex per packet.
 func (s *Scheduler) Select() (primary, alternate string, duplicate bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.selectLocked()
 }
 
+// selectLocked ranks healthy candidates and picks the primary, applying
+// margin+dwell hysteresis only when the delivery-ratio term is actually part
+// of the picture (the challenger or the current incumbent has a real
+// sample) -- a plain RTT/loss comparison, which is v1's entire behavior and
+// also v2's before any sample has landed, switches immediately exactly as it
+// always has. RTT is already EWMA-smoothed and loss already uses a rolling
+// window, so a suddenly lossy or slow path must still fail over without
+// delay; only the newly added, individually noisy delivery-ratio samples
+// need hysteresis to avoid flapping. An incumbent that is no longer Healthy
+// has already dropped out of paths entirely, so it fails over instantly
+// regardless -- hysteresis never delays that case.
 func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 	var paths []*candidate
 	for _, p := range s.candidates {
@@ -451,21 +678,61 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 			paths = append(paths, p)
 		}
 	}
-	sort.Slice(paths, func(i, j int) bool { return score(paths[i]) < score(paths[j]) })
+	sort.Slice(paths, func(i, j int) bool { return s.score(paths[i]) < s.score(paths[j]) })
 	if len(paths) == 0 {
-		return
+		s.primary.Store(nil)
+		return "", "", false
 	}
-	primary = paths[0].Name
+	best := paths[0]
+	chosen := best
+	cur := s.primary.Load()
+	var curName string
+	var curSince time.Time
+	if cur != nil {
+		curName, curSince = cur.name, cur.since
+	}
+	if incumbent := findCandidate(paths, curName); incumbent != nil && incumbent != best &&
+		(best.DeliveryRatio >= 0 || incumbent.DeliveryRatio >= 0) {
+		now := time.Now()
+		if !(s.score(best)+s.switchMargin < s.score(incumbent) && now.Sub(curSince) >= s.minDwell) {
+			chosen = incumbent
+		}
+	}
+	if chosen.Name != curName {
+		s.primary.Store(&primaryState{name: chosen.Name, since: time.Now()})
+	}
+	primary = chosen.Name
 	if len(paths) == 1 {
-		return
+		return primary, "", false
 	}
-	alt := paths[1]
-	if paths[0].Loss >= .05 || (paths[0].p95() > 150*time.Millisecond && paths[0].p95() >= alt.p95()+50*time.Millisecond) {
+	var alt *candidate
+	for _, c := range paths {
+		if c.Name != primary {
+			alt = c
+			break
+		}
+	}
+	if chosen.Loss >= .05 || (chosen.p95() > 150*time.Millisecond && chosen.p95() >= alt.p95()+50*time.Millisecond) {
 		return primary, alt.Name, true
 	}
 	return primary, "", false
 }
 
+func findCandidate(paths []*candidate, name string) *candidate {
+	if name == "" {
+		return nil
+	}
+	for _, c := range paths {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// Status holds only a read lock, for the same reason Select does (see its
+// doc comment): selectLocked commits any hysteresis state change through
+// Scheduler.primary's atomic pointer, not through mu.
 func (s *Scheduler) Status() []PathStatus {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

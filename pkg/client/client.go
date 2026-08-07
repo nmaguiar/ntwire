@@ -110,6 +110,12 @@ type Options struct {
 	// nil for the production defaults; see DirectUpgradeTiming's doc.
 	DirectUpgradeTiming *DirectUpgradeTiming
 
+	// MultipathV2 overrides multipath-v2's passive throughput-sampling
+	// tuning (mirror bandwidth cap, scoring/hysteresis thresholds). Only
+	// takes effect when the server also negotiates CapabilityMultipathV2;
+	// leave nil for the production defaults.
+	MultipathV2 *MultipathV2Options
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
@@ -837,7 +843,8 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	var multipath *wstransport.MultipathBind
 	if useWS {
 		if r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1) {
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+			v2 := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, v2, resolveMultipathV2Options(options.MultipathV2))
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
@@ -948,6 +955,44 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	return c, nil
+}
+
+// MultipathV2Options overrides multipath-v2's passive throughput-sampling
+// tuning (see wstransport.V2Options, which this mirrors field-for-field).
+// Every field left at its zero value keeps that one setting's production
+// default -- the same convention DirectUpgradeTiming uses.
+type MultipathV2Options struct {
+	// MirrorRateBytesPerSec bounds how much real traffic per second is
+	// opportunistically mirrored to the standby candidate purely to sample
+	// it -- the mechanism that gives multipath-v2 something to measure
+	// without synthesizing new bandwidth-eating test transfers.
+	MirrorRateBytesPerSec int
+	// MinDeliveryRatio is the minimum fraction (0,1] of mirrored bytes a
+	// candidate must be reported as actually delivering before scoring adds
+	// a capped penalty. Deliberately loose by default -- see
+	// wstransport.V2Options.MinDeliveryRatio's doc for why.
+	MinDeliveryRatio float64
+	// SwitchMargin and MinDwell bound how eagerly a delivery-ratio-driven
+	// primary switch happens, to avoid flapping on individually noisy
+	// mirrored samples -- see wstransport.Scheduler's selectLocked doc.
+	SwitchMargin time.Duration
+	MinDwell     time.Duration
+	// ReportInterval paces how often a receiver summarizes mirrored-traffic
+	// counters back to the sender.
+	ReportInterval time.Duration
+}
+
+func resolveMultipathV2Options(o *MultipathV2Options) wstransport.V2Options {
+	if o == nil {
+		return wstransport.V2Options{}
+	}
+	return wstransport.V2Options{
+		MirrorRateBytesPerSec: o.MirrorRateBytesPerSec,
+		MinDeliveryRatio:      o.MinDeliveryRatio,
+		SwitchMargin:          o.SwitchMargin,
+		MinDwell:              o.MinDwell,
+		ReportInterval:         o.ReportInterval,
+	}
 }
 
 func hasTransportCapability(caps []string, want string) bool {

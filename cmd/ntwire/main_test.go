@@ -10,6 +10,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 func TestNoColorFrom(t *testing.T) {
@@ -155,6 +156,24 @@ func TestConnsAndTrafficSummary(t *testing.T) {
 // than a misleading zero-valued one -- callers should be able to tell
 // "not connected" apart from "connected with zero traffic" by field
 // presence alone.
+// TestPathStatusRowRendersDeliverySentinel checks that a candidate with no
+// comparable delivery-ratio sample yet (DeliveryRatio < 0) renders as "-",
+// not a misleading "0%" that would read as confirmed total loss, and that a
+// real sample renders as a percentage.
+func TestPathStatusRowRendersDeliverySentinel(t *testing.T) {
+	noData := pathStatusRow(wstransport.PathStatus{Name: "udp-relay", Kind: wstransport.PathUDPRelay, Healthy: true, DeliveryRatio: -1})
+	if got, want := noData[len(noData)-1], "-"; got != want {
+		t.Errorf("delivery column with no sample = %q, want %q", got, want)
+	}
+	withData := pathStatusRow(wstransport.PathStatus{Name: "wss", Kind: wstransport.PathWSS, Healthy: true, Primary: true, DeliveryRatio: 0.9})
+	if got, want := withData[len(withData)-1], "90%"; got != want {
+		t.Errorf("delivery column with a sample = %q, want %q", got, want)
+	}
+	if got, want := withData[2], "healthy (primary)"; got != want {
+		t.Errorf("status column = %q, want %q", got, want)
+	}
+}
+
 func TestListEntryJSONOmitsLiveFieldsWhenNotConnected(t *testing.T) {
 	e := listEntry{Name: "reports", VirtualPort: 51001, Description: "Reporting DB"}
 	b, err := json.Marshal(e)

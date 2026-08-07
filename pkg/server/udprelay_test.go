@@ -77,11 +77,11 @@ func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp1 := u.sessionFor(context.Background(), peer.Public, false)
+	resp1 := u.sessionFor(context.Background(), peer.Public, false, false)
 	if resp1.Token != "tok-1" || resp1.RelayAddr != "127.0.0.1:1" {
 		t.Fatalf("sessionFor() first call = %+v, want token/relay_addr populated", resp1)
 	}
-	resp2 := u.sessionFor(context.Background(), peer.Public, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false)
 	if resp2 != resp1 {
 		t.Fatalf("sessionFor() second call = %+v, want identical to first %+v", resp2, resp1)
 	}
@@ -97,7 +97,7 @@ func TestUDPRelaySessionForReturnsEmptyWhenAllocationUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := u.sessionFor(context.Background(), peer.Public, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false)
 	if resp != (protocol.UDPRelayResponse{}) {
 		t.Fatalf("sessionFor() = %+v, want the zero value when allocation is unavailable", resp)
 	}
@@ -111,7 +111,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := u.sessionFor(context.Background(), peer.Public, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false)
 	u.release(peer.Public)
 
 	fa.mu.Lock()
@@ -124,7 +124,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 	// A fresh sessionFor call after release must allocate again, not reuse
 	// stale state.
 	fa.token = "tok-2"
-	resp2 := u.sessionFor(context.Background(), peer.Public, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false)
 	if resp2.Token != "tok-2" {
 		t.Fatalf("sessionFor() after release = %+v, want a fresh allocation", resp2)
 	}

@@ -106,7 +106,11 @@ func (s *Server) StartDataPlane() error {
 	var bind conn.Bind = ws
 	var multipath *wstransport.ServerMultipathBind
 	if s.Config.Relay.Enabled {
-		multipath = wstransport.NewServerMultipathBind(ws)
+		mc := s.Config.Relay.Multipath
+		multipath = wstransport.NewServerMultipathBind(ws, wstransport.V2Options{
+			MirrorRateBytesPerSec: mc.MirrorRateBytesPerSec, MinDeliveryRatio: mc.MinDeliveryRatio,
+			SwitchMargin: mc.SwitchMargin, MinDwell: mc.MinDwell, ReportInterval: mc.ReportInterval,
+		})
 		bind = multipath
 		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
 		// handler's ServeHTTP call). Gate on that session's own negotiated
@@ -118,7 +122,7 @@ func (s *Server) StartDataPlane() error {
 		// probes forever for no one to answer.
 		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) {
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
-				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep)
+				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2)
 			}
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
