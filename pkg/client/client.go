@@ -35,7 +35,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -76,7 +75,14 @@ func Authenticate(url, keyPath string, info protocol.ClientInfo) (protocol.AuthR
 
 // Options controls the client-side TLS and connection lifecycle.
 type Options struct {
-	Ports    map[string]int
+	Ports map[string]int
+	// Hosts is a per-tunnel loopback address override (e.g.
+	// "127.70.0.1"), keyed by tunnel name. It is a strict override like
+	// Ports: an address that fails to bind aborts the connect. Empty
+	// (the default) defers to the tunnel's server-suggested LocalHost,
+	// which is a soft preference that falls back to 127.0.0.1 on failure.
+	// BindAddress, when explicitly set, takes precedence over both.
+	Hosts    map[string]string
 	CAFile   string
 	Insecure bool
 	// HTTPSProxy is an explicit HTTP or HTTPS proxy URL for the HTTPS
@@ -883,7 +889,8 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		}
 	}
 	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "reason", c.transportReason, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
-	if bindAddr != "127.0.0.1" && bindAddr != "::1" {
+	explicitBind := options.BindAddress != ""
+	if bindIP, e := netip.ParseAddr(bindAddr); explicitBind && (e != nil || !bindIP.IsLoopback()) {
 		c.log.Warn("tunnel listeners are bound beyond loopback; tunneled targets are reachable from other hosts on this address", "bind_address", bindAddr)
 	}
 	for _, t := range r.Tunnels {
@@ -895,16 +902,33 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			c.Close()
 			return nil, fmt.Errorf("invalid local port for tunnel %q", t.Name)
 		}
-		l, e := listenLocal(bindAddr, p, !explicitPort)
+		host, softHost, rejectedServerHost := resolveTunnelHost(t.Name, t.LocalHost, options.Hosts, explicitBind, bindAddr)
+		if rejectedServerHost != "" {
+			// A server-supplied local_host is validated at config load
+			// time, but the client re-checks: it must never trust a
+			// (possibly compromised) server to move a listener beyond
+			// loopback on its behalf.
+			c.log.Warn("server suggested a non-loopback local_host for a tunnel; ignoring it", "tunnel", t.Name, "local_host", rejectedServerHost)
+		}
+		l, firstErr, e := listenLocal(host, p, softHost, !explicitPort, nil)
 		if e != nil {
 			c.Close()
 			return nil, e
 		}
+		bound := l.Addr().String()
+		requested := net.JoinHostPort(host, fmt.Sprint(p))
+		if firstErr != nil {
+			fields := []any{"tunnel", t.Name, "requested", requested, "bound", bound, "error", firstErr}
+			if hint := loopbackAliasHint(host); hint != "" {
+				fields = append(fields, "hint", hint)
+			}
+			c.log.Warn("tunnel listener fell back from its requested local address", fields...)
+		}
 		target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
-		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, localAddr: l.Addr().String(), target: target}
+		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, localAddr: bound, target: target}
 		c.tunnels = append(c.tunnels, lt)
-		c.LocalAddresses = append(c.LocalAddresses, l.Addr().String())
-		c.log.Debug("tunnel listener bound", "tunnel", t.Name, "local_address", l.Addr().String(), "target", target)
+		c.LocalAddresses = append(c.LocalAddresses, bound)
+		c.log.Debug("tunnel listener bound", "tunnel", t.Name, "local_address", bound, "target", target)
 		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
@@ -998,28 +1022,129 @@ func resolveBindAddress(addr string) (string, error) {
 	return ip.String(), nil
 }
 
-// listenLocal prefers port when it is supplied by the server configuration.
-// A configured local port is a convenience default, so fall back to an
-// ephemeral port on the same bind address when another process already owns
-// it. Explicit client port mappings remain strict overrides.
-func listenLocal(bindAddr string, port int, fallbackOnInUse bool) (net.Listener, error) {
-	l, err := net.Listen("tcp", net.JoinHostPort(bindAddr, fmt.Sprint(port)))
-	if err == nil || !fallbackOnInUse || port == 0 || !errors.Is(err, syscall.EADDRINUSE) {
-		return l, err
+// resolveTunnelHost picks one tunnel's local listener host and whether it
+// is a soft (fallback-eligible) or hard (strict) choice, per this order:
+//
+//  1. hosts[name]        (client --port name=host:port, or settings hosts:) -- soft
+//  2. bindAddr            (explicit --bind)                                  -- strict
+//  3. serverLocalHost     (server's per-tunnel suggestion)                   -- soft
+//  4. bindAddr            (the resolved default, ordinarily 127.0.0.1)
+//
+// A non-loopback serverLocalHost is never used -- the client does not
+// trust the server to move a listener beyond loopback on its behalf, even
+// though the server is expected to have already rejected that value at
+// config load -- and is returned as rejectedServerHost so the caller can
+// log it; rejectedServerHost is empty whenever there was nothing to reject.
+func resolveTunnelHost(name, serverLocalHost string, hosts map[string]string, explicitBind bool, bindAddr string) (host string, soft bool, rejectedServerHost string) {
+	if h, ok := hosts[name]; ok {
+		return h, true, ""
 	}
-	return net.Listen("tcp", net.JoinHostPort(bindAddr, "0"))
+	if explicitBind {
+		return bindAddr, false, ""
+	}
+	if serverLocalHost != "" {
+		if ip, err := netip.ParseAddr(serverLocalHost); err == nil && ip.IsLoopback() {
+			return serverLocalHost, true, ""
+		}
+		return bindAddr, true, serverLocalHost
+	}
+	return bindAddr, true, ""
 }
 
-// ReplacePort atomically switches a tunnel to a new listener on the
-// connection's configured bind address (loopback by default). Existing
-// connections continue on the old listener while new connections use the port.
+// listenFunc matches net.Listen's signature; it exists so tests can inject
+// failures for a specific address without depending on platform-specific
+// errno behavior (e.g. binding a loopback alias that only exists on Linux).
+type listenFunc func(network, address string) (net.Listener, error)
+
+// listenLocal binds a tunnel's local listener at host:port, softening the
+// host and/or port when the caller did not strictly require them:
+//
+//  1. host:port
+//  2. host:0            (only when softPort and port != 0)
+//  3. 127.0.0.1:port    (only when softHost and host != "127.0.0.1")
+//  4. 127.0.0.1:0       (only when softHost, softPort, port != 0, and host != "127.0.0.1")
+//
+// A configured local port or preferred loopback address is a convenience
+// default, not a guarantee, so any bind error triggers the next step --
+// this is deliberately not classified by errno, since the set that means
+// "this address is unavailable" (e.g. EADDRINUSE, EADDRNOTAVAIL) is not
+// portable across platforms. A hard (non-soft) host or port is a strict
+// override: its failure is returned immediately with no fallback.
+//
+// firstErr is the error from the initial host:port attempt (nil if it
+// succeeded), returned so callers can log why a tunnel did not land on its
+// requested address even when a fallback then succeeded. err is non-nil
+// only when no attempt bound successfully. listen defaults to net.Listen
+// when nil.
+func listenLocal(host string, port int, softHost, softPort bool, listen listenFunc) (l net.Listener, firstErr error, err error) {
+	if listen == nil {
+		listen = net.Listen
+	}
+	l, firstErr = listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
+	if firstErr == nil {
+		return l, nil, nil
+	}
+	if softPort && port != 0 {
+		if l2, e := listen("tcp", net.JoinHostPort(host, "0")); e == nil {
+			return l2, firstErr, nil
+		}
+	}
+	if softHost && host != "127.0.0.1" {
+		if l2, e := listen("tcp", net.JoinHostPort("127.0.0.1", fmt.Sprint(port))); e == nil {
+			return l2, firstErr, nil
+		}
+		if softPort && port != 0 {
+			if l2, e := listen("tcp", net.JoinHostPort("127.0.0.1", "0")); e == nil {
+				return l2, firstErr, nil
+			}
+		}
+	}
+	return nil, firstErr, firstErr
+}
+
+// loopbackAliasHint returns an actionable command for a loopback address
+// that is not the universally-present 127.0.0.1, on the one platform where
+// it typically needs one: macOS assigns only 127.0.0.1 to lo0 by default,
+// so any other 127.0.0.0/8 address (or a non-::1 IPv6 loopback) 404s at
+// bind time until an operator adds it as an alias. Linux binds all of
+// 127/8 out of the box and needs no such hint.
+func loopbackAliasHint(host string) string {
+	if runtime.GOOS != "darwin" || host == "" || host == "127.0.0.1" || host == "::1" {
+		return ""
+	}
+	if ip, err := netip.ParseAddr(host); err != nil || !ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("sudo ifconfig lo0 alias %s up", host)
+}
+
+// ReplacePort switches a tunnel's local port, keeping its currently bound
+// host unchanged. It is a thin wrapper over ReplaceListener for callers
+// (the web UI, `ntwire port <name>=N`, the GUI) that only want to change
+// the port.
 func (c *Connection) ReplacePort(name string, port int) (string, error) {
+	return c.ReplaceListener(name, "", port)
+}
+
+// ReplaceListener atomically switches a tunnel to a new local listener.
+// An empty host keeps the tunnel's currently bound host unchanged -- it
+// must not default to c.bindAddr, since that would silently relocate a
+// tunnel bound to a non-default host (e.g. a server-suggested local_host)
+// back to the connection's baseline on a port-only change. Existing
+// connections continue on the old listener while new connections use the
+// new one. Unlike the automatic per-tunnel fallback at connect time, this
+// is a direct user action: it is strict, with no fallback to another
+// address or port on failure.
+func (c *Connection) ReplaceListener(name, host string, port int) (string, error) {
 	if name == "" || port < 1 || port > 65535 {
 		return "", fmt.Errorf("invalid tunnel name or local port")
 	}
-	bindAddr := c.bindAddr
-	if bindAddr == "" {
-		bindAddr = "127.0.0.1"
+	if host != "" {
+		ip, err := netip.ParseAddr(host)
+		if err != nil {
+			return "", fmt.Errorf("invalid local host %q: must be a numeric IP address", host)
+		}
+		host = ip.String()
 	}
 	c.mu.Lock()
 	var tunnel *localTunnel
@@ -1033,14 +1158,22 @@ func (c *Connection) ReplacePort(name string, port int) (string, error) {
 		c.mu.Unlock()
 		return "", fmt.Errorf("unknown or disconnected tunnel %q", name)
 	}
-	if _, currentPort, err := net.SplitHostPort(tunnel.localAddr); err == nil && currentPort == fmt.Sprint(port) {
+	currentHost, currentPort, splitErr := net.SplitHostPort(tunnel.localAddr)
+	if host == "" {
+		if splitErr == nil {
+			host = currentHost
+		} else if host = c.bindAddr; host == "" {
+			host = "127.0.0.1"
+		}
+	}
+	if splitErr == nil && currentHost == host && currentPort == fmt.Sprint(port) {
 		addr := tunnel.localAddr
 		c.mu.Unlock()
 		return addr, nil
 	}
 	c.mu.Unlock()
 
-	l, err := net.Listen("tcp", net.JoinHostPort(bindAddr, fmt.Sprint(port)))
+	l, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		return "", err
 	}
@@ -1258,13 +1391,14 @@ func (c *Connection) startWebUI() {
 			return
 		}
 		var in struct {
-			LocalPort int `json:"local_port"`
+			LocalPort int    `json:"local_port"`
+			LocalHost string `json:"local_host"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		address, err := c.ReplacePort(name, in.LocalPort)
+		address, err := c.ReplaceListener(name, in.LocalHost, in.LocalPort)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return

@@ -55,17 +55,20 @@ func GenerateIdentity(path string) (string, error) {
 // Settings is the optional persistent configuration stored at
 // ~/.ntwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {
-	Server        string         `yaml:"server"`
-	IdentityFile  string         `yaml:"identity_file"`
-	Ports         map[string]int `yaml:"ports"`
-	CAFile        string         `yaml:"ca_file"`
-	Insecure      bool           `yaml:"insecure"`
-	HTTPSProxy    string         `yaml:"https_proxy"`
-	NoSystemProxy bool           `yaml:"no_system_proxy"`
-	NoBrowser     bool           `yaml:"no_browser"`
-	CollectExec   string         `yaml:"collect_exec"`
-	SSO           bool           `yaml:"sso"`
-	Provider      string         `yaml:"provider"`
+	Server       string         `yaml:"server"`
+	IdentityFile string         `yaml:"identity_file"`
+	Ports        map[string]int `yaml:"ports"`
+	// Hosts is a per-tunnel loopback address override; see
+	// client.Options.Hosts.
+	Hosts         map[string]string `yaml:"hosts"`
+	CAFile        string            `yaml:"ca_file"`
+	Insecure      bool              `yaml:"insecure"`
+	HTTPSProxy    string            `yaml:"https_proxy"`
+	NoSystemProxy bool              `yaml:"no_system_proxy"`
+	NoBrowser     bool              `yaml:"no_browser"`
+	CollectExec   string            `yaml:"collect_exec"`
+	SSO           bool              `yaml:"sso"`
+	Provider      string            `yaml:"provider"`
 	// BindAddress is the advanced, opt-in override for the loopback-only
 	// default tunnel listeners bind to; see client.Options.BindAddress.
 	BindAddress string `yaml:"bind_address"`

@@ -77,7 +77,12 @@ type Tunnel struct {
 	Description string `json:"description,omitempty"`
 	VirtualPort int    `json:"virtual_port"`
 	LocalPort   int    `json:"local_port,omitempty"`
-	TargetHint  string `json:"target_hint,omitempty"`
+	// LocalHost is an optional preferred loopback address for the client's
+	// local listener (e.g. "127.70.0.1"), letting distinct tunnels share a
+	// memorable port without colliding. The client may override it, and
+	// falls back to 127.0.0.1 if the address cannot be bound.
+	LocalHost  string `json:"local_host,omitempty"`
+	TargetHint string `json:"target_hint,omitempty"`
 	// Instructions is optional Markdown describing how to use this tunnel,
 	// expanded as a Go template by the client (see pkg/instructions) so that
 	// the real loopback port can appear in the commands it documents.

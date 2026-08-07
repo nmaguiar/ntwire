@@ -58,8 +58,13 @@ func (p Profile) ToClientOptions(statusFile, passphrase string) (client.Options,
 	for k, v := range p.Ports {
 		ports[k] = v
 	}
+	hosts := make(map[string]string, len(p.Hosts))
+	for k, v := range p.Hosts {
+		hosts[k] = v
+	}
 	return client.Options{
 		Ports:            ports,
+		Hosts:            hosts,
 		CAFile:           ExpandHome(p.CAFile),
 		Insecure:         p.Insecure,
 		HTTPSProxy:       p.HTTPSProxy,

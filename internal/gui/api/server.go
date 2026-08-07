@@ -186,13 +186,14 @@ func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReplacePort(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		LocalPort int `json:"local_port"`
+		LocalPort int    `json:"local_port"`
+		LocalHost string `json:"local_host"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	addr, err := s.mgr.ReplacePort(r.PathValue("id"), r.PathValue("name"), body.LocalPort)
+	addr, err := s.mgr.ReplaceListener(r.PathValue("id"), r.PathValue("name"), body.LocalHost, body.LocalPort)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return

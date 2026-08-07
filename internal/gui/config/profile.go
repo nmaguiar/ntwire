@@ -11,18 +11,21 @@ package config
 // ToClientOptions needs to build a client.Options, plus GUI-only metadata
 // (ID, Name, ConnectOnStart).
 type Profile struct {
-	ID               string         `yaml:"id"`
-	Name             string         `yaml:"name"`
-	Server           string         `yaml:"server"`
-	IdentityFile     string         `yaml:"identity_file"`
-	ConnectOnStart   bool           `yaml:"connect_on_start"`
-	Ports            map[string]int `yaml:"ports"`
-	CAFile           string         `yaml:"ca_file"`
-	Insecure         bool           `yaml:"insecure"`
-	HTTPSProxy       string         `yaml:"https_proxy"`
-	NoSystemProxy    bool           `yaml:"no_system_proxy"`
-	KnownServersFile string         `yaml:"known_servers_file"`
-	TokenCacheFile   string         `yaml:"token_cache_file"`
+	ID             string         `yaml:"id"`
+	Name           string         `yaml:"name"`
+	Server         string         `yaml:"server"`
+	IdentityFile   string         `yaml:"identity_file"`
+	ConnectOnStart bool           `yaml:"connect_on_start"`
+	Ports          map[string]int `yaml:"ports"`
+	// Hosts is a per-tunnel loopback address override; see
+	// client.Options.Hosts.
+	Hosts            map[string]string `yaml:"hosts"`
+	CAFile           string            `yaml:"ca_file"`
+	Insecure         bool              `yaml:"insecure"`
+	HTTPSProxy       string            `yaml:"https_proxy"`
+	NoSystemProxy    bool              `yaml:"no_system_proxy"`
+	KnownServersFile string            `yaml:"known_servers_file"`
+	TokenCacheFile   string            `yaml:"token_cache_file"`
 	// Websocket forces the WebSocket WireGuard transport. Leave false for
 	// almost every profile: relay servers are auto-detected and use it
 	// without this being set (see client.selectTransport).

@@ -35,8 +35,11 @@ type fakeHandle struct{}
 
 func (fakeHandle) Status() client.WebStatus                 { return client.WebStatus{Connected: true} }
 func (fakeHandle) Instructions() client.WebInstructionsList { return client.WebInstructionsList{} }
-func (fakeHandle) ReplacePort(name string, port int) (string, error) {
-	return fmt.Sprintf("127.0.0.1:%d", port), nil
+func (fakeHandle) ReplaceListener(name, host string, port int) (string, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("%s:%d", host, port), nil
 }
 func (fakeHandle) AuthMethod() string   { return "ssh" }
 func (fakeHandle) DisplayName() string  { return "fake" }

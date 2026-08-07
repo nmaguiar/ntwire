@@ -40,6 +40,10 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 	for k, v := range settings.Ports {
 		ports[k] = v
 	}
+	hosts := make(map[string]string, len(settings.Hosts))
+	for k, v := range settings.Hosts {
+		hosts[k] = v
+	}
 	cfg.Profiles = append(cfg.Profiles, Profile{
 		ID:             NewID(),
 		Name:           profileNameFor(settings.Server),
@@ -47,6 +51,7 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 		IdentityFile:   settings.IdentityFile,
 		ConnectOnStart: false,
 		Ports:          ports,
+		Hosts:          hosts,
 		CAFile:         settings.CAFile,
 		Insecure:       settings.Insecure,
 		HTTPSProxy:     settings.HTTPSProxy,

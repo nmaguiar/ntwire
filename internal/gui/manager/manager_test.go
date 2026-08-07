@@ -239,6 +239,43 @@ func TestPortCollisionRejectsSecondProfileWithoutCallingConnector(t *testing.T) 
 	}
 }
 
+// TestPortCollisionRejectsSecondProfileOnReconciledImplicitTunnel checks the
+// fix for a gap the explicit-Ports-only guard above can't see: neither
+// profile here configures an explicit local port at all (both rely purely
+// on whatever the server suggests), so reservePorts has nothing to compare
+// before authenticating. Once profile a actually connects,
+// reconcileAllPortReservations must still record the real address its
+// tunnel bound -- for every tunnel, not only ones tracked from an explicit
+// Ports entry -- so that profile b's reservePorts check (which runs before
+// b's own connector call) can catch the same real address and reject it.
+func TestPortCollisionRejectsSecondProfileOnReconciledImplicitTunnel(t *testing.T) {
+	fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
+		return &fakeHandle{status: client.WebStatus{
+			Connected: true,
+			Tunnels:   []client.WebTunnel{{Name: "web", LocalAddress: "127.0.0.1:58080"}},
+		}}, nil
+	}}
+	m, _ := newTestManager(t, fc)
+	a, _ := m.AddProfile(config.Profile{Name: "a", Server: "https://a.example:8443"})
+	b, _ := m.AddProfile(config.Profile{Name: "b", Server: "https://b.example:8443", Hosts: map[string]string{"web": "127.0.0.1"}, Ports: map[string]int{"web": 58080}})
+
+	if err := m.Connect(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, m, a.ID, StateConnected, 5*time.Second)
+
+	if err := m.Connect(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap := waitForState(t, m, b.ID, StateFailed, 5*time.Second)
+	if snap.Err == "" {
+		t.Error("Snapshot().Err is empty after a reconciled-address collision, want an explanation")
+	}
+	if fc.callCount() != 1 {
+		t.Errorf("connector called %d times, want 1 (profile b must never reach the connector once a's real address is known)", fc.callCount())
+	}
+}
+
 func TestDisconnectReleasesPortForAnotherProfile(t *testing.T) {
 	fc := &fakeConnector{}
 	m, _ := newTestManager(t, fc)
@@ -282,12 +319,12 @@ func TestReplacePortCallsHandle(t *testing.T) {
 	}
 	waitForState(t, m, p.ID, StateConnected, 5*time.Second)
 
-	addr, err := m.ReplacePort(p.ID, "web", 9090)
+	addr, err := m.ReplaceListener(p.ID, "web", "", 9090)
 	if err != nil {
-		t.Fatalf("ReplacePort() error = %v", err)
+		t.Fatalf("ReplaceListener() error = %v", err)
 	}
 	if addr != "127.0.0.1:0" {
-		t.Errorf("ReplacePort() = %q, want the fake handle's fixed address", addr)
+		t.Errorf("ReplaceListener() = %q, want the fake handle's fixed address", addr)
 	}
 }
 

@@ -297,7 +297,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
-		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, LocalPort: t.LocalPort, TargetHint: t.Target,
+		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, LocalPort: t.LocalPort, LocalHost: t.LocalHost, TargetHint: t.Target,
 			Instructions: t.Instructions, DocsURL: t.DocsURL})
 	}
 	if req.QueryOnly {
@@ -522,7 +522,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, g := range grants {
-		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, LocalPort: g.LocalPort, TargetHint: g.Target,
+		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, LocalPort: g.LocalPort, LocalHost: g.LocalHost, TargetHint: g.Target,
 			Instructions: g.Instructions, DocsURL: g.DocsURL})
 	}
 	s.sessions.Delete(t)

@@ -55,6 +55,7 @@ tunnels:
     description: Reporting service      # free-text, shown to clients; optional
     virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
     local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
+    local_host: ""                      # loopback address ntwire connect prefers for this tunnel's local listener, e.g. "127.70.0.1"; optional, must be 127.0.0.0/8 or ::1, falls back to 127.0.0.1 if it can't be bound -- see "Tunnel local address and port" below
     docs_url: https://wiki/reports      # absolute http(s) link offered as "See more" in the client status UI; optional
     instructions: |                     # Markdown setup guidance shown in the client status UI; optional, see "Tunnel instructions" below
       Fetch the latest report:
@@ -154,6 +155,62 @@ legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
 ASSOCIATE is recognized by the handshake but refused — it needs UDP to
 traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
 
+## Tunnel local address and port
+
+`local_port` and `local_host` are preferences for the loopback listener
+`ntwire connect` opens for a tunnel, not guarantees: ntwire is entirely
+user-space, so it can only ask the OS for an address, never reserve one in
+advance. Both fall back independently when the preferred value can't be
+used:
+
+- `local_port` (optional, `0`-`65535`, default any free port): if occupied,
+  the client falls back to an ephemeral port on the same host.
+- `local_host` (optional, must be `127.0.0.0/8` or `::1`, default
+  `127.0.0.1`): if it can't be bound, the client falls back to `127.0.0.1`.
+  A value outside `127.0.0.0/8`/`::1` fails config validation at the server
+  and is additionally ignored by the client if it somehow arrives anyway —
+  a server operator cannot use `local_host` to move a client's listener
+  onto a LAN-reachable interface; only the client's own `--bind` can do
+  that (see [SECURITY.md](SECURITY.md)).
+
+`local_host` exists so distinct tunnels can share a memorable port instead
+of colliding on `127.0.0.1`, e.g.:
+
+```yaml
+tunnels:
+  - name: primary-db
+    local_port: 5432
+    local_host: 127.70.0.1
+  - name: replica-db
+    local_port: 5432
+    local_host: 127.71.0.1
+```
+
+**Linux** binds every address in `127.0.0.0/8` by default, so this works with
+no extra setup. **macOS** assigns only `127.0.0.1` to the loopback interface
+(`lo0`); any other address in `127.0.0.0/8` needs an alias added first, or
+the client silently falls back to `127.0.0.1` (logging a warning that names
+the requested and actual address):
+
+```sh
+sudo ifconfig lo0 alias 127.70.0.1 up
+sudo ifconfig lo0 alias 127.71.0.1 up
+```
+
+The alias does not survive a reboot; add it to a login script or
+`launchd` job if it needs to persist.
+
+A user can always override either value from the client side: `--port
+name=local-port` or `--port name=host:local-port` (repeatable; IPv6 as
+`name=[::1]:local-port`) on `ntwire connect`, a same-shaped `hosts:`/`ports:`
+pair in `~/.ntwire/config.yaml`, or `ntwire port name=host:local-port`
+against a running connection. An explicit client override is itself a soft
+preference for the host (it still falls back to `127.0.0.1` if unbindable)
+but a strict requirement for the port (an occupied explicit port fails the
+command rather than silently moving to another one) — `--bind` remains the
+one setting that is strict for the host too, since choosing it is a
+deliberate decision to expose tunnels beyond loopback.
+
 ## Tunnel instructions
 
 `instructions` is optional Markdown that `ntwire connect` shows under each
@@ -163,9 +220,10 @@ tunnel instead of having to work it out from a port number. `docs_url` adds a
 refuses to start otherwise.
 
 The text is expanded as a [Go template](https://pkg.go.dev/text/template) **on
-the client**, because only the client knows which loopback port it actually
-bound: the server's `local_port` is a preference, an occupied port falls back
-to a free one, and the user can change it at runtime from the status UI. These
+the client**, because only the client knows which loopback address it
+actually bound: the server's `local_port`/`local_host` are preferences (see
+"Tunnel local address and port" above), an unusable one falls back to
+another, and the user can change either at runtime from the status UI. These
 fields are available:
 
 | Field | Value |

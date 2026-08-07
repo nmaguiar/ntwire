@@ -15,7 +15,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"max_sessions_per_key:", "issuers:", "name:", "issuer:", "client_id:",
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
-		"local_port:", "allow:", "target:", "description:", "log_file:",
+		"local_port:", "local_host:", "allow:", "target:", "description:", "log_file:",
 		"instructions:", "docs_url:", "advertise_direct:",
 	} {
 		if !strings.Contains(sample, option) {
@@ -397,6 +397,56 @@ tunnels:
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("LoadConfig accepted local_port above 65535")
+	}
+}
+
+func TestLoadConfigRejectsInvalidTunnelLocalHost(t *testing.T) {
+	for _, bad := range []string{"0.0.0.0", "192.168.1.5", "example.com", "not-an-ip"} {
+		t.Run(bad, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ntwire.yaml")
+			config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    local_host: "` + bad + `"
+`
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(path); err == nil {
+				t.Fatalf("LoadConfig accepted non-loopback local_host %q", bad)
+			}
+		})
+	}
+}
+
+func TestLoadConfigReadsTunnelLocalHost(t *testing.T) {
+	for _, good := range []string{"127.70.0.1", "127.0.0.1", "::1"} {
+		t.Run(good, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "ntwire.yaml")
+			config := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: reports
+    target: reports.internal:8080
+    virtual_port: 18080
+    local_host: "` + good + `"
+`
+			if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadConfig(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Tunnels[0].LocalHost != good {
+				t.Fatalf("local_host = %q, want %q", got.Tunnels[0].LocalHost, good)
+			}
+		})
 	}
 }
 
