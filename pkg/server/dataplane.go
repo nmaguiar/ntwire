@@ -108,7 +108,20 @@ func (s *Server) StartDataPlane() error {
 	if s.Config.Relay.Enabled {
 		multipath = wstransport.NewServerMultipathBind(ws)
 		bind = multipath
-		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) { multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep) }
+		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
+		// handler's ServeHTTP call). Gate on that session's own negotiated
+		// Multipath flag, not just Relay.Enabled: a peer that didn't
+		// negotiate multipath-v1 (an older client, or one that simply
+		// doesn't offer the capability) has no MultipathBind of its own and
+		// will never understand a FramePathProbe sent to it -- registering
+		// it here anyway would only add a phantom candidate this bind
+		// probes forever for no one to answer.
+		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) {
+			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
+				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep)
+			}
+		}
+		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
 	}
 	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
 	if err != nil {

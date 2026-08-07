@@ -52,14 +52,20 @@ registers with the relay; the relay returns its own version/capabilities. An
 older peer omits the capability and stays on the legacy transport rather than
 being placed on a stable endpoint it cannot route.
 
-Candidates are probed once a second. The primary is the healthy path with the
-best RTT/loss score. A second copy is used only after at least 5% rolling probe
-loss on the primary, or when its p95 latency is above 150 ms and at least 50 ms
-worse than the alternate. Three missed probes make a candidate unhealthy, but
-it remains registered and is re-probed so recovery does not require a session
-reconnect. Receivers suppress repeated type-4 WireGuard transport packets by
-receiver index and counter in a short bounded cache; handshake packets are
-never suppressed.
+Candidates are probed roughly once a second, over the candidate's own
+transport (a tiny fixed-size `FramePathProbe`/`FramePathAck` exchange,
+answered immediately by the peer). A candidate starts unhealthy the moment
+it's registered and only becomes eligible for selection once its first probe
+is acknowledged -- bounding a freshly registered candidate's unusable window
+to roughly one round trip, since registration itself fires an immediate,
+out-of-band probe rather than waiting for the next tick. The primary is the
+healthy path with the best RTT/loss score. A second copy is used only after
+at least 5% rolling probe loss on the primary, or when its p95 latency is
+above 150 ms and at least 50 ms worse than the alternate. Three missed probes
+make a candidate unhealthy, but it remains registered and is re-probed so
+recovery does not require a session reconnect. Receivers suppress repeated
+type-4 WireGuard transport packets by receiver index and counter in a short
+bounded cache; handshake packets are never suppressed.
 
 Probe/ack controls have fixed-size payloads and invalid or oversized frames
 are ignored. There are no tuning options in v1. A server without `multipath`

@@ -87,23 +87,42 @@ func addrPort(addr net.Addr) (netip.AddrPort, bool) {
 // locked in.
 func (d *datagramRelay) handleClientDatagram(b []byte, from netip.AddrPort) {
 	if typ, payload, ok := wstransport.DecodeControlFrame(b); ok {
-		if typ != wstransport.FrameRelayBind {
-			return // e.g. a stray reflector/prime frame that ended up on this socket; not ours
+		switch typ {
+		case wstransport.FrameRelayBind:
+			if !d.rate.allow(from.Addr().String()) {
+				d.log.Debug("udp relay: client bind rate limit exceeded", "peer", from)
+				return
+			}
+			if _, ok := d.sessions.BindClient(string(payload), from); !ok {
+				return // unknown or expired token: no reply, indistinguishable from a dropped packet
+			}
+			ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
+			_, _ = d.clientConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
+		case wstransport.FramePathProbe, wstransport.FramePathAck:
+			// The relay never interprets these -- it forwards the opaque
+			// frame between an already-bound session pair under exactly the
+			// same permission check as an ordinary WireGuard datagram (see
+			// forwardFromClient), so multipath-v1's health probing can ride
+			// this tier without the relay needing to understand it.
+			if wstransport.ValidPathControl(typ, payload) {
+				d.forwardFromClient(b, from)
+			}
 		}
-		if !d.rate.allow(from.Addr().String()) {
-			d.log.Debug("udp relay: client bind rate limit exceeded", "peer", from)
-			return
-		}
-		if _, ok := d.sessions.BindClient(string(payload), from); !ok {
-			return // unknown or expired token: no reply, indistinguishable from a dropped packet
-		}
-		ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
-		_, _ = d.clientConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
-		return
+		return // every other recognized control type (or an invalid probe/ack shape) stays dropped: e.g. a stray reflector/prime frame that ended up on this socket, not ours
 	}
 	if !wstransport.ValidRelayDatagram(b) {
 		return
 	}
+	d.forwardFromClient(b, from)
+}
+
+// forwardFromClient forwards b -- an ordinary WireGuard datagram, or an
+// opaque FramePathProbe/FramePathAck the relay never interprets -- from a
+// client-facing sender to its bound session's server leg. Both callers in
+// handleClientDatagram share this so a probe/ack frame goes through exactly
+// the same token-verified bind/address-lock permission check as every other
+// byte this tier relays, never a separately maintained copy of it.
+func (d *datagramRelay) forwardFromClient(b []byte, from netip.AddrPort) {
 	sess, ok := d.sessions.LookupByClientAddr(from)
 	if !ok {
 		// An unrecognized sender on a public, internet-facing UDP socket is
@@ -130,21 +149,37 @@ func (d *datagramRelay) handleServerDatagram(port uint16, b []byte, from netip.A
 		return // port not currently allocated to any session: stray/late packet, drop
 	}
 	if typ, payload, ok := wstransport.DecodeControlFrame(b); ok {
-		// The port already implies which session this must be, but the
-		// frame's token must still match that session's -- never trust the
-		// port mapping alone to authenticate a bind, since anyone can send
-		// a UDP datagram to a port within the advertised pool.
-		if typ != wstransport.FrameRelayBind || string(payload) != sess.token {
-			return
+		switch typ {
+		case wstransport.FrameRelayBind:
+			// The port already implies which session this must be, but the
+			// frame's token must still match that session's -- never trust the
+			// port mapping alone to authenticate a bind, since anyone can send
+			// a UDP datagram to a port within the advertised pool.
+			if string(payload) != sess.token {
+				return
+			}
+			d.sessions.BindServer(sess.token, from)
+			ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
+			_, _ = sess.serverConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
+		case wstransport.FramePathProbe, wstransport.FramePathAck:
+			if wstransport.ValidPathControl(typ, payload) {
+				d.forwardFromServer(sess, b, from)
+			}
 		}
-		d.sessions.BindServer(sess.token, from)
-		ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
-		_, _ = sess.serverConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
 		return
 	}
 	if !wstransport.ValidRelayDatagram(b) {
 		return
 	}
+	d.forwardFromServer(sess, b, from)
+}
+
+// forwardFromServer forwards b -- an ordinary WireGuard datagram, or an
+// opaque FramePathProbe/FramePathAck -- from a sender on sess's pooled
+// server-leg port onto the shared client-facing socket, under the same
+// bound/address-lock permission check (sess.legs()) as every other byte this
+// tier relays.
+func (d *datagramRelay) forwardFromServer(sess *udpRelaySession, b []byte, from netip.AddrPort) {
 	serverAddr, serverBound, clientAddr, clientBound := sess.legs()
 	if !serverBound || from != serverAddr || !clientBound {
 		// Not yet bound on one leg or the other (drop, don't buffer), or a

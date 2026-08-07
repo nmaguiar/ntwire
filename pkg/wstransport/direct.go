@@ -110,6 +110,17 @@ func DecodeControlFrame(b []byte) (typ byte, payload []byte, ok bool) {
 type FilterBind struct {
 	conn.Bind
 	control chan ControlPacket
+
+	// probeHandler, when set, receives FramePathProbe/FramePathAck (and, once
+	// negotiated, FrameThroughputReport) directly and synchronously from the
+	// receive path instead of via Control(). Those frame types need a
+	// persistent handler for the life of the connection, not the one-shot
+	// "send, then wait up to a timeout" pattern every existing Control()
+	// reader (selfReflect, waitForBindAck, directUDP.selfReflect) uses --
+	// routing them onto the same shared, single-buffered control channel
+	// those transient readers already share would let a persistent reader
+	// steal a message meant for one of them, or vice versa.
+	probeHandler func(typ byte, payload []byte, ep conn.Endpoint)
 }
 
 // NewFilterBind wraps bind. Control frames beyond the internal 32-entry
@@ -117,6 +128,14 @@ type FilterBind struct {
 // reflection and priming are both fire-and-forget and safe to lose.
 func NewFilterBind(bind conn.Bind) *FilterBind {
 	return &FilterBind{Bind: bind, control: make(chan ControlPacket, 32)}
+}
+
+// SetProbeHandler installs fn as the receiver for FramePathProbe/
+// FramePathAck/FrameThroughputReport frames arriving over this bind's UDP
+// carrier. Not safe to change concurrently with receiving; callers set it
+// once, before the bind starts receiving traffic.
+func (f *FilterBind) SetProbeHandler(fn func(typ byte, payload []byte, ep conn.Endpoint)) {
+	f.probeHandler = fn
 }
 
 // Control receives intercepted control frames.
@@ -170,13 +189,29 @@ func (f *FilterBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 }
 
 func (f *FilterBind) deliverControl(b []byte, ep conn.Endpoint) {
+	typ := b[4]
+	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport
+	if isProbeFrame {
+		// These frame types are only ever meaningful to a probeHandler, never
+		// to Control()'s existing transient readers (selfReflect,
+		// waitForBindAck, directUDP.selfReflect) -- if no handler is
+		// installed, drop rather than fall through to the shared channel
+		// below, so a peer that (mistakenly, or during some future code
+		// path) sends one of these to a bind with no handler can never
+		// occupy a slot in that channel's small fixed buffer at those
+		// readers' expense.
+		if h := f.probeHandler; h != nil {
+			h(typ, append([]byte(nil), b[controlHeaderLen:]...), ep)
+		}
+		return
+	}
+	payload := append([]byte(nil), b[controlHeaderLen:]...)
 	addr, err := netip.ParseAddrPort(ep.DstToString())
 	if err != nil {
 		return
 	}
-	payload := append([]byte(nil), b[controlHeaderLen:]...)
 	select {
-	case f.control <- ControlPacket{Type: b[4], Payload: payload, From: addr}:
+	case f.control <- ControlPacket{Type: typ, Payload: payload, From: addr}:
 	default:
 	}
 }

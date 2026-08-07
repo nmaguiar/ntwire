@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
-	"time"
 
 	"github.com/coder/websocket"
 	"golang.zx2c4.com/wireguard/conn"
@@ -91,16 +90,20 @@ func NewHybridClient(url string, client *http.Client, header http.Header) *Hybri
 func NewMultipathHybridClient(url string, client *http.Client, header http.Header) (*Hybrid, *MultipathBind) {
 	h := NewHybridClient(url, client, header)
 	m := NewMultipathBind(h, "relay-server")
+	h.UDP.(*FilterBind).SetProbeHandler(m.handlePathControl)
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
 	// has connected it. Register the fallback from MultipathBind.Open instead,
-	// after h.Open has established the peer.
+	// after h.Open has established the peer. RegisterPath itself fires an
+	// immediate real probe (see its doc comment); a synthetic ProbeResult
+	// seed used to stand in here, but that's what left "wss" and every other
+	// candidate frozen at whatever health they started with forever, since
+	// nothing ever re-probed them afterward.
 	m.onOpen = func() error {
 		ep, err := h.WebSocket.ParseEndpoint(WSSentinel)
 		if err != nil {
 			return err
 		}
 		m.RegisterPath("wss", PathWSS, ep)
-		m.Scheduler().ProbeResult("wss", time.Millisecond, true, time.Now())
 		return nil
 	}
 	return h, m

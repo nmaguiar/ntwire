@@ -1,6 +1,8 @@
 package wstransport
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"net/netip"
@@ -28,7 +30,34 @@ type MultipathBind struct {
 	paths     map[string]conn.Endpoint
 	endpoint  multipathEndpoint
 	onOpen    func() error
+
+	// probeMu guards probes, kept separate from mu (which guards paths) so
+	// the receive-path handling a FramePathAck never has to take the same
+	// lock a concurrent RegisterPath/Send might be holding.
+	probeMu   sync.Mutex
+	probes    map[string]outstandingProbe
+	stop      chan struct{}
+	closeOnce sync.Once
 }
+
+// outstandingProbe is one in-flight FramePathProbe this side is waiting on an
+// ack for, keyed by candidate name in both MultipathBind and
+// serverMultipathPeer.
+type outstandingProbe struct {
+	nonce  [pathProbeSize]byte
+	sentAt time.Time
+}
+
+// probeInterval/probeTimeout pace the health-probing every registered
+// candidate gets on both sides of a multipath session (see RegisterPath and
+// probeLoop): a probe goes out at most once every probeInterval per
+// candidate, and one still outstanding after probeTimeout counts as a miss
+// (ProbeResult(name, 0, false, now)), the same "miss" semantics a candidate
+// that simply never answers already has.
+const (
+	probeInterval = time.Second
+	probeTimeout  = 2 * time.Second
+)
 
 type multipathEndpoint struct{ id string }
 
@@ -40,16 +69,23 @@ func (e multipathEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
 func (e multipathEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 func NewMultipathBind(base conn.Bind, id string) *MultipathBind {
-	return &MultipathBind{base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second), paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id}}
+	m := &MultipathBind{base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second), paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id}, probes: make(map[string]outstandingProbe), stop: make(chan struct{})}
+	go m.probeLoop()
+	return m
 }
 
 // RegisterPath adds or refreshes a candidate. endpoint must be produced by
-// the underlying carrier bind, not by this bind.
+// the underlying carrier bind, not by this bind. It also fires one immediate,
+// out-of-band probe for the new candidate rather than waiting for the next
+// probeLoop tick: Select only ever returns a Healthy candidate, so without
+// this a freshly registered path would sit unusable for up to a full
+// probeInterval.
 func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.Endpoint) {
 	m.mu.Lock()
 	m.paths[name] = endpoint
 	m.mu.Unlock()
 	m.scheduler.Register(name, kind)
+	m.sendProbe(name, time.Now())
 }
 func (m *MultipathBind) Scheduler() *Scheduler { return m.scheduler }
 func (m *MultipathBind) Paths() []PathStatus   { return m.scheduler.Status() }
@@ -81,7 +117,18 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 			}
 			out := 0
 			for i := 0; i < n; i++ {
-				if m.cache.Seen(bufs[i][:sizes[i]], time.Now()) {
+				b := bufs[i][:sizes[i]]
+				// A UDP-carried control frame never reaches here -- FilterBind
+				// already strips it out before this receive func sees it (see
+				// SetProbeHandler). Only the WSS carrier has no such
+				// interception of its own, since it has no notion of control
+				// frames at all, so this is what catches a probe/ack arriving
+				// over WSS.
+				if typ, payload, ok := DecodeControlFrame(b); ok {
+					m.handlePathControl(typ, payload, eps[i])
+					continue
+				}
+				if m.cache.Seen(b, time.Now()) {
 					continue
 				}
 				eps[out] = m.endpoint
@@ -121,7 +168,10 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	return nil
 }
-func (m *MultipathBind) Close() error              { return m.base.Close() }
+func (m *MultipathBind) Close() error {
+	m.closeOnce.Do(func() { close(m.stop) })
+	return m.base.Close()
+}
 func (m *MultipathBind) SetMark(mark uint32) error { return m.base.SetMark(mark) }
 func (m *MultipathBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	if s == MultipathSentinel {
@@ -131,14 +181,139 @@ func (m *MultipathBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 }
 func (m *MultipathBind) BatchSize() int { return m.base.BatchSize() }
 
-// FramePathProbe and FramePathAck are deliberately tiny control frames.  A
-// probe has an eight byte nonce; an ack echoes exactly those eight bytes.  In
-// particular, neither frame carries an address, token, or arbitrary payload,
-// so replying to a probe cannot be used as a useful amplification primitive.
+// handlePathControl is the single entry point for a FramePathProbe/
+// FramePathAck this side received, whether it arrived over WSS (dispatched
+// from wrapReceive, since Bind has no control-frame concept of its own) or
+// over UDP (dispatched from FilterBind's probe handler, registered via
+// SetProbeHandler -- see NewMultipathHybridClient). A probe is answered
+// immediately, on the same path/endpoint it arrived on; an ack completes the
+// matching outstanding probe, if any, and feeds a real RTT into the
+// scheduler.
+func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endpoint) {
+	if !ValidPathControl(typ, payload) {
+		return
+	}
+	switch typ {
+	case FramePathProbe:
+		ack := EncodeControlFrame(FramePathAck, payload)
+		_ = m.base.Send([][]byte{ack}, ep)
+	case FramePathAck:
+		name, ok := m.nameForEndpoint(ep)
+		if !ok {
+			return
+		}
+		now := time.Now()
+		m.probeMu.Lock()
+		outstanding, found := m.probes[name]
+		if found && bytes.Equal(outstanding.nonce[:], payload) {
+			delete(m.probes, name)
+		} else {
+			found = false
+		}
+		m.probeMu.Unlock()
+		if found {
+			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
+		}
+	}
+}
+
+// nameForEndpoint reverse-looks-up which registered candidate ep belongs to,
+// by comparing its endpoint identity string. paths is small (a handful of
+// candidates at most), so a linear scan is simplest.
+func (m *MultipathBind) nameForEndpoint(ep conn.Endpoint) (string, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	target := ep.DstToString()
+	for name, e := range m.paths {
+		if e.DstToString() == target {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func (m *MultipathBind) probeLoop() {
+	ticker := time.NewTicker(probeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			m.probeAll()
+		case <-m.stop:
+			return
+		}
+	}
+}
+
+func (m *MultipathBind) probeAll() {
+	now := time.Now()
+	m.mu.RLock()
+	names := make([]string, 0, len(m.paths))
+	for name := range m.paths {
+		names = append(names, name)
+	}
+	m.mu.RUnlock()
+	for _, name := range names {
+		m.probeOne(name, now)
+	}
+}
+
+// probeOne sends a fresh probe for name unless one is already outstanding
+// and not yet timed out; a timed-out probe is scored as a miss before a new
+// one goes out, the same as an ack that never arrives at all.
+func (m *MultipathBind) probeOne(name string, now time.Time) {
+	m.probeMu.Lock()
+	if outstanding, ok := m.probes[name]; ok {
+		if now.Sub(outstanding.sentAt) < probeTimeout {
+			m.probeMu.Unlock()
+			return
+		}
+		delete(m.probes, name)
+		m.probeMu.Unlock()
+		m.scheduler.ProbeResult(name, 0, false, now)
+	} else {
+		m.probeMu.Unlock()
+	}
+	m.sendProbe(name, now)
+}
+
+func (m *MultipathBind) sendProbe(name string, now time.Time) {
+	m.mu.RLock()
+	ep, ok := m.paths[name]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return
+	}
+	m.probeMu.Lock()
+	if m.probes == nil {
+		m.probes = map[string]outstandingProbe{}
+	}
+	m.probes[name] = outstandingProbe{nonce: nonce, sentAt: now}
+	m.probeMu.Unlock()
+	frame := EncodeControlFrame(FramePathProbe, nonce[:])
+	_ = m.base.Send([][]byte{frame}, ep)
+}
+
+// FramePathProbe and FramePathAck are deliberately tiny, fixed-size control
+// frames. A probe has a twelve byte nonce; an ack echoes exactly those twelve
+// bytes. Neither carries an address, token, or arbitrary payload, so
+// replying to a probe cannot be used as a useful amplification primitive.
+// The size (encoded frame: controlHeaderLen(5)+12 = 17 bytes) is deliberately
+// chosen to clear wstransport.ValidDatagram's 16-byte floor -- the WSS
+// carrier (Bind.Send/read) silently drops anything smaller with no error, so
+// an 8-byte nonce (the original size) made a WSS-carried probe/ack
+// unforwardable.
 const (
 	FramePathProbe byte = 6
 	FramePathAck   byte = 7
-	pathProbeSize       = 8
+	pathProbeSize       = 12
+	// FrameThroughputReport is a multipath-v2-only frame; see its own doc
+	// comment further down for the payload shape.
+	FrameThroughputReport byte = 8
 )
 
 // PathKind is a human-readable candidate class, suitable for local status.

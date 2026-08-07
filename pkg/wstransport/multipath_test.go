@@ -30,6 +30,19 @@ func TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+// TestRegisterPathStartsUnhealthy is a regression test for the bug that made
+// a multipath-v1 session a permanent split-brain: a candidate must start
+// unhealthy at registration and only become healthy once a real probe/ack
+// round trip completes -- never from a synthetic seed baked into
+// RegisterPath/Register themselves.
+func TestRegisterPathStartsUnhealthy(t *testing.T) {
+	s := NewScheduler()
+	s.Register("udp-relay", PathUDPRelay)
+	if primary, _, _ := s.Select(); primary != "" {
+		t.Fatalf("primary immediately after Register = %q, want none", primary)
+	}
+}
+
 func TestSchedulerRecoversAfterThreeMisses(t *testing.T) {
 	s := NewScheduler()
 	s.Register("wss", PathWSS)
@@ -73,10 +86,22 @@ func TestDuplicateCacheTransportOnlyAndExpiry(t *testing.T) {
 }
 
 func TestValidPathControl(t *testing.T) {
-	if !ValidPathControl(FramePathProbe, make([]byte, 8)) || !ValidPathControl(FramePathAck, make([]byte, 8)) {
+	if !ValidPathControl(FramePathProbe, make([]byte, pathProbeSize)) || !ValidPathControl(FramePathAck, make([]byte, pathProbeSize)) {
 		t.Fatal("valid fixed control frame rejected")
 	}
-	if ValidPathControl(FramePathProbe, nil) || ValidPathControl(FramePrime, make([]byte, 8)) {
+	if ValidPathControl(FramePathProbe, nil) || ValidPathControl(FramePrime, make([]byte, pathProbeSize)) {
 		t.Fatal("invalid control frame accepted")
+	}
+}
+
+// TestPathProbeFrameClearsValidDatagramFloor guards against a regression that
+// once made every WSS-carried candidate permanently unhealthy: an encoded
+// probe/ack frame must be large enough to survive ValidDatagram's 16-byte
+// floor, since Bind.Send/read (the WSS carrier) silently drops anything
+// smaller with no error.
+func TestPathProbeFrameClearsValidDatagramFloor(t *testing.T) {
+	frame := EncodeControlFrame(FramePathProbe, make([]byte, pathProbeSize))
+	if !ValidDatagram(frame) {
+		t.Fatalf("encoded probe frame (%d bytes) does not clear ValidDatagram's floor", len(frame))
 	}
 }

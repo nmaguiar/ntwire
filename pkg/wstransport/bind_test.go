@@ -145,14 +145,57 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	defer h.Close()
 
 	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
-	_, _, err = client.Open(0)
+	clientFns, _, err := client.Open(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if primary, _, _ := client.Scheduler().Select(); primary != "wss" {
-		t.Fatalf("primary path after Open = %q, want wss", primary)
+	// Hybrid.Open appends the UDP carrier's receive funcs (StdNetBind may
+	// return more than one, e.g. one per address family) before the single
+	// WebSocket one, so the WS func -- where the ack actually arrives -- is
+	// always the last element, never assumable as index 0.
+	clientWSFn := clientFns[len(clientFns)-1]
+
+	// RegisterPath (from the client's onOpen) fires an immediate probe but
+	// does not wait for the reply; this test's server is a bare Server, not
+	// wrapped in ServerMultipathBind, so nothing answers it automatically --
+	// read the probe and echo the ack by hand, exactly as
+	// ServerMultipathBind.dispatchControl would.
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	n, err := serverFns[0](serverBuf, serverSizes, serverEP)
+	if err != nil || n != 1 {
+		t.Fatalf("server receive of probe: n=%d err=%v", n, err)
 	}
+	typ, payload, ok := DecodeControlFrame(serverBuf[0][:serverSizes[0]])
+	if !ok || typ != FramePathProbe {
+		t.Fatalf("expected a path probe, got typ=%d ok=%v", typ, ok)
+	}
+	if err := server.Send([][]byte{EncodeControlFrame(FramePathAck, payload)}, serverEP[0]); err != nil {
+		t.Fatalf("server ack send: %v", err)
+	}
+
+	// The client must actually pump its receive func for wrapReceive to
+	// intercept the ack and call handlePathControl; a control-frame-only
+	// batch never returns to the caller (see wrapReceive), so this blocks
+	// until client.Close() tears down the connection -- run it in the
+	// background and poll Select for the result instead of waiting on it
+	// directly.
+	go func() {
+		buf, sizes, eps := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+		_, _ = clientWSFn(buf, sizes, eps)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	var primary string
+	for time.Now().Before(deadline) {
+		if primary, _, _ = client.Scheduler().Select(); primary == "wss" {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if primary != "wss" {
+		t.Fatalf("primary path after ack = %q, want wss", primary)
+	}
+
 	ep, err := client.ParseEndpoint(MultipathSentinel)
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +203,7 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
 		t.Fatalf("Send via multipath WSS = %v", err)
 	}
-	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
 		t.Fatalf("server receive: n=%d err=%v size=%d", n, err, serverSizes[0])
 	}

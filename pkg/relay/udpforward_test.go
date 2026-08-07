@@ -173,6 +173,62 @@ func TestDatagramRelayDropsOversizedDatagram(t *testing.T) {
 	}
 }
 
+// TestDatagramRelayForwardsPathProbeOnlyWhenBound exercises the A6 claim
+// directly: a FramePathProbe/FramePathAck is opaque to the relay, but still
+// only ever forwarded under the same token-verified bind/address-lock check
+// as an ordinary WireGuard datagram -- never trusted on frame type alone.
+func TestDatagramRelayForwardsPathProbeOnlyWhenBound(t *testing.T) {
+	table, clientFacing, pooled := newTestDatagramRelay(t)
+	serverSock, clientSock := bindTestSession(t, table, clientFacing, pooled, "tenant-probe")
+
+	probe := wstransport.EncodeControlFrame(wstransport.FramePathProbe, bytes.Repeat([]byte{0x05}, 12))
+
+	// An unbound sender's probe must be dropped, exactly like an ordinary
+	// unbound datagram.
+	unbound := mustListenUDPForTest(t)
+	if _, err := unbound.WriteTo(probe, clientFacing.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readWithTimeout(t, serverSock, 200*time.Millisecond); ok {
+		t.Fatal("path probe from an unbound sender was forwarded, want it dropped")
+	}
+
+	// The bound client's probe forwards byte-for-byte, opaque to the relay.
+	if _, err := clientSock.WriteTo(probe, clientFacing.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := readWithTimeout(t, serverSock, time.Second)
+	if !ok || !bytes.Equal(got, probe) {
+		t.Fatalf("path probe from the bound client was not forwarded byte-for-byte (ok=%v)", ok)
+	}
+
+	// The ack direction (server leg -> client-facing socket) is symmetric.
+	ack := wstransport.EncodeControlFrame(wstransport.FramePathAck, bytes.Repeat([]byte{0x06}, 12))
+	if _, err := serverSock.WriteTo(ack, pooled.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	got, ok = readWithTimeout(t, clientSock, time.Second)
+	if !ok || !bytes.Equal(got, ack) {
+		t.Fatalf("path ack from the bound server was not forwarded byte-for-byte (ok=%v)", ok)
+	}
+}
+
+// TestDatagramRelayDropsMalformedPathControl confirms a probe/ack frame
+// whose payload doesn't match the fixed 12-byte shape is dropped even from a
+// fully bound sender, rather than forwarded as if it were valid.
+func TestDatagramRelayDropsMalformedPathControl(t *testing.T) {
+	table, clientFacing, pooled := newTestDatagramRelay(t)
+	serverSock, clientSock := bindTestSession(t, table, clientFacing, pooled, "tenant-probe")
+
+	malformed := wstransport.EncodeControlFrame(wstransport.FramePathProbe, []byte{0x01, 0x02})
+	if _, err := clientSock.WriteTo(malformed, clientFacing.LocalAddr()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readWithTimeout(t, serverSock, 200*time.Millisecond); ok {
+		t.Fatal("malformed path probe was forwarded, want it dropped")
+	}
+}
+
 func TestDatagramRelayIsolatesConcurrentSessions(t *testing.T) {
 	clientFacing := mustListenUDPForTest(t)
 	pooled1 := mustListenUDPForTest(t)
