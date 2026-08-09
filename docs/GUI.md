@@ -60,6 +60,16 @@ profile from it -- and after that, never writes `config.yaml` again;
 file under `~/.ntwire/gui/`, so a GUI-managed connection can never delete
 or overwrite a CLI session's status file.
 
+For an OIDC provider that requires a client secret, open a profile's **SSO
+(advanced)** section and enter it as **OIDC client secret**. The secret is
+stored only in that profile's `gui.yaml` (which ntwire-gui writes with mode
+`0600`) and is sent only to the OIDC token endpoint. It is write-only in the
+settings UI and API: after saving, it is never returned or displayed again;
+leave the field blank while editing a profile to retain the saved value. A
+profile secret takes precedence over `NTWIRE_OIDC_CLIENT_SECRET`; the
+environment variable remains the CLI-compatible fallback when no GUI secret
+is saved.
+
 ## Autostart and single instance
 
 Toggling "Start at login" in the tray registers a per-OS login item via

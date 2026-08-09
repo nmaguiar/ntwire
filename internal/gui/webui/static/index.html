@@ -292,6 +292,22 @@ function fieldControl(f, value, profile) {
   return label;
 }
 
+function oidcClientSecretControl(profile) {
+  const label = document.createElement('label');
+  label.append('OIDC client secret');
+  const input = document.createElement('input');
+  input.type = 'password';
+  input.name = 'OIDCClientSecret';
+  input.autocomplete = 'new-password';
+  input.placeholder = profile ? 'Saved secret is not shown; leave empty to keep it' : 'Optional';
+  label.append(input);
+  const help = document.createElement('p');
+  help.className = 'help';
+  help.textContent = 'For providers that require a client secret. It is saved with this GUI profile and is never shown here again.';
+  label.append(help);
+  return label;
+}
+
 // previewTunnels calls the profile's /probe endpoint (client.Options.
 // QueryOnly -- authenticates and reports what the server would grant
 // without occupying a max_sessions_per_key slot, ntwire-gui's equivalent
@@ -339,6 +355,20 @@ function renderGeneratedFields(profile) {
       details.append(summary);
       const fs = document.createElement('fieldset');
       advanced.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined, profile)));
+      if (group === 'SSO') fs.append(oidcClientSecretControl(profile));
+      details.append(fs);
+      generatedFields.append(details);
+    }
+    // The SSO group normally has both basic and advanced fields. Keep the
+    // write-only secret in Advanced even if that changes in the future.
+    if (group === 'SSO' && !advanced.length) {
+      const details = document.createElement('details');
+      details.className = 'advanced';
+      const summary = document.createElement('summary');
+      summary.textContent = 'SSO (advanced)';
+      details.append(summary);
+      const fs = document.createElement('fieldset');
+      fs.append(oidcClientSecretControl(profile));
       details.append(fs);
       generatedFields.append(details);
     }
@@ -410,6 +440,8 @@ form.addEventListener('submit', async (e) => {
       }
       else body[f.field] = el.value;
     }
+    const oidcClientSecret = form.elements.OIDCClientSecret;
+    if (oidcClientSecret && oidcClientSecret.value) body.OIDCClientSecret = oidcClientSecret.value;
     if (editingID) {
       await api('PUT', `/api/profiles/${editingID}`, body);
     } else {

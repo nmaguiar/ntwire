@@ -215,6 +215,23 @@ func (c *Connection) directUpgradeLoop() {
 			healthy, reason := c.pathHealthy(relayCandidate)
 			if !healthy {
 				c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
+				c.mu.Lock()
+				multipath := c.multipath != nil
+				c.mu.Unlock()
+				if multipath {
+					// Multipath keeps the WireGuard peer on its stable logical
+					// endpoint and the scheduler continues using the still-healthy
+					// WSS candidate. WSSentinel is a legacy Hybrid endpoint and
+					// cannot be installed on a MultipathBind; trying to do so here
+					// used to turn a harmless per-path failure into a failed
+					// "revert" loop.
+					c.transport.Store(uint32(transportWSSRelay))
+					stopRelayKeepalive()
+					relayCandidate = ""
+					rung = rungNone
+					wait = c.upgradeTiming.retryInterval
+					continue
+				}
 				if err := c.setEndpoint(wstransport.WSSentinel); err != nil {
 					c.log.Warn("reverting to WebSocket fallback failed; will retry", "server", c.DisplayName(), "error", err)
 					wait = c.upgradeTiming.healthCheckInterval
@@ -345,13 +362,13 @@ func (c *Connection) stackAndServerKey() (stack *wgnet.Stack, serverPub string, 
 // is gone, so PeerEndpoint alone can't detect that.
 func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string) {
 	c.mu.Lock()
-	multipath := c.multipath != nil
+	multipath := c.multipath
 	c.mu.Unlock()
-	if multipath {
-		if !c.probeDirectPath() {
-			return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
+	if multipath != nil {
+		if multipathPathHealthy(multipath, "udp-relay") {
+			return true, ""
 		}
-		return true, ""
+		return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
 	}
 	stack, serverPub, ok := c.stackAndServerKey()
 	if !ok {
@@ -368,6 +385,19 @@ func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string)
 		return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
 	}
 	return true, ""
+}
+
+// multipathPathHealthy deliberately checks the named candidate, rather than
+// sending a WireGuard probe through the stable multipath endpoint. The latter
+// only proves that *some* scheduler-selected path (usually WSS while a new UDP
+// candidate is being probed) works, and could therefore falsely promote UDP.
+func multipathPathHealthy(bind *wstransport.MultipathBind, name string) bool {
+	for _, path := range bind.Paths() {
+		if path.Name == name {
+			return path.Healthy
+		}
+	}
+	return false
 }
 
 // tryDirectUpgrade runs one full candidate-exchange-and-punch attempt. It
@@ -648,7 +678,11 @@ func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate
 	} else if err := stack.UpdateEndpoint(serverPub, resp.RelayAddr); err != nil {
 		return "", "", fmt.Sprintf("failed to seed the local WireGuard endpoint with the relay's UDP-relay address %s: %v", resp.RelayAddr, err)
 	}
-	if !c.probeDirectPath() {
+	if multipath != nil {
+		if !waitForMultipathPath(multipath, "udp-relay", c.upgradeTiming.probeTimeout, c.stop) {
+			return "", "", fmt.Sprintf("UDP relay path via %s did not respond within %s", resp.RelayAddr, c.upgradeTiming.probeTimeout)
+		}
+	} else if !c.probeDirectPath() {
 		if multipath == nil {
 			_ = stack.UpdateEndpoint(serverPub, wstransport.WSSentinel)
 		}
@@ -663,6 +697,28 @@ func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate
 	c.log.Info("upgraded to UDP via relay", "server", c.DisplayName(), "relay_addr", resp.RelayAddr)
 	c.transport.Store(uint32(transportUDPRelay))
 	return resp.RelayAddr, resp.Token, ""
+}
+
+// waitForMultipathPath waits only for the newly registered candidate's
+// control-plane acknowledgement. WSS remains selectable by the scheduler the
+// entire time, so this verification never replaces an active tunnel route.
+func waitForMultipathPath(bind *wstransport.MultipathBind, name string, timeout time.Duration, stop <-chan struct{}) bool {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if multipathPathHealthy(bind, name) {
+			return true
+		}
+		select {
+		case <-stop:
+			return false
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 // udpRelayKeepaliveLoop resends FrameRelayBind to addr with token every

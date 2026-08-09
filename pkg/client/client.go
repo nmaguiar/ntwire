@@ -145,7 +145,14 @@ type Options struct {
 	NoBrowser bool
 	// TokenCacheFile overrides ~/.ntwire/tokens.json.
 	TokenCacheFile string
-	Logger         *slog.Logger
+	// OIDCClientSecret supplies the optional client secret required by some
+	// public OIDC clients. When empty, NTWIRE_OIDC_CLIENT_SECRET is used for
+	// backwards compatibility with the command-line client.
+	//
+	// Callers must keep this value private: it is only sent to the issuer's
+	// token endpoint and is never included in ntwire protocol messages.
+	OIDCClientSecret string
+	Logger           *slog.Logger
 
 	// QueryOnly asks the server for the caller's allowed tunnels without
 	// establishing a tunnel session: no WireGuard keypair is generated and
@@ -561,7 +568,11 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	if err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	tok, err := oidcclient.TokensForIssuer(context.Background(), cache, base, issuer, oidcclient.ForIssuerOptions{NoBrowser: o.NoBrowser, ClientSecret: os.Getenv("NTWIRE_OIDC_CLIENT_SECRET")})
+	clientSecret := o.OIDCClientSecret
+	if clientSecret == "" {
+		clientSecret = os.Getenv("NTWIRE_OIDC_CLIENT_SECRET")
+	}
+	tok, err := oidcclient.TokensForIssuer(context.Background(), cache, base, issuer, oidcclient.ForIssuerOptions{NoBrowser: o.NoBrowser, ClientSecret: clientSecret})
 	if err != nil {
 		return protocol.AuthResponse{}, fmt.Errorf("sso login: %w", err)
 	}

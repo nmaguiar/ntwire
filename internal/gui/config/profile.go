@@ -29,10 +29,15 @@ type Profile struct {
 	// Websocket forces the WebSocket WireGuard transport. Leave false for
 	// almost every profile: relay servers are auto-detected and use it
 	// without this being set (see client.selectTransport).
-	Websocket   bool   `yaml:"websocket"`
-	SSO         bool   `yaml:"sso"`
-	Provider    string `yaml:"provider"`
-	CollectExec string `yaml:"collect_exec"`
+	Websocket bool   `yaml:"websocket"`
+	SSO       bool   `yaml:"sso"`
+	Provider  string `yaml:"provider"`
+	// OIDCClientSecret is profile-local client authentication material for an
+	// issuer that requires it. It is persisted only in gui.yaml (mode 0600)
+	// and deliberately excluded from JSON so the settings API can never return
+	// it to the UI after it has been saved.
+	OIDCClientSecret string `yaml:"oidc_client_secret,omitempty" json:"-"`
+	CollectExec      string `yaml:"collect_exec"`
 	// BindAddress is the advanced, opt-in override for the loopback-only
 	// default tunnel listeners bind to; see client.Options.BindAddress.
 	BindAddress string `yaml:"bind_address"`

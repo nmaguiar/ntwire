@@ -26,7 +26,7 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	cfg := Config{
 		Settings: Settings{StartAtLogin: true, Notifications: true},
 		Profiles: []Profile{
-			{ID: "abc123", Name: "home-lab", Server: "https://home.example:8443", Ports: map[string]int{"web": 8080}},
+			{ID: "abc123", Name: "home-lab", Server: "https://home.example:8443", Ports: map[string]int{"web": 8080}, OIDCClientSecret: "gui-secret"},
 		},
 	}
 	if err := Save(path, cfg); err != nil {
@@ -41,6 +41,9 @@ func TestSaveThenLoadRoundTrips(t *testing.T) {
 	}
 	if !got.Settings.StartAtLogin {
 		t.Errorf("Load() Settings.StartAtLogin = false, want true")
+	}
+	if got.Profiles[0].OIDCClientSecret != "gui-secret" {
+		t.Errorf("Load() OIDCClientSecret = %q, want saved secret", got.Profiles[0].OIDCClientSecret)
 	}
 }
 

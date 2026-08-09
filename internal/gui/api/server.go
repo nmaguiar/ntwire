@@ -131,10 +131,14 @@ func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
-	var p config.Profile
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	body, err := decodeProfileRequest(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	p := body.Profile
+	if body.OIDCClientSecret != nil {
+		p.OIDCClientSecret = *body.OIDCClientSecret
 	}
 	p.ID = "" // a client does not choose its own ID; AddProfile assigns one
 	added, err := s.mgr.AddProfile(p)
@@ -147,10 +151,25 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	var p config.Profile
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+	body, err := decodeProfileRequest(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
+	}
+	p := body.Profile
+	previous, ok := s.mgr.Snapshot(id)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("gui: no such profile %q", id))
+		return
+	}
+	// Profile reads intentionally omit OIDCClientSecret. A blank value from
+	// the write-only form therefore means "keep the saved secret"; an API
+	// caller can explicitly clear it with ClearOIDCClientSecret.
+	p.OIDCClientSecret = previous.Profile.OIDCClientSecret
+	if body.ClearOIDCClientSecret {
+		p.OIDCClientSecret = ""
+	} else if body.OIDCClientSecret != nil && *body.OIDCClientSecret != "" {
+		p.OIDCClientSecret = *body.OIDCClientSecret
 	}
 	p.ID = id
 	if err := s.mgr.UpdateProfile(p); err != nil {
@@ -158,6 +177,23 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
+}
+
+// profileRequest is the write shape of a GUI profile. OIDCClientSecret is
+// deliberately separate from config.Profile: Profile's JSON form is used for
+// every API response and must never contain the saved secret.
+type profileRequest struct {
+	config.Profile
+	OIDCClientSecret      *string `json:"OIDCClientSecret"`
+	ClearOIDCClientSecret bool    `json:"ClearOIDCClientSecret"`
+}
+
+func decodeProfileRequest(r *http.Request) (profileRequest, error) {
+	var body profileRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		return profileRequest{}, err
+	}
+	return body, nil
 }
 
 func (s *Server) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {

@@ -38,6 +38,17 @@ func TestToClientOptionsIncludesHTTPSProxyControls(t *testing.T) {
 	}
 }
 
+func TestToClientOptionsIncludesProfileOIDCClientSecret(t *testing.T) {
+	p := Profile{OIDCClientSecret: "gui-only-secret"}
+	o, err := p.ToClientOptions("/tmp/status.json", "")
+	if err != nil {
+		t.Fatalf("ToClientOptions() error = %v", err)
+	}
+	if o.OIDCClientSecret != "gui-only-secret" {
+		t.Errorf("OIDCClientSecret = %q, want profile secret", o.OIDCClientSecret)
+	}
+}
+
 func TestToClientOptionsCopiesPortsAndPassphrase(t *testing.T) {
 	p := Profile{Ports: map[string]int{"web": 8080, "db": 5432}}
 	o, err := p.ToClientOptions("/tmp/status.json", "hunter2")

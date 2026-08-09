@@ -336,6 +336,29 @@ func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
 	}
 }
 
+// TestMultipathUDPRelayHealthRequiresUDPRelayProbe protects active flows
+// during a carrier migration. A TCP probe through the stable logical endpoint
+// can succeed over WSS while a newly added UDP relay candidate is still dead;
+// that must not be treated as a UDP upgrade.
+func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.V2Options{})
+	defer multipath.Close()
+
+	now := time.Now()
+	multipath.Scheduler().Register("wss", wstransport.PathWSS)
+	multipath.Scheduler().ProbeResult("wss", time.Millisecond, true, now)
+	multipath.Scheduler().Register("udp-relay", wstransport.PathUDPRelay)
+	c := &Connection{multipath: multipath, upgradeTiming: defaultDirectUpgradeTiming()}
+	if healthy, _ := c.pathHealthy("198.51.100.10:5000"); healthy {
+		t.Fatal("pathHealthy() = true with only WSS healthy, want false for an unprobed UDP relay candidate")
+	}
+
+	multipath.Scheduler().ProbeResult("udp-relay", time.Millisecond, true, now)
+	if healthy, reason := c.pathHealthy("198.51.100.10:5000"); !healthy {
+		t.Fatalf("pathHealthy() = false (%s) after UDP relay probe acknowledgement, want true", reason)
+	}
+}
+
 // TestSetEndpointReturnsErrorWhenWebSocketDisconnected reproduces the
 // failure mode directUpgradeLoop's revert-retry logic exists for: reverting
 // is itself an UpdateEndpoint call, which fails if the WebSocket fallback

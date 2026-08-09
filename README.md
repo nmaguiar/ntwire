@@ -182,8 +182,9 @@ and `target: socks` proxy tunnels — is in
 `ntwire-server` is a public
 OAuth client (PKCE) and never authenticates itself to an IdP. A
 `client_secret` is not accepted in server configuration or exposed through
-`/v1/info`; if a provider requires one for a public client, configure it only
-in that client's `NTWIRE_OIDC_CLIENT_SECRET` environment. See the
+`/v1/info`; if a provider requires one for a public client, configure it in
+that client's `NTWIRE_OIDC_CLIENT_SECRET` environment, or in ntwire-gui's
+write-only per-profile **SSO (advanced)** setting. See the
 Google/Entra/Keycloak registration notes in [docs/OIDC-SETUP.md](docs/OIDC-SETUP.md).
 
 The server watches its configuration file (and, when set, the

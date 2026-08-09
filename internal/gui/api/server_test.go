@@ -174,6 +174,60 @@ func TestProfileCRUD(t *testing.T) {
 	}
 }
 
+func TestProfileOIDCClientSecretIsWriteOnly(t *testing.T) {
+	s := newTestServer(t)
+	const secret = "not-for-api-responses"
+
+	resp := s.do(t, http.MethodPost, "/api/profiles", map[string]string{
+		"Name": "sso", "Server": "https://home.example:8443", "OIDCClientSecret": secret,
+	})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/profiles status = %d, want 201", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(secret)) || bytes.Contains(body, []byte("OIDCClientSecret")) {
+		t.Fatalf("create response leaked OIDC secret: %s", body)
+	}
+	var created config.Profile
+	if err := json.Unmarshal(body, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = s.get(t, "/api/profiles")
+	body, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(secret)) || bytes.Contains(body, []byte("OIDCClientSecret")) {
+		t.Fatalf("profile response leaked OIDC secret: %s", body)
+	}
+
+	// The form omits its blank write-only input on edit. That must retain the
+	// stored value rather than replacing it with an empty string.
+	resp = s.do(t, http.MethodPut, "/api/profiles/"+created.ID, map[string]string{
+		"Name": "renamed", "Server": "https://home.example:8443",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT /api/profiles/{id} status = %d, want 200", resp.StatusCode)
+	}
+	body, err = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(body, []byte(secret)) || bytes.Contains(body, []byte("OIDCClientSecret")) {
+		t.Fatalf("update response leaked OIDC secret: %s", body)
+	}
+	if got, ok := s.mgr.Snapshot(created.ID); !ok || got.Profile.OIDCClientSecret != secret {
+		t.Fatalf("stored OIDC secret after blank update = %q, want preserved secret", got.Profile.OIDCClientSecret)
+	}
+}
+
 func TestConnectDisconnectAndReplacePort(t *testing.T) {
 	s := newTestServer(t)
 	resp := s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "home-lab", Server: "https://home.example:8443"})
