@@ -901,6 +901,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if c.log == nil {
 		c.log = slog.Default()
 	}
+	if options.Insecure {
+		c.log.Warn("TLS certificate verification is disabled", "event", "insecure_tls_enabled", "server", c.DisplayName())
+	}
 	transport := "udp"
 	if useWS {
 		transport = "websocket"

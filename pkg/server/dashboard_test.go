@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -11,7 +12,10 @@ import (
 )
 
 func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
-	c := Config{Tunnels: []TunnelConfig{{Name: "reports", Target: "reports.internal:8080", Description: "Reports", VirtualPort: 18080}}}
+	c := Config{Tunnels: []TunnelConfig{{Name: "reports", Target: "reports.internal:8080", Description: "Reports", VirtualPort: 18080}, {Name: "egress", Target: "socks", VirtualPort: 18081, Socks: &SocksConfig{AllowAll: true, AllowBind: true}}}}
+	c.Authorizer.Exec = "/usr/local/bin/ntwire-authorizer"
+	c.Relay.Enabled = true
+	c.Relay.AdvertiseDirect = true
 	c.Admin.WebUIToken = "operator-secret"
 	s := New(c, nil)
 	s.sessions.Create(CreateParams{Method: "oidc", Identity: "alice@example.com", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "reports", VirtualPort: 18080}}, LatencyMillis: 18, Reconnections: 2, TTL: time.Minute})
@@ -34,13 +38,18 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
 	var out struct {
-		Tunnels []dashboardTunnel `json:"tunnels"`
+		Tunnels              []dashboardTunnel `json:"tunnels"`
+		SecurityCapabilities []string          `json:"security_capabilities"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	if len(out.Tunnels) != 1 || out.Tunnels[0].SessionID == "" || out.Tunnels[0].Identity != "alice@example.com" || out.Tunnels[0].Target != "reports.internal:8080" || out.Tunnels[0].LatencyMillis != 18 || out.Tunnels[0].Reconnections != 2 || out.Tunnels[0].Stats.BytesToTarget != 42 || out.Tunnels[0].Stats.BytesFromTarget != 17 || out.Tunnels[0].Stats.Connections != 3 || out.Tunnels[0].Stats.Active != 1 {
 		t.Fatalf("dashboard tunnels = %+v", out.Tunnels)
+	}
+	wantCapabilities := []string{"authorization_hook", "direct_udp_relay_bypass", "relay_mediated_udp", "socks_bind", "socks_unrestricted"}
+	if !reflect.DeepEqual(out.SecurityCapabilities, wantCapabilities) {
+		t.Fatalf("security_capabilities = %v, want %v", out.SecurityCapabilities, wantCapabilities)
 	}
 	control := httptest.NewRecorder()
 	s.Handler().ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/v1/dashboard?token=operator-secret", nil))

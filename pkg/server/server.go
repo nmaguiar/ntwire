@@ -51,6 +51,7 @@ func New(c Config, l *slog.Logger) *Server {
 	if len(c.Auth.OIDC.Issuers) > 0 {
 		s.oidc = newVerifiers(c, l)
 	}
+	s.logSecurityCapabilities(c)
 	return s
 }
 
@@ -138,9 +139,10 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	write(w, http.StatusOK, struct {
-		Sessions int               `json:"sessions"`
-		Tunnels  []dashboardTunnel `json:"tunnels"`
-	}{Sessions: len(sessions), Tunnels: out})
+		Sessions             int               `json:"sessions"`
+		Tunnels              []dashboardTunnel `json:"tunnels"`
+		SecurityCapabilities []string          `json:"security_capabilities"`
+	}{Sessions: len(sessions), Tunnels: out, SecurityCapabilities: s.SecurityCapabilities()})
 }
 
 func (s *Server) tunnelConfig(name string) (TunnelConfig, bool) {
@@ -809,6 +811,7 @@ func (s *Server) Reload(c Config) {
 		s.reconcileTunnels(v, allowed)
 	}
 	s.log.Info("lifecycle event", "event", "configuration_reloaded")
+	s.logSecurityCapabilities(c)
 }
 
 func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {

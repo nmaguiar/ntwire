@@ -145,6 +145,18 @@ automatically" workarounds; instead, use one of:
 
 ## SOCKS proxy tunnels and egress risk
 
+### Operator-visible risk capabilities
+
+At startup and after a configuration reload, ntwire logs the stable
+`security_capabilities` event. Its `capabilities` array contains only enabled
+high-risk configuration classes, never tunnel names, identities, URLs, or
+secrets. The same array is available to an authenticated operator in
+`GET /v1/dashboard?token=...` as `security_capabilities`. Current values are
+`authorization_hook`, `socks_unrestricted`, `socks_bind`,
+`relay_mediated_udp`, and `direct_udp_relay_bypass`. An empty array means none
+of these opt-ins is configured. Client-side `--insecure` emits the separate
+`insecure_tls_enabled` warning when a connection is established.
+
 A `target: socks` tunnel is a governed general-purpose egress proxy, not a
 fixed-destination forward: every session holding its grant can reach every
 destination the tunnel's `socks:` filters permit, and the server itself, not

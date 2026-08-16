@@ -325,10 +325,16 @@ func TestClientBindRedialsAfterDrop(t *testing.T) {
 
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
 	client.redialMin, client.redialMax, client.dialTimeout = 5*time.Millisecond, 20*time.Millisecond, time.Second
+	events := make(chan string, 4)
+	client.OnPeerConnected = func(string, conn.Endpoint) { events <- "connected" }
+	client.OnPeerDisconnected = func(string, conn.Endpoint) { events <- "disconnected" }
 	if _, _, err := client.Open(0); err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	if event := <-events; event != "connected" {
+		t.Fatalf("initial lifecycle event = %q", event)
+	}
 
 	ep, err := client.ParseEndpoint("127.0.0.1:1")
 	if err != nil {
@@ -353,6 +359,14 @@ func TestClientBindRedialsAfterDrop(t *testing.T) {
 		t.Fatal("server never saw the client's peer")
 	}
 	_ = serverPeer.ws.Close(websocket.StatusNormalClosure, "simulated drop")
+	select {
+	case event := <-events:
+		if event != "disconnected" {
+			t.Fatalf("drop lifecycle event = %q", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client never emitted disconnect lifecycle event")
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	for {
@@ -368,6 +382,14 @@ func TestClientBindRedialsAfterDrop(t *testing.T) {
 	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
 		t.Fatalf("server receive after redial: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+	select {
+	case event := <-events:
+		if event != "connected" {
+			t.Fatalf("redial lifecycle event = %q", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client never emitted reconnect lifecycle event")
 	}
 }
 
