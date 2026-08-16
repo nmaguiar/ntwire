@@ -424,14 +424,26 @@ func (s *Server) reapLoop(d *dataPlane) {
 	for {
 		select {
 		case <-tick.C:
-			for _, v := range s.sessions.Reap() {
-				s.dropSession(v)
-				s.log.Debug("session expired", "session", v.ID, "identity", v.Identity)
-				s.audit("session_expired", v, "", 0)
-			}
+			s.reapSessions()
 		case <-d.stop:
 			return
 		}
+	}
+}
+
+// reapSessions owns one complete expiry transition. It is intentionally
+// separate from the ticker so tests and controlled shutdown paths can drive
+// expiration deterministically rather than waiting for wall-clock polling.
+func (s *Server) reapSessions() {
+	// Expiry may remove a WireGuard peer. Serialize it with renewal and reload
+	// so an expiring old session cannot tear down the peer a just-completed
+	// renewal deliberately preserved.
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	for _, v := range s.sessions.Reap() {
+		s.dropSession(v)
+		s.log.Debug("session expired", "session", v.ID, "identity", v.Identity)
+		s.audit("session_expired", v, "", 0)
 	}
 }
 func (s *Server) Close() {
