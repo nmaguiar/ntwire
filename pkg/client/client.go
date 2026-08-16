@@ -476,8 +476,32 @@ func fetchInfo(h *http.Client, base string) (protocol.InfoResponse, error) {
 		return protocol.InfoResponse{}, fmt.Errorf("fetching server info: %s", resp.Status)
 	}
 	var out protocol.InfoResponse
-	err = json.NewDecoder(resp.Body).Decode(&out)
-	return out, err
+	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.InfoResponse{}, err
+	}
+	if out.Version != protocol.Version {
+		return protocol.InfoResponse{}, fmt.Errorf("server uses unsupported protocol version %d", out.Version)
+	}
+	if err := protocol.ValidateRequiredCapabilities(clientCapabilities(), out.RequiredCapabilities); err != nil {
+		return protocol.InfoResponse{}, fmt.Errorf("server requires an unsupported capability: %w", err)
+	}
+	return out, nil
+}
+
+// clientCapabilities are optional control/data-plane features this binary can
+// understand. They are kept separate from what a particular connection
+// requests so an InfoResponse can fail a required capability before auth.
+func clientCapabilities() []string {
+	return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2}
+}
+
+func clientTransportCapabilities() []string { return clientCapabilities() }
+
+func validateAuthResponseCapabilities(r protocol.AuthResponse) error {
+	if err := protocol.ValidateRequiredCapabilities(clientTransportCapabilities(), r.RequiredTransportCapabilities); err != nil {
+		return fmt.Errorf("server requires an unsupported transport capability: %w", err)
+	}
+	return nil
 }
 
 func selectIssuer(info protocol.InfoResponse, name string) (protocol.OIDCIssuerInfo, error) {
@@ -579,7 +603,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	r := protocol.OIDCAuthRequest{
 		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
-		TransportCapabilities: []string{protocol.CapabilityMultipathV1},
+		TransportCapabilities: clientTransportCapabilities(),
 		QueryOnly:             o.QueryOnly,
 	}
 	b, _ := json.Marshal(r)
@@ -592,8 +616,13 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 		return protocol.AuthResponse{}, decodeAuthError(resp, "", "")
 	}
 	var out protocol.AuthResponse
-	err = json.NewDecoder(resp.Body).Decode(&out)
-	return out, err
+	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	if err := validateAuthResponseCapabilities(out); err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	return out, nil
 }
 
 // Logout clears any cached SSO tokens for serverURL, so the next
@@ -621,7 +650,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: []string{protocol.CapabilityMultipathV1}, QueryOnly: o.QueryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: clientTransportCapabilities(), QueryOnly: o.QueryOnly}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -640,8 +669,13 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 		return protocol.AuthResponse{}, decodeAuthError(resp, keyPath, o.KeyPassphrase)
 	}
 	var out protocol.AuthResponse
-	err = json.NewDecoder(resp.Body).Decode(&out)
-	return out, err
+	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	if err := validateAuthResponseCapabilities(out); err != nil {
+		return protocol.AuthResponse{}, err
+	}
+	return out, nil
 }
 
 // Connection is a persistent, local-listener view of one WireGuard session.

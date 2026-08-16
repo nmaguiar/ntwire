@@ -187,6 +187,17 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	}
 	write(w, http.StatusOK, protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers})
 }
+
+// transportCapabilitiesAvailable describes transport features this server can
+// actually negotiate now. It intentionally depends on the live data plane,
+// not just relay.enabled, so a required capability fails during authentication
+// instead of producing a session that later fails in the data plane.
+func (s *Server) transportCapabilitiesAvailable() []string {
+	if s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil {
+		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2}
+	}
+	return nil
+}
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
@@ -211,6 +222,10 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	// nonce use or authorization, rather than failing later unpredictably.
 	if a.Version != protocol.Version {
 		fail(w, 400, protocol.ErrorInvalidRequest, "unsupported protocol version")
+		return
+	}
+	if err := protocol.ValidateRequiredCapabilities(s.transportCapabilitiesAvailable(), a.RequiredTransportCapabilities); err != nil {
+		fail(w, http.StatusBadRequest, protocol.ErrorUnsupportedCapability, err.Error())
 		return
 	}
 	at, err := protocol.ParseTimestamp(a.Timestamp)
@@ -264,6 +279,10 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.Version != protocol.Version {
 		fail(w, 400, protocol.ErrorInvalidRequest, "unsupported protocol version")
+		return
+	}
+	if err := protocol.ValidateRequiredCapabilities(s.transportCapabilitiesAvailable(), a.RequiredTransportCapabilities); err != nil {
+		fail(w, http.StatusBadRequest, protocol.ErrorUnsupportedCapability, err.Error())
 		return
 	}
 	at, err := protocol.ParseTimestamp(a.Timestamp)
@@ -367,9 +386,10 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		serverKey = s.data.stack.PublicKey()
 		serverTunnelIP = s.data.serverIP.String()
 	}
-	multipathV1 := hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV1)
-	multipathV2 := hasCapability(req.TransportCapabilities, protocol.CapabilityMultipathV2)
-	multipath := s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil && multipathV1
+	negotiatedTransport := protocol.IntersectCapabilities(req.TransportCapabilities, s.transportCapabilitiesAvailable())
+	multipathV1 := protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV1)
+	multipathV2 := protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV2)
+	multipath := multipathV1
 	multipathV2 = multipath && multipathV2
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
@@ -384,15 +404,6 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.audit("auth_allowed", session, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2)})
 	return true
-}
-
-func hasCapability(caps []string, want string) bool {
-	for _, got := range caps {
-		if got == want {
-			return true
-		}
-	}
-	return false
 }
 
 // transportCapabilities echoes back which multipath capability this session

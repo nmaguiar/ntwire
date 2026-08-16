@@ -163,6 +163,9 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 	if req.Version != protocol.Version {
 		return "", "", &RegisterError{Code: protocol.ErrorInvalidRequest, Message: "unsupported protocol version"}
 	}
+	if err := protocol.ValidateRequiredCapabilities(relayCapabilities(), req.RequiredCapabilities); err != nil {
+		return "", "", &RegisterError{Code: protocol.ErrorUnsupportedCapability, Message: err.Error()}
+	}
 	ts, err := protocol.ParseTimestamp(req.Timestamp)
 	if err != nil || time.Since(ts) > 2*time.Minute || time.Until(ts) > 2*time.Minute {
 		return "", "", &RegisterError{Code: protocol.ErrorClockSkew, Message: "timestamp outside permitted window"}
@@ -193,6 +196,11 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 	}
 	return reg.Name, fp, nil
 }
+
+// relayCapabilities lists optional features implemented by the relay control
+// protocol. Unknown optional server offers are ignored; only an explicit
+// RequiredCapabilities request reaches the failure path above.
+func relayCapabilities() []string { return []string{protocol.CapabilityMultipathV1} }
 
 // RegisterAgent binds agent as the live control connection for name,
 // evicting and closing any prior agent for that name (last-writer-wins).
