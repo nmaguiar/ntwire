@@ -244,8 +244,8 @@ func snapshotOf(s *session) Snapshot {
 		snap.Err = s.err.Error()
 	}
 	if s.handle != nil {
-		st := s.handle.Status()
-		snap.Status = &st
+		state := s.handle.State()
+		snap.Connection = &state
 	}
 	return snap
 }
@@ -542,14 +542,14 @@ func (m *Manager) releasePorts(id string) {
 // profile's own guess collides with, and only a real post-connect address
 // on both sides makes that collision visible to reservePorts. See the
 // Manager.reservations doc comment.
-func (m *Manager) reconcileAllPortReservations(id string, status client.WebStatus) {
+func (m *Manager) reconcileAllPortReservations(id string, state client.ConnectionState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	res, ok := m.reservations[id]
 	if !ok {
 		return
 	}
-	for _, t := range status.Tunnels {
+	for _, t := range state.Tunnels {
 		res[t.Name] = t.LocalAddress
 	}
 }
@@ -669,7 +669,7 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 	// for that), so the provisional reservation above is corrected to the
 	// truth now that it's known -- otherwise a later profile's reservePorts
 	// check compares against a request that never actually came true.
-	m.reconcileAllPortReservations(id, handle.Status())
+	m.reconcileAllPortReservations(id, handle.State())
 	m.publish(id)
 }
 

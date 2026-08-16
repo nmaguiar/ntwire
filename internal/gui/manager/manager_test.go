@@ -69,9 +69,9 @@ func TestAddProfilePersistsToDisk(t *testing.T) {
 	}
 }
 
-func TestConnectSucceedsAndSnapshotReportsStatus(t *testing.T) {
+func TestConnectSucceedsAndSnapshotReportsTypedConnectionState(t *testing.T) {
 	fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
-		return &fakeHandle{status: client.WebStatus{Connected: true, Server: server}}, nil
+		return &fakeHandle{state: client.ConnectionState{Connected: true, Server: server}}, nil
 	}}
 	m, _ := newTestManager(t, fc)
 	p, err := m.AddProfile(config.Profile{Name: "home-lab", Server: "https://home.example:8443"})
@@ -83,8 +83,8 @@ func TestConnectSucceedsAndSnapshotReportsStatus(t *testing.T) {
 		t.Fatalf("Connect() error = %v", err)
 	}
 	snap := waitForState(t, m, p.ID, StateConnected, 5*time.Second)
-	if snap.Status == nil || !snap.Status.Connected {
-		t.Fatalf("Snapshot().Status = %+v, want Connected=true", snap.Status)
+	if snap.Connection == nil || !snap.Connection.Connected {
+		t.Fatalf("Snapshot().Connection = %+v, want Connected=true", snap.Connection)
 	}
 	if fc.callCount() != 1 {
 		t.Errorf("connector called %d times, want 1", fc.callCount())
@@ -250,9 +250,9 @@ func TestPortCollisionRejectsSecondProfileWithoutCallingConnector(t *testing.T) 
 // b's own connector call) can catch the same real address and reject it.
 func TestPortCollisionRejectsSecondProfileOnReconciledImplicitTunnel(t *testing.T) {
 	fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
-		return &fakeHandle{status: client.WebStatus{
+		return &fakeHandle{state: client.ConnectionState{
 			Connected: true,
-			Tunnels:   []client.WebTunnel{{Name: "web", LocalAddress: "127.0.0.1:58080"}},
+			Tunnels:   []client.ListenerState{{Name: "web", LocalAddress: "127.0.0.1:58080"}},
 		}}, nil
 	}}
 	m, _ := newTestManager(t, fc)

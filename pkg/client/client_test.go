@@ -704,7 +704,8 @@ func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
 
 	c := &Connection{
 		Response: protocol.AuthResponse{SessionID: "s1", Token: "t1",
-			TunnelIP: "10.90.0.7", ServerTunnelIP: "10.90.0.1", ServerPublicKey: "abc="},
+			TunnelIP: "10.90.0.7", ServerTunnelIP: "10.90.0.1", ServerPublicKey: "abc=",
+			TransportCapabilities: []string{protocol.CapabilityMultipathV1}},
 		base: srv.URL, http: srv.Client(),
 	}
 	if err := c.renew(); err != nil {
@@ -715,6 +716,9 @@ func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
 	}
 	if c.Response.TunnelIP != "10.90.0.7" || c.Response.ServerTunnelIP != "10.90.0.1" || c.Response.ServerPublicKey != "abc=" {
 		t.Fatalf("addressing lost on renew: %+v", c.Response)
+	}
+	if !reflect.DeepEqual(c.State().Security.TransportCapabilities, []string{protocol.CapabilityMultipathV1}) {
+		t.Fatalf("State().Security.TransportCapabilities = %v, want negotiated capability preserved", c.State().Security.TransportCapabilities)
 	}
 }
 
@@ -741,6 +745,48 @@ func TestStatusMatchesWebStatus(t *testing.T) {
 	}
 	if got, want := c.Status(), c.webStatus(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Status() = %+v, want %+v (webStatus())", got, want)
+	}
+}
+
+func TestStateReportsTypedGUIConnectionState(t *testing.T) {
+	c := &Connection{
+		Response: protocol.AuthResponse{
+			TTLSeconds:                    42,
+			TransportCapabilities:         []string{protocol.CapabilityMultipathV1},
+			RequiredTransportCapabilities: []string{protocol.CapabilityMultipathV2},
+			Tunnels:                       []protocol.Tunnel{{Name: "reports", Description: "Reports"}},
+		},
+		base:            "https://ntwire.example:8443",
+		method:          "oidc",
+		issuer:          "example",
+		bindAddr:        "127.0.0.1",
+		options:         Options{Insecure: true},
+		transportReason: "server did not advertise a direct UDP WireGuard endpoint",
+		expiresAt:       time.Now().Add(42 * time.Second),
+		tunnels:         []*localTunnel{{name: "reports", virtualPort: 443, localAddr: "127.0.0.1:8443"}},
+	}
+	c.transport.Store(uint32(transportWSSRelay))
+	retryAt := time.Now().Add(time.Second)
+	c.reconnectState = ReconnectState{Reconnecting: true, Attempts: 2, RetryAt: &retryAt, LastError: "temporary network failure"}
+
+	got := c.State()
+	if got.Authentication != (AuthenticationState{Method: "oidc", Issuer: "example"}) {
+		t.Fatalf("Authentication = %+v", got.Authentication)
+	}
+	if got.Transport.Mode != TransportWebSocketRelay || got.Transport.Description != "WSS through relay" || got.Transport.Reason == "" {
+		t.Fatalf("Transport = %+v", got.Transport)
+	}
+	if got.Reconnect.Attempts != 2 || !got.Reconnect.Reconnecting || got.Reconnect.LastError == "" || got.Reconnect.RetryAt == nil {
+		t.Fatalf("Reconnect = %+v", got.Reconnect)
+	}
+	if got.Expiration.TTLSeconds != 42 || got.Expiration.ExpiresAt == nil {
+		t.Fatalf("Expiration = %+v", got.Expiration)
+	}
+	if !got.Security.InsecureTLS || !reflect.DeepEqual(got.Security.TransportCapabilities, []string{protocol.CapabilityMultipathV1}) {
+		t.Fatalf("Security = %+v", got.Security)
+	}
+	if len(got.Tunnels) != 1 || got.Tunnels[0].Name != "reports" || got.Tunnels[0].LocalAddress != "127.0.0.1:8443" {
+		t.Fatalf("Tunnels = %+v", got.Tunnels)
 	}
 }
 

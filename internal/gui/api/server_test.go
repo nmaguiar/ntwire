@@ -33,16 +33,13 @@ func (fakeConnector) Authenticate(server, keyPath string, info protocol.ClientIn
 
 type fakeHandle struct{}
 
-func (fakeHandle) Status() client.WebStatus                 { return client.WebStatus{Connected: true} }
-func (fakeHandle) Instructions() client.WebInstructionsList { return client.WebInstructionsList{} }
+func (fakeHandle) State() client.ConnectionState { return client.ConnectionState{Connected: true} }
 func (fakeHandle) ReplaceListener(name, host string, port int) (string, error) {
 	if host == "" {
 		host = "127.0.0.1"
 	}
 	return fmt.Sprintf("%s:%d", host, port), nil
 }
-func (fakeHandle) AuthMethod() string   { return "ssh" }
-func (fakeHandle) DisplayName() string  { return "fake" }
 func (fakeHandle) DashboardURL() string { return "http://127.0.0.1:0/?token=fake" }
 func (fakeHandle) Close()               {}
 
@@ -251,6 +248,9 @@ func TestConnectDisconnectAndReplacePort(t *testing.T) {
 	}
 	if snap.State != manager.StateConnected {
 		t.Fatalf("profile did not reach StateConnected in time; last state observed differs")
+	}
+	if snap.Connection == nil || !snap.Connection.Connected {
+		t.Fatalf("connected profile has no typed connection snapshot: %+v", snap.Connection)
 	}
 
 	resp = s.do(t, http.MethodPut, "/api/profiles/"+created.ID+"/tunnels/web", map[string]int{"local_port": 9090})

@@ -18,6 +18,7 @@ h2{font-size:1.1rem;margin:0 0 .75rem}
 .profile:last-child{border-bottom:none}
 .profile .name{font-weight:700}
 .profile .server{color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Consolas,monospace}
+.profile .live{color:var(--muted);font-size:.8rem;margin-top:.15rem}
 .profile .info{flex:1;min-width:0}
 .badge{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);border-radius:999px;padding:.25rem .6rem;font-size:.78rem;font-weight:700;background:var(--panel-2)}
 .badge::before{content:"";width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}
@@ -152,7 +153,20 @@ function renderProfileRow(snap) {
 
   const badge = document.createElement('span');
   badge.className = 'badge ' + snap.state;
-  badge.textContent = stateLabel(snap.state) + (snap.error ? ': ' + snap.error : '');
+  const reconnectError = snap.connection && snap.connection.reconnect && snap.connection.reconnect.last_error;
+  badge.textContent = stateLabel(snap.state) + (snap.error ? ': ' + snap.error : reconnectError ? ': ' + reconnectError : '');
+
+  if (snap.connection) {
+    const c = snap.connection;
+    const live = document.createElement('div');
+    live.className = 'live';
+    const parts = [];
+    if (c.authentication && c.authentication.method) parts.push(`Authentication: ${c.authentication.method}`);
+    if (c.transport && c.transport.description) parts.push(`Transport: ${c.transport.description}`);
+    if (c.expiration && c.expiration.expires_at) parts.push(`Expires: ${new Date(c.expiration.expires_at).toLocaleString()}`);
+    live.textContent = parts.join(' · ');
+    info.append(live);
+  }
 
   const connected = snap.state === 'connected' || snap.state === 'reconnecting';
   const connectBtn = document.createElement('button');
@@ -200,8 +214,8 @@ function renderProfileRow(snap) {
   }
 
   block.append(row);
-  if (connected && snap.status && snap.status.tunnels && snap.status.tunnels.length) {
-    block.append(renderTunnelList(p.ID, snap.status.tunnels));
+  if (connected && snap.connection && snap.connection.tunnels && snap.connection.tunnels.length) {
+    block.append(renderTunnelList(p.ID, snap.connection.tunnels));
   }
   return block;
 }

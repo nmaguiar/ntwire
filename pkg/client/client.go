@@ -205,6 +205,24 @@ type Event struct {
 }
 
 func (c *Connection) fireEvent(e Event) {
+	c.mu.Lock()
+	switch e.Kind {
+	case EventReconnecting, EventReconnectFailed:
+		c.reconnectState.Reconnecting = true
+		c.reconnectState.Attempts++
+		if e.Err != nil {
+			c.reconnectState.LastError = e.Err.Error()
+		}
+		if e.RetryIn > 0 {
+			retryAt := time.Now().Add(e.RetryIn)
+			c.reconnectState.RetryAt = &retryAt
+		}
+	case EventReconnected, EventRenewed:
+		c.reconnectState.Reconnecting = false
+		c.reconnectState.RetryAt = nil
+		c.reconnectState.LastError = ""
+	}
+	c.mu.Unlock()
 	if c.options.OnEvent != nil {
 		c.options.OnEvent(e)
 	}
@@ -672,6 +690,11 @@ type Connection struct {
 	// (see selectTransport); empty when it is. Surfaced by TransportReason
 	// so the connect CLI can tell the user why, not just that.
 	transportReason string
+	// expiresAt and reconnectState are the GUI-facing lifecycle facts which
+	// cannot be reconstructed reliably from logs. They are protected by mu
+	// along with Response, because renewal replaces both at the same time.
+	expiresAt      time.Time
+	reconnectState ReconnectState
 
 	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
 	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
@@ -719,6 +742,37 @@ func (t connectionTransport) String() string {
 		return "UDP direct via relay reflector"
 	default:
 		return "unknown"
+	}
+}
+
+// TransportMode is the stable, machine-readable form of the active
+// data-plane route. Description in ConnectionState.Transport is intended for
+// display; consumers should branch on Mode instead.
+type TransportMode string
+
+const (
+	TransportUnknown           TransportMode = "unknown"
+	TransportUDPDirect         TransportMode = "udp_direct"
+	TransportWebSocketFallback TransportMode = "websocket_fallback"
+	TransportWebSocketRelay    TransportMode = "websocket_relay"
+	TransportUDPRelay          TransportMode = "udp_relay"
+	TransportUDPRelayReflector TransportMode = "udp_relay_reflector"
+)
+
+func (t connectionTransport) mode() TransportMode {
+	switch t {
+	case transportUDPDirect:
+		return TransportUDPDirect
+	case transportWSSFallback:
+		return TransportWebSocketFallback
+	case transportWSSRelay:
+		return TransportWebSocketRelay
+	case transportUDPRelay:
+		return TransportUDPRelay
+	case transportUDPRelayReflector:
+		return TransportUDPRelayReflector
+	default:
+		return TransportUnknown
 	}
 }
 
@@ -895,6 +949,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
+	}
+	if r.TTLSeconds > 0 {
+		c.expiresAt = time.Now().Add(time.Duration(r.TTLSeconds) * time.Second)
 	}
 	c.transport.Store(uint32(initialTransportState(useWS, r.UDP).connectionTransport()))
 	c.latencyMillis.Store(uint64(time.Since(authStart).Milliseconds()))
@@ -1361,6 +1418,11 @@ func (c *Connection) reconnect() error {
 	c.Response = auth.response
 	c.token = auth.response.Token
 	c.method, c.issuer = auth.method, auth.issuer
+	if auth.response.TTLSeconds > 0 {
+		c.expiresAt = time.Now().Add(time.Duration(auth.response.TTLSeconds) * time.Second)
+	} else {
+		c.expiresAt = time.Time{}
+	}
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.reconnections.Store(info.Reconnections)
 	c.mu.Unlock()
@@ -1412,8 +1474,23 @@ func (c *Connection) renew() error {
 	if out.ServerPublicKey == "" {
 		out.ServerPublicKey = c.Response.ServerPublicKey
 	}
+	// Transport capabilities are negotiated at authentication time and a
+	// renewal commonly omits them. Keep the established values so callers of
+	// State do not see their security-capability state disappear between
+	// renewals merely because the compact renewal response left it out.
+	if out.TransportCapabilities == nil {
+		out.TransportCapabilities = append([]string(nil), c.Response.TransportCapabilities...)
+	}
+	if out.RequiredTransportCapabilities == nil {
+		out.RequiredTransportCapabilities = append([]string(nil), c.Response.RequiredTransportCapabilities...)
+	}
 	c.Response = out
 	c.token = out.Token
+	if out.TTLSeconds > 0 {
+		c.expiresAt = time.Now().Add(time.Duration(out.TTLSeconds) * time.Second)
+	} else {
+		c.expiresAt = time.Time{}
+	}
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.mu.Unlock()
 	// hybrid is set once at connect and never reassigned (see the doc comment
@@ -1540,6 +1617,120 @@ type WebStatus struct {
 	Reconnections  uint64                   `json:"reconnections"`
 	Paths          []wstransport.PathStatus `json:"paths,omitempty"`
 	Duplication    bool                     `json:"duplication_active,omitempty"`
+}
+
+// ConnectionState is the complete typed, race-free state of a running
+// connection. It is intended for long-lived callers such as ntwire-gui;
+// unlike parsing log lines, it remains stable across log formatting changes
+// and reports the current listener, authentication, transport, reconnect,
+// expiry, and negotiated security state together.
+type ConnectionState struct {
+	Connected      bool                `json:"connected"`
+	Server         string              `json:"server"`
+	ServerName     string              `json:"server_name"`
+	Authentication AuthenticationState `json:"authentication"`
+	Tunnels        []ListenerState     `json:"tunnels"`
+	Transport      TransportState      `json:"transport"`
+	Reconnect      ReconnectState      `json:"reconnect"`
+	Expiration     ExpirationState     `json:"expiration"`
+	Security       SecurityState       `json:"security"`
+	LatencyMillis  uint64              `json:"latency_millis"`
+	Reconnections  uint64              `json:"reconnections"`
+}
+
+// AuthenticationState identifies the successful method without exposing the
+// authenticated identity, session token, or any other credential.
+type AuthenticationState struct {
+	Method string `json:"method,omitempty"`
+	Issuer string `json:"issuer,omitempty"`
+}
+
+// ListenerState is one granted tunnel and its actual local listener.
+type ListenerState struct {
+	Name         string      `json:"name"`
+	VirtualPort  int         `json:"virtual_port"`
+	Description  string      `json:"description"`
+	LocalAddress string      `json:"local_address"`
+	Stats        TunnelStats `json:"stats"`
+}
+
+// TransportState reports both a stable route identifier and human-readable
+// display text. Paths and Duplication are populated for multipath transport.
+type TransportState struct {
+	Mode        TransportMode            `json:"mode"`
+	Description string                   `json:"description"`
+	Reason      string                   `json:"reason,omitempty"`
+	Paths       []wstransport.PathStatus `json:"paths,omitempty"`
+	Duplication bool                     `json:"duplication_active,omitempty"`
+}
+
+// ReconnectState describes an in-progress control-plane recovery. RetryAt is
+// omitted when the connection is healthy; LastError is deliberately a value,
+// not a log-derived inference.
+type ReconnectState struct {
+	Reconnecting bool       `json:"reconnecting"`
+	Attempts     uint64     `json:"attempts"`
+	RetryAt      *time.Time `json:"retry_at,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+}
+
+// ExpirationState is refreshed after every successful authentication or
+// renewal. ExpiresAt is omitted for legacy/test connections without a TTL.
+type ExpirationState struct {
+	TTLSeconds int        `json:"ttl_seconds"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+}
+
+// SecurityState contains only non-secret, negotiated or explicitly enabled
+// client security capabilities. It never includes tokens, identities, keys,
+// or TLS material.
+type SecurityState struct {
+	TransportCapabilities         []string `json:"transport_capabilities,omitempty"`
+	RequiredTransportCapabilities []string `json:"required_transport_capabilities,omitempty"`
+	InsecureTLS                   bool     `json:"insecure_tls"`
+	ListenerBindAddress           string   `json:"listener_bind_address,omitempty"`
+}
+
+// State returns a complete race-free snapshot for API consumers. Callers must
+// treat the returned slices as their own copy.
+func (c *Connection) State() ConnectionState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	granted := c.grantedByName()
+	tunnels := make([]ListenerState, 0, len(c.tunnels))
+	for _, t := range c.tunnels {
+		g := granted[t.name]
+		tunnels = append(tunnels, ListenerState{Name: t.name, VirtualPort: t.virtualPort, Description: g.Description, LocalAddress: t.localAddr, Stats: t.stats()})
+	}
+	transport := connectionTransport(c.transport.Load())
+	state := ConnectionState{
+		Connected:      c.Stack != nil,
+		Server:         c.base,
+		ServerName:     c.displayName(),
+		Authentication: AuthenticationState{Method: c.method, Issuer: c.issuer},
+		Tunnels:        tunnels,
+		Transport: TransportState{
+			Mode: transport.mode(), Description: transport.String(), Reason: c.transportReason,
+		},
+		Reconnect:     c.reconnectState,
+		Expiration:    ExpirationState{TTLSeconds: c.Response.TTLSeconds},
+		Security:      SecurityState{TransportCapabilities: append([]string(nil), c.Response.TransportCapabilities...), RequiredTransportCapabilities: append([]string(nil), c.Response.RequiredTransportCapabilities...), InsecureTLS: c.options.Insecure, ListenerBindAddress: c.bindAddr},
+		LatencyMillis: c.latencyMillis.Load(),
+		Reconnections: c.reconnections.Load(),
+	}
+	if c.reconnectState.RetryAt != nil {
+		t := *c.reconnectState.RetryAt
+		state.Reconnect.RetryAt = &t
+	}
+	if !c.expiresAt.IsZero() {
+		expiresAt := c.expiresAt
+		state.Expiration.ExpiresAt = &expiresAt
+	}
+	if c.multipath != nil {
+		state.Transport.Paths = append([]wstransport.PathStatus(nil), c.multipath.Paths()...)
+		_, _, state.Transport.Duplication = c.multipath.Scheduler().Select()
+	}
+	return state
 }
 
 // Status returns a race-free snapshot of this connection's live state -- the

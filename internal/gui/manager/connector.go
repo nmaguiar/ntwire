@@ -13,15 +13,12 @@ import (
 // Handle is the subset of *client.Connection the manager depends on. It
 // exists so the state machine can be driven, in tests, against a fake
 // instead of a live ntwire-server. Every method here is already exported on
-// *client.Connection -- including Status/Instructions, added to pkg/client
-// specifically so a GUI has a race-free way to read live state -- so
-// *client.Connection satisfies Handle with no adapter needed.
+// *client.Connection -- especially State, the single race-free typed snapshot
+// the GUI consumes -- so *client.Connection satisfies Handle with no adapter
+// needed.
 type Handle interface {
-	Status() client.WebStatus
-	Instructions() client.WebInstructionsList
+	State() client.ConnectionState
 	ReplaceListener(name, host string, port int) (string, error)
-	AuthMethod() string
-	DisplayName() string
 	DashboardURL() string
 	Close()
 }
