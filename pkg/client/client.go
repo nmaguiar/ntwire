@@ -896,7 +896,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
-	c.transport.Store(uint32(initialTransport(useWS, r.UDP)))
+	c.transport.Store(uint32(initialTransportState(useWS, r.UDP).connectionTransport()))
 	c.latencyMillis.Store(uint64(time.Since(authStart).Milliseconds()))
 	if c.log == nil {
 		c.log = slog.Default()
@@ -1308,6 +1308,7 @@ func (c *Connection) renewLoop() {
 			if err == nil {
 				if delay > time.Second {
 					c.log.Warn("control-plane connection reconnected", "server", c.DisplayName())
+					c.preserveTransportOnReconnect()
 					c.fireEvent(Event{Kind: EventReconnected})
 				}
 				c.mu.Lock()
@@ -1763,6 +1764,7 @@ func (c *Connection) Close() {
 		}
 	}
 	c.mu.Unlock()
+	c.transitionTransport(nextTransportState(transportStateStopped, transportShutdown, false), "connection closed")
 
 	// Best effort: expiry remains the server-side safety net if this cannot be
 	// delivered (for example after a network outage). Never hold c.mu while
