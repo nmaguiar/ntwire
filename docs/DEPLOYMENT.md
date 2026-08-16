@@ -76,8 +76,9 @@ resources automatically; on failure it prints the Compose logs.
 
 The matching client image is built from `deploy/docker/Dockerfile.client` and
 published as `nmaguiar/ntwire-client`. It keeps certificate pins,
-local status, and (for `--sso`) the token cache in `/home/nonroot/.ntwire`;
-mount a named volume there to preserve that state. The image runs as an
+local status, and the mode-`0600` fallback cache (when no desktop keyring is
+available) in `/home/nonroot/.ntwire`; mount a named volume there to preserve
+that state. The image runs as an
 unprivileged user. When bind-mounting a host private key, run it as your host
 UID and bind-mount a host-owned state directory as shown below. Use
 `--insecure` only for a disposable development server; for an interactive

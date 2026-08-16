@@ -82,6 +82,7 @@ tunnels:
       reverse_filters: false            # invert the above from an allow-list into a deny-list
       dns_timeout: 10s                  # timeout for resolving SOCKS5 domain requests
       allow_all: false                  # required to permit every destination when no filters above are set
+      allow_bind: false                 # explicitly allow SOCKS4/5 BIND (opens a temporary inbound server listener)
 log:
   format: text                          # text or json (Logstash-format); container images default to json
   level: info                           # debug, info, warn, or error
@@ -154,6 +155,11 @@ implementation with no NAT traversal, matching upstream: it exists for
 legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
 ASSOCIATE is recognized by the handshake but refused — it needs UDP to
 traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
+
+SOCKS BIND is separately disabled by default even when CONNECT and
+`allow_all` are enabled. Set `socks.allow_bind: true` only for a tunnel that
+needs legacy active-mode behavior: BIND opens a temporary host-network
+listener, so the peer is not limited to the WireGuard tunnel.
 
 ## Tunnel local address and port
 

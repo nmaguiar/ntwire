@@ -39,6 +39,10 @@ type Config struct {
 	// for the single inbound peer it accepts. Default: 2m.
 	BindTimeout time.Duration
 
+	// AllowBind explicitly enables SOCKS4/5 BIND. BIND creates a temporary
+	// host-network listener that an external peer can reach, unlike CONNECT.
+	AllowBind bool
+
 	Resolver *net.Resolver                                                     // default: net.DefaultResolver
 	Dial     func(ctx context.Context, network, addr string) (net.Conn, error) // default: (&net.Dialer{}).DialContext
 	Logger   *slog.Logger                                                      // default: slog.Default()
@@ -54,6 +58,7 @@ type Server struct {
 	dnsTimeout  time.Duration
 	dialTimeout time.Duration
 	bindTimeout time.Duration
+	allowBind   bool
 	resolver    *net.Resolver
 	dial        func(ctx context.Context, network, addr string) (net.Conn, error)
 	log         *slog.Logger
@@ -70,6 +75,7 @@ func New(cfg Config) (*Server, error) {
 		dnsTimeout:  cfg.DNSTimeout,
 		dialTimeout: cfg.DialTimeout,
 		bindTimeout: cfg.BindTimeout,
+		allowBind:   cfg.AllowBind,
 		resolver:    cfg.Resolver,
 		dial:        cfg.Dial,
 		log:         cfg.Logger,

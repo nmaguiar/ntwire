@@ -9,6 +9,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
+	github.com/zalando/go-keyring v0.2.6
 	golang.org/x/crypto v0.55.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sys v0.47.0
@@ -18,6 +19,8 @@ require (
 )
 
 require (
+	al.essio.dev/pkg/shellescape v1.5.1 // indirect
+	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	golang.org/x/net v0.58.0 // indirect

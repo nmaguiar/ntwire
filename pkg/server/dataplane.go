@@ -69,6 +69,7 @@ func (s *Server) newSocksRuntime(t TunnelConfig) *socksRuntime {
 		},
 		ASNLookup:  asnIdx,
 		DNSTimeout: sc.DNSTimeout,
+		AllowBind:  sc.AllowBind,
 		Logger:     log,
 	})
 	if err != nil {

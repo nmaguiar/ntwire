@@ -238,6 +238,7 @@ func readSocks5Reply(t *testing.T, r io.Reader) (rep byte, port uint16) {
 
 func TestSocks5Bind(t *testing.T) {
 	s := testServer(t, FilterConfig{AllowAll: true})
+	s.allowBind = true
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
@@ -281,8 +282,23 @@ func TestSocks5Bind(t *testing.T) {
 	}
 }
 
+func TestSocks5BindRequiresExplicitOptIn(t *testing.T) {
+	s := testServer(t, FilterConfig{AllowAll: true})
+	client, server := net.Pipe()
+	go s.ServeConn(context.Background(), server)
+	client.Write([]byte{0x05, 0x01, 0x00})
+	readN(t, client, 2, nil)
+	client.Write([]byte{0x05, socks5CmdBind, 0x00, socks5AtypIPv4, 127, 0, 0, 1, 0, 0})
+	readN(t, client, 10, func(b []byte) {
+		if b[1] != socks5RepCmdNotSupported {
+			t.Fatalf("BIND reply = %d, want command-not-supported", b[1])
+		}
+	})
+}
+
 func TestSocks5BindDeniedByFilter(t *testing.T) {
 	s := testServer(t, FilterConfig{}) // deny by default
+	s.allowBind = true
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
@@ -301,6 +317,7 @@ func TestSocks5BindDeniedByFilter(t *testing.T) {
 
 func TestSocks4Bind(t *testing.T) {
 	s := testServer(t, FilterConfig{AllowAll: true})
+	s.allowBind = true
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
