@@ -77,6 +77,16 @@ func TestRegistry_RegisterSuccess(t *testing.T) {
 	}
 }
 
+func TestRegistry_RegisterRejectsUnsupportedRequiredCapability(t *testing.T) {
+	k := generateTestKey(t)
+	r := NewRegistry([]Registration{{Name: "home", PublicKey: k.pub}}, testLimits())
+	req := signedRegisterRequest(t, k, "home", "required-capability")
+	req.RequiredCapabilities = []string{"future-relay-feature"}
+	if _, _, err := r.Register(req); err == nil || err.Code != protocol.ErrorUnsupportedCapability {
+		t.Fatalf("Register() error = %#v, want code %q", err, protocol.ErrorUnsupportedCapability)
+	}
+}
+
 func TestRegistry_RegisterUnknownKey(t *testing.T) {
 	k := generateTestKey(t)
 	other := generateTestKey(t)

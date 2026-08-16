@@ -22,6 +22,54 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func TestAuthRequiredTransportCapabilityFailsBeforeAuthentication(t *testing.T) {
+	s := New(Config{}, nil)
+	body, err := json.Marshal(protocol.AuthRequest{
+		Version:                       protocol.Version,
+		RequiredTransportCapabilities: []string{"future-transport"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/auth", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.auth(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var out protocol.Error
+	if err := json.NewDecoder(w.Result().Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Code != protocol.ErrorUnsupportedCapability {
+		t.Fatalf("code = %q, want %q", out.Code, protocol.ErrorUnsupportedCapability)
+	}
+}
+
+func TestOIDCAuthRequiredTransportCapabilityFailsBeforeAuthentication(t *testing.T) {
+	s := New(Config{}, nil)
+	body, err := json.Marshal(protocol.OIDCAuthRequest{
+		Version:                       protocol.Version,
+		RequiredTransportCapabilities: []string{"future-transport"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/auth/oidc", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	s.authOIDC(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+	var out protocol.Error
+	if err := json.NewDecoder(w.Result().Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Code != protocol.ErrorUnsupportedCapability {
+		t.Fatalf("code = %q, want %q", out.Code, protocol.ErrorUnsupportedCapability)
+	}
+}
+
 // genTestKey writes an ed25519 private key PEM to dir/priv and returns the
 // private key path plus the OpenSSH authorized_keys line for its public key.
 func genTestKey(t *testing.T, dir, comment string) (privPath, authorizedLine string) {

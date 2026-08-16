@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,57 @@ const CapabilityMultipathV1 = "multipath-v1"
 // check on both sides, so an unrecognized capability string is always safe
 // to ignore).
 const CapabilityMultipathV2 = "multipath-v2"
+
+// ErrorUnsupportedCapability is returned when a peer explicitly requires a
+// capability the receiving peer cannot provide. Optional capability strings
+// remain additive and are deliberately ignored when unknown.
+const ErrorUnsupportedCapability = "unsupported_capability"
+
+// ValidateRequiredCapabilities reports a stable, safe error for an unmet
+// required capability. Callers should surface ErrorUnsupportedCapability on
+// the wire rather than treating it as a version mismatch.
+func ValidateRequiredCapabilities(supported, required []string) error {
+	for _, want := range required {
+		if want == "" {
+			return fmt.Errorf("required capability must not be empty")
+		}
+		if !HasCapability(supported, want) {
+			return fmt.Errorf("required capability %q is not supported", want)
+		}
+	}
+	return nil
+}
+
+// HasCapability is exact, case-sensitive membership. Capability names are
+// protocol identifiers, not user input; trimming or case-folding would turn
+// a typo into an unintended feature request.
+func HasCapability(caps []string, want string) bool {
+	for _, got := range caps {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
+
+// IntersectCapabilities returns the capabilities offered by both peers in
+// offer order, without duplicates or empty strings. It is used only for
+// advertised optional features; required capabilities are validated first.
+func IntersectCapabilities(offer, supported []string) []string {
+	seen := make(map[string]struct{}, len(offer))
+	var out []string
+	for _, cap := range offer {
+		if cap == "" || strings.TrimSpace(cap) != cap || !HasCapability(supported, cap) {
+			continue
+		}
+		if _, ok := seen[cap]; ok {
+			continue
+		}
+		seen[cap] = struct{}{}
+		out = append(out, cap)
+	}
+	return out
+}
 
 type ClientInfo struct {
 	OS            string            `json:"os,omitempty"`
@@ -44,6 +96,10 @@ type AuthRequest struct {
 	Info                  ClientInfo `json:"client_info"`
 	Signature             string     `json:"signature"`
 	TransportCapabilities []string   `json:"transport_capabilities,omitempty"`
+	// RequiredTransportCapabilities must be supported by the server for this
+	// session to be established. It is intentionally unsigned: it can only
+	// narrow the requested behavior, and signing it would break v1 clients.
+	RequiredTransportCapabilities []string `json:"required_transport_capabilities,omitempty"`
 	// QueryOnly asks the server to report the caller's allowed tunnels
 	// without establishing a tunnel session: no WireGuard peer/IP is
 	// allocated and the request does not count against
@@ -56,13 +112,14 @@ type AuthRequest struct {
 // There is no nonce: the ID token carries its own exp/iat, and the existing
 // per-source-IP rate limit bounds replay of a still-valid token.
 type OIDCAuthRequest struct {
-	Version               int        `json:"version"`
-	IssuerName            string     `json:"issuer_name"`
-	IDToken               string     `json:"id_token"`
-	WireGuardPublicKey    string     `json:"wireguard_public_key"`
-	Timestamp             string     `json:"timestamp"`
-	Info                  ClientInfo `json:"client_info"`
-	TransportCapabilities []string   `json:"transport_capabilities,omitempty"`
+	Version                       int        `json:"version"`
+	IssuerName                    string     `json:"issuer_name"`
+	IDToken                       string     `json:"id_token"`
+	WireGuardPublicKey            string     `json:"wireguard_public_key"`
+	Timestamp                     string     `json:"timestamp"`
+	Info                          ClientInfo `json:"client_info"`
+	TransportCapabilities         []string   `json:"transport_capabilities,omitempty"`
+	RequiredTransportCapabilities []string   `json:"required_transport_capabilities,omitempty"`
 	// QueryOnly: see AuthRequest.QueryOnly.
 	QueryOnly bool `json:"query_only,omitempty"`
 }
@@ -78,9 +135,12 @@ type OIDCIssuerInfo struct {
 }
 
 type InfoResponse struct {
-	Version      int              `json:"version"`
-	Capabilities []string         `json:"capabilities"`
-	OIDCIssuers  []OIDCIssuerInfo `json:"oidc_issuers,omitempty"`
+	Version      int      `json:"version"`
+	Capabilities []string `json:"capabilities"`
+	// RequiredCapabilities lets a future server fail a too-old client before
+	// authentication. Omission is the legacy-compatible default.
+	RequiredCapabilities []string         `json:"required_capabilities,omitempty"`
+	OIDCIssuers          []OIDCIssuerInfo `json:"oidc_issuers,omitempty"`
 }
 type Tunnel struct {
 	Name        string `json:"name"`
@@ -158,14 +218,15 @@ const (
 // domain separator (see RelayRegisterPayload) because it binds a Name field
 // that SigningPayload does not cover.
 type RelayRegisterRequest struct {
-	Version       int      `json:"version"`
-	PublicKey     string   `json:"public_key"` // authorized_keys line
-	Name          string   `json:"name"`       // requested tenant label
-	Timestamp     string   `json:"timestamp"`
-	Nonce         string   `json:"nonce"`
-	Signature     string   `json:"signature"`
-	ServerVersion string   `json:"server_version,omitempty"`
-	Capabilities  []string `json:"capabilities,omitempty"`
+	Version              int      `json:"version"`
+	PublicKey            string   `json:"public_key"` // authorized_keys line
+	Name                 string   `json:"name"`       // requested tenant label
+	Timestamp            string   `json:"timestamp"`
+	Nonce                string   `json:"nonce"`
+	Signature            string   `json:"signature"`
+	ServerVersion        string   `json:"server_version,omitempty"`
+	Capabilities         []string `json:"capabilities,omitempty"`
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // RelayRegisterResponse answers a RelayRegisterRequest. Name is the
@@ -191,9 +252,10 @@ type RelayRegisterResponse struct {
 	// ReflectAddr, a registered server acts on this unconditionally -- the
 	// tier never reveals the server's real address to a client, so there is
 	// no advertise_direct-style opt-in gating it. See docs/RELAY.md.
-	UDPRelayAddr string   `json:"udp_relay_addr,omitempty"`
-	RelayVersion string   `json:"relay_version,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
+	UDPRelayAddr         string   `json:"udp_relay_addr,omitempty"`
+	RelayVersion         string   `json:"relay_version,omitempty"`
+	Capabilities         []string `json:"capabilities,omitempty"`
+	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
 }
 
 // PunchRequest is POSTed by an authenticated client to a relayed server's

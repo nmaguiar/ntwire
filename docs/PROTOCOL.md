@@ -47,10 +47,38 @@ expose credentials. See [OIDC-SETUP.md](OIDC-SETUP.md) if a provider requires
 a value on client token requests.
 
 The envelope `version` is validated before authentication for both SSH and
-OIDC requests. Within a compatible envelope version, capability strings are
-additive: peers must ignore unknown optional capabilities, while a future
-feature that cannot operate without peer support must be negotiated explicitly
-and fail during session establishment rather than later in the data plane.
+OIDC requests. Compatibility is capability-based, not build-version based:
+within a compatible envelope version, peers must ignore unknown optional
+capability strings. A peer that cannot safely proceed without a feature puts
+it in `required_capabilities` (or `required_transport_capabilities` on an
+authentication envelope). The receiver validates those strings before session
+establishment and returns `400` with code `unsupported_capability` when one is
+not available. Omitted capability fields are the legacy-compatible default.
+
+## Capability negotiation
+
+Every capability list is a set of exact, case-sensitive protocol identifiers.
+`capabilities` and `transport_capabilities` are optional offers: the receiver
+uses only their intersection with features it implements and ignores unknown
+values. `required_capabilities` and `required_transport_capabilities` are an
+explicit fail-closed assertion: each listed value must be supported by the
+receiver, including no empty values. They are additive JSON fields, so an old
+peer still receives the original v1 shape; do not use a binary version or
+release version to infer feature support.
+
+For client/server auth, clients offer transport capabilities and the server
+returns only the negotiated subset in `transport_capabilities`. A client must
+reject any `required_transport_capabilities` in an auth response that it does
+not support. For server/relay registration, the server offers `capabilities`,
+the relay returns the shared subset, and either side may use
+`required_capabilities` to fail registration before the data/control path is
+used. `GET /v1/info` can similarly require a client capability before login.
+
+The current transport identifiers are `multipath-v1` and `multipath-v2`.
+`multipath-v2` is useful only together with `multipath-v1`; a peer that knows
+only v1 ignores the optional v2 offer and continues using v1. Tests cover the
+old/old, old/new, shared-new, unknown-optional, and required-unsupported
+matrices in `pkg/protocol/capability_test.go`.
 
 ## Authentication request
 
