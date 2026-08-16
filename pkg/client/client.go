@@ -1499,9 +1499,12 @@ func (c *Connection) startWebUI() {
 	if err != nil {
 		return
 	}
-	c.ui = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	ui := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	c.mu.Lock()
+	c.ui = ui
 	c.UIURL = "http://" + l.Addr().String() + "/?token=" + access
-	go func() { _ = c.ui.Serve(l) }()
+	c.mu.Unlock()
+	go func() { _ = ui.Serve(l) }()
 }
 
 // WebTunnel is the live status of one tunnel on a running connect process,
