@@ -52,6 +52,11 @@ func (s *Server) serveSocks4(ctx context.Context, conn net.Conn, br *bufio.Reade
 		writeSocks4Reply(conn, socks4Granted, port, ipBuf)
 		s.relay(conn, br, out)
 	case socks4CmdBind:
+		if !s.allowBind {
+			s.log.Warn("socks4 BIND denied by policy")
+			writeSocks4Reply(conn, socks4Rejected, port, ipBuf)
+			return
+		}
 		s.doSocks4Bind(ctx, conn, br, ip, port, ipBuf)
 	default:
 		s.log.Debug("socks4: unsupported command", "command", cmd)

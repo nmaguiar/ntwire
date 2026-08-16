@@ -38,6 +38,38 @@ type fakeIdP struct {
 	deviceOK bool
 }
 
+type memoryCredentialStore struct {
+	values map[string]string
+	err    error
+}
+
+func (s *memoryCredentialStore) Get(key string) (string, error) {
+	if s.err != nil {
+		return "", s.err
+	}
+	v, ok := s.values[key]
+	if !ok {
+		return "", errCredentialNotFound
+	}
+	return v, nil
+}
+
+func (s *memoryCredentialStore) Set(key, value string) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.values[key] = value
+	return nil
+}
+
+func (s *memoryCredentialStore) Delete(key string) error {
+	if s.err != nil {
+		return s.err
+	}
+	delete(s.values, key)
+	return nil
+}
+
 func newFakeIdP(t *testing.T, scopesSupported []string, deviceOK bool) *fakeIdP {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -284,7 +316,7 @@ func TestRefresh(t *testing.T) {
 func TestCacheRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/tokens.json"
-	c, err := OpenCache(path)
+	c, err := openCache(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +328,7 @@ func TestCacheRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	reopened, err := OpenCache(path)
+	reopened, err := openCache(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,12 +348,69 @@ func TestCacheRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCacheMigratesLegacyEntryOnlyAfterVerifiedNativeWrite(t *testing.T) {
+	path := t.TempDir() + "/tokens.json"
+	legacy, err := openCache(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := CacheEntry{RefreshToken: "refresh-secret", IDToken: "id-token", Expiry: time.Now().Add(time.Hour).Truncate(time.Second)}
+	if err := legacy.Put("https://server", "issuer", want); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &memoryCredentialStore{values: map[string]string{}}
+	c, err := openCache(path, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := c.Get("https://server", "issuer")
+	if !ok || got.RefreshToken != want.RefreshToken {
+		t.Fatalf("Get() = %+v, %v", got, ok)
+	}
+	if _, ok := store.values[cacheKey("https://server", "issuer")]; !ok {
+		t.Fatal("legacy credential was not migrated to native store")
+	}
+	reopened, err := openCache(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Get("https://server", "issuer"); ok {
+		t.Fatal("legacy secret remained after verified native migration")
+	}
+}
+
+func TestCacheKeepsLegacyEntryWhenNativeWriteFails(t *testing.T) {
+	path := t.TempDir() + "/tokens.json"
+	legacy, err := openCache(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Put("https://server", "issuer", CacheEntry{RefreshToken: "refresh-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := openCache(path, &memoryCredentialStore{values: map[string]string{}, err: errors.New("unavailable")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.Get("https://server", "issuer"); !ok {
+		t.Fatal("legacy credential should remain usable when native storage is unavailable")
+	}
+	reopened, err := openCache(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reopened.Get("https://server", "issuer"); !ok {
+		t.Fatal("legacy secret was removed after failed native migration")
+	}
+}
+
 func TestTokensForIssuerUsesCacheThenRefreshesThenLogsIn(t *testing.T) {
 	idp := newFakeIdP(t, []string{"openid", "email", "offline_access"}, false)
 	issuer := protocol.OIDCIssuerInfo{Name: "test", Issuer: idp.server.URL, ClientID: "client-1", Scopes: []string{"openid", "email"}}
 
 	dir := t.TempDir()
-	cache, err := OpenCache(dir + "/tokens.json")
+	cache, err := openCache(dir+"/tokens.json", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

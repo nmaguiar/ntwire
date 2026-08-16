@@ -70,14 +70,30 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintf(w, "ntwire_tunnels_configured %d\n", tunnelCount)
 	fmt.Fprintln(w, "# HELP ntwire_session_tunnels Granted tunnels per active session.")
 	fmt.Fprintln(w, "# TYPE ntwire_session_tunnels gauge")
-	fmt.Fprintln(w, "# HELP ntwire_session_latency_milliseconds Last client-observed control-plane round-trip latency.")
-	fmt.Fprintln(w, "# TYPE ntwire_session_latency_milliseconds gauge")
-	fmt.Fprintln(w, "# HELP ntwire_session_reconnections Client control-plane reconnections since startup.")
-	fmt.Fprintln(w, "# TYPE ntwire_session_reconnections counter")
+	fmt.Fprintln(w, "# HELP ntwire_session_latency_milliseconds Aggregate client-observed control-plane round-trip latency for active sessions.")
+	fmt.Fprintln(w, "# TYPE ntwire_session_latency_milliseconds summary")
+	fmt.Fprintln(w, "# HELP ntwire_session_reconnections Client control-plane reconnections reported by active sessions.")
+	fmt.Fprintln(w, "# TYPE ntwire_session_reconnections gauge")
+	// Metrics must not turn an authenticated identity (email, SSH fingerprint,
+	// or arbitrary external subject) into a Prometheus label: it is both
+	// sensitive and unbounded. Aggregate the session snapshot by the stable,
+	// low-cardinality authentication method instead.
+	type sessionTotals struct{ count, tunnels, latency, reconnections uint64 }
+	byMethod := map[string]sessionTotals{}
 	for _, session := range sessions {
-		fmt.Fprintf(w, "ntwire_session_tunnels{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), len(session.Tunnels))
-		fmt.Fprintf(w, "ntwire_session_latency_milliseconds{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), session.LatencyMillis)
-		fmt.Fprintf(w, "ntwire_session_reconnections{method=\"%s\",identity=\"%s\"} %d\n", promLabel(session.Method), promLabel(session.Identity), session.Reconnections)
+		t := byMethod[session.Method]
+		t.count++
+		t.tunnels += uint64(len(session.Tunnels))
+		t.latency += session.LatencyMillis
+		t.reconnections += session.Reconnections
+		byMethod[session.Method] = t
+	}
+	for method, totals := range byMethod {
+		label := promLabel(method)
+		fmt.Fprintf(w, "ntwire_session_tunnels{method=\"%s\"} %d\n", label, totals.tunnels)
+		fmt.Fprintf(w, "ntwire_session_latency_milliseconds_sum{method=\"%s\"} %d\n", label, totals.latency)
+		fmt.Fprintf(w, "ntwire_session_latency_milliseconds_count{method=\"%s\"} %d\n", label, totals.count)
+		fmt.Fprintf(w, "ntwire_session_reconnections{method=\"%s\"} %d\n", label, totals.reconnections)
 	}
 	fmt.Fprintln(w, "# HELP ntwire_tunnel_bytes_to_target_total Bytes forwarded from a tunnel's client side to its target.")
 	fmt.Fprintln(w, "# TYPE ntwire_tunnel_bytes_to_target_total counter")
@@ -85,14 +101,28 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	fmt.Fprintln(w, "# TYPE ntwire_tunnel_bytes_from_target_total counter")
 	fmt.Fprintln(w, "# HELP ntwire_tunnel_connections_active Open forwarded connections for a tunnel.")
 	fmt.Fprintln(w, "# TYPE ntwire_tunnel_connections_active gauge")
+	type tunnelTotals struct {
+		toTarget, fromTarget uint64
+		active               int64
+	}
+	byTunnel := map[string]tunnelTotals{}
 	for _, session := range sessions {
 		for _, tunnel := range session.Tunnels {
 			stats := s.statsFor(session.TunnelIP, tunnel.Name).snapshot()
-			labels := fmt.Sprintf("tunnel=\"%s\",method=\"%s\",identity=\"%s\"", promLabel(tunnel.Name), promLabel(session.Method), promLabel(session.Identity))
-			fmt.Fprintf(w, "ntwire_tunnel_bytes_to_target_total{%s} %d\n", labels, stats.BytesToTarget)
-			fmt.Fprintf(w, "ntwire_tunnel_bytes_from_target_total{%s} %d\n", labels, stats.BytesFromTarget)
-			fmt.Fprintf(w, "ntwire_tunnel_connections_active{%s} %d\n", labels, stats.Active)
+			key := session.Method + "\x00" + tunnel.Name
+			t := byTunnel[key]
+			t.toTarget += stats.BytesToTarget
+			t.fromTarget += stats.BytesFromTarget
+			t.active += stats.Active
+			byTunnel[key] = t
 		}
+	}
+	for key, totals := range byTunnel {
+		method, tunnel, _ := strings.Cut(key, "\x00")
+		labels := fmt.Sprintf("tunnel=\"%s\",method=\"%s\"", promLabel(tunnel), promLabel(method))
+		fmt.Fprintf(w, "ntwire_tunnel_bytes_to_target_total{%s} %d\n", labels, totals.toTarget)
+		fmt.Fprintf(w, "ntwire_tunnel_bytes_from_target_total{%s} %d\n", labels, totals.fromTarget)
+		fmt.Fprintf(w, "ntwire_tunnel_connections_active{%s} %d\n", labels, totals.active)
 	}
 }
 

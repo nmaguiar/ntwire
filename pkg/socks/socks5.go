@@ -119,6 +119,11 @@ func (s *Server) serveSocks5(ctx context.Context, conn net.Conn, br *bufio.Reade
 		writeSocks5Reply(conn, socks5RepSucceeded, bindAddr, bindPort)
 		s.relay(conn, br, out)
 	case socks5CmdBind:
+		if !s.allowBind {
+			s.log.Warn("socks5 BIND denied by policy")
+			writeSocks5Reply(conn, socks5RepCmdNotSupported, netip.IPv4Unspecified(), 0)
+			return
+		}
 		s.doSocks5Bind(ctx, conn, br, hostname, ip, port)
 	default:
 		s.log.Debug("socks5: unsupported command", "command", cmd)

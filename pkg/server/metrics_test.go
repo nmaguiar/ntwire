@@ -31,16 +31,20 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 		"# TYPE ntwire_sessions gauge",
 		"ntwire_sessions 1",
 		"ntwire_tunnels_configured 2",
-		`ntwire_session_tunnels{method="oidc",identity="alice@example.com"} 1`,
-		`ntwire_session_latency_milliseconds{method="oidc",identity="alice@example.com"} 24`,
-		`ntwire_session_reconnections{method="oidc",identity="alice@example.com"} 3`,
-		`ntwire_tunnel_bytes_to_target_total{tunnel="reports",method="oidc",identity="alice@example.com"} 150`,
-		`ntwire_tunnel_bytes_from_target_total{tunnel="reports",method="oidc",identity="alice@example.com"} 4200`,
-		`ntwire_tunnel_connections_active{tunnel="reports",method="oidc",identity="alice@example.com"} 1`,
+		`ntwire_session_tunnels{method="oidc"} 1`,
+		`ntwire_session_latency_milliseconds_sum{method="oidc"} 24`,
+		`ntwire_session_latency_milliseconds_count{method="oidc"} 1`,
+		`ntwire_session_reconnections{method="oidc"} 3`,
+		`ntwire_tunnel_bytes_to_target_total{tunnel="reports",method="oidc"} 150`,
+		`ntwire_tunnel_bytes_from_target_total{tunnel="reports",method="oidc"} 4200`,
+		`ntwire_tunnel_connections_active{tunnel="reports",method="oidc"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q in:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "alice@example.com") {
+		t.Fatalf("metrics leaked identity:\n%s", body)
 	}
 }
 

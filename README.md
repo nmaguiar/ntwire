@@ -162,10 +162,14 @@ PKCE login on a loopback redirect; `--no-browser` (or a machine with no
 browser available) falls back to the OAuth device flow, which prints a URL
 and code to enter on another device.
 
-A successful login caches a refresh token in `~/.ntwire/tokens.json` (mode
-`0600`), keyed by server URL and issuer, so a long-running `connect` and
-future invocations reauthenticate silently until `ntwire logout` clears it or
-the server revokes access (see [docs/SECURITY.md](docs/SECURITY.md)).
+A successful login stores its reusable OIDC credentials in the native desktop
+credential store (macOS Keychain, Windows Credential Manager, or a
+Secret-Service-compatible Linux keyring), keyed internally by server URL and
+issuer. If no native store is available, ntwire explicitly falls back to the
+mode-`0600` `~/.ntwire/tokens.json` file. Existing file entries migrate only
+after a native write is verified. A long-running `connect` and future
+invocations reauthenticate silently until `ntwire logout` clears the local
+credential or the server revokes access (see [docs/SECURITY.md](docs/SECURITY.md)).
 
 ## Server configuration
 

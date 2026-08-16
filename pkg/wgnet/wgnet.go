@@ -242,7 +242,18 @@ func (s *Stack) Listen(network, address string) (net.Listener, error) {
 // wireguard-go's Device.Close already closes the tun.Device it was built
 // with, so closing it again here would double-close the netstack tun's
 // internal channels and panic.
+//
+// RemoveAllPeers is called first, ahead of Close, because Close's own
+// internal ordering closes the tun before removing peers (its comment even
+// says peers should go first, but the code doesn't). That leaves a window
+// where a peer's still-running receive routine can write into the tun
+// concurrently with it being closed -- a real data race, not just a benign
+// one, since a peer that's mid-handshake or mid-transfer at Close time has
+// an actively running routine writing decrypted packets into the tun.
+// Removing peers here first stops and waits for those routines (Peer.Stop
+// blocks on them) before Close ever touches the tun.
 func (s *Stack) Close() error {
+	s.device.RemoveAllPeers()
 	s.device.Close()
 	return nil
 }

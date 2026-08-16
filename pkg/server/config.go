@@ -202,6 +202,10 @@ type SocksConfig struct {
 	ReverseFilters bool          `yaml:"reverse_filters"`
 	DNSTimeout     time.Duration `yaml:"dns_timeout"`
 	AllowAll       bool          `yaml:"allow_all"`
+	// AllowBind enables SOCKS4/5 BIND, which creates a temporary inbound
+	// listener on the server host. It is independent of allow_all and false
+	// by default.
+	AllowBind bool `yaml:"allow_bind"`
 }
 
 // WantsASNUpdates reports whether the background ASN index refresh should
@@ -350,6 +354,7 @@ tunnels:
   #     reverse_filters: false              # invert the above from an allow-list into a deny-list
   #     dns_timeout: 10s                    # timeout for resolving SOCKS5 domain requests
   #     allow_all: false                    # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+  #     allow_bind: false                   # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
 
 log:
   format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT

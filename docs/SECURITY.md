@@ -112,10 +112,14 @@ automatically" workarounds; instead, use one of:
 - **ntwire-server holds no IdP secret.** It is a public OAuth client (PKCE, no
   client secret) and never performs a token exchange itself; it only verifies
   ID tokens the client already obtained, against the issuer's published JWKS.
-- **Token cache file permissions.** `~/.ntwire/tokens.json` holds a long-lived
-  refresh token and is written mode `0600`. Treat it like a private key: a
-  reader can mint fresh sessions until it is revoked. `ntwire logout` deletes
-  a server's entries locally; it does not revoke the refresh token at the IdP.
+- **Native credential storage with explicit fallback.** ntwire stores reusable
+  OIDC credentials in macOS Keychain, Windows Credential Manager, or a
+  Secret-Service-compatible Linux keyring when one is available. A legacy
+  `~/.ntwire/tokens.json` entry is migrated only after the native write is
+  read back successfully, then its secret is removed from the file. On a
+  headless or otherwise unsupported system, the documented fallback remains
+  that mode-`0600` file; treat it like a private key. `ntwire logout` removes
+  a server's local entries but does not revoke the refresh token at the IdP.
 - **Revocation is YAML/groups change + session TTL, not instantaneous —
   unless an operator revokes the session directly.** Removing a user's
   email/domain/group grant, removing an issuer, or editing the groups a
@@ -168,7 +172,10 @@ resolutions. Weigh that before granting one broadly:
   resolver and `socks.dns_timeout`, before `socks.domain_filters` is
   matched against the requested hostname and `socks.filters`/`asn_filters`
   against the resolved IP; a client cannot force resolution elsewhere.
-- **BIND opens a real, temporary *inbound* listener on the server host**,
+- **BIND is independently opt-in and opens a real, temporary *inbound*
+  listener on the server host.** Set `socks.allow_bind: true` only when this
+  legacy behavior is required; it remains disabled even when SOCKS CONNECT or
+  `allow_all` is enabled. When enabled it is
   reachable from any address that can route to it (not just over the
   WireGuard tunnel), for up to two minutes while it waits for one peer to
   connect — the same `socks:` filters gate the request's declared target
@@ -239,7 +246,11 @@ permissiveness: the user is choosing their own exposure, same as always.
 
 - Never commit or log private keys, bearer tokens, ID/refresh tokens, request
   bodies, or hook output without redaction. `ntwire keygen` writes private
-  keys with mode 0600; the token cache is written with the same mode.
+  keys with mode 0600; the credential-file fallback uses the same mode.
+- Prometheus metrics deliberately aggregate by authentication method and
+  tunnel name only. They never use identities, session IDs, targets, or other
+  unbounded/sensitive values as labels; use the separately protected operator
+  dashboard for per-session inspection.
 - Restrict writes to the authorized-key directory. Every readable file in it
   is considered a candidate public key.
 - Prefer explicit fingerprint `allow` entries for SSH (the bundled client

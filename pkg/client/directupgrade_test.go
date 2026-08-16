@@ -422,7 +422,15 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	// Kill the WebSocket connection from the server side, forcing the
 	// client's own read loop to notice and remove it from its peer map --
 	// exactly what a relay/server restart or network blip would also cause.
+	// The listener is also closed here so the client's automatic redial (see
+	// Bind.redial) can never race this test's observation of the disconnected
+	// state: without this, redial can reconnect within microseconds on a busy
+	// machine (e.g. under -race alongside this package's other tests), and
+	// the polling loop below can miss that window entirely, making the test
+	// flaky. With the listener gone, every redial attempt fails permanently,
+	// so the disconnected state -- once observed -- never clears.
 	server.CloseSession("session")
+	l.Close()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := hybrid.ParseEndpoint(wstransport.WSSentinel); err != nil {
