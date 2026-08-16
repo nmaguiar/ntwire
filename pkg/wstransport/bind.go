@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/netip"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"golang.zx2c4.com/wireguard/conn"
@@ -21,13 +23,23 @@ import (
 type Bind struct {
 	url    string
 	client *http.Client
-	header http.Header
+
+	// redialMin/redialMax bound the backoff between reconnect attempts after
+	// the client-side "remote" peer drops (see redial). Fields rather than
+	// package constants so tests can shrink them instead of sleeping through
+	// real backoff delays.
+	redialMin, redialMax time.Duration
+	// dialTimeout bounds one redial attempt so a dial that hangs (e.g. a DNS
+	// lookup stuck on a since-vanished interface) cannot block the retry loop
+	// from ever observing Close.
+	dialTimeout time.Duration
 
 	mu              sync.Mutex
 	open            bool
 	done            chan struct{}
 	packets         chan packet
 	peers           map[string]*peer
+	header          http.Header
 	OnPeerConnected func(string, conn.Endpoint)
 }
 
@@ -142,8 +154,31 @@ func (h *Hybrid) ParseEndpoint(s string) (conn.Endpoint, error) {
 }
 func (h *Hybrid) BatchSize() int { return h.UDP.BatchSize() }
 
+// redialMinDefault/redialMaxDefault/dialTimeoutDefault are NewClient's
+// defaults for the client-side redial loop (see redial). Exposed as instance
+// fields, not consulted directly, so a test can shrink them.
+const (
+	redialMinDefault   = time.Second
+	redialMaxDefault   = 30 * time.Second
+	dialTimeoutDefault = 10 * time.Second
+)
+
 func NewClient(url string, client *http.Client, header http.Header) *Bind {
-	return &Bind{url: url, client: client, header: header}
+	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault}
+}
+
+// SetHeader replaces the headers used for the client's WebSocket dial (both
+// the initial Open and every subsequent redial attempt). It exists because
+// the Authorization bearer token Open originally dialed with is only valid
+// until the control-plane session's next renewal -- see
+// Connection.renew/reconnect in pkg/client, which call this on every token
+// rotation so a later redial (see read/redial) presents a live token instead
+// of one the server has already invalidated. A no-op on a server-side Bind,
+// which never dials anything.
+func (b *Bind) SetHeader(header http.Header) {
+	b.mu.Lock()
+	b.header = header
+	b.mu.Unlock()
 }
 
 // NewServer creates a bind whose ServeHTTP method attaches authenticated
@@ -207,6 +242,15 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	}
 	p := &peer{id: id, ws: ws, endpoint: endpoint{id: id, address: endpointAddress(r.RemoteAddr)}, done: make(chan struct{})}
 	b.mu.Lock()
+	if !b.open {
+		// Closed between the readiness check above and here -- b.peers is
+		// nil now, so writing into it would panic. A client racing its own
+		// redial against Close (see redial) is exactly the case that made
+		// this window wide enough to hit in practice.
+		b.mu.Unlock()
+		_ = ws.Close(websocket.StatusServiceRestart, "closing")
+		return errors.New("WebSocket transport is not ready")
+	}
 	if old := b.peers[id]; old != nil {
 		_ = old.ws.Close(websocket.StatusNormalClosure, "replaced")
 	}
@@ -230,6 +274,13 @@ func (b *Bind) read(p *peer) {
 		b.remove(p)
 		close(p.done)
 		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
+		// Only a client-side Bind (b.url != "") ever dials out; a server-side
+		// Bind's peers arrive via ServeHTTP, and a disconnect there just means
+		// the client is gone. Every client-side peer is "remote" (see Open and
+		// redial), so b.url alone is a sufficient discriminator.
+		if b.url != "" {
+			go b.redial()
+		}
 	}()
 	for {
 		typ, data, err := p.ws.Read(context.Background())
@@ -258,6 +309,68 @@ func (b *Bind) remove(p *peer) {
 	defer b.mu.Unlock()
 	if b.peers[p.id] == p {
 		delete(b.peers, p.id)
+	}
+}
+
+// redial keeps retrying the client-side WebSocket dial, with jittered
+// exponential backoff, until it succeeds or the bind closes. Without this,
+// once the "remote" peer's TCP connection drops (interface change, NAT
+// rebind, a proxy hiccup), Send fails permanently and nothing above this
+// layer -- Hybrid's WSSentinel fallback, MultipathBind's "wss" candidate --
+// ever gets a working WebSocket carrier again for the rest of the process's
+// life. A successful redial needs no coordination with either caller: both
+// route by the stable endpoint{id:"remote"} value, resolved through
+// b.peers["remote"] at Send time, so a fresh peer object under the same id
+// is immediately usable with no re-registration.
+func (b *Bind) redial() {
+	b.mu.Lock()
+	done := b.done
+	b.mu.Unlock()
+	backoff := b.redialMin
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// Full jitter: spreads out redial attempts from many peers that
+			// dropped at the same moment (e.g. a shared uplink flapping)
+			// instead of them all retrying in lockstep.
+			if backoff <= 0 {
+				backoff = time.Millisecond
+			}
+			wait := time.Duration(rand.Int63n(int64(backoff)))
+			select {
+			case <-done:
+				return
+			case <-time.After(wait):
+			}
+			backoff = min(backoff*2, b.redialMax)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+		b.mu.Lock()
+		url, client, header := b.url, b.client, b.header
+		b.mu.Unlock()
+		dialCtx, cancel := context.WithTimeout(context.Background(), b.dialTimeout)
+		ws, _, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{HTTPClient: client, HTTPHeader: header})
+		cancel()
+		if err != nil {
+			slog.Debug("WireGuard WebSocket redial failed", "error", err)
+			continue
+		}
+		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(url)}, done: make(chan struct{})}
+		b.mu.Lock()
+		if !b.open || b.done != done {
+			// Closed, or closed and reopened, while this attempt was dialing.
+			b.mu.Unlock()
+			_ = ws.Close(websocket.StatusNormalClosure, "closing")
+			return
+		}
+		b.peers[p.id] = p
+		b.mu.Unlock()
+		slog.Debug("WireGuard WebSocket peer reconnected", "peer", p.id)
+		go b.read(p)
+		return
 	}
 }
 

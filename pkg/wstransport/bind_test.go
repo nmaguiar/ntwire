@@ -8,13 +8,17 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"golang.zx2c4.com/wireguard/conn"
 )
 
@@ -289,5 +293,260 @@ func TestClientBindSendsSNIThroughPinningTransport(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for the ClientHello")
+	}
+}
+
+// TestClientBindRedialsAfterDrop protects the fix for the gap where, once
+// the client-side "remote" peer's WebSocket connection dropped (an interface
+// change, a NAT rebind, a proxy hiccup), Send failed forever: nothing ever
+// redialed. It simulates the drop from the server side -- closing the
+// server's copy of the socket produces the same read error on the client
+// that a broken network path would -- and asserts Send against the same
+// endpoint value eventually works again with no caller-visible change.
+func TestClientBindRedialsAfterDrop(t *testing.T) {
+	server := NewServer()
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := server.ServeHTTP(w, r, "session"); err != nil {
+			t.Error(err)
+		}
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	client.redialMin, client.redialMax, client.dialTimeout = 5*time.Millisecond, 20*time.Millisecond, time.Second
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ep, err := client.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
+		t.Fatalf("initial send: %v", err)
+	}
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 {
+		t.Fatalf("server receive before drop: n=%d err=%v", n, err)
+	}
+
+	server.mu.Lock()
+	var serverPeer *peer
+	for _, p := range server.peers {
+		serverPeer = p
+	}
+	server.mu.Unlock()
+	if serverPeer == nil {
+		t.Fatal("server never saw the client's peer")
+	}
+	_ = serverPeer.ws.Close(websocket.StatusNormalClosure, "simulated drop")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := client.Send([][]byte{make([]byte, 16)}, ep); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client never redialed: Send kept failing")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
+		t.Fatalf("server receive after redial: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+}
+
+// TestClientBindRedialUsesUpdatedHeader protects SetHeader: pkg/client's
+// Connection.renew/reconnect call it on every control-plane token rotation
+// specifically so a later redial presents a live token rather than the one
+// Open originally dialed with, which the server's session store deletes on
+// renewal (see pkg/server's renew handler). The test server enforces that
+// itself -- only "new-token" is accepted -- so if SetHeader's value were
+// ignored by redial, every attempt would 401 and Send would never recover.
+func TestClientBindRedialUsesUpdatedHeader(t *testing.T) {
+	server := NewServer()
+	if _, _, err := server.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	var expected atomic.Value
+	expected.Store("old-token")
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		if token != expected.Load().(string) {
+			http.Error(w, "invalid session", http.StatusUnauthorized)
+			return
+		}
+		if err := server.ServeHTTP(w, r, "session"); err != nil {
+			t.Error(err)
+		}
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	client := NewClient("ws"+h.URL[len("http"):], h.Client(), http.Header{"Authorization": {"Bearer old-token"}})
+	client.redialMin, client.redialMax, client.dialTimeout = 5*time.Millisecond, 15*time.Millisecond, 500*time.Millisecond
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ep, err := client.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server.mu.Lock()
+	var serverPeer *peer
+	for _, p := range server.peers {
+		serverPeer = p
+	}
+	server.mu.Unlock()
+	if serverPeer == nil {
+		t.Fatal("server never saw the client's peer")
+	}
+
+	// Rotate the token before dropping the connection, mirroring a renewal
+	// that happens independently of any network interruption.
+	expected.Store("new-token")
+	client.SetHeader(http.Header{"Authorization": {"Bearer new-token"}})
+	_ = serverPeer.ws.Close(websocket.StatusNormalClosure, "simulated drop")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if err := client.Send([][]byte{make([]byte, 16)}, ep); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("client never redialed successfully with the updated header")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestServerReplacesStaleClientPeerOnRedial covers a case a graceful close
+// (as in TestClientBindRedialsAfterDrop) never exercises: an interface that
+// vanishes without ever notifying the peer -- no FIN, no WebSocket close
+// frame reaches the server, so its "session" peer entry is still live when
+// the client's redial reaches it again. That is exactly what ServeHTTP's
+// replace branch (old := b.peers[id]; old.ws.Close(); b.peers[id] = p) exists
+// for, and what remove's b.peers[p.id] == p guard protects: the old peer's
+// own read() goroutine, unwinding concurrently from that same Close, must
+// not delete the just-installed new entry out from under it. The orphaned
+// old peer is left untouched here (never closed by the test) to stand in for
+// the vanished interface, and redial is called directly -- read()'s defer
+// calls it the same way after a real read error, which
+// TestClientBindRedialsAfterDrop already covers.
+func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
+	server := NewServer()
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	// Unlike the other tests' handlers, this one must not call any t method:
+	// the orphaned old peer's own read() goroutine (left running by design,
+	// see below) spawns its own redial once the server later closes it as
+	// part of the replace this test provokes, and that redial's dial can
+	// legitimately land after this test function has returned -- t.Error
+	// from a goroutine at that point panics the whole test binary. The
+	// test's real assertions run synchronously below and don't depend on
+	// this handler ever reporting anything.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = server.ServeHTTP(w, r, "session")
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	clientFns, _, err := client.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	ep, err := client.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
+		t.Fatalf("initial send: %v", err)
+	}
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 {
+		t.Fatalf("server receive before drop: n=%d err=%v", n, err)
+	}
+
+	// Abandon the client's peer -- no Close on either side -- and redial
+	// directly, standing in for read()'s defer after the interface vanished.
+	client.mu.Lock()
+	delete(client.peers, "remote")
+	client.mu.Unlock()
+	client.redial()
+
+	client.mu.Lock()
+	_, reconnected := client.peers["remote"]
+	client.mu.Unlock()
+	if !reconnected {
+		t.Fatal("redial did not install a new client-side peer")
+	}
+
+	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
+		t.Fatalf("send over the redialed connection: %v", err)
+	}
+	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
+		t.Fatalf("server receive after redial: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+
+	// The server must still be able to push data back over the new
+	// connection: if remove() had incorrectly deleted the new entry (racing
+	// against ServeHTTP's replace of the stale one), this would fail with
+	// "WebSocket peer is not connected".
+	if err := server.Send([][]byte{make([]byte, 16)}, serverEP[0]); err != nil {
+		t.Fatalf("server send back over the redialed connection: %v", err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		buf, sizes, eps := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+		n, err := clientFns[0](buf, sizes, eps)
+		if err == nil && (n != 1 || sizes[0] != 16) {
+			err = fmt.Errorf("n=%d size=%d", n, sizes[0])
+		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("client never received the server's reply: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the client to receive the server's reply")
 	}
 }

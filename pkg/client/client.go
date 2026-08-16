@@ -1002,7 +1002,7 @@ func resolveMultipathV2Options(o *MultipathV2Options) wstransport.V2Options {
 		MinDeliveryRatio:      o.MinDeliveryRatio,
 		SwitchMargin:          o.SwitchMargin,
 		MinDwell:              o.MinDwell,
-		ReportInterval:         o.ReportInterval,
+		ReportInterval:        o.ReportInterval,
 	}
 }
 
@@ -1350,6 +1350,9 @@ func (c *Connection) reconnect() error {
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.reconnections.Store(info.Reconnections)
 	c.mu.Unlock()
+	if c.hybrid != nil {
+		c.hybrid.WebSocket.SetHeader(http.Header{"Authorization": {"Bearer " + auth.response.Token}})
+	}
 	return nil
 }
 
@@ -1395,6 +1398,14 @@ func (c *Connection) renew() error {
 	c.token = out.Token
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.mu.Unlock()
+	// hybrid is set once at connect and never reassigned (see the doc comment
+	// on the var declaration in Connect), so reading it without c.mu is safe.
+	// A dropped WebSocket carrier redials with whatever header was last set
+	// here; without this, a redial after any renewal presents the token the
+	// server just invalidated and 401s forever (see Bind.SetHeader).
+	if c.hybrid != nil {
+		c.hybrid.WebSocket.SetHeader(http.Header{"Authorization": {"Bearer " + out.Token}})
+	}
 	return nil
 }
 
