@@ -23,10 +23,15 @@ import (
 )
 
 type Server struct {
-	Config      Config
-	sessions    *Sessions
-	nonces      map[string]time.Time
-	mu          sync.Mutex
+	Config   Config
+	sessions *Sessions
+	nonces   map[string]time.Time
+	mu       sync.Mutex
+	// operationMu serializes control-plane operations that combine config,
+	// authorization, session allocation, and data-plane peer ownership.
+	// Sessions has its own map lock, but that alone cannot make a reload and a
+	// concurrent renewal atomic as a policy decision.
+	operationMu sync.Mutex
 	log         *slog.Logger
 	data        *dataPlane
 	rates       map[string]*rateState
@@ -180,6 +185,8 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 	write(w, http.StatusOK, protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers})
 }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	if !s.allowSource(r.RemoteAddr) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
@@ -187,6 +194,13 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	var a protocol.AuthRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
+		return
+	}
+	// SSH authentication used to omit this check even though OIDC and relay
+	// registration enforce it. Reject an incompatible signed envelope before
+	// nonce use or authorization, rather than failing later unpredictably.
+	if a.Version != protocol.Version {
+		fail(w, 400, protocol.ErrorInvalidRequest, "unsupported protocol version")
 		return
 	}
 	at, err := protocol.ParseTimestamp(a.Timestamp)
@@ -220,6 +234,8 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 // signature. There is no nonce cache: the ID token's own exp/iat bound
 // replay, and allowSource rate-limits repeated attempts per source IP.
 func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	if !s.allowSource(r.RemoteAddr) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
@@ -503,6 +519,8 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	old, ok := s.sessions.Get(t)
 	if !ok {
@@ -552,9 +570,12 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
+	s.audit("session_renewed", n, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	old, ok := s.sessions.Get(t)
 	if !ok {
@@ -739,6 +760,8 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 // which net.Listener cmd/ntwire-server passes to ServeTLS, which Handler()
 // never sees, so there is nothing here for it to hot-reload.
 func (s *Server) Reload(c Config) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c.Listen = s.Config.Listen
@@ -785,7 +808,7 @@ func (s *Server) Reload(c Config) {
 		}
 		s.reconcileTunnels(v, allowed)
 	}
-	s.log.Info("configuration reloaded")
+	s.log.Info("lifecycle event", "event", "configuration_reloaded")
 }
 
 func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {

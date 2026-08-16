@@ -46,6 +46,12 @@ discovery, scopes, and `client_id` all come from the server. A
 expose credentials. See [OIDC-SETUP.md](OIDC-SETUP.md) if a provider requires
 a value on client token requests.
 
+The envelope `version` is validated before authentication for both SSH and
+OIDC requests. Within a compatible envelope version, capability strings are
+additive: peers must ignore unknown optional capabilities, while a future
+feature that cannot operate without peer support must be negotiated explicitly
+and fail during session establishment rather than later in the data plane.
+
 ## Authentication request
 
 `POST /v1/auth` accepts a JSON request no larger than 1 MiB:

@@ -43,6 +43,9 @@ type Bind struct {
 	peers           map[string]*peer
 	header          http.Header
 	OnPeerConnected func(string, conn.Endpoint)
+	// OnPeerDisconnected mirrors OnPeerConnected for lifecycle consumers.
+	// Callbacks run outside Bind's mutex and must not retain credentials.
+	OnPeerDisconnected func(string, conn.Endpoint)
 }
 
 type packet struct {
@@ -291,6 +294,9 @@ func (b *Bind) read(p *peer) {
 	defer func() {
 		b.remove(p)
 		close(p.done)
+		if b.OnPeerDisconnected != nil {
+			b.OnPeerDisconnected(p.id, p.endpoint)
+		}
 		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
 		// Only a client-side Bind (b.url != "") ever dials out; a server-side
 		// Bind's peers arrive via ServeHTTP, and a disconnect there just means
@@ -389,6 +395,9 @@ func (b *Bind) redial() {
 		}
 		b.peers[p.id] = p
 		b.mu.Unlock()
+		if b.OnPeerConnected != nil {
+			b.OnPeerConnected(p.id, p.endpoint)
+		}
 		slog.Debug("WireGuard WebSocket peer reconnected", "peer", p.id)
 		go b.read(p)
 		return

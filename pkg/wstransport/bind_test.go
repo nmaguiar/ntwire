@@ -380,6 +380,18 @@ func TestClientBindRedialsAfterDrop(t *testing.T) {
 // ignored by redial, every attempt would 401 and Send would never recover.
 func TestClientBindRedialUsesUpdatedHeader(t *testing.T) {
 	server := NewServer()
+	// OnPeerConnected fires (see ServeHTTP) only after the peer is inserted
+	// into server.peers under the lock, so waiting on it below is a correct
+	// happens-after signal -- unlike checking server.peers right after
+	// client.Open returns, which races the server-side handler goroutine
+	// that hasn't necessarily reached that insertion yet.
+	peerConnected := make(chan struct{}, 1)
+	server.OnPeerConnected = func(string, conn.Endpoint) {
+		select {
+		case peerConnected <- struct{}{}:
+		default:
+		}
+	}
 	if _, _, err := server.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -415,6 +427,12 @@ func TestClientBindRedialUsesUpdatedHeader(t *testing.T) {
 	ep, err := client.ParseEndpoint("127.0.0.1:1")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	select {
+	case <-peerConnected:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server never saw the client's peer")
 	}
 
 	server.mu.Lock()

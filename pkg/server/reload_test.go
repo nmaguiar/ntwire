@@ -1,8 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,4 +100,43 @@ func TestReloadKeepsOIDCSessionWhenStillGranted(t *testing.T) {
 	if _, ok := s.sessions.Get(session.Token); !ok {
 		t.Fatal("oidc session should survive a reload that keeps its grants")
 	}
+}
+
+func TestReloadSerializesConcurrentRenewal(t *testing.T) {
+	cfg := Config{Tunnels: []TunnelConfig{{Name: "reports", Target: "x:1", VirtualPort: 1, Allow: []string{"*"}}}}
+	cfg.Auth.SessionTTL = time.Minute
+	s := New(cfg, nil)
+	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", Fingerprint: "fp", Tunnels: []protocol.Tunnel{{Name: "reports"}}, TTL: time.Minute})
+	h := s.Handler()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			s.Reload(cfg)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/renew", bytes.NewBufferString(`{"client_info":{}}`))
+			req.Header.Set("Authorization", "Bearer "+session.Token)
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK && rec.Code != http.StatusUnauthorized {
+				t.Errorf("renew status = %d", rec.Code)
+				return
+			}
+			if rec.Code == http.StatusOK {
+				var response protocol.AuthResponse
+				if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+					t.Error(err)
+					return
+				}
+				session.Token = response.Token
+			}
+		}
+	}()
+	wg.Wait()
 }

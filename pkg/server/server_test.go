@@ -272,3 +272,20 @@ func TestAllowSourcePrunesStaleEntries(t *testing.T) {
 		t.Fatal("a rate entry older than the window should have been pruned")
 	}
 }
+
+func TestSSHAuthenticationRejectsUnsupportedProtocolVersion(t *testing.T) {
+	s, _, _ := newTestServer(t, []TunnelConfig{{Name: "reports", Target: "x:1", VirtualPort: 1, Allow: []string{"*"}}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth", bytes.NewBufferString(`{"version":999}`))
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	var body protocol.Error
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != protocol.ErrorInvalidRequest || body.Error != "unsupported protocol version" {
+		t.Fatalf("error = %+v", body)
+	}
+}

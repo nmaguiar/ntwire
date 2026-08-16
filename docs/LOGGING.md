@@ -57,6 +57,16 @@ Each line is a single JSON object:
 - `message` — the log line.
 - All other fields are the structured attributes passed to the log call.
 
+## Lifecycle events
+
+Lifecycle logs use a stable `event` field. Current server events include
+`configuration_reloaded`, `websocket_connected`, and
+`websocket_disconnected`; transport events include the low-cardinality
+`transport` and `relay` fields. Session audit records additionally cover
+authentication, renewal, expiration, disconnect, and administrative
+revocation. Credentials, bearer tokens, private keys, and OAuth artifacts are
+never included in these fields.
+
 ### fluent-bit example
 
 Both daemons write logs to stderr, not to a file, so under a container
