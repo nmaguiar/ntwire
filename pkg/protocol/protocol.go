@@ -117,6 +117,11 @@ type AuthResponse struct {
 	// upgrade ladder wire-compatible.
 	Multipath             bool     `json:"multipath,omitempty"`
 	TransportCapabilities []string `json:"transport_capabilities,omitempty"`
+	// RequiredTransportCapabilities lists capabilities the server mandates
+	// for this session (e.g. it refuses to fall back below multipath-v1).
+	// A client that cannot honor one of these should treat the session as
+	// unusable rather than silently degrading.
+	RequiredTransportCapabilities []string `json:"required_transport_capabilities,omitempty"`
 	// ServerName is the operator-configured listen.name, letting a client
 	// distinguish several servers it is connected to at once. Empty when
 	// unset; clients fall back to the host:port they connected to.
