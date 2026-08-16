@@ -57,11 +57,14 @@ type Prompt struct {
 // Snapshot is a session's state, safe to read from any goroutine and safe
 // to serialize as JSON for the settings API.
 type Snapshot struct {
-	Profile config.Profile    `json:"profile"`
-	State   State             `json:"state"`
-	Err     string            `json:"error,omitempty"`
-	Prompt  *Prompt           `json:"prompt,omitempty"`
-	Status  *client.WebStatus `json:"status,omitempty"`
+	Profile config.Profile `json:"profile"`
+	State   State          `json:"state"`
+	Err     string         `json:"error,omitempty"`
+	Prompt  *Prompt        `json:"prompt,omitempty"`
+	// Connection comes directly from client.Connection.State. It is the GUI's
+	// sole connected-state input; it never derives state from client logs or
+	// reaches into Connection's mutable fields.
+	Connection *client.ConnectionState `json:"connection,omitempty"`
 }
 
 // session is one profile's live connection state, owned by exactly one

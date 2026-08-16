@@ -113,4 +113,15 @@ starting a second connection manager.
 | `port` | Settings window's live per-tunnel port change |
 | `logout` | "Clear SSO tokens" |
 | `keygen` | Settings window's "Generate new identity…" |
-| `status` | Tray labels and the settings window's live profile list, both fed by `Connection.Status()` |
+| `status` | Tray labels and the settings window's live profile list, both fed by the typed `Connection.State()` snapshot and lifecycle events |
+
+## Live connection state
+
+The settings API exposes a profile's `connection` only while it has a live
+client handle. This is a typed `client.ConnectionState` snapshot, refreshed
+on each API read and manager event. It carries the connection and
+authentication method, actual tunnel listeners, machine-readable and display
+transport state, reconnect attempt/error/retry timing, session expiry,
+latency, reconnection count, and non-secret security state (negotiated
+transport capabilities, explicit insecure-TLS use, and listener bind
+address). The GUI does not parse client logs for any connection state.

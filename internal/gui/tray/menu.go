@@ -266,9 +266,9 @@ func (m *menu) renderDashboardItem(slot *profileSlot, snap manager.Snapshot) {
 }
 
 func (m *menu) renderTunnels(slot *profileSlot, snap manager.Snapshot) {
-	var tunnels []client.WebTunnel
-	if snap.Status != nil {
-		tunnels = snap.Status.Tunnels
+	var tunnels []client.ListenerState
+	if snap.Connection != nil {
+		tunnels = snap.Connection.Tunnels
 	}
 	if len(tunnels) > maxTunnelsPerProfile {
 		tunnels = tunnels[:maxTunnelsPerProfile]
@@ -376,8 +376,8 @@ func (m *menu) watchQuit() {
 func profileTitle(snap manager.Snapshot) string {
 	switch snap.State {
 	case manager.StateConnected:
-		if snap.Status != nil {
-			return fmt.Sprintf("%s — connected · %dms", snap.Profile.Name, snap.Status.LatencyMillis)
+		if snap.Connection != nil {
+			return fmt.Sprintf("%s — connected · %dms", snap.Profile.Name, snap.Connection.LatencyMillis)
 		}
 		return snap.Profile.Name + " — connected"
 	case manager.StateReconnecting:

@@ -12,16 +12,13 @@ import (
 type fakeHandle struct {
 	mu     sync.Mutex
 	closed bool
-	status client.WebStatus
+	state  client.ConnectionState
 }
 
-func (h *fakeHandle) Status() client.WebStatus                 { h.mu.Lock(); defer h.mu.Unlock(); return h.status }
-func (h *fakeHandle) Instructions() client.WebInstructionsList { return client.WebInstructionsList{} }
+func (h *fakeHandle) State() client.ConnectionState { h.mu.Lock(); defer h.mu.Unlock(); return h.state }
 func (h *fakeHandle) ReplaceListener(name, host string, port int) (string, error) {
 	return "127.0.0.1:0", nil
 }
-func (h *fakeHandle) AuthMethod() string   { return "ssh" }
-func (h *fakeHandle) DisplayName() string  { return "fake" }
 func (h *fakeHandle) DashboardURL() string { return "http://127.0.0.1:0/?token=fake" }
 func (h *fakeHandle) Close() {
 	h.mu.Lock()
