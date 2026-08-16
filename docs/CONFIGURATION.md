@@ -349,6 +349,11 @@ deprovisioning specifically. The dashboard and revoke endpoint are disabled by
 default and return 404 without the exact token because they expose
 operational and identity data (and, for revoke, session control); bind the
 metrics listener to loopback or place it behind a trusted TLS reverse proxy.
+The JSON form at `GET /v1/dashboard?token=TOKEN` also includes a
+`security_capabilities` array, listing enabled high-risk configuration classes
+without exposing tunnel names or credentials. See
+[SECURITY.md](SECURITY.md#operator-visible-risk-capabilities) for the stable
+values and their meaning.
 
 ## See also
 

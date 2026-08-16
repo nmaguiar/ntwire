@@ -19,3 +19,27 @@ func FuzzAccept(f *testing.F) {
 		}
 	})
 }
+
+// FuzzControlFrameDecoding covers datagrams arriving on the public UDP relay
+// and direct-upgrade control path. Decoding is allocation-free and must never
+// classify a malformed prefix as a control packet.
+func FuzzControlFrameDecoding(f *testing.F) {
+	f.Add([]byte{})
+	f.Add(EncodeControlFrame(FrameRelayBind, []byte("token")))
+	f.Add(make([]byte, MaxRelayDatagram))
+	f.Add(make([]byte, MaxRelayDatagram+1))
+	f.Fuzz(func(t *testing.T, datagram []byte) {
+		typ, payload, ok := DecodeControlFrame(datagram)
+		if ok {
+			if len(datagram) < controlHeaderLen || typ != datagram[4] {
+				t.Fatalf("invalid control frame classification")
+			}
+			if len(payload) != len(datagram)-controlHeaderLen {
+				t.Fatalf("payload length = %d, want %d", len(payload), len(datagram)-controlHeaderLen)
+			}
+		}
+		if ValidRelayDatagram(datagram) != (len(datagram) > 0 && len(datagram) <= MaxRelayDatagram) {
+			t.Fatalf("unexpected relay datagram validity for %d bytes", len(datagram))
+		}
+	})
+}

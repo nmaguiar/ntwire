@@ -208,22 +208,32 @@ func NewServer() *Bind { return &Bind{} }
 
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.open {
+		b.mu.Unlock()
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 	b.open, b.done = true, make(chan struct{})
 	b.packets, b.peers = make(chan packet, conn.IdealBatchSize), map[string]*peer{}
+	var connected *peer
+	var onConnected func(string, conn.Endpoint)
 	if b.url != "" {
 		ws, _, err := websocket.Dial(context.Background(), b.url, &websocket.DialOptions{HTTPClient: b.client, HTTPHeader: b.header})
 		if err != nil {
 			close(b.done)
 			b.open = false
+			b.mu.Unlock()
 			return nil, 0, err
 		}
 		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(b.url)}, done: make(chan struct{})}
 		b.peers[p.id] = p
-		go b.read(p)
+		connected, onConnected = p, b.OnPeerConnected
+	}
+	b.mu.Unlock()
+	if connected != nil {
+		if onConnected != nil {
+			onConnected(connected.id, connected.endpoint)
+		}
+		go b.read(connected)
 	}
 	return []conn.ReceiveFunc{b.receive}, 0, nil
 }
