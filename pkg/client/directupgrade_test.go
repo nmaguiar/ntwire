@@ -419,18 +419,27 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 		t.Fatal("WebSocket peer never became connected on the server")
 	}
 
+	// The listener is closed before the session is, not after: the client's
+	// automatic redial (see Bind.redial) reacts to a closed read within
+	// microseconds of CloseSession being called, and CloseSession's own
+	// close handshake (coder/websocket's graceful Close writes a close frame
+	// and waits) takes long enough that the redial's dial, HTTP upgrade, and
+	// server-side re-registration can all complete *while CloseSession is
+	// still running*, before this goroutine would otherwise get to
+	// l.Close(). Confirmed locally by counting OnPeerConnected calls for
+	// "session": with the listener closed after CloseSession, a second
+	// connection routinely lands before the first failing ParseEndpoint is
+	// observed below, so the disconnected state is never seen. Closing the
+	// listener first means every dial attempt the redial makes -- no matter
+	// how fast -- fails outright, so there is no reconnection left to race.
+	if err := l.Close(); err != nil {
+		t.Fatalf("l.Close() = %v", err)
+	}
+
 	// Kill the WebSocket connection from the server side, forcing the
 	// client's own read loop to notice and remove it from its peer map --
 	// exactly what a relay/server restart or network blip would also cause.
-	// The listener is also closed here so the client's automatic redial (see
-	// Bind.redial) can never race this test's observation of the disconnected
-	// state: without this, redial can reconnect within microseconds on a busy
-	// machine (e.g. under -race alongside this package's other tests), and
-	// the polling loop below can miss that window entirely, making the test
-	// flaky. With the listener gone, every redial attempt fails permanently,
-	// so the disconnected state -- once observed -- never clears.
 	server.CloseSession("session")
-	l.Close()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if _, err := hybrid.ParseEndpoint(wstransport.WSSentinel); err != nil {
