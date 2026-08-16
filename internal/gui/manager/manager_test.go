@@ -365,15 +365,12 @@ func TestRemoveProfileWhileAwaitingTrustUnblocksRunConnect(t *testing.T) {
 }
 
 func TestConnectPassphrasePromptTimesOut(t *testing.T) {
-	orig := promptTimeout
-	promptTimeout = 50 * time.Millisecond
-	defer func() { promptTimeout = orig }()
-
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id")
 	writeRealEncryptedKey(t, keyPath, "s3cret")
 
 	m, _ := newTestManager(t, &fakeConnector{})
+	m.promptTimeout = 50 * time.Millisecond
 	p, _ := m.AddProfile(config.Profile{Name: "home-lab", Server: "https://home.example:8443", IdentityFile: keyPath})
 
 	if err := m.Connect(p.ID); err != nil {

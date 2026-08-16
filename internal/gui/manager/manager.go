@@ -16,11 +16,10 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
 
-// promptTimeout bounds how long a connect attempt waits for a trust or
-// passphrase prompt to be answered before failing the attempt. It is a
-// package variable, not a constant, so tests can shorten it rather than
-// waiting for the real duration.
-var promptTimeout = 5 * time.Minute
+// defaultPromptTimeout bounds how long a connect attempt waits for a trust
+// or passphrase prompt to be answered before failing the attempt, unless a
+// Manager overrides it via its promptTimeout field.
+const defaultPromptTimeout = 5 * time.Minute
 
 // Update is published to every subscriber whenever a session's state
 // changes.
@@ -37,6 +36,13 @@ type Update struct {
 type Manager struct {
 	connector  Connector
 	configPath string
+
+	// promptTimeout bounds how long a connect attempt waits for a trust or
+	// passphrase prompt to be answered before failing the attempt. It lives
+	// on the Manager, not a package variable, so tests can shorten it on
+	// their own Manager instance without racing a concurrently running
+	// goroutine (possibly leaked from another test's Manager) that reads it.
+	promptTimeout time.Duration
 
 	mu       sync.Mutex
 	settings config.Settings
@@ -86,12 +92,13 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 	}
 
 	m := &Manager{
-		connector:    connector,
-		configPath:   configPath,
-		settings:     cfg.Settings,
-		sessions:     map[string]*session{},
-		reservations: map[string]map[string]string{},
-		subs:         map[int]chan Update{},
+		connector:     connector,
+		configPath:    configPath,
+		settings:      cfg.Settings,
+		sessions:      map[string]*session{},
+		reservations:  map[string]map[string]string{},
+		subs:          map[int]chan Update{},
+		promptTimeout: defaultPromptTimeout,
 	}
 	for _, p := range cfg.Profiles {
 		m.sessions[p.ID] = newSession(p)
@@ -703,7 +710,7 @@ func (m *Manager) resolvePassphrase(id, keyPath string) (string, bool) {
 		// a safe no-op rather than resurrecting a deleted profile.
 		m.setFailed(id, errors.New("profile was removed while awaiting a passphrase"))
 		return "", false
-	case <-time.After(promptTimeout):
+	case <-time.After(m.promptTimeout):
 		m.setFailed(id, errors.New("timed out waiting for a passphrase"))
 		return "", false
 	}
@@ -748,7 +755,7 @@ func (m *Manager) resolveTrust(id string, unknown *client.UnknownCertificateErro
 	case <-cancel:
 		m.setFailed(id, errors.New("profile was removed while awaiting a trust decision"))
 		return false
-	case <-time.After(promptTimeout):
+	case <-time.After(m.promptTimeout):
 		m.setFailed(id, errors.New("timed out waiting for a trust decision"))
 		return false
 	}
