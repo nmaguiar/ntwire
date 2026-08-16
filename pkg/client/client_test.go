@@ -79,6 +79,53 @@ func TestInitialTransport(t *testing.T) {
 	}
 }
 
+func TestInitialTransportState(t *testing.T) {
+	cases := []struct {
+		name  string
+		useWS bool
+		udp   string
+		want  transportState
+	}{
+		{"direct UDP", false, "vpn.example:51820", transportStateDirect},
+		{"WebSocket fallback", true, "vpn.example:51820", transportStateWSSFallback},
+		{"relay WebSocket", true, "", transportStateWSSRelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := initialTransportState(tc.useWS, tc.udp); got != tc.want {
+				t.Fatalf("initialTransportState(%t, %q) = %v, want %v", tc.useWS, tc.udp, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTransportStateTransitions(t *testing.T) {
+	cases := []struct {
+		name           string
+		current        transportState
+		event          transportTransition
+		relayAvailable bool
+		want           transportState
+	}{
+		{"upgrade WSS to UDP relay", transportStateWSSRelay, transportUDPRelayEstablished, false, transportStateUDPRelay},
+		{"upgrade WSS directly when relay tier unavailable", transportStateWSSRelay, transportDirectEstablished, false, transportStateDirectViaRelayReflector},
+		{"upgrade UDP relay to direct", transportStateUDPRelay, transportDirectEstablished, true, transportStateDirectViaRelayReflector},
+		{"UDP relay loss falls back to WSS", transportStateUDPRelay, transportUDPRelayLost, false, transportStateWSSRelay},
+		{"direct loss steps down to warm UDP relay", transportStateDirectViaRelayReflector, transportDirectLost, true, transportStateUDPRelay},
+		{"direct loss falls back to WSS", transportStateDirectViaRelayReflector, transportDirectLost, false, transportStateWSSRelay},
+		{"control reconnect preserves direct route", transportStateDirect, transportControlReconnected, true, transportStateDirect},
+		{"shutdown clears route", transportStateUDPRelay, transportShutdown, true, transportStateStopped},
+		{"invalid direct loss from WSS is ignored", transportStateWSSRelay, transportDirectLost, false, transportStateWSSRelay},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nextTransportState(tc.current, tc.event, tc.relayAvailable); got != tc.want {
+				t.Fatalf("nextTransportState(%v, %v, %t) = %v, want %v", tc.current, tc.event, tc.relayAvailable, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProxyFunc(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://server.example/v1/info", nil)
 	if err != nil {

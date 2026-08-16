@@ -101,18 +101,6 @@ func resolveDirectUpgradeTiming(o *DirectUpgradeTiming) directUpgradeTiming {
 	return t
 }
 
-// upgradeRung is directUpgradeLoop's position on the relay upgrade ladder:
-// each rung trades more privacy (the server's real address, or at least
-// more of the relay's visibility into traffic timing) for less overhead,
-// and the loop only ever moves one rung at a time in either direction.
-type upgradeRung int
-
-const (
-	rungNone     upgradeRung = iota // on the WebSocket fallback
-	rungUDPRelay                    // WireGuard riding UDP forwarded through the relay's UDP-relay tier
-	rungDirect                      // full escape, bypassing the relay's data plane entirely
-)
-
 // directUpgradeLoop is the background goroutine a WebSocket-fallback
 // Connection runs (unless Options.NoDirectUpgrade, or the caller forced
 // Options.UseWebSocket and is meant to stay on it) to opportunistically
@@ -133,14 +121,14 @@ func (c *Connection) directUpgradeLoop() {
 		return
 	}
 
-	rung := rungNone
+	state := transportStateWSSRelay
 	var relayCandidate, directCandidate string
 	var relayStop chan struct{} // non-nil while a UDP-relay bind keepalive goroutine is running
-	// nextDirectAttempt paces opportunistic escalation from rungUDPRelay to
-	// rungDirect at retryInterval, independent of the faster
+	// nextDirectAttempt paces opportunistic escalation from UDP relay to
+	// direct UDP at retryInterval, independent of the faster
 	// healthCheckInterval the loop otherwise ticks at once upgraded -- a
 	// zero value is always due, so the first health-check tick after
-	// reaching rungUDPRelay also tries escalating.
+	// reaching UDP relay also tries escalating.
 	var nextDirectAttempt time.Time
 	// lastReason remembers the most recently logged failure/revert
 	// explanation so a steady-state cause (e.g. "server has not enabled
@@ -164,14 +152,15 @@ func (c *Connection) directUpgradeLoop() {
 		case <-time.After(wait):
 		}
 
-		switch rung {
-		case rungNone:
+		switch state {
+		case transportStateWSSRelay:
 			var relayReason, relayToken string
 			relayCandidate, relayToken, relayReason = c.tryUDPRelayUpgrade(bind)
 			if relayCandidate != "" {
 				relayStop = make(chan struct{})
 				go c.udpRelayKeepaliveLoop(bind, relayToken, relayCandidate, relayStop)
-				rung = rungUDPRelay
+				state = nextTransportState(state, transportUDPRelayEstablished, false)
+				c.transitionTransport(state, "UDP relay path established")
 				nextDirectAttempt = time.Time{}
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
@@ -203,7 +192,8 @@ func (c *Connection) directUpgradeLoop() {
 			var directReason string
 			directCandidate, directReason = c.tryDirectUpgrade(bind, wstransport.WSSentinel)
 			if directCandidate != "" {
-				rung = rungDirect
+				state = nextTransportState(state, transportDirectEstablished, false)
+				c.transitionTransport(state, "direct UDP path established")
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
 				continue
@@ -211,7 +201,7 @@ func (c *Connection) directUpgradeLoop() {
 			wait = c.upgradeTiming.retryInterval
 			c.logUpgradeReason(&lastReason, directReason, "direct UDP upgrade not established; staying on WebSocket relay")
 
-		case rungUDPRelay:
+		case transportStateUDPRelay:
 			healthy, reason := c.pathHealthy(relayCandidate)
 			if !healthy {
 				c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
@@ -225,10 +215,10 @@ func (c *Connection) directUpgradeLoop() {
 					// cannot be installed on a MultipathBind; trying to do so here
 					// used to turn a harmless per-path failure into a failed
 					// "revert" loop.
-					c.transport.Store(uint32(transportWSSRelay))
+					state = nextTransportState(state, transportUDPRelayLost, false)
+					c.transitionTransport(state, "UDP relay path lost")
 					stopRelayKeepalive()
 					relayCandidate = ""
-					rung = rungNone
 					wait = c.upgradeTiming.retryInterval
 					continue
 				}
@@ -237,10 +227,10 @@ func (c *Connection) directUpgradeLoop() {
 					wait = c.upgradeTiming.healthCheckInterval
 					continue
 				}
-				c.transport.Store(uint32(transportWSSRelay))
+				state = nextTransportState(state, transportUDPRelayLost, false)
+				c.transitionTransport(state, "UDP relay path lost")
 				stopRelayKeepalive()
 				relayCandidate = ""
-				rung = rungNone
 				wait = c.upgradeTiming.retryInterval
 				continue
 			}
@@ -261,13 +251,14 @@ func (c *Connection) directUpgradeLoop() {
 			var directReason string
 			directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
 			if directCandidate != "" {
-				rung = rungDirect
+				state = nextTransportState(state, transportDirectEstablished, true)
+				c.transitionTransport(state, "direct UDP path established")
 			}
 			_ = directReason // staying on the already-healthy relay rung isn't itself news; nothing to log
 			wait = c.upgradeTiming.healthCheckInterval
 			lastReason = ""
 
-		case rungDirect:
+		case transportStateDirect, transportStateDirectViaRelayReflector:
 			healthy, reason := c.pathHealthy(directCandidate)
 			if healthy {
 				wait = c.upgradeTiming.healthCheckInterval
@@ -278,9 +269,10 @@ func (c *Connection) directUpgradeLoop() {
 			// still warm (its keepalive kept running underneath the whole
 			// time this connection rode the direct path), else all the way
 			// to the WebSocket fallback.
-			fallback, nextRung, nextTransport := wstransport.WSSentinel, rungNone, transportWSSRelay
-			if relayCandidate != "" {
-				fallback, nextRung, nextTransport = relayCandidate, rungUDPRelay, transportUDPRelay
+			nextState := nextTransportState(state, transportDirectLost, relayCandidate != "")
+			fallback := wstransport.WSSentinel
+			if nextState == transportStateUDPRelay {
+				fallback = relayCandidate
 			}
 			c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting", "candidate", directCandidate, "fallback", fallback)
 			if err := c.setEndpoint(fallback); err != nil {
@@ -295,9 +287,9 @@ func (c *Connection) directUpgradeLoop() {
 				wait = c.upgradeTiming.healthCheckInterval
 				continue
 			}
-			c.transport.Store(uint32(nextTransport))
+			state = nextState
+			c.transitionTransport(state, "direct UDP path lost")
 			directCandidate = ""
-			rung = nextRung
 			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
 			wait = c.upgradeTiming.retryInterval
 		}
@@ -467,7 +459,6 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback str
 		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", serverAddr)
 	}
 	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", serverAddr)
-	c.transport.Store(uint32(transportUDPRelayReflector))
 	return serverAddr, ""
 }
 
@@ -695,7 +686,6 @@ func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate
 		}
 	}
 	c.log.Info("upgraded to UDP via relay", "server", c.DisplayName(), "relay_addr", resp.RelayAddr)
-	c.transport.Store(uint32(transportUDPRelay))
 	return resp.RelayAddr, resp.Token, ""
 }
 
