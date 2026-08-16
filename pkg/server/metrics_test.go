@@ -20,6 +20,9 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 	stats.toTarget.Add(150)
 	stats.fromTarget.Add(4200)
 	stats.active.Add(1)
+	s.observe("authentication_success", "oidc")
+	s.observe("session_created", "oidc")
+	s.observe("configuration_reloaded", "")
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	s.MetricsHandler().ServeHTTP(rec, req)
@@ -38,6 +41,8 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 		`ntwire_tunnel_bytes_to_target_total{tunnel="reports",method="oidc"} 150`,
 		`ntwire_tunnel_bytes_from_target_total{tunnel="reports",method="oidc"} 4200`,
 		`ntwire_tunnel_connections_active{tunnel="reports",method="oidc"} 1`,
+		`ntwire_lifecycle_events_total{event="authentication_success",method="oidc"} 1`,
+		`ntwire_lifecycle_events_total{event="configuration_reloaded",method="unknown"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("metrics missing %q in:\n%s", want, body)
@@ -45,6 +50,9 @@ func TestMetricsHandlerExposesMetrics(t *testing.T) {
 	}
 	if strings.Contains(body, "alice@example.com") {
 		t.Fatalf("metrics leaked identity:\n%s", body)
+	}
+	if strings.Contains(body, "session_id") || strings.Contains(body, "reports.internal") {
+		t.Fatalf("metrics leaked sensitive or unbounded value:\n%s", body)
 	}
 }
 

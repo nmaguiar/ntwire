@@ -39,6 +39,7 @@ type Server struct {
 	oidc        *oidcauth.Verifiers
 	tlsManager  *TLSManager
 	auditLog    *slog.Logger
+	lifecycle   *lifecycleCounters
 	direct      *directUDP
 	udpr        atomic.Pointer[udpRelay]
 }
@@ -47,7 +48,7 @@ func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}}
+	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}, lifecycle: newLifecycleCounters()}
 	if len(c.Auth.OIDC.Issuers) > 0 {
 		s.oidc = newVerifiers(c, l)
 	}
@@ -189,6 +190,13 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			s.observe("authentication_failed", "ssh")
+			s.auditLifecycle("authentication_failed", "ssh", "rejected")
+		}
+	}()
 	if !s.allowSource(r.RemoteAddr) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
@@ -226,7 +234,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	}
 	fp := sshkey.Fingerprint(key)
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
-	s.establishSession(w, r, sessionRequest{
+	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
 		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
 	}, grants)
@@ -238,6 +246,13 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	succeeded := false
+	defer func() {
+		if !succeeded {
+			s.observe("authentication_failed", "oidc")
+			s.auditLifecycle("authentication_failed", "oidc", "rejected")
+		}
+	}()
 	if !s.allowSource(r.RemoteAddr) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
@@ -265,12 +280,12 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	identity, err := verifiers.Verify(r.Context(), a.IssuerName, a.IDToken)
 	if err != nil {
-		s.log.Warn("oidc verification failed", "issuer", a.IssuerName, "error", err)
+		s.log.Warn("oidc verification failed", "event", "authentication_failed", "method", "oidc", "reason_category", "invalid_token")
 		fail(w, 401, protocol.ErrorOIDCInvalidToken, "invalid id token")
 		return
 	}
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
-	s.establishSession(w, r, sessionRequest{
+	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
 		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
 	}, grants)
@@ -299,19 +314,22 @@ type sessionRequest struct {
 // returns just the allowed tunnel list, so a caller that only wants to look
 // (e.g. `ntwire list`) never occupies a max_sessions_per_key slot or a
 // WireGuard peer/IP.
-func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) {
+func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) bool {
 	if !req.QueryOnly && s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
 		fail(w, 429, protocol.ErrorMaxSessions, "maximum sessions for key reached")
-		return
+		return false
 	}
 	grants, ttl, err := s.authorize(r, authContext{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Comment: req.Comment,
 		Issuer: req.Issuer, Groups: req.Groups,
 	}, req.Info, grants)
 	if err != nil {
-		s.log.Warn("authorization denied", "identity", req.Identity, "method", req.Method, "error", err)
+		s.observe("authorization_denied", req.Method)
+		// Authorizer errors may originate outside ntwire (and can therefore
+		// signal while logging only a stable category.
+		s.log.Warn("authorization denied", "event", "authorization_denied", "method", req.Method, "reason_category", "authorization_failed")
 		fail(w, 403, protocol.ErrorNotAllowed, "authorization denied")
-		return
+		return false
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
@@ -319,9 +337,10 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			Instructions: t.Instructions, DocsURL: t.DocsURL})
 	}
 	if req.QueryOnly {
+		s.observe("authentication_success", req.Method)
 		s.log.Info("query-only authentication allowed", "method", req.Method, "identity", req.Identity)
 		write(w, 200, protocol.AuthResponse{Tunnels: v, Identity: req.Identity, Method: req.Method})
-		return
+		return true
 	}
 	tunnelIP := ""
 	serverKey := ""
@@ -329,7 +348,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	if s.data != nil {
 		if req.WireGuardPublicKey == "" {
 			fail(w, 400, protocol.ErrorInvalidRequest, "wireguard_public_key is required")
-			return
+			return false
 		}
 		if old, ok := s.sessions.FindWireGuardPublicKey(req.WireGuardPublicKey); ok {
 			tunnelIP = old.TunnelIP
@@ -338,12 +357,12 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			tunnelIP, err = s.allocateIP()
 			if err != nil {
 				fail(w, 503, protocol.ErrorNoCapacity, err.Error())
-				return
+				return false
 			}
 		}
 		if err = s.addPeer(req.WireGuardPublicKey, tunnelIP); err != nil {
 			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "invalid wireguard key")
-			return
+			return false
 		}
 		serverKey = s.data.stack.PublicKey()
 		serverTunnelIP = s.data.serverIP.String()
@@ -360,8 +379,11 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
+	s.observe("authentication_success", session.Method)
+	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2)})
+	return true
 }
 
 func hasCapability(caps []string, want string) bool {
@@ -548,6 +570,8 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.sessions.Delete(t)
 		s.dropSession(old)
+		s.observe("authorization_denied", old.Method)
+		s.audit("authorization_denied", old, "renewal authorization denied", 0)
 		fail(w, 403, protocol.ErrorNotAllowed, "authorization denied")
 		return
 	}
@@ -572,6 +596,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
+	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
 	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2)})
 }
@@ -587,6 +612,7 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.sessions.Delete(t)
 	s.dropSession(old)
 	s.log.Debug("session disconnected", "session", old.ID, "identity", old.Identity)
+	s.observe("session_disconnected", old.Method)
 	s.audit("session_disconnected", old, "", 0)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -724,9 +750,19 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 		SessionID: ac.SessionID, ClientInfo: extra, GrantedTunnels: names, RequestedAt: time.Now(),
 	})
 	if err != nil {
+		if s.Config.Authorizer.WebhookURL != "" || s.Config.Authorizer.Exec != "" {
+			s.observe("authorization_hook_denied", ac.Method)
+			s.auditLifecycle("authorization_hook_denied", ac.Method, "hook_error")
+			s.log.Warn("authorization hook denied request", "event", "authorization_hook_denied", "method", ac.Method, "reason_category", "hook_error")
+		}
 		return nil, 0, err
 	}
 	if !result.Allow {
+		if s.Config.Authorizer.WebhookURL != "" || s.Config.Authorizer.Exec != "" {
+			s.observe("authorization_hook_denied", ac.Method)
+			s.auditLifecycle("authorization_hook_denied", ac.Method, "hook_denied")
+			s.log.Info("authorization hook denied request", "event", "authorization_hook_denied", "method", ac.Method, "reason_category", "hook_denied")
+		}
 		return nil, 0, fmt.Errorf("authorizer denied")
 	}
 	if result.AllowedTunnels != "*" {
@@ -790,6 +826,8 @@ func (s *Server) Reload(c Config) {
 			if !validIssuers[v.Issuer] {
 				s.sessions.Delete(v.Token)
 				s.dropSession(v)
+				s.observe("authorization_revoked", v.Method)
+				auditRecord(s.auditLog, s.log, "authorization_revoked", v, "issuer removed on configuration reload", 0)
 				continue
 			}
 			allowed := map[string]bool{}
@@ -802,6 +840,8 @@ func (s *Server) Reload(c Config) {
 		if !s.authorizedFingerprint(v.Fingerprint) {
 			s.sessions.Delete(v.Token)
 			s.dropSession(v)
+			s.observe("authorization_revoked", v.Method)
+			auditRecord(s.auditLog, s.log, "authorization_revoked", v, "SSH authorization removed on configuration reload", 0)
 			continue
 		}
 		allowed := map[string]bool{}
@@ -811,6 +851,7 @@ func (s *Server) Reload(c Config) {
 		s.reconcileTunnels(v, allowed)
 	}
 	s.log.Info("lifecycle event", "event", "configuration_reloaded")
+	s.observe("configuration_reloaded", "")
 	s.logSecurityCapabilities(c)
 }
 
@@ -824,6 +865,8 @@ func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {
 	if len(kept) != len(v.Tunnels) {
 		s.sessions.Delete(v.Token)
 		s.dropSession(v)
+		s.observe("tunnel_grant_revoked", v.Method)
+		auditRecord(s.auditLog, s.log, "tunnel_grant_revoked", v, "tunnel grant changed on configuration reload", 0)
 	}
 }
 
@@ -864,10 +907,14 @@ func (s *Server) audit(event string, session Session, reason string, risk int) {
 	s.mu.Lock()
 	l := s.auditLog
 	s.mu.Unlock()
+	auditRecord(l, s.log, event, session, reason, risk)
+}
+
+func auditRecord(l, fallback *slog.Logger, event string, session Session, reason string, risk int) {
 	if l == nil {
-		l = s.log
+		l = fallback
 	}
-	l.Info("audit", "event", event, "session_id", session.ID, "fingerprint", session.Fingerprint, "reason", reason, "risk_score", risk)
+	l.Info("audit", "event", event, "session_id", session.ID, "method", session.Method, "fingerprint", session.Fingerprint, "reason", reason, "risk_score", risk)
 }
 func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

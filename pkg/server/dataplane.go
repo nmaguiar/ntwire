@@ -106,9 +106,11 @@ func (s *Server) StartDataPlane() error {
 	ws := wstransport.NewHybrid()
 	relayMode := s.Config.Relay.Enabled
 	ws.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
+		s.observe("websocket_connected", "")
 		s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", relayMode)
 	}
 	ws.WebSocket.OnPeerDisconnected = func(_ string, _ conn.Endpoint) {
+		s.observe("websocket_disconnected", "")
 		s.log.Info("transport event", "event", "websocket_disconnected", "transport", "websocket", "relay", relayMode)
 	}
 	var bind conn.Bind = ws
@@ -129,6 +131,7 @@ func (s *Server) StartDataPlane() error {
 		// it here anyway would only add a phantom candidate this bind
 		// probes forever for no one to answer.
 		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) {
+			s.observe("websocket_connected", "")
 			s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", true)
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
 				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2)
@@ -443,6 +446,7 @@ func (s *Server) reapSessions() {
 	for _, v := range s.sessions.Reap() {
 		s.dropSession(v)
 		s.log.Debug("session expired", "session", v.ID, "identity", v.Identity)
+		s.observe("session_expired", v.Method)
 		s.audit("session_expired", v, "", 0)
 	}
 }

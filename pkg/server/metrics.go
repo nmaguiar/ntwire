@@ -37,6 +37,7 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.dropSession(old)
 	s.log.Debug("session revoked", "session", old.ID, "identity", old.Identity)
+	s.observe("session_revoked", old.Method)
 	s.audit("session_revoked", old, "admin revoke", 0)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -94,6 +95,11 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "ntwire_session_latency_milliseconds_sum{method=\"%s\"} %d\n", label, totals.latency)
 		fmt.Fprintf(w, "ntwire_session_latency_milliseconds_count{method=\"%s\"} %d\n", label, totals.count)
 		fmt.Fprintf(w, "ntwire_session_reconnections{method=\"%s\"} %d\n", label, totals.reconnections)
+	}
+	fmt.Fprintln(w, "# HELP ntwire_lifecycle_events_total Completed server lifecycle events since process start.")
+	fmt.Fprintln(w, "# TYPE ntwire_lifecycle_events_total counter")
+	for _, counter := range s.lifecycle.snapshot() {
+		fmt.Fprintf(w, "ntwire_lifecycle_events_total{event=\"%s\",method=\"%s\"} %d\n", promLabel(counter.event), promLabel(counter.method), counter.total)
 	}
 	fmt.Fprintln(w, "# HELP ntwire_tunnel_bytes_to_target_total Bytes forwarded from a tunnel's client side to its target.")
 	fmt.Fprintln(w, "# TYPE ntwire_tunnel_bytes_to_target_total counter")

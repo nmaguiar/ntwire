@@ -60,12 +60,23 @@ Each line is a single JSON object:
 ## Lifecycle events
 
 Lifecycle logs use a stable `event` field. Current server events include
-`configuration_reloaded`, `websocket_connected`, and
-`websocket_disconnected`; transport events include the low-cardinality
-`transport` and `relay` fields. Session audit records additionally cover
-authentication, renewal, expiration, disconnect, and administrative
-revocation. Credentials, bearer tokens, private keys, and OAuth artifacts are
-never included in these fields.
+`configuration_reloaded`, `websocket_connected`,
+`websocket_disconnected`, `authentication_failed`, and
+`authorization_hook_denied`; transport events
+include the low-cardinality `transport` and `relay` fields. Session audit
+records additionally cover authentication, renewal, expiration, disconnect,
+administrative revocation, reload-driven authorization/tunnel-grant revocation,
+and authorization-hook denial. Hook-denial records use only the stable
+`hook_error` or `hook_denied` reason category, not an external error string.
+Credentials, bearer tokens, private keys, and OAuth artifacts are never
+included in these fields.
+
+`/metrics` also exposes the process-lifetime counter
+`ntwire_lifecycle_events_total{event,method}`. Both labels are bounded:
+`event` is an ntwire-defined lifecycle name and `method` is `ssh`, `oidc`, or
+`unknown`; neither can contain an identity, session ID, target, tunnel grant,
+or error text. Existing session and traffic values remain snapshots of active
+state.
 
 ### fluent-bit example
 
