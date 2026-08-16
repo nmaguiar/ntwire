@@ -223,6 +223,12 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	if resp.Error != "" {
 		return false, fmt.Errorf("relay registration rejected: %s (%s)", resp.Error, resp.Code)
 	}
+	if resp.Version != protocol.Version {
+		return false, fmt.Errorf("relay uses unsupported protocol version %d", resp.Version)
+	}
+	if err := protocol.ValidateRequiredCapabilities([]string{protocol.CapabilityMultipathV1}, resp.RequiredCapabilities); err != nil {
+		return false, fmt.Errorf("relay requires an unsupported capability: %w", err)
+	}
 	a.log.Info("relay registered", "name", resp.Name, "domain", resp.Domain)
 	if a.OnReflectAddr != nil {
 		a.OnReflectAddr(resp.ReflectAddr)

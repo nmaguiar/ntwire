@@ -59,6 +59,15 @@ func TestSelectTransport(t *testing.T) {
 	}
 }
 
+func TestValidateAuthResponseCapabilities(t *testing.T) {
+	if err := validateAuthResponseCapabilities(protocol.AuthResponse{TransportCapabilities: []string{"future-transport"}}); err != nil {
+		t.Fatalf("unknown optional transport capability should be ignored: %v", err)
+	}
+	if err := validateAuthResponseCapabilities(protocol.AuthResponse{RequiredTransportCapabilities: []string{"future-transport"}}); err == nil {
+		t.Fatal("unknown required transport capability should fail")
+	}
+}
+
 func TestInitialTransport(t *testing.T) {
 	cases := []struct {
 		name  string
