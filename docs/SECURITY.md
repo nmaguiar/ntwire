@@ -256,6 +256,12 @@ permissiveness: the user is choosing their own exposure, same as always.
 
 ## Operator guidance
 
+Release validation must exercise the security-sensitive parser boundaries as
+well as ordinary tests. `ojob tasks.yaml op=release` runs bounded fuzzing of
+the protocol, SOCKS, and WebSocket inputs; record any unavailable local
+dependency separately from a failing assertion in the release sign-off
+([RELEASE.md](RELEASE.md)).
+
 - Never commit or log private keys, bearer tokens, ID/refresh tokens, request
   bodies, or hook output without redaction. `ntwire keygen` writes private
   keys with mode 0600; the credential-file fallback uses the same mode.
