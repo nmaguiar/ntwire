@@ -557,3 +557,16 @@ func TestConcurrentReloadAndAllowedIPDoesNotRace(t *testing.T) {
 	}
 	<-done
 }
+
+func TestReapSessionsExpiresDeterministically(t *testing.T) {
+	s := New(Config{}, nil)
+	session := s.sessions.Create(CreateParams{
+		Method: "ssh", Identity: "fingerprint", Fingerprint: "fingerprint",
+		TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "reports"}},
+		TTL: -time.Second,
+	})
+	s.reapSessions()
+	if _, ok := s.sessions.Get(session.Token); ok {
+		t.Fatal("expired session survived deterministic reap")
+	}
+}
