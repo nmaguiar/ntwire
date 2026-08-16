@@ -80,6 +80,11 @@ only v1 ignores the optional v2 offer and continues using v1. Tests cover the
 old/old, old/new, shared-new, unknown-optional, and required-unsupported
 matrices in `pkg/protocol/capability_test.go`.
 
+Protocol changes require the bounded protocol-envelope fuzz smoke test in
+addition to these compatibility tests. It is included in `ojob tasks.yaml
+op=release`; the release record distinguishes a failed test from an
+environment where the check could not run ([RELEASE.md](RELEASE.md)).
+
 ## Authentication request
 
 `POST /v1/auth` accepts a JSON request no larger than 1 MiB:

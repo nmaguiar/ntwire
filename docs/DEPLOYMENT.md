@@ -72,6 +72,12 @@ tunnel. The Compose networks isolate clients from the target, so a passing
 probe must traverse ntwire. The runner removes its temporary files and Docker
 resources automatically; on failure it prints the Compose logs.
 
+For the full release gate, including normal/race tests, bounded fuzzing, and
+all command builds before this Docker check, run `ojob tasks.yaml op=release`.
+Record a missing Docker daemon, registry access, or platform restriction as an
+environment-blocked check rather than a product failure; see
+[RELEASE.md](RELEASE.md).
+
 ### Client image
 
 The matching client image is built from `deploy/docker/Dockerfile.client` and

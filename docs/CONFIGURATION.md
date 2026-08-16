@@ -14,6 +14,11 @@ Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 write a complete, extensively commented template for every available option.
 At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers` is required.
 
+Before releasing a configuration or protocol-affecting change, run the
+repository release gate and retain its result with the deployment record; it
+verifies that legacy-compatible configuration and transport paths still build
+and pass their Docker smoke test. See [RELEASE.md](RELEASE.md).
+
 See [../README.md](../README.md) for a minimal working example. The
 following is the complete currently parsed configuration:
 

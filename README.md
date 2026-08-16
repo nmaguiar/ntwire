@@ -261,6 +261,17 @@ Release binaries, Docker Compose, and Kubernetes manifests are covered in
 [AGENTS.md](AGENTS.md) for the full contributor workflow, coding style, and
 commit conventions.
 
+Before a release, run the complete local release gate (normal tests, race
+tests, bounded fuzzing, all command builds, and the Docker E2E test):
+
+```sh
+ojob tasks.yaml op=release
+```
+
+It needs Docker Compose for its final E2E stage. See
+[docs/RELEASE.md](docs/RELEASE.md) for the sign-off record, including how to
+separate an unavailable environment from a product failure.
+
 For a full local, containerized smoke test of direct UDP tunnels and relayed
 WebSocket tunnels (including fixed-target and SOCKS5 traffic), run:
 

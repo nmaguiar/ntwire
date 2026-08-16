@@ -25,7 +25,9 @@ help:
     - gui
     - test
     - race
+    - fuzz
     - check
+    - release
     - deps
     - tidy
     - format
@@ -53,7 +55,7 @@ init:
 
 todo:
 - (ask):
-    op: option.['all'|'build'|'client'|'server'|'relay'|'gui'|'test'|'race'|'check'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
+    op: option.['all'|'build'|'client'|'server'|'relay'|'gui'|'test'|'race'|'fuzz'|'check'|'release'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
   ((question)): "Operation to perform:"
 - (optionOn): op
   ((lowerCase)): true
@@ -74,8 +76,12 @@ todo:
     - Test
     race:
     - Race test
+    fuzz:
+    - Fuzz smoke test
     check:
     - Check
+    release:
+    - Release readiness checks
     deps:
     - Verify dependencies
     tidy:
@@ -159,6 +165,13 @@ jobs:
     test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
     mkdir -p "$GO_BUILD_CACHE"
     GOCACHE="$GO_BUILD_CACHE" go test -race ./...
+
+- name: Fuzz smoke test
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    GOCACHE="$GO_BUILD_CACHE" scripts/fuzz-smoke.sh
 
 - name: Build client
   lang: shell
@@ -275,3 +288,11 @@ jobs:
   to:
   - Check
   - Build binaries
+
+- name: Release readiness checks
+  to:
+  - Check
+  - Race test
+  - Fuzz smoke test
+  - Build all commands
+  - End-to-end test

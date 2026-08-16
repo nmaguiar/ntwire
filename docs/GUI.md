@@ -50,6 +50,11 @@ build without `-tags gui` and rely on the browser fallback). `ojob
 tasks.yaml op=gui` builds the default (untagged) mode for the host
 platform.
 
+The repository release gate builds every command and CI also performs a
+native macOS GUI build/test check. Run `ojob tasks.yaml op=release` before a
+release; record any missing desktop toolchain as environment-blocked rather
+than treating it as a passing GUI validation ([RELEASE.md](RELEASE.md)).
+
 ## Profiles and storage
 
 `ntwire-gui` owns its own store, `~/.ntwire/gui.yaml`, holding N server
