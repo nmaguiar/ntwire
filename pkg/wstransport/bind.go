@@ -33,6 +33,8 @@ type Bind struct {
 	// lookup stuck on a since-vanished interface) cannot block the retry loop
 	// from ever observing Close.
 	dialTimeout time.Duration
+	// noRedial disables the automatic reconnect entirely -- see DisableRedial.
+	noRedial bool
 
 	mu              sync.Mutex
 	open            bool
@@ -181,6 +183,22 @@ func (b *Bind) SetHeader(header http.Header) {
 	b.mu.Unlock()
 }
 
+// DisableRedial permanently turns off the automatic reconnect a client-side
+// Bind otherwise starts every time its "remote" peer drops (see redial). It
+// exists for tests that need a disconnect to stay observably disconnected: a
+// redial's first attempt fires with no backoff (see redial's attempt==0
+// case), so it can win a race against a test closing the peer's server-side
+// listener a moment later -- a connection already past the OS's TCP
+// handshake at the instant the listener closes can still land, even though
+// every later attempt is correctly refused. Reordering test code narrows
+// that window but cannot close it; only disabling redial does. A no-op on a
+// server-side Bind, which never dials out.
+func (b *Bind) DisableRedial() {
+	b.mu.Lock()
+	b.noRedial = true
+	b.mu.Unlock()
+}
+
 // NewServer creates a bind whose ServeHTTP method attaches authenticated
 // WebSocket connections. The id is usually the ntwire session ID.
 func NewServer() *Bind { return &Bind{} }
@@ -278,7 +296,10 @@ func (b *Bind) read(p *peer) {
 		// Bind's peers arrive via ServeHTTP, and a disconnect there just means
 		// the client is gone. Every client-side peer is "remote" (see Open and
 		// redial), so b.url alone is a sufficient discriminator.
-		if b.url != "" {
+		b.mu.Lock()
+		noRedial := b.noRedial
+		b.mu.Unlock()
+		if b.url != "" && !noRedial {
 			go b.redial()
 		}
 	}()

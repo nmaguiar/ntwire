@@ -396,11 +396,29 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	defer h.Close()
 
 	hybrid := wstransport.NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
-	if _, _, err := hybrid.Open(0); err != nil {
-		t.Fatal(err)
-	}
 	defer hybrid.Close()
+	// This test wants the disconnect below to stay observably disconnected,
+	// not race the client's automatic reconnect (see Bind.redial). redial's
+	// first attempt fires with no backoff, so a well-timed one can win even
+	// against a test that closes the peer's listener first: a connection
+	// already past the OS's TCP handshake at the instant the listener closes
+	// can still land, even though every later dial attempt is correctly
+	// refused. Disabling it outright removes the race rather than trying to
+	// out-time it.
+	hybrid.WebSocket.DisableRedial()
 
+	// wgnet.New brings the WireGuard device up itself (device.Up calls
+	// BindUpdate, which closes and reopens whatever Bind it was given) --
+	// so this used to also call hybrid.Open(0) here first. That created a
+	// throwaway connection BindUpdate would immediately close and replace,
+	// and the resulting close/reopen churn raced this test's own
+	// CloseSession call below: if the throwaway connection's server-side
+	// removal (from Bind.read's defer) landed in the gap before the real
+	// connection's server-side registration, CloseSession's b.peers["session"]
+	// lookup found nothing and silently no-opped, leaving the client's
+	// WebSocket peer connected for the rest of the test -- observed as
+	// ParseEndpoint never returning an error below. Letting wgnet.New make
+	// the only connection avoids the churn, and the race, entirely.
 	clientStack, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{netip.MustParseAddr("100.65.30.2")}, Bind: hybrid})
 	if err != nil {
 		t.Fatal(err)
@@ -417,23 +435,6 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	case <-connected:
 	case <-time.After(2 * time.Second):
 		t.Fatal("WebSocket peer never became connected on the server")
-	}
-
-	// The listener is closed before the session is, not after: the client's
-	// automatic redial (see Bind.redial) reacts to a closed read within
-	// microseconds of CloseSession being called, and CloseSession's own
-	// close handshake (coder/websocket's graceful Close writes a close frame
-	// and waits) takes long enough that the redial's dial, HTTP upgrade, and
-	// server-side re-registration can all complete *while CloseSession is
-	// still running*, before this goroutine would otherwise get to
-	// l.Close(). Confirmed locally by counting OnPeerConnected calls for
-	// "session": with the listener closed after CloseSession, a second
-	// connection routinely lands before the first failing ParseEndpoint is
-	// observed below, so the disconnected state is never seen. Closing the
-	// listener first means every dial attempt the redial makes -- no matter
-	// how fast -- fails outright, so there is no reconnection left to race.
-	if err := l.Close(); err != nil {
-		t.Fatalf("l.Close() = %v", err)
 	}
 
 	// Kill the WebSocket connection from the server side, forcing the
