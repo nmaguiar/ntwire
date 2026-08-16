@@ -530,6 +530,10 @@ func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	// Replacing the deliberately orphaned connection below closes it on the
+	// server. Its read goroutine would then start an unrelated automatic
+	// redial, racing the explicit redial this test is exercising.
+	client.DisableRedial()
 
 	ep, err := client.ParseEndpoint("127.0.0.1:1")
 	if err != nil {
