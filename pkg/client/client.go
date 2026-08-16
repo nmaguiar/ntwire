@@ -652,6 +652,7 @@ type Connection struct {
 	LocalAddresses []string
 	token, base    string
 	mu             sync.Mutex
+	closed         bool
 	info           protocol.ClientInfo
 	http           *http.Client
 	ports          map[string]int
@@ -681,6 +682,11 @@ type Connection struct {
 	serverTunnelIP netip.Addr
 	upgradeTiming  directUpgradeTiming
 }
+
+// closeDisconnectTimeout bounds the best-effort remote cleanup request.
+// It is a variable solely so lifecycle tests can inject a short deterministic
+// timeout; production keeps the one-second default.
+var closeDisconnectTimeout = time.Second
 
 type connectionTransport uint32
 
@@ -1329,7 +1335,7 @@ func (c *Connection) renewLoop() {
 // recognizes the same peer once it is available again.
 func (c *Connection) reconnect() error {
 	c.mu.Lock()
-	if c.Stack == nil {
+	if c.closed || c.Stack == nil {
 		c.mu.Unlock()
 		return fmt.Errorf("connection is closed")
 	}
@@ -1344,6 +1350,10 @@ func (c *Connection) reconnect() error {
 		return err
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return fmt.Errorf("connection is closed")
+	}
 	c.Response = auth.response
 	c.token = auth.response.Token
 	c.method, c.issuer = auth.method, auth.issuer
@@ -1381,6 +1391,10 @@ func (c *Connection) renew() error {
 		return err
 	}
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return fmt.Errorf("connection is closed")
+	}
 	// A renewal reuses the same WireGuard peer and tunnel address, so the
 	// server does not repeat the addressing fields in its response. Carry
 	// them over instead of letting them be zeroed: Connection.Response is
@@ -1723,39 +1737,54 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 }
 func (c *Connection) Close() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.closed = true
+	h, token, base := c.http, c.token, c.base
+	tunnels, ui, stack := c.tunnels, c.ui, c.Stack
+	c.tunnels, c.ui, c.Stack = nil, nil, nil
+	statusFile := c.statusFile
+	if statusFile == "" {
+		statusFile = DefaultStatusFile()
+	}
+	if c.stop != nil {
+		select {
+		case <-c.stop:
+		default:
+			close(c.stop)
+		}
+	}
+	c.mu.Unlock()
+
 	// Best effort: expiry remains the server-side safety net if this cannot be
-	// delivered (for example after a network outage).
-	if c.http != nil && c.token != "" {
-		req, err := http.NewRequest(http.MethodPost, c.base+"/v1/disconnect", nil)
+	// delivered (for example after a network outage). Never hold c.mu while
+	// doing I/O: renewal/reconnect and status readers must be able to observe
+	// shutdown immediately. Bound the request so Close cannot hang forever on
+	// a vanished server.
+	if h != nil && token != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), closeDisconnectTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/disconnect", nil)
 		if err == nil {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-			resp, err := c.http.Do(req)
+			req.Header.Set("Authorization", "Bearer "+token)
+			resp, err := h.Do(req)
 			if err == nil && resp != nil {
 				_ = resp.Body.Close()
 			}
 		}
 	}
-	for _, t := range c.tunnels {
+	for _, t := range tunnels {
 		_ = t.listener.Close()
 	}
-	c.tunnels = nil
-	select {
-	case <-c.stop:
-	default:
-		close(c.stop)
+	if ui != nil {
+		_ = ui.Close()
 	}
-	if c.ui != nil {
-		_ = c.ui.Close()
+	if statusFile != "" {
+		_ = os.Remove(statusFile)
 	}
-	if c.statusFile == "" {
-		c.statusFile = DefaultStatusFile()
-	}
-	if c.statusFile != "" {
-		_ = os.Remove(c.statusFile)
-	}
-	if c.Stack != nil {
-		_ = c.Stack.Close()
-		c.Stack = nil
+	if stack != nil {
+		_ = stack.Close()
 	}
 }

@@ -94,7 +94,8 @@ See [LOGGING.md](LOGGING.md) for the full `log:` reference, including the
 `-log-format`/`-log-level` flags and env vars, and their precedence.
 
 `audit.log_file`, when set, additionally writes every `audit` event
-(`auth_allowed`, `session_disconnected`, `session_expired`, `session_revoked`)
+(`auth_allowed`, `session_renewed`, `session_disconnected`, `session_expired`,
+`session_revoked`)
 as a Logstash-format JSON line to that file, regardless of `log.format`. This
 is additive: audit events keep appearing in the main log too, so existing
 log-based monitoring is unaffected. The file is opened append-only with mode

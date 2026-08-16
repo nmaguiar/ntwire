@@ -780,3 +780,51 @@ func TestFireEventWithNilOnEventDoesNotPanic(t *testing.T) {
 	c := &Connection{}
 	c.fireEvent(Event{Kind: EventRenewed})
 }
+
+func TestCloseBoundsDisconnectAndIsIdempotent(t *testing.T) {
+	oldTimeout := closeDisconnectTimeout
+	closeDisconnectTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { closeDisconnectTimeout = oldTimeout })
+
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+	c := &Connection{base: srv.URL, token: "token", http: srv.Client(), stop: make(chan struct{})}
+	startedAt := time.Now()
+	c.Close()
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("Close blocked for %s", elapsed)
+	}
+	c.Close() // idempotent even after all owned state has been released
+}
+
+func TestRenewCannotRestoreStateAfterClose(t *testing.T) {
+	renewStarted := make(chan struct{})
+	allowRenew := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/renew":
+			close(renewStarted)
+			<-allowRenew
+			_ = json.NewEncoder(w).Encode(protocol.AuthResponse{Token: "new-token", TTLSeconds: 60})
+		case "/v1/disconnect":
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	c := &Connection{Response: protocol.AuthResponse{Token: "old-token", TTLSeconds: 60}, base: srv.URL, token: "old-token", http: srv.Client(), stop: make(chan struct{})}
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.renew() }()
+	<-renewStarted
+	c.Close()
+	close(allowRenew)
+	if err := <-errCh; err == nil {
+		t.Fatal("renew succeeded after Close")
+	}
+	if c.Response.Token != "old-token" || c.token != "old-token" {
+		t.Fatalf("closed connection state was restored: response=%q token=%q", c.Response.Token, c.token)
+	}
+}
