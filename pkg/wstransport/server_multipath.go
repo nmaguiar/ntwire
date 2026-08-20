@@ -128,6 +128,7 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.paths[name] = ep
 	p.v2 = v2
 	p.mu.Unlock()
+	p.scheduler.SetV2(v2)
 
 	p.scheduler.Register(name, kind)
 	m.sendProbe(p, name, time.Now())

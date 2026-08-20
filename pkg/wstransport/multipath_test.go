@@ -253,3 +253,79 @@ func TestSelectFailsOverInstantlyWhenIncumbentUnhealthyDespiteHysteresis(t *test
 		t.Fatalf("primary = %q after incumbent went unhealthy, want failover to the other candidate", primary)
 	}
 }
+
+// TestSelectV2ProtectsIncumbentFromUnsampledChallenger is a regression test
+// for a production incident: a UDP-relay candidate answered health probes
+// perfectly (great RTT, 0% loss) while silently dropping every real
+// WireGuard packet, and immediately stole primary from a working WSS
+// incumbent on probe RTT alone. With CapabilityMultipathV2 negotiated, a
+// challenger with no ReportDeliveryRatio sample yet must not unseat a
+// healthy incumbent no matter how much better its raw probe score is.
+func TestSelectV2ProtectsIncumbentFromUnsampledChallenger(t *testing.T) {
+	s := NewScheduler()
+	s.SetV2(true)
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("wss", 70*time.Millisecond, true, now)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("initial primary = %q, want wss", primary)
+	}
+	s.Register("udp-relay", PathUDPRelay)
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("udp-relay", time.Millisecond, true, now) // far better RTT, still unsampled
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("primary = %q after an unsampled challenger registered with better RTT, want wss to remain incumbent", primary)
+	}
+}
+
+// TestSelectV1StillSwitchesImmediatelyToUnsampledChallenger shows the
+// protection above is v2-specific: v1 has no delivery-ratio signal to wait
+// for, so it keeps switching on RTT/loss alone exactly as before.
+func TestSelectV1StillSwitchesImmediatelyToUnsampledChallenger(t *testing.T) {
+	s := NewScheduler() // v2 left false
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("wss", 70*time.Millisecond, true, now)
+	}
+	s.Register("udp-relay", PathUDPRelay)
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("udp-relay", time.Millisecond, true, now)
+	}
+	if primary, _, _ := s.Select(); primary != "udp-relay" {
+		t.Fatalf("primary = %q, want immediate v1 switch to udp-relay", primary)
+	}
+}
+
+// TestSelectV2PromotesChallengerOnceDeliveryProven confirms the incumbent
+// protection is temporary, not a permanent freeze: once the challenger earns
+// a real delivery-ratio sample and clears the usual margin+dwell hysteresis,
+// it can still become primary.
+func TestSelectV2PromotesChallengerOnceDeliveryProven(t *testing.T) {
+	s := NewScheduler()
+	s.SetV2Options(V2Options{SwitchMargin: 5 * time.Millisecond, MinDwell: time.Millisecond})
+	s.SetV2(true)
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("wss", 70*time.Millisecond, true, now)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("initial primary = %q, want wss", primary)
+	}
+	s.Register("udp-relay", PathUDPRelay)
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("udp-relay", time.Millisecond, true, now)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("primary = %q before any delivery sample, want wss protected", primary)
+	}
+	time.Sleep(2 * time.Millisecond) // clear MinDwell
+	s.ReportDeliveryRatio("udp-relay", 1.0)
+	if primary, _, _ := s.Select(); primary != "udp-relay" {
+		t.Fatalf("primary = %q after udp-relay proved perfect delivery, want it promoted", primary)
+	}
+}

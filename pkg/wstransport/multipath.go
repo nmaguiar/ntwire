@@ -97,6 +97,7 @@ func NewMultipathBind(base conn.Bind, id string, v2 bool, opts V2Options) *Multi
 	}
 	if v2 {
 		m.scheduler.SetV2Options(opts)
+		m.scheduler.SetV2(true)
 		m.mirror = newMirrorLimiter(opts.MirrorRateBytesPerSec)
 		m.recvCounters = make(map[string]*recvCounter)
 		m.attempts = newMirrorAccounting()
@@ -475,6 +476,12 @@ type Scheduler struct {
 	maxThroughputPenalty time.Duration
 	switchMargin         time.Duration
 	minDwell             time.Duration
+	// v2 records whether this scheduler's session negotiated
+	// CapabilityMultipathV2 -- and so can actually measure a challenger's
+	// real-traffic delivery via ReportDeliveryRatio. Gates the incumbent
+	// protection in selectLocked; false (v1) keeps the original immediate
+	// RTT/loss-only switching, since v1 has no delivery signal to wait for.
+	v2 bool
 
 	// primary holds the hysteresis-committed incumbent name and when it was
 	// last (re)selected, swapped atomically rather than guarded by mu: Select
@@ -519,6 +526,17 @@ func (s *Scheduler) SetV2Options(opts V2Options) {
 	if opts.MinDwell > 0 {
 		s.minDwell = opts.MinDwell
 	}
+}
+
+// SetV2 records whether this scheduler's session negotiated
+// CapabilityMultipathV2. Pass the same value every time it can change for a
+// given scheduler (a server-side peer's scheduler is constructed before its
+// negotiated capability is known -- see RegisterPath), since selectLocked
+// reads it on every Select call.
+func (s *Scheduler) SetV2(enabled bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.v2 = enabled
 }
 
 func (s *Scheduler) Register(name string, kind PathKind) {
@@ -663,14 +681,20 @@ func (s *Scheduler) Select() (primary, alternate string, duplicate bool) {
 // selectLocked ranks healthy candidates and picks the primary, applying
 // margin+dwell hysteresis only when the delivery-ratio term is actually part
 // of the picture (the challenger or the current incumbent has a real
-// sample) -- a plain RTT/loss comparison, which is v1's entire behavior and
-// also v2's before any sample has landed, switches immediately exactly as it
-// always has. RTT is already EWMA-smoothed and loss already uses a rolling
-// window, so a suddenly lossy or slow path must still fail over without
-// delay; only the newly added, individually noisy delivery-ratio samples
-// need hysteresis to avoid flapping. An incumbent that is no longer Healthy
-// has already dropped out of paths entirely, so it fails over instantly
-// regardless -- hysteresis never delays that case.
+// sample) -- a plain RTT/loss comparison, which is v1's entire behavior,
+// switches immediately exactly as it always has. RTT is already
+// EWMA-smoothed and loss already uses a rolling window, so a suddenly lossy
+// or slow path must still fail over without delay; only the newly added,
+// individually noisy delivery-ratio samples need hysteresis to avoid
+// flapping. An incumbent that is no longer Healthy has already dropped out
+// of paths entirely, so it fails over instantly regardless -- hysteresis
+// never delays that case.
+//
+// v2 additionally never lets an unsampled challenger unseat a healthy
+// incumbent at all (see the DeliveryRatio < 0 check below): unlike v1, v2
+// has a real signal for "can this candidate actually carry WireGuard
+// traffic," so probe-only RTT/loss is deliberately not enough to promote it
+// until that signal exists.
 func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 	var paths []*candidate
 	for _, p := range s.candidates {
@@ -683,15 +707,32 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		s.primary.Store(nil)
 		return "", "", false
 	}
-	best := paths[0]
-	chosen := best
 	cur := s.primary.Load()
 	var curName string
 	var curSince time.Time
 	if cur != nil {
 		curName, curSince = cur.name, cur.since
 	}
-	if incumbent := findCandidate(paths, curName); incumbent != nil && incumbent != best &&
+	incumbent := findCandidate(paths, curName)
+
+	best := paths[0]
+	// v2 can actually measure a challenger's real WireGuard delivery (via
+	// mirrored-traffic sampling; see ReportDeliveryRatio). Until a
+	// challenger has at least one such sample, its score reflects only
+	// probe RTT/loss -- proof it can carry the tiny probe frames, not real
+	// traffic. A healthy incumbent must not be unseated on that alone, or a
+	// path that answers probes perfectly while silently dropping real
+	// WireGuard packets would steal primary from a working incumbent the
+	// instant it registers, exactly what a broken UDP-relay path did in
+	// production: probes stayed healthy while every real dial timed out.
+	// Once real traffic starts flowing, MirrorCandidate opportunistically
+	// samples this same challenger, so it still gets a fair, evidence-based
+	// shot at primary via the hysteresis check below.
+	if s.v2 && incumbent != nil && incumbent.Healthy && best != incumbent && best.DeliveryRatio < 0 {
+		best = incumbent
+	}
+	chosen := best
+	if incumbent != nil && incumbent != best &&
 		(best.DeliveryRatio >= 0 || incumbent.DeliveryRatio >= 0) {
 		now := time.Now()
 		if !(s.score(best)+s.switchMargin < s.score(incumbent) && now.Sub(curSince) >= s.minDwell) {
