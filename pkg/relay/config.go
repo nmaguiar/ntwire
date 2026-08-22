@@ -2,6 +2,7 @@ package relay
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -74,8 +75,11 @@ type Config struct {
 }
 
 type RegistrationConfig struct {
-	Name      string `yaml:"name"`
-	PublicKey string `yaml:"public_key"`
+	Name            string `yaml:"name"`
+	PublicKey       string `yaml:"public_key"`
+	NativeWireGuard struct {
+		Listen string `yaml:"listen"`
+	} `yaml:"native_wireguard"`
 }
 
 // SampleConfig returns a complete, commented relay configuration template,
@@ -116,6 +120,8 @@ limits:
 registrations:
   - name: home                              # first DNS label; clients use https://home.relay.example.com
     public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINA2Gh3ezOG8R0iaD0WVnVsJTQGHqjI96LwGrIc/Kwgc admin@laptop" # authorized_keys line identifying the ntwire-server allowed to claim this name; replace with your own
+    native_wireguard:
+      listen: ""                           # optional dedicated UDP endpoint for ordinary WireGuard clients, e.g. ":51821"
 
 log:
   format: text                              # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
@@ -185,6 +191,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	seen := map[string]bool{}
+	seenNative := map[string]bool{}
 	for _, r := range c.Registrations {
 		if r.Name == "" || r.PublicKey == "" {
 			return c, fmt.Errorf("registrations require name and public_key")
@@ -201,6 +208,15 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("duplicate registration name %q", r.Name)
 		}
 		seen[r.Name] = true
+		if r.NativeWireGuard.Listen != "" {
+			if _, _, err := net.SplitHostPort(r.NativeWireGuard.Listen); err != nil {
+				return c, fmt.Errorf("registration %q native_wireguard.listen: %w", r.Name, err)
+			}
+			if seenNative[r.NativeWireGuard.Listen] {
+				return c, fmt.Errorf("duplicate native WireGuard listener %q", r.NativeWireGuard.Listen)
+			}
+			seenNative[r.NativeWireGuard.Listen] = true
+		}
 		if _, _, err := sshkey.ParsePublicString(r.PublicKey); err != nil {
 			return c, fmt.Errorf("registration %q: invalid public_key: %w", r.Name, err)
 		}

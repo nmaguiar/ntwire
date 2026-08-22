@@ -172,6 +172,10 @@ automatically" workarounds; instead, use one of:
 
 ## SOCKS proxy tunnels and egress risk
 
+## Native WireGuard and destination policies
+
+Native peers are static cryptographic peers in the existing userspace WireGuard device, not bearer-token sessions. Their configured IPs are reserved from dynamic allocation. Keep the persistent server WireGuard key and all client private keys out of source control. Tunnel grants are checked before destination policies; peer and tunnel policies compose as restrictive AND rules. Fixed-target policies evaluate the chosen resolved IP before it is dialled. See `NATIVE-WIREGUARD.md` and `DESTINATION-POLICIES.md`.
+
 ### Operator-visible risk capabilities
 
 At startup and after a configuration reload, ntwire logs the stable

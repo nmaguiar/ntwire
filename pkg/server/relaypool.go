@@ -26,8 +26,9 @@ type RelayPool struct {
 
 	// Callbacks run after the preferred healthy member changes. They are
 	// intentionally optional so a pool also works for WebSocket-only relays.
-	OnReflectAddr  func(string)
-	OnUDPRelayAddr func(*RelayAgent, string)
+	OnReflectAddr     func(string)
+	OnUDPRelayAddr    func(*RelayAgent, string)
+	OnNativeWireGuard func(string, string)
 }
 
 type relayPoolMember struct {
@@ -99,7 +100,7 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	}
 	p.preferred = preferred
 	changed := oldPreferred != preferred
-	if preferred == member && registered && (oldResponse.ReflectAddr != response.ReflectAddr || oldResponse.UDPRelayAddr != response.UDPRelayAddr) {
+	if preferred == member && registered && (oldResponse.ReflectAddr != response.ReflectAddr || oldResponse.UDPRelayAddr != response.UDPRelayAddr || oldResponse.NativeWireGuardAddr != response.NativeWireGuardAddr || oldResponse.NativeWireGuardToken != response.NativeWireGuardToken) {
 		changed = true
 	}
 	reflectAddr := ""
@@ -107,7 +108,7 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	if preferred != nil {
 		reflectAddr, udpAddr = preferred.response.ReflectAddr, preferred.response.UDPRelayAddr
 	}
-	onReflect, onUDP := p.OnReflectAddr, p.OnUDPRelayAddr
+	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
 	p.mu.Unlock()
 	if changed && onReflect != nil {
 		onReflect(reflectAddr)
@@ -118,6 +119,13 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 			agent = preferred.agent
 		}
 		onUDP(agent, udpAddr)
+	}
+	if changed && onNative != nil {
+		if preferred == nil {
+			onNative("", "")
+		} else {
+			onNative(preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken)
+		}
 	}
 }
 

@@ -28,6 +28,7 @@ type agentServer struct {
 	reflectAddr  string
 	udpRelayAddr string
 	sessions     *udpSessionTable // nil until Relay.Start wires it (or forever, if listen.udp_relay is unset)
+	native       map[string]*nativeWGRelay
 }
 
 // setReflectAddr records the relay's bound UDP reflector address (or ""),
@@ -74,6 +75,16 @@ func (a *agentServer) getUDPSessions() *udpSessionTable {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.sessions
+}
+func (a *agentServer) setNative(native map[string]*nativeWGRelay) {
+	a.mu.Lock()
+	a.native = native
+	a.mu.Unlock()
+}
+func (a *agentServer) nativeFor(name string) *nativeWGRelay {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.native[name]
 }
 
 // handoffConn lets handleData keep its hijacked HTTP handler alive until the
@@ -187,6 +198,12 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	defer a.registry.DeregisterAgent(name, agent)
 	reflectAddr := a.getReflectAddr()
 	udpRelayAddr := a.getUDPRelayAddr()
+	native := a.nativeFor(name)
+	nativeAddr, nativeToken := "", ""
+	if native != nil {
+		nativeAddr, nativeToken = native.conn.LocalAddr().String(), native.issue(name)
+		defer native.remove(name)
+	}
 	// reflect_addr records this tenant's wss-vs-direct-UDP posture at
 	// registration time: "" means every client of this tenant rides the wss
 	// tunnel exclusively; non-empty means the server also has the option to
@@ -197,7 +214,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr, "udp_relay_addr", udpRelayAddr)
 	defer a.log.Info("server disconnected", "name", name, "fingerprint", fingerprint)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr, RelayVersion: buildinfo.String(), Capabilities: protocol.IntersectCapabilities(req.Capabilities, relayCapabilities())})
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr, NativeWireGuardAddr: nativeAddr, NativeWireGuardToken: nativeToken, RelayVersion: buildinfo.String(), Capabilities: protocol.IntersectCapabilities(req.Capabilities, relayCapabilities())})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()

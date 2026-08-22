@@ -469,7 +469,7 @@ func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 	req := protocol.RelayRegisterRequest{
 		Version: protocol.Version, PublicKey: pub, Name: a.cfg.Name,
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n),
-		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1},
+		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1, protocol.CapabilityNativeWireGuardRelay},
 	}
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil {

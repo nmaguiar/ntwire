@@ -147,6 +147,7 @@ func main() {
 		pool.OnUDPRelayAddr = func(agent *server.RelayAgent, addr string) {
 			s.EnableUDPRelay(agent, addr)
 		}
+		pool.OnNativeWireGuard = s.EnableNativeWireGuardRelay
 		go pool.Run(context.Background())
 		defer pool.Close()
 		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_endpoints", len(c.Relay.Endpoints), "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())

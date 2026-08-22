@@ -50,6 +50,7 @@ admin:
 network:
   tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward); host may be a hostname, resolved fresh on every client connect/renew
+  wireguard_private_key_file: ""         # optional persistent server WireGuard key; needed for stable official-client profiles
 authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
   exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty

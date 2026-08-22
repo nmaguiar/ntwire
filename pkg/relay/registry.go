@@ -200,7 +200,9 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 // relayCapabilities lists optional features implemented by the relay control
 // protocol. Unknown optional server offers are ignored; only an explicit
 // RequiredCapabilities request reaches the failure path above.
-func relayCapabilities() []string { return []string{protocol.CapabilityMultipathV1} }
+func relayCapabilities() []string {
+	return []string{protocol.CapabilityMultipathV1, protocol.CapabilityNativeWireGuardRelay}
+}
 
 // RegisterAgent binds agent as the live control connection for name,
 // evicting and closing any prior agent for that name (last-writer-wins).
