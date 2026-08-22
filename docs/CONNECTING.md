@@ -52,6 +52,8 @@ anywhere:
 ntwire-server -generate-wireguard-key client_wg
 # Or from a running Docker container:
 docker exec ntwire-server /ntwire-server -generate-wireguard-key /etc/ntwire/keys/client_wg
+# Or from a running Kubernetes deployment:
+kubectl exec deployment/ntwire-server -- /ntwire-server -generate-wireguard-key /etc/ntwire/keys/client_wg
 ```
 
 This writes `client_wg` (private key, mode `0600`) and `client_wg.pub`, and
@@ -177,6 +179,9 @@ configuration; it's the server and relay operators who opt into it.
    > 
    > # When ntwire-server is running inside Docker:
    > docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr -wireguard-peer iphone
+   > 
+   > # When ntwire-server is running inside Kubernetes:
+   > kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr -wireguard-peer iphone
    > ```
 
    Or write the `.conf` profile manually:
@@ -319,6 +324,8 @@ with no inbound connectivity be reachable at all.
    ntwire-server -generate-relay-key relay_id_ed25519
    # Or from a running Docker container:
    docker exec ntwire-server /ntwire-server -generate-relay-key /etc/ntwire/keys/relay_id_ed25519
+   # Or from a running Kubernetes deployment:
+   kubectl exec deployment/ntwire-server -- /ntwire-server -generate-relay-key /etc/ntwire/keys/relay_id_ed25519
    ```
    This prints the `registrations[]` entry to add to `ntwire-relay.yaml`:
    ```yaml

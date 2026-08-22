@@ -353,8 +353,28 @@ The wire protocol between an `ntwire-server` and an `ntwire-relay`
 (registration, `RelayOpen`, and data-connection splicing) is specified in
 [PROTOCOL.md](PROTOCOL.md#relay-registration-protocol-ntwire-server-ntwire-relay).
 
-## Docker Compose example
+## Deployment examples
+
+### Docker Compose
 
 `deploy/docker/Dockerfile.relay` builds the relay image, and
 `deploy/docker/ntwire-relay.yaml` is a runnable sample config — see
 [DEPLOYMENT.md](DEPLOYMENT.md) for container and Kubernetes deployment.
+
+```sh
+# Run relay with Docker Compose
+docker compose -f deploy/docker/docker-compose.yml up --build
+```
+
+### Kubernetes
+
+To run and inspect `ntwire-relay` in Kubernetes with `kubectl`:
+
+```sh
+# Run an ad-hoc relay pod
+kubectl run ntwire-relay --image=nmaguiar/ntwire-relay:build --port=8444
+
+# Check relay pod status and logs
+kubectl get pods -l app=ntwire-relay
+kubectl logs -f deployment/ntwire-relay
+```

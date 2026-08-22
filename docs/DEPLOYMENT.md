@@ -55,9 +55,9 @@ It starts `ntwire-server` from `deploy/docker/Dockerfile` using
 tunnel forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 `op=compose-down` when finished.
 
-### Interacting with a running server container
+### Interacting with a running server container or pod
 
-When `ntwire-server` is running in a Docker container (e.g. named `ntwire-server`), you can execute server management commands, view status and metrics, print WireGuard QR codes, list tunnels, and reload configuration without stopping the container.
+When `ntwire-server` is running in a Docker container (e.g. named `ntwire-server`) or Kubernetes pod, you can execute server management commands, view status and metrics, print WireGuard QR codes, list tunnels, and reload configuration without stopping the container.
 
 #### 1. WireGuard QR codes & client configuration
 
@@ -84,6 +84,22 @@ docker compose -f deploy/docker/docker-compose.yml exec -it ntwire-server /ntwir
 docker compose -f deploy/docker/docker-compose.yml exec ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
 ```
 
+When using Kubernetes (`kubectl`):
+
+```sh
+# Display WireGuard QR code in the terminal (for mobile app scanning)
+kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
+
+# Display QR code for a specific configured peer
+kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr -wireguard-peer iphone
+
+# Export client .conf configuration file
+kubectl exec deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
+
+# Print both .conf configuration and terminal QR code
+kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-config
+```
+
 #### 2. Listing allowed tunnels (`list`)
 
 To check what tunnels are permitted for an identity against the running server:
@@ -93,12 +109,16 @@ To check what tunnels are permitted for an identity against the running server:
 ntwire list -i ~/.ntwire/id_ed25519 https://localhost:8443
 ntwire list --json -i ~/.ntwire/id_ed25519 https://localhost:8443
 
-# Or using the containerized client:
+# Or using the containerized client with Docker:
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/deploy/docker/keys/local.pub:/keys/id_ed25519.pub:ro" \
   -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
   nmaguiar/ntwire-client:build list -i /keys/id_ed25519 https://host.docker.internal:8443
+
+# Or using the containerized client in Kubernetes:
+kubectl run ntwire-client --rm -i --tty --image=nmaguiar/ntwire-client:build --restart=Never -- \
+  list -i /keys/id_ed25519 https://ntwire-server:8443
 ```
 
 #### 3. Viewing server status, metrics, and logs (`status`)
@@ -111,6 +131,10 @@ docker ps --filter "name=ntwire-server"
 docker logs -f ntwire-server
 # Or via Compose:
 docker compose -f deploy/docker/docker-compose.yml logs -f ntwire-server
+
+# Or via Kubernetes (kubectl):
+kubectl get pods -l app=ntwire-server
+kubectl logs -f deployment/ntwire-server
 ```
 
 When `listen.metrics` (e.g. `:9090` or `127.0.0.1:9090`) and `admin.web_ui_token` are configured in `ntwire.yaml` and published to the host:
@@ -124,6 +148,9 @@ curl "http://localhost:9090/v1/dashboard?token=YOUR_ADMIN_WEB_UI_TOKEN"
 
 # Or open the web dashboard in a browser:
 # http://localhost:9090/?token=YOUR_ADMIN_WEB_UI_TOKEN
+
+# When running in Kubernetes, forward the metrics port to localhost:
+kubectl port-forward deployment/ntwire-server 9090:9090
 ```
 
 To inspect an active client connection's status from the client side:
@@ -146,6 +173,13 @@ docker exec ntwire-server /ntwire-server -generate-relay-key /etc/ntwire/keys/re
 docker kill -s HUP ntwire-server
 # Or via Compose:
 docker compose -f deploy/docker/docker-compose.yml kill -s HUP ntwire-server
+
+# Or via Kubernetes (kubectl):
+kubectl exec deployment/ntwire-server -- /ntwire-server -generate-wireguard-key /etc/ntwire/keys/client_wg
+kubectl exec deployment/ntwire-server -- /ntwire-server -generate-relay-key /etc/ntwire/keys/relay_id_ed25519
+kubectl exec deployment/ntwire-server -- kill -HUP 1
+# Or trigger a rolling restart:
+kubectl rollout restart deployment/ntwire-server
 ```
 
 ## End-to-end Docker test
@@ -186,12 +220,17 @@ login inside a container has no browser to open, so pass `--sso --no-browser`
 to use the device flow.
 
 ```sh
+# Running with Docker:
 mkdir -p .local/ntwire/client-state
 docker run --rm -it \
   --user "$(id -u):$(id -g)" \
   -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
   -v "$PWD/.local/ntwire/client-state:/home/nonroot/.ntwire" \
   nmaguiar/ntwire-client:build connect --no-browser -i /keys/id_ed25519 https://host.docker.internal:8443
+
+# Or running in Kubernetes with kubectl:
+kubectl run ntwire-client --rm -i --tty --image=nmaguiar/ntwire-client:build --restart=Never -- \
+  connect --no-browser -i /keys/id_ed25519 https://ntwire-server:8443
 ```
 
 Or build the image locally instead of pulling it:
@@ -219,10 +258,31 @@ Manifests under `deploy/k8s` mount config and keys and expose both protocols:
 | `kustomization.yaml` | Bundles the four resources above |
 
 Create an `ntwire-authorized-keys` Secret with one key per data entry before
-applying, then:
+applying:
 
 ```sh
+# Create authorized keys secret
+kubectl create secret generic ntwire-authorized-keys --from-file=local.pub=.local/ntwire/id_ed25519.pub
+
+# Apply Kubernetes manifests
 kubectl apply -k deploy/k8s
+
+# Check deployment and service status
+kubectl get deployment,pods,svc -l app=ntwire-server
+
+# Stream server logs
+kubectl logs -f deployment/ntwire-server
+
+# Forward HTTPS control port for local client testing
+kubectl port-forward svc/ntwire-server 8443:8443
+
+# Execute server commands (e.g. generate WireGuard QR code)
+kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
+
+# Hot reload configuration on SIGHUP
+kubectl exec deployment/ntwire-server -- kill -HUP 1
+# Or trigger a rolling restart
+kubectl rollout restart deployment/ntwire-server
 ```
 
 Edit `configmap.yaml`'s `tunnels:` list for real targets, and see

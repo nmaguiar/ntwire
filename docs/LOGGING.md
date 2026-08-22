@@ -23,7 +23,8 @@ Both daemons accept:
 **Precedence: flag > config file > env var > built-in default.** This is
 deliberately not the more common "env beats file" order: it lets a mounted
 config file override a container image's baked-in `NTWIRE_LOG_FORMAT=json`
-default (see below), while `docker run -e NTWIRE_LOG_FORMAT=text` still
+default (see below), while `docker run -e NTWIRE_LOG_FORMAT=text` (or
+`kubectl set env deployment/ntwire-server NTWIRE_LOG_FORMAT=text`) still
 works whenever no config value is set. An explicit `-log-format`/`-log-level`
 flag always wins, matching how `-config` already behaves.
 
@@ -37,7 +38,13 @@ images set `ENV NTWIRE_LOG_FORMAT=json`, so logs are structured JSON by
 default when running under an orchestrator. Override it at run time:
 
 ```sh
+# Docker:
 docker run -e NTWIRE_LOG_FORMAT=text nmaguiar/ntwire-server:build
+
+# Kubernetes (ad-hoc pod or setting env on a deployment):
+kubectl run ntwire-server --image=nmaguiar/ntwire-server:build --env="NTWIRE_LOG_FORMAT=text"
+# Or update an existing deployment:
+kubectl set env deployment/ntwire-server NTWIRE_LOG_FORMAT=text
 ```
 
 or by setting `log.format: text` in a mounted config file, which takes
@@ -114,8 +121,18 @@ For example, tailing Docker's default JSON-file log driver output:
     Logstash_Prefix   ntwire
 ```
 
+Or for Kubernetes container log files (CRI / containerd):
+
+```ini
+[INPUT]
+    Name              tail
+    Path              /var/log/containers/ntwire-server-*.log
+    Parser            cri
+    Tag               ntwire.server
+```
+
 If a supervisor instead redirects a daemon's stderr to a plain file, tail
-that file directly with `Parser json` and skip the Docker-log unwrapping
+that file directly with `Parser json` and skip the container-log unwrapping
 step above. Because the JSON already uses `@timestamp`/`@version`, no
 additional `[FILTER] modify` step is needed to reshape fields for
 Logstash-compatible consumers.
