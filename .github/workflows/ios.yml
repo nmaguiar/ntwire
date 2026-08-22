@@ -1,6 +1,9 @@
 name: iOS
 
-on: [push, pull_request, workflow_dispatch]
+# The native iOS client (ios/NTWire) is temporarily archived — see
+# docs/IOS.md. Automatic triggers are disabled while it's paused; this
+# workflow can still be run manually and is left in place to resume easily.
+on: [workflow_dispatch]
 
 jobs:
   swift-core:

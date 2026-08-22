@@ -153,12 +153,14 @@ window vs. browser fallback), profile storage, and autostart.
 
 ### iOS and iPadOS
 
-The initial native iOS/iPadOS client uses Apple Network Relay rather than a
-packet-tunnel VPN. It is feasible for an individual Apple Developer account,
-but the data path requires a new optional MASQUE gateway; existing ntwire
-WireGuard and WebSocket endpoints cannot serve Network Relay directly. The
-current architecture decision, entitlement/distribution research, security
-boundary, and delivery gates are in [docs/IOS.md](docs/IOS.md).
+The native iOS/iPadOS client (Apple Network Relay + a new MASQUE gateway) is
+**archived** — see [docs/IOS.md](docs/IOS.md) for status and the reasoning
+behind pausing it. In the meantime, iOS/iPadOS devices can reach an
+`ntwire-server` using the official WireGuard app, imported from an ordinary
+profile: see [docs/NATIVE-WIREGUARD.md](docs/NATIVE-WIREGUARD.md) for the
+server-side `native_wireguard` peer config and the client profile to import,
+and [docs/RELAY.md](docs/RELAY.md#native-wireguard-udp-endpoints) if the
+server is behind `ntwire-relay` instead of directly reachable.
 
 ### SSO login
 

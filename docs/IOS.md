@@ -6,6 +6,17 @@ type: architecture
 
 # iOS and iPadOS client
 
+> **Archived (temporary).** The native `ios/NTWire` app and its MASQUE
+> gateway plan below are paused; the code stays in this repository and its
+> CI workflow is disabled but not deleted, so this can resume later. Until
+> then, iOS/iPadOS devices should connect with the **official WireGuard
+> app** against `ntwire-server`'s native WireGuard support instead of this
+> client — see [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) for the server
+> config and profile to import, and
+> [RELAY.md](RELAY.md#native-wireguard-udp-endpoints) for reaching a server
+> behind `ntwire-relay`. The rest of this document is the frozen feasibility
+> and design record for the archived client.
+
 ## Decision: GO, with a new optional MASQUE gateway
 
 An ntwire iOS/iPadOS client based on `NERelayManager` is feasible for an

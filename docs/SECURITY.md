@@ -21,7 +21,15 @@ token-authenticated WebSocket fallback on the HTTPS endpoint. SSH keys and SSO
 (OIDC) logins are parallel, equally-trusted authentication methods; both
 produce the same opaque-bearer-token session.
 
-## Planned iOS/iPadOS Network Relay boundary
+## Archived iOS/iPadOS Network Relay boundary
+
+Work on the native iOS/iPadOS client is currently paused (see
+[IOS.md](IOS.md)); the boundary below is retained as a design record. For
+current iOS/iPadOS connectivity, use the official WireGuard app against
+`ntwire-server`'s native peer support — see
+[NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) — which reuses the same
+authentication/grant model described in [Current boundary](#current-boundary)
+above rather than this Network Relay design.
 
 The planned iOS/iPadOS client does not run a packet tunnel or repurpose a
 background mode. It configures Apple’s system Network Relay and therefore
