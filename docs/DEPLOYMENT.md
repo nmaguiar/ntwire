@@ -55,6 +55,99 @@ It starts `ntwire-server` from `deploy/docker/Dockerfile` using
 tunnel forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 `op=compose-down` when finished.
 
+### Interacting with a running server container
+
+When `ntwire-server` is running in a Docker container (e.g. named `ntwire-server`), you can execute server management commands, view status and metrics, print WireGuard QR codes, list tunnels, and reload configuration without stopping the container.
+
+#### 1. WireGuard QR codes & client configuration
+
+If native WireGuard peers are configured (see [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md)), you can generate and display QR codes directly in your terminal for instant scanning with official WireGuard mobile apps, or export `.conf` profiles:
+
+```sh
+# Display WireGuard QR code in the terminal (for mobile app scanning)
+docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
+
+# Display QR code for a specific configured peer
+docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr -wireguard-peer iphone
+
+# Export client .conf configuration file
+docker exec ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
+
+# Print both .conf configuration and terminal QR code
+docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-config
+```
+
+When using Docker Compose from `deploy/docker`:
+
+```sh
+docker compose -f deploy/docker/docker-compose.yml exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
+docker compose -f deploy/docker/docker-compose.yml exec ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
+```
+
+#### 2. Listing allowed tunnels (`list`)
+
+To check what tunnels are permitted for an identity against the running server:
+
+```sh
+# From the host using the ntwire CLI:
+ntwire list -i ~/.ntwire/id_ed25519 https://localhost:8443
+ntwire list --json -i ~/.ntwire/id_ed25519 https://localhost:8443
+
+# Or using the containerized client:
+docker run --rm -it \
+  --user "$(id -u):$(id -g)" \
+  -v "$PWD/deploy/docker/keys/local.pub:/keys/id_ed25519.pub:ro" \
+  -v "$PWD/.local/ntwire/id_ed25519:/keys/id_ed25519:ro" \
+  nmaguiar/ntwire-client:build list -i /keys/id_ed25519 https://host.docker.internal:8443
+```
+
+#### 3. Viewing server status, metrics, and logs (`status`)
+
+```sh
+# Check container status
+docker ps --filter "name=ntwire-server"
+
+# Stream live container logs (Logstash JSON by default)
+docker logs -f ntwire-server
+# Or via Compose:
+docker compose -f deploy/docker/docker-compose.yml logs -f ntwire-server
+```
+
+When `listen.metrics` (e.g. `:9090` or `127.0.0.1:9090`) and `admin.web_ui_token` are configured in `ntwire.yaml` and published to the host:
+
+```sh
+# Prometheus metrics endpoint
+curl http://localhost:9090/metrics
+
+# Live operator dashboard status (JSON format)
+curl "http://localhost:9090/v1/dashboard?token=YOUR_ADMIN_WEB_UI_TOKEN"
+
+# Or open the web dashboard in a browser:
+# http://localhost:9090/?token=YOUR_ADMIN_WEB_UI_TOKEN
+```
+
+To inspect an active client connection's status from the client side:
+
+```sh
+ntwire status
+ntwire status --json
+```
+
+#### 4. Generating keys & reloading configuration
+
+```sh
+# Generate a native WireGuard key pair inside the container's keys directory
+docker exec ntwire-server /ntwire-server -generate-wireguard-key /etc/ntwire/keys/client_wg
+
+# Generate a relay identity key
+docker exec ntwire-server /ntwire-server -generate-relay-key /etc/ntwire/keys/relay_id_ed25519
+
+# Hot reload configuration on SIGHUP without dropping existing connections
+docker kill -s HUP ntwire-server
+# Or via Compose:
+docker compose -f deploy/docker/docker-compose.yml kill -s HUP ntwire-server
+```
+
 ## End-to-end Docker test
 
 Docker Compose is also used for the repository's black-box E2E test:
