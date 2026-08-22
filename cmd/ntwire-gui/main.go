@@ -52,6 +52,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/tray"
 	"github.com/nmaguiar/ntwire/internal/gui/window"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 )
@@ -71,18 +72,41 @@ func init() {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "completion" {
+		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
+		return
+	}
+
 	var (
-		headless  = flag.Bool("headless", false, "run the connection manager and settings API without a tray icon")
-		windowURL = flag.String("window", "", "internal: host a native settings window at this URL (spawned by the core process, not for direct use)")
-		version   = flag.Bool("version", false, "print the version and exit")
-		guiConfig = flag.String("gui-config", "", "path to gui.yaml (default ~/.ntwire/gui.yaml)")
-		cliConfig = flag.String("cli-config", "", "path to the CLI's config.yaml, imported once on first run (default ~/.ntwire/config.yaml)")
-		autostart = flag.Bool("autostart", false, "the process was launched by the OS's own login-item mechanism (set automatically by the registered autostart entry; not for interactive use)")
+		headless        = flag.Bool("headless", false, "run the connection manager and settings API without a tray icon")
+		windowURL       = flag.String("window", "", "internal: host a native settings window at this URL (spawned by the core process, not for direct use)")
+		version         = flag.Bool("version", false, "print the version and exit")
+		guiConfig       = flag.String("gui-config", "", "path to gui.yaml (default ~/.ntwire/gui.yaml)")
+		cliConfig       = flag.String("cli-config", "", "path to the CLI's config.yaml, imported once on first run (default ~/.ntwire/config.yaml)")
+		autostart       = flag.Bool("autostart", false, "the process was launched by the OS's own login-item mechanism (set automatically by the registered autostart entry; not for interactive use)")
+		completionShell = flag.String("completion", "", "generate shell completion script (bash, zsh, fish, powershell) and exit")
 	)
+	flag.Usage = func() {
+		ui.Spec{
+			Tool:    "ntwire-gui",
+			Tagline: "ntwire tray/menu-bar GUI client",
+			Flags:   ui.FlagsOf(flag.CommandLine),
+			Examples: []string{
+				"ntwire-gui",
+				"ntwire-gui -headless",
+				"ntwire-gui -completion bash > /etc/bash_completion.d/ntwire-gui",
+				"ntwire-gui -version",
+			},
+		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
+	}
 	flag.Parse()
 
 	if *version {
 		fmt.Println(buildinfo.String())
+		return
+	}
+	if *completionShell != "" {
+		runCompletion([]string{*completionShell}, ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
 
@@ -236,6 +260,39 @@ func runWindow(origin string) {
 	}
 	if err := window.Run(full); err != nil {
 		fmt.Fprintln(os.Stderr, "ntwire-gui: opening settings window:", err)
+		os.Exit(1)
+	}
+}
+
+func runCompletion(args []string, u *ui.UI) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		ui.Spec{
+			Tool:    "ntwire-gui completion",
+			Tagline: "generate shell completion script for bash, zsh, fish, or powershell",
+			Commands: []ui.Command{
+				{Name: "bash", Summary: "generate completion script for bash"},
+				{Name: "zsh", Summary: "generate completion script for zsh"},
+				{Name: "fish", Summary: "generate completion script for fish"},
+				{Name: "powershell", Summary: "generate completion script for powershell"},
+			},
+			Examples: []string{
+				"ntwire-gui completion bash > /etc/bash_completion.d/ntwire-gui",
+				"source <(ntwire-gui completion zsh)",
+				"ntwire-gui -completion fish | source",
+			},
+		}.Fprint(os.Stderr, u)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	sh, err := completion.ParseShell(args[0])
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(2)
+	}
+	if err := completion.Generate(sh, completion.GUICommand(), u.Out); err != nil {
+		u.Errorf("completion: %v", err)
 		os.Exit(1)
 	}
 }

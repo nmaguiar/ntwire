@@ -444,16 +444,22 @@ func loadInstructionsFile(t *TunnelConfig) {
 }
 
 func LoadConfig(path string) (Config, error) {
-	var c Config
 	b, e := os.ReadFile(path)
 	if e != nil {
-		return c, e
+		return Config{}, e
 	}
+	return ParseConfig(b, filepath.Dir(path))
+}
+
+// ParseConfig unmarshals and validates server configuration YAML from b.
+func ParseConfig(b []byte, stateDir string) (Config, error) {
+	var c Config
+	var e error
 	if e = yaml.Unmarshal(b, &c); e != nil {
 		return c, e
 	}
 	if c.TLS.StateDir == "" {
-		c.TLS.StateDir = filepath.Dir(path)
+		c.TLS.StateDir = stateDir
 	}
 	if c.Listen.HTTPS == "" {
 		c.Listen.HTTPS = ":8443"

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -21,14 +22,27 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "completion" {
+		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
+		return
+	}
+
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	generateRelayKey := flag.String("generate-relay-key", "", "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit")
 	generateWireGuardKey := flag.String("generate-wireguard-key", "", "generate a WireGuard key pair at this path (and path.pub) for a native_wireguard peer, print setup instructions, and exit")
+	printWGConfig := flag.Bool("print-wireguard-config", false, "print sample official WireGuard client configuration (.conf and QR code text) and exit")
+	printWGClientConfig := flag.Bool("print-wireguard-client-config", false, "alias for -print-wireguard-config")
+	printWGConf := flag.Bool("print-wireguard-conf", false, "print sample official WireGuard client configuration in .conf format and exit")
+	printWGQR := flag.Bool("print-wireguard-qr", false, "print sample official WireGuard client configuration as a QR code in text format and exit")
+	wireguardFormat := flag.String("wireguard-format", "all", "output format for -print-wireguard-config: conf, qr, or all")
+	wireguardPeer := flag.String("wireguard-peer", "", "peer name from native_wireguard.peers to use (default: first peer or sample)")
+	wireguardClientKey := flag.String("wireguard-client-key", "", "client WireGuard private key to embed in the generated configuration (default: generated sample key)")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
 	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
+	completionShell := flag.String("completion", "", "generate shell completion script (bash, zsh, fish, powershell) and exit")
 	flag.Usage = func() {
 		ui.Spec{
 			Tool:    "ntwire-server",
@@ -37,8 +51,12 @@ func main() {
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
+				"ntwire-server -print-wireguard-config -config ntwire.yaml",
+				"ntwire-server -print-wireguard-conf -config ntwire.yaml > client.conf",
+				"ntwire-server -print-wireguard-qr -config ntwire.yaml",
 				"ntwire-server -generate-relay-key relay_id_ed25519",
 				"ntwire-server -generate-wireguard-key client_wg",
+				"ntwire-server -completion bash > /etc/bash_completion.d/ntwire-server",
 				"ntwire-server -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -46,6 +64,10 @@ func main() {
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(buildinfo.String())
+		return
+	}
+	if *completionShell != "" {
+		runCompletion([]string{*completionShell}, ui.New(os.Stdout, os.Stderr, *noColor))
 		return
 	}
 	if *printSampleConfig {
@@ -57,6 +79,36 @@ func main() {
 	}
 	if *generateWireGuardKey != "" {
 		generateWireGuardKeyAndExit(*generateWireGuardKey, ui.New(os.Stdout, os.Stderr, *noColor))
+	}
+	if *printWGConf {
+		*printWGConfig = true
+		*wireguardFormat = "conf"
+	}
+	if *printWGQR {
+		*printWGConfig = true
+		*wireguardFormat = "qr"
+	}
+	if *printWGClientConfig {
+		*printWGConfig = true
+	}
+	if *printWGConfig {
+		u := ui.New(os.Stdout, os.Stderr, *noColor)
+		var c server.Config
+		var err error
+		c, err = server.LoadConfig(*config)
+		if err != nil {
+			if *config == "ntwire.yaml" && os.IsNotExist(err) {
+				c, err = server.ParseConfig([]byte(server.SampleConfig()), "")
+			}
+			if err != nil {
+				u.Errorf("configuration error: %v", err)
+				os.Exit(2)
+			}
+		}
+		printWireGuardConfigAndExit(c, *wireguardFormat, server.WireGuardClientOptions{
+			PeerName:         *wireguardPeer,
+			ClientPrivateKey: *wireguardClientKey,
+		}, u)
 	}
 
 	caps := ui.Detect(os.Stderr, *noColor)
@@ -272,4 +324,102 @@ docs/RELAY.md#native-wireguard-udp-endpoints if this server is reached
 through ntwire-relay instead of directly.
 `, path, path, key.Public, path, key.Public)
 	os.Exit(0)
+}
+
+// printWireGuardConfig formats and prints the official WireGuard client
+// configuration and/or QR code for a native WireGuard peer based on this
+// server's configuration. It returns the process exit code (0 on success).
+func printWireGuardConfig(c server.Config, format string, opts server.WireGuardClientOptions, u *ui.UI) int {
+	cfg, err := server.GenerateWireGuardClientConfig(c, opts)
+	if err != nil {
+		u.Errorf("generate-wireguard-config: %v", err)
+		return 1
+	}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "conf", "ini":
+		fmt.Fprint(u.Out, cfg.Conf())
+		return 0
+	case "qr", "qrcode":
+		qr, err := cfg.QRCodeText()
+		if err != nil {
+			u.Errorf("generate-wireguard-config QR code: %v", err)
+			return 1
+		}
+		fmt.Fprintln(u.Out, qr)
+		return 0
+	case "all", "text", "both", "":
+		qr, err := cfg.QRCodeText()
+		if err != nil {
+			u.Errorf("generate-wireguard-config QR code: %v", err)
+			return 1
+		}
+		u.Success("Official WireGuard client configuration (.conf format):")
+		fmt.Fprintln(u.Out)
+		fmt.Fprint(u.Out, cfg.Conf())
+		fmt.Fprintln(u.Out)
+		u.Success("Official WireGuard client QR code (scan with official WireGuard app):")
+		fmt.Fprintln(u.Out)
+		fmt.Fprintln(u.Out, qr)
+		if cfg.ServerPublicKeySample {
+			u.Warn("The server public key above is a sample. Configure network.wireguard_private_key_file to keep the server key stable.")
+		}
+		if cfg.PeerName != "" {
+			u.Info("Configuration generated for native peer %q (tunnel IP: %s).", cfg.PeerName, cfg.ClientAddress)
+		} else {
+			ip := strings.TrimSuffix(strings.TrimSuffix(cfg.ClientAddress, "/32"), "/128")
+			fmt.Fprintf(u.Out, `To admit this client as a native peer, add its public key (%s) to this server's config:
+
+  native_wireguard:
+    enabled: true
+    peers:
+      - name: client
+        public_key: "%s"
+        tunnel_ip: %s
+        tunnels: [<tunnel name>]
+
+See docs/NATIVE-WIREGUARD.md for details.
+`, cfg.ClientPublicKey, cfg.ClientPublicKey, ip)
+		}
+		return 0
+	default:
+		u.Errorf("unknown wireguard format %q; use 'conf', 'qr', or 'all'", format)
+		return 2
+	}
+}
+
+func printWireGuardConfigAndExit(c server.Config, format string, opts server.WireGuardClientOptions, u *ui.UI) {
+	os.Exit(printWireGuardConfig(c, format, opts, u))
+}
+
+func runCompletion(args []string, u *ui.UI) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		ui.Spec{
+			Tool:    "ntwire-server completion",
+			Tagline: "generate shell completion script for bash, zsh, fish, or powershell",
+			Commands: []ui.Command{
+				{Name: "bash", Summary: "generate completion script for bash"},
+				{Name: "zsh", Summary: "generate completion script for zsh"},
+				{Name: "fish", Summary: "generate completion script for fish"},
+				{Name: "powershell", Summary: "generate completion script for powershell"},
+			},
+			Examples: []string{
+				"ntwire-server completion bash > /etc/bash_completion.d/ntwire-server",
+				"source <(ntwire-server completion zsh)",
+				"ntwire-server -completion fish | source",
+			},
+		}.Fprint(os.Stderr, u)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	sh, err := completion.ParseShell(args[0])
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(2)
+	}
+	if err := completion.Generate(sh, completion.ServerCommand(), u.Out); err != nil {
+		u.Errorf("completion: %v", err)
+		os.Exit(1)
+	}
 }

@@ -11,18 +11,25 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/relay"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "completion" {
+		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
+		return
+	}
+
 	config := flag.String("config", "ntwire-relay.yaml", "relay configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
 	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
+	completionShell := flag.String("completion", "", "generate shell completion script (bash, zsh, fish, powershell) and exit")
 	flag.Usage = func() {
 		ui.Spec{
 			Tool:    "ntwire-relay",
@@ -31,6 +38,7 @@ func main() {
 			Examples: []string{
 				"ntwire-relay -config ntwire-relay.yaml",
 				"ntwire-relay -print-sample-config > ntwire-relay.yaml",
+				"ntwire-relay -completion bash > /etc/bash_completion.d/ntwire-relay",
 				"ntwire-relay -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -38,6 +46,10 @@ func main() {
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(buildinfo.String())
+		return
+	}
+	if *completionShell != "" {
+		runCompletion([]string{*completionShell}, ui.New(os.Stdout, os.Stderr, *noColor))
 		return
 	}
 	if *printSampleConfig {
@@ -119,4 +131,37 @@ func main() {
 	}
 
 	select {}
+}
+
+func runCompletion(args []string, u *ui.UI) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		ui.Spec{
+			Tool:    "ntwire-relay completion",
+			Tagline: "generate shell completion script for bash, zsh, fish, or powershell",
+			Commands: []ui.Command{
+				{Name: "bash", Summary: "generate completion script for bash"},
+				{Name: "zsh", Summary: "generate completion script for zsh"},
+				{Name: "fish", Summary: "generate completion script for fish"},
+				{Name: "powershell", Summary: "generate completion script for powershell"},
+			},
+			Examples: []string{
+				"ntwire-relay completion bash > /etc/bash_completion.d/ntwire-relay",
+				"source <(ntwire-relay completion zsh)",
+				"ntwire-relay -completion fish | source",
+			},
+		}.Fprint(os.Stderr, u)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	sh, err := completion.ParseShell(args[0])
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(2)
+	}
+	if err := completion.Generate(sh, completion.RelayCommand(), u.Out); err != nil {
+		u.Errorf("completion: %v", err)
+		os.Exit(1)
+	}
 }
