@@ -12,7 +12,8 @@ variables. An explicit `https_proxy` takes precedence over `no_system_proxy`.
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.
-At least one of `auth.authorized_keys_dir` or `auth.oidc.issuers` is required.
+At least one of `auth.authorized_keys_dir`, `auth.oidc.issuers`, or
+`native_wireguard.enabled: true` is required.
 
 Before releasing a configuration or protocol-affecting change, run the
 repository release gate and retain its result with the deployment record; it
@@ -55,12 +56,42 @@ authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
   exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty
   timeout: 5s                            # deadline for the webhook call or executable run; a timeout denies the request; default: 5s
+destination_policies:                    # named CIDR/ASN/domain/protocol/port rules a tunnel or native peer can reference; see DESTINATION-POLICIES.md
+  mobile:
+    filters: ["10.0.0.0/8"]              # destination CIDR allow-list
+    domain_filters: []                   # destination hostname-suffix allow-list
+    asn_filters: []                      # destination ASN allow-list (IPv4 only)
+    only_local: false                    # true restricts to private ranges only and ignores every other filter here
+    reverse_filters: false               # invert the above into a deny-list
+    allow_all: false                     # required to permit every destination when no filters above are set
+    protocols: []                        # e.g. ["tcp"]; empty allows any
+    ports: []                            # e.g. [443]; empty allows any
+native_wireguard:                        # admits unmodified official WireGuard clients into the same tunnel device; see NATIVE-WIREGUARD.md
+  enabled: false
+  peers: []
+relay:                                   # dial out to an ntwire-relay instead of listening directly, for a server with no inbound connectivity; see RELAY.md
+  enabled: false
+  url: ""
+  name: ""
+  identity_file: ""
+  fingerprint: ""
+  advertise_direct: false
+masque:                                  # optional HTTP/2 CONNECT gateway for the (currently archived) iOS/iPadOS Network Relay client; see IOS.md and SECURITY.md
+  enabled: false
+  listen: ""
+  http2_url: ""
+  client_ca_file: ""
+  issuer_cert_file: ""
+  issuer_key_file: ""
+  certificate_ttl: 0s
+  tunnels: {}
 tunnels:
   - name: reports                       # unique identifier; shown to clients in grant listings
     target: reports.internal:8080       # host:port the server proxies to over the ordinary network, once a client's WireGuard traffic reaches it
     description: Reporting service      # free-text, shown to clients; optional
     virtual_port: 18080                 # port the server listens on inside the WireGuard tunnel for this target; required, 1-65535
     local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
+    destination_policy: mobile          # optional; names a destination_policies entry above, ANDed with any native-peer policy; see DESTINATION-POLICIES.md
     local_host: ""                      # loopback address ntwire connect prefers for this tunnel's local listener, e.g. "127.70.0.1"; optional, must be 127.0.0.0/8 or ::1, falls back to 127.0.0.1 if it can't be bound -- see "Tunnel local address and port" below
     docs_url: https://wiki/reports      # absolute http(s) link offered as "See more" in the client status UI; optional
     instructions: |                     # Markdown setup guidance shown in the client status UI; optional, see "Tunnel instructions" below
@@ -102,7 +133,8 @@ See [LOGGING.md](LOGGING.md) for the full `log:` reference, including the
 `audit.log_file`, when set, additionally writes every `audit` event
 (`auth_allowed`, `authentication_failed`, `session_renewed`, `session_disconnected`, `session_expired`,
 `session_revoked`, `authorization_denied`, `authorization_revoked`,
-`tunnel_grant_revoked`, `authorization_hook_denied`)
+`tunnel_grant_revoked`, `authorization_hook_denied`, `masque_certificate_issued`,
+`masque_connect`)
 as a Logstash-format JSON line to that file, regardless of `log.format`. This
 is additive: audit events keep appearing in the main log too, so existing
 log-based monitoring is unaffected. The file is opened append-only with mode
@@ -369,3 +401,6 @@ values and their meaning.
 - [OIDC-SETUP.md](OIDC-SETUP.md) — per-IdP registration steps
 - [RELAY.md](RELAY.md) — the `relay:` block for servers behind NAT
 - [AUTHORIZATION.md](AUTHORIZATION.md) — the `authorizer:` block
+- [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) — the `native_wireguard:` block
+- [DESTINATION-POLICIES.md](DESTINATION-POLICIES.md) — the `destination_policies:` block and per-tunnel `destination_policy`
+- [IOS.md](IOS.md) — the `masque:` block and the archived iOS client it serves

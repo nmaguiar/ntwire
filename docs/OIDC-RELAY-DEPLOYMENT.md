@@ -47,9 +47,12 @@ Use a loopback redirect supported by that IdP because the client chooses an
 ephemeral local port at login time. Request `openid`, `email`, and `profile`;
 also enable refresh-token/device-code support if users need non-browser login.
 
-- **Google:** create a Desktop app client. Include the generated client secret
-  in ntwire's configuration because Google's Desktop token endpoint requires
-  it, but treat it as public client metadata rather than a protected secret.
+- **Google:** create a Desktop app client. Google's Desktop token endpoint
+  requires the generated client secret, but treat it as public client
+  metadata rather than a protected secret: it goes only in each client's
+  `NTWIRE_OIDC_CLIENT_SECRET` environment variable, never in the server's
+  `auth.oidc.issuers` configuration below — the server rejects a
+  `client_secret` field there at startup (see [OIDC-SETUP.md](OIDC-SETUP.md)).
 - **Microsoft Entra ID:** create a Mobile and desktop application redirect for
   `http://localhost`, enable public client flows, and choose the intended
   tenant in the issuer URL.

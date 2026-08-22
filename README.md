@@ -26,6 +26,7 @@ the [documentation index](docs/README.md).
 | Optional webhook or executable authorization hook | |
 | `target: socks` tunnels: an embedded SOCKS4/5 CONNECT and BIND proxy with CIDR/domain/ASN/only-local/reverse destination filters | UDP ASSOCIATE is recognized but refused. Unfiltered SOCKS tunnels deny all destinations unless `allow_all: true` is set. |
 | `ntwire-relay`: lets an ntwire-server behind NAT (no inbound connectivity) dial out to a public relay instead of listening directly | WireGuard defaults to the WebSocket fallback in relay mode. If the relay offers it, clients transparently upgrade to a relay-mediated native-UDP path (the relay stays in the data path; no server address exposure) and, if the server operator further opts in, can escalate again to a fully direct UDP path that bypasses the relay entirely. |
+| Native WireGuard peers: admits an unmodified official WireGuard client into the same tunnel, and per-tunnel/per-peer destination policies (CIDR/ASN/domain rules independent of `allow:` grants) | See [docs/NATIVE-WIREGUARD.md](docs/NATIVE-WIREGUARD.md) and [docs/DESTINATION-POLICIES.md](docs/DESTINATION-POLICIES.md). |
 
 ## Quick start
 
@@ -113,9 +114,11 @@ If someone else already runs the server, you only need the client:
 
 | Command | Current behavior |
 | --- | --- |
-| `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `ntwire_ed25519`. |
-| `ntwire list [-i key \| --sso] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses the first conventional key found in `~/.ssh`, or falls back to SSO when the server advertises it. Do not add a trailing `/` to `URL`. |
+| `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `~/.ntwire/id_ed25519`. |
+| `ntwire list [-i key \| --sso] [--json] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, uses `~/.ntwire/id_ed25519` if present, then the first conventional key found in `~/.ssh`, or falls back to SSO when the server advertises it. `--json` prints machine-readable output. Do not add a trailing `/` to `URL`. |
 | `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket] [--bind address]` | Starts local listeners, renews its session, and prints a token-protected status URL. A tunnel's YAML `local_port`/`local_host` are preferred when available, falling back to a free port and to `127.0.0.1` respectively; `--port name=local-port` or `--port name=host:local-port` (e.g. `db=127.70.0.1:5432`) is a client-side override, strict for the port and soft for the host. Same key/SSO selection as `list`; `--websocket` selects fallback transport. `--bind` binds tunnel listeners to an address other than `127.0.0.1` (advanced; see SECURITY.md). |
+| `ntwire status [--json]` | Shows the running connection's tunnels, transport, and expiry. `--json` prints the same status-file snapshot as machine-readable output. |
+| `ntwire disconnect` | Stops the running connection started by the most recent `ntwire connect` in this state directory. |
 | `ntwire port name=15432` | Replaces the local loopback listener for a running tunnel. The same action is available in the status UI. |
 | `ntwire logout URL` | Clears cached SSO tokens for a server, so the next connection reopens the browser (or device flow) instead of silently refreshing. |
 | `ntwire version` | Prints the build version (`dev` for an ordinary source build). |
@@ -153,20 +156,25 @@ window vs. browser fallback), profile storage, and autostart.
 
 ### iOS and iPadOS
 
-The native iOS/iPadOS client (Apple Network Relay + a new MASQUE gateway) is
-**archived** — see [docs/IOS.md](docs/IOS.md) for status and the reasoning
-behind pausing it. In the meantime, iOS/iPadOS devices can reach an
+The native iOS/iPadOS app is **archived** — see [docs/IOS.md](docs/IOS.md)
+for status and the reasoning behind pausing it. The server-side MASQUE
+gateway it depends on (`masque:` config, `POST /v1/masque/certificate`) is
+not archived and ships normally; it's simply unused until the iOS client
+resumes. In the meantime, iOS/iPadOS devices can reach an
 `ntwire-server` using the official WireGuard app, imported from an ordinary
 profile: see [docs/NATIVE-WIREGUARD.md](docs/NATIVE-WIREGUARD.md) for the
 server-side `native_wireguard` peer config and the client profile to import,
 and [docs/RELAY.md](docs/RELAY.md#native-wireguard-udp-endpoints) if the
-server is behind `ntwire-relay` instead of directly reachable.
+server is behind `ntwire-relay` instead of directly reachable. See
+[docs/CONNECTING.md](docs/CONNECTING.md) for a step-by-step walkthrough of
+every client/endpoint combination, `ntwire` and official WireGuard alike.
 
 ### SSO login
 
 When a server advertises one or more OIDC issuers, `connect`/`list` use SSO by
-default whenever no SSH key is found (an explicit `-i`, or a key present in
-`~/.ssh`, is always preferred). Pass `--sso` to force SSO even when a key is
+default whenever no SSH key is found (an explicit `-i`, or a discovered key —
+`~/.ntwire/id_ed25519` first, then a conventional key in `~/.ssh` — is always
+preferred). Pass `--sso` to force SSO even when a key is
 available, and `--provider name` to pick an issuer if the server advertises
 more than one. The default flow opens the system browser for an Auth Code +
 PKCE login on a loopback redirect; `--no-browser` (or a machine with no

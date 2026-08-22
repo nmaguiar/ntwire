@@ -51,8 +51,8 @@ docker compose -f deploy/docker/docker-compose.yml up --build
 ```
 
 It starts `ntwire-server` from `deploy/docker/Dockerfile` using
-`deploy/docker/ntwire.yaml`, plus an `echo` service that the `example` tunnel
-forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
+`deploy/docker/ntwire.yaml`, plus an `example` service that the `example`
+tunnel forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 `op=compose-down` when finished.
 
 ## End-to-end Docker test

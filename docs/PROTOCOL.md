@@ -37,8 +37,12 @@ The reference server serves HTTPS.
 ```
 
 `ssh-auth` and `oidc-auth` are present only when the corresponding
-`auth.authorized_keys_dir` / `auth.oidc.issuers` configuration is set; at
-least one is always present. The `tcp` capability indicates TCP tunnel
+`auth.authorized_keys_dir` / `auth.oidc.issuers` configuration is set. Neither
+capability is required to start the server: `native_wireguard.enabled: true`
+is a third, independent way to satisfy the "at least one auth method"
+config-validation rule (see [CONFIGURATION.md](CONFIGURATION.md)), and a
+server configured that way advertises neither `ssh-auth` nor `oidc-auth`. The
+`tcp` capability indicates TCP tunnel
 forwarding support. `oidc_issuers` is omitted (or empty) when `oidc-auth` is
 absent, and lets a client run the login flow with zero local configuration:
 discovery, scopes, and `client_id` all come from the server. A
@@ -447,7 +451,7 @@ WireGuard traffic.
 Every datagram in this protocol shares a 5-byte header: 4 magic bytes
 (`0x00 'N' 'T' 'W'`, chosen so byte 0 can never collide with a real
 WireGuard packet's first byte, always 1-4) followed by a 1-byte frame type.
-The reflector only ever handles two of the three defined frame types:
+The reflector only ever handles two of the six defined frame types:
 
 | Frame type | Value | Direction | Payload |
 | --- | --- | --- | --- |
@@ -456,6 +460,17 @@ The reflector only ever handles two of the three defined frame types:
 | `FramePrime` | `3` | peer → peer, direct | none; a NAT-priming ping, never sent to the reflector |
 | `FrameRelayBind` | `4` | server/client → relay | the session `token` |
 | `FrameRelayBindAck` | `5` | relay → server/client | none; sent only for a bind with a valid, live token |
+| `FrameNativeWireGuardAssociate` | `6` | server → relay's native-WireGuard listener | an opaque, relay-minted association token; see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints) |
+
+`FrameNativeWireGuardAssociate` is sent to a different socket than the other
+five (the relay's per-tenant `native_wireguard.listen` port, not
+`listen.reflect`/`listen.udp_relay`), which is what lets it safely reuse value
+`6` — `pkg/wstransport/multipath.go` separately defines `FramePathProbe` as
+value `6` too, for the unrelated multipath candidate-health protocol, which is
+demultiplexed on the WireGuard data-plane bind instead. The two never appear
+on the same socket today, but they are the same byte in the same
+magic-prefixed control-frame format, so this is a fragile invariant to
+maintain by convention rather than by construction.
 
 A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
 and gets back `FrameReflectResponse` with its own address as the relay
