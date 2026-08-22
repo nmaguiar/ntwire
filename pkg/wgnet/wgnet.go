@@ -103,6 +103,20 @@ func ValidatePublicKey(publicKey string) error {
 	}
 	return nil
 }
+
+// PublicKeyFromPrivate derives the base64-encoded WireGuard public key from
+// a base64-encoded private key.
+func PublicKeyFromPrivate(privateKey string) (string, error) {
+	raw, err := decodeKey(privateKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid WireGuard private key: %w", err)
+	}
+	priv, err := ecdh.X25519().NewPrivateKey(raw)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes()), nil
+}
 func (s *Stack) AddPeer(e Endpoint) error {
 	public, err := decodeKey(e.PublicKey)
 	if err != nil {

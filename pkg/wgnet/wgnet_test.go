@@ -56,6 +56,24 @@ func TestGenerateKeyProducesDistinctValidKeys(t *testing.T) {
 	}
 }
 
+func TestPublicKeyFromPrivate(t *testing.T) {
+	key, err := GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, err := PublicKeyFromPrivate(key.Private)
+	if err != nil {
+		t.Fatalf("PublicKeyFromPrivate failed: %v", err)
+	}
+	if derived != key.Public {
+		t.Errorf("PublicKeyFromPrivate() = %q, want %q", derived, key.Public)
+	}
+
+	if _, err := PublicKeyFromPrivate("invalid-base64"); err == nil {
+		t.Errorf("PublicKeyFromPrivate(\"invalid-base64\") should fail")
+	}
+}
+
 func TestNewDerivesPublicKeyFromProvidedPrivateKey(t *testing.T) {
 	key, err := GenerateKey()
 	if err != nil {

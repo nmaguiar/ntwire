@@ -9,6 +9,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
+	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -50,6 +51,8 @@ func main() {
 		port(os.Args[2:], u)
 	case "logout":
 		logout(os.Args[2:], u)
+	case "completion":
+		completionCmd(os.Args[2:], u)
 	default:
 		usage(u)
 	}
@@ -80,6 +83,7 @@ func usage(u *ui.UI) {
 			{Name: "disconnect", Summary: "stop the running connection"},
 			{Name: "port", Summary: "replace a tunnel's local port"},
 			{Name: "logout", Summary: "clear cached SSO tokens"},
+			{Name: "completion", Summary: "generate shell completion script"},
 			{Name: "version", Summary: "print the build version"},
 		},
 		Examples: []string{
@@ -799,4 +803,38 @@ func keygen(args []string, u *ui.UI) {
 	pub, _ := os.ReadFile(out + ".pub")
 	u.Success("Identity created: %s", out)
 	fmt.Fprintf(u.Out, "Fingerprint: %s\nSend this line to your administrator:\n%sNext: ntwire connect <server>\n", fingerprint, pub)
+}
+
+func completionCmd(args []string, u *ui.UI) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		ui.Spec{
+			Tool:    "ntwire completion",
+			Tagline: "generate shell completion script for bash, zsh, fish, or powershell",
+			Commands: []ui.Command{
+				{Name: "bash", Summary: "generate completion script for bash"},
+				{Name: "zsh", Summary: "generate completion script for zsh"},
+				{Name: "fish", Summary: "generate completion script for fish"},
+				{Name: "powershell", Summary: "generate completion script for powershell"},
+			},
+			Examples: []string{
+				"ntwire completion bash > /etc/bash_completion.d/ntwire",
+				"source <(ntwire completion zsh)",
+				"ntwire completion fish | source",
+				"ntwire completion powershell | Out-String | Invoke-Expression",
+			},
+		}.Fprint(os.Stderr, u)
+		if len(args) == 0 {
+			os.Exit(2)
+		}
+		return
+	}
+	sh, err := completion.ParseShell(args[0])
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(2)
+	}
+	if err := completion.Generate(sh, completion.ClientCommand(), u.Out); err != nil {
+		u.Errorf("completion: %v", err)
+		os.Exit(1)
+	}
 }

@@ -384,3 +384,19 @@ func TestMergePorts(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletionCmd(t *testing.T) {
+	for _, sh := range []string{"bash", "zsh", "fish", "powershell"} {
+		t.Run(sh, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			u := ui.New(&stdout, &stderr, true)
+			completionCmd([]string{sh}, u)
+			if stderr.Len() > 0 {
+				t.Fatalf("completionCmd(%q) unexpected stderr: %s", sh, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "ntwire") {
+				t.Errorf("completionCmd(%q) stdout does not contain ntwire", sh)
+			}
+		})
+	}
+}
