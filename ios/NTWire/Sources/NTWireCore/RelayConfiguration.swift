@@ -48,6 +48,7 @@ public enum ConnectionEvent: Equatable, Sendable {
     case connectRequested
     case authenticationSucceeded
     case relayConfigured
+    case relayUnavailable
     case transportConnected
     case transportLost
     case credentialsExpired
@@ -73,6 +74,7 @@ public enum ConnectionState: Equatable, Sendable {
         case (.disconnected, .connectRequested), (.loginRequired, .connectRequested), (.failed, .connectRequested): return .authenticating
         case (.authenticating, .authenticationSucceeded): return .configuringRelay
         case (.configuringRelay, .relayConfigured): return .connecting
+        case (.configuringRelay, .relayUnavailable): return .connected
         case (.connecting, .transportConnected), (.reconnecting, .transportConnected): return .connected
         case (.connected, .transportLost): return .reconnecting
         default: return self

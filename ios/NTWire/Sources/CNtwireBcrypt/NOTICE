@@ -1,0 +1,5 @@
+This target contains the bcrypt-PBKDF and Blowfish sources from OpenBSD,
+vendored via Citadel 0.12.1. Individual source files retain their original
+OpenBSD copyright and license notices. Citadel's MIT license is in
+LICENSE-Citadel-MIT. Only the key-decryption primitive is included; no SSH
+transport or networking code is vendored.
