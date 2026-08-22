@@ -459,3 +459,102 @@ func TestRelay_SampleConfigParses(t *testing.T) {
 		t.Fatal("expected a non-empty domain in the sample config")
 	}
 }
+
+func TestRelay_DedicatedTCPPortRoutesDirectly(t *testing.T) {
+	homeKey := generateTestKey(t)
+	labKey := generateTestKey(t)
+	relay := testRelayConfig(t, "relay.test", []RegistrationConfig{
+		{Name: "home", PublicKey: homeKey.line, Listen: "127.0.0.1:0"},
+		{Name: "lab", PublicKey: labKey.line},
+	})
+
+	homeDialBack, homeFP := startOrigin(t, "home.relay.test", "hello from home")
+	labDialBack, labFP := startOrigin(t, "lab.relay.test", "hello from lab")
+	runFakeAgent(t, relay.AgentsAddr().String(), homeKey, "home", homeDialBack)
+	runFakeAgent(t, relay.AgentsAddr().String(), labKey, "lab", labDialBack)
+	time.Sleep(50 * time.Millisecond)
+
+	tenantAddr := relay.TenantAddr("home")
+	if tenantAddr == nil {
+		t.Fatal("expected non-nil tenant listener address for home")
+	}
+	if relay.TenantAddr("lab") != nil {
+		t.Fatal("expected nil tenant listener address for lab (no dedicated listen configured)")
+	}
+
+	// 1. Dial home's dedicated port with an unrelated/arbitrary SNI (bypassing subdomain requirement)
+	conn, err := dialClientThroughRelay(tenantAddr.String(), "arbitrary.example.com", homeFP)
+	if err != nil {
+		t.Fatalf("dial home on dedicated port with arbitrary SNI failed: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://arbitrary.example.com/", nil)
+	if err := req.Write(conn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	conn.Close()
+	if string(body) != "hello from home" {
+		t.Fatalf("got %q, want %q", body, "hello from home")
+	}
+
+	// 2. Dial home's dedicated port with empty SNI (e.g. connecting via IP)
+	conn, err = dialClientThroughRelay(tenantAddr.String(), "", homeFP)
+	if err != nil {
+		t.Fatalf("dial home on dedicated port with empty SNI failed: %v", err)
+	}
+	req, _ = http.NewRequest(http.MethodGet, "https://127.0.0.1/", nil)
+	if err := req.Write(conn); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err = http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	conn.Close()
+	if string(body) != "hello from home" {
+		t.Fatalf("got %q, want %q", body, "hello from home")
+	}
+
+	// 3. Dial home via the shared public listener using SNI (subdomain)
+	conn, err = dialClientThroughRelay(relay.PublicAddr().String(), "home.relay.test", homeFP)
+	if err != nil {
+		t.Fatalf("dial home via shared public listener failed: %v", err)
+	}
+	req, _ = http.NewRequest(http.MethodGet, "https://home.relay.test/", nil)
+	req.Write(conn)
+	resp, err = http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	conn.Close()
+	if string(body) != "hello from home" {
+		t.Fatalf("got %q, want %q", body, "hello from home")
+	}
+
+	// 4. Dial lab via the shared public listener using SNI
+	conn, err = dialClientThroughRelay(relay.PublicAddr().String(), "lab.relay.test", labFP)
+	if err != nil {
+		t.Fatalf("dial lab via shared public listener failed: %v", err)
+	}
+	req, _ = http.NewRequest(http.MethodGet, "https://lab.relay.test/", nil)
+	req.Write(conn)
+	resp, err = http.ReadResponse(bufio.NewReader(conn), req)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	conn.Close()
+	if string(body) != "hello from lab" {
+		t.Fatalf("got %q, want %q", body, "hello from lab")
+	}
+}

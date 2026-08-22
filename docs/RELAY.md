@@ -86,6 +86,7 @@ domain: relay.example.com # wildcard suffix; a server registered as "home" is re
 registrations:
   - name: home
     public_key: "ssh-ed25519 AAAA... admin@laptop"
+    listen: ":8443"       # optional dedicated TCP public listener for this tenant; bypasses wildcard DNS/SNI
 ```
 
 `listen.reflect` is left out here deliberately: it is optional, off by default,
@@ -93,7 +94,12 @@ and only matters to a server that opts into the direct-UDP upgrade — see
 [below](#opportunistic-direct-udp-upgrade).
 
 Point wildcard DNS (`*.relay.example.com`) at the host running `listen.public`,
-and give each registered server its own key. On that server, run
+and give each registered server its own key. Alternatively, if `registrations[].listen`
+is configured for a tenant, clients can dial that dedicated port directly (e.g.
+`https://relay.example.com:8443` or `https://<relay-ip>:8443`) without requiring
+wildcard DNS or a specific SNI subdomain.
+
+On that server, run
 `ntwire-server -generate-relay-key relay_id_ed25519`: it creates the key pair
 and prints the `public_key` line to add above, plus the matching `relay:`
 block described next.

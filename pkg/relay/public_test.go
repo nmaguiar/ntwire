@@ -159,3 +159,29 @@ func TestPublicListener_SurvivesTransientAcceptError(t *testing.T) {
 		t.Fatal("serve did not return after the listener reported closed")
 	}
 }
+
+func TestPublicListener_ServeTenantSurvivesTransientAcceptError(t *testing.T) {
+	reg := NewRegistry(nil, testLimits())
+	pl := newPublicListener(reg, "relay.example.com", testLimits(), 60, slog.Default())
+
+	conn := &stubConn{closed: make(chan struct{})}
+	ln := &sequencedListener{conn: conn}
+
+	done := make(chan struct{})
+	go func() {
+		pl.serveTenant(ln, "home")
+		close(done)
+	}()
+
+	select {
+	case <-conn.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connection accepted after a transient error was never handled: the accept loop likely returned instead of retrying")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveTenant did not return after the listener reported closed")
+	}
+}

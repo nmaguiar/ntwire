@@ -19,6 +19,7 @@ import (
 type Registration struct {
 	Name      string
 	PublicKey ssh.PublicKey
+	Listen    string
 }
 
 // Limits bounds resource usage per tenant; DialBackTimeout doubles as the
