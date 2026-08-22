@@ -93,6 +93,16 @@ func New(c Config) (*Stack, error) {
 	return &Stack{device: d, tun: td, Net: ns, key: key}, nil
 }
 func (s *Stack) PublicKey() string { return s.key.Public }
+
+// ValidatePublicKey validates the base64 WireGuard public-key representation
+// used by ntwire configuration without installing a peer.
+func ValidatePublicKey(publicKey string) error {
+	_, err := decodeKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("invalid WireGuard public key: %w", err)
+	}
+	return nil
+}
 func (s *Stack) AddPeer(e Endpoint) error {
 	public, err := decodeKey(e.PublicKey)
 	if err != nil {
@@ -222,6 +232,9 @@ func decodeKey(encoded string) ([]byte, error) {
 	return key, nil
 }
 func (s *Stack) RemovePeer(publicKey string) error {
+	if raw, err := decodeKey(publicKey); err == nil {
+		publicKey = hex.EncodeToString(raw)
+	}
 	return s.device.IpcSet("public_key=" + publicKey + "\nremove=true\n")
 }
 func (s *Stack) DialContext(ctx context.Context, network, address string) (net.Conn, error) {

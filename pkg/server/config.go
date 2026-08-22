@@ -12,6 +12,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
 type Config struct {
@@ -41,14 +42,17 @@ type Config struct {
 		WebUIToken string `yaml:"web_ui_token"`
 	} `yaml:"admin"`
 	Network struct {
-		TunnelCIDR         string `yaml:"tunnel_cidr"`
-		AdvertisedEndpoint string `yaml:"advertised_endpoint"`
+		TunnelCIDR              string `yaml:"tunnel_cidr"`
+		AdvertisedEndpoint      string `yaml:"advertised_endpoint"`
+		WireGuardPrivateKeyFile string `yaml:"wireguard_private_key_file"`
 	} `yaml:"network"`
-	Authorizer AuthorizerConfig `yaml:"authorizer"`
-	Relay      RelayConfig      `yaml:"relay"`
-	Tunnels    []TunnelConfig   `yaml:"tunnels"`
-	Log        logging.Config   `yaml:"log"`
-	Audit      struct {
+	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
+	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
+	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
+	Relay               RelayConfig                  `yaml:"relay"`
+	Tunnels             []TunnelConfig               `yaml:"tunnels"`
+	Log                 logging.Config               `yaml:"log"`
+	Audit               struct {
 		LogFile string `yaml:"log_file"`
 	} `yaml:"audit"`
 }
@@ -150,8 +154,9 @@ type TunnelConfig struct {
 	// controls whether tunneled targets are reachable beyond localhost.
 	// The client may override it and falls back to 127.0.0.1 if the
 	// address cannot be bound (e.g. on macOS, without a lo0 alias).
-	LocalHost string   `yaml:"local_host"`
-	Allow     []string `yaml:"allow"`
+	LocalHost         string   `yaml:"local_host"`
+	Allow             []string `yaml:"allow"`
+	DestinationPolicy string   `yaml:"destination_policy"`
 
 	// Instructions is optional Markdown shown to clients in their local
 	// status UI, describing how to point a tool at this tunnel. It is
@@ -173,6 +178,20 @@ type TunnelConfig struct {
 	// a fixed-target forward. It is used, and required, when Target is the
 	// sentinel value "socks"; see SocksConfig.
 	Socks *SocksConfig `yaml:"socks"`
+}
+
+// NativeWireGuardConfig statically admits unmodified WireGuard clients into
+// the existing userspace device. These are not HTTP sessions.
+type NativeWireGuardConfig struct {
+	Enabled bool                  `yaml:"enabled"`
+	Peers   []NativeWireGuardPeer `yaml:"peers"`
+}
+type NativeWireGuardPeer struct {
+	Name              string   `yaml:"name"`
+	PublicKey         string   `yaml:"public_key"`
+	TunnelIP          string   `yaml:"tunnel_ip"`
+	Tunnels           []string `yaml:"tunnels"`
+	DestinationPolicy string   `yaml:"destination_policy"`
 }
 
 // socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
@@ -267,6 +286,15 @@ auth:
 network:
   tunnel_cidr: 100.64.0.0/16              # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
+  wireguard_private_key_file: ""          # optional persistent server WireGuard private key; use for native official WireGuard clients
+
+# Named reusable egress policy. A tunnel and a native peer can each name one;
+# when both do, both must allow the selected destination.
+destination_policies: {}
+
+native_wireguard:
+  enabled: false
+  peers: []                              # name, public_key, tunnel_ip, tunnels, optional destination_policy
 
 relay:
   enabled: false                          # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)
@@ -421,8 +449,8 @@ func LoadConfig(path string) (Config, error) {
 	if c.Authorizer.Timeout == 0 {
 		c.Authorizer.Timeout = 5 * time.Second
 	}
-	if c.Auth.AuthorizedKeysDir == "" && len(c.Auth.OIDC.Issuers) == 0 {
-		return c, fmt.Errorf("at least one of auth.authorized_keys_dir or auth.oidc.issuers is required")
+	if c.Auth.AuthorizedKeysDir == "" && len(c.Auth.OIDC.Issuers) == 0 && !c.NativeWireGuard.Enabled {
+		return c, fmt.Errorf("at least one of auth.authorized_keys_dir, auth.oidc.issuers, or native_wireguard.enabled is required")
 	}
 	seenIssuers := map[string]bool{}
 	for i := range c.Auth.OIDC.Issuers {
@@ -447,6 +475,7 @@ func LoadConfig(path string) (Config, error) {
 	if _, _, e = net.ParseCIDR(c.Network.TunnelCIDR); e != nil {
 		return c, fmt.Errorf("network.tunnel_cidr: %w", e)
 	}
+	prefix, _ := netip.ParsePrefix(c.Network.TunnelCIDR)
 	if c.Relay.Enabled {
 		if c.Relay.Name == "" || c.Relay.IdentityFile == "" {
 			return c, fmt.Errorf("relay.enabled requires relay.name and relay.identity_file")
@@ -520,6 +549,64 @@ func LoadConfig(path string) (Config, error) {
 			}
 		} else if t.Socks != nil {
 			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+		}
+	}
+	for name, policy := range c.DestinationPolicies {
+		if strings.TrimSpace(name) == "" {
+			return c, fmt.Errorf("destination_policies: empty policy name")
+		}
+		if _, err := compilePolicy(policy, nil); err != nil {
+			return c, fmt.Errorf("destination_policies.%s: %w", name, err)
+		}
+	}
+	seenPeerNames, seenPeerKeys, seenPeerIPs := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	if !c.NativeWireGuard.Enabled && len(c.NativeWireGuard.Peers) > 0 {
+		return c, fmt.Errorf("native_wireguard.peers requires native_wireguard.enabled: true")
+	}
+	serverIP := prefix.Addr().Next()
+	for i, peer := range c.NativeWireGuard.Peers {
+		where := fmt.Sprintf("native_wireguard.peers[%d]", i)
+		if peer.Name == "" || peer.PublicKey == "" || peer.TunnelIP == "" {
+			return c, fmt.Errorf("%s requires name, public_key, and tunnel_ip", where)
+		}
+		if seenPeerNames[peer.Name] {
+			return c, fmt.Errorf("duplicate native WireGuard peer name %q", peer.Name)
+		}
+		seenPeerNames[peer.Name] = true
+		if seenPeerKeys[peer.PublicKey] {
+			return c, fmt.Errorf("duplicate native WireGuard public key")
+		}
+		seenPeerKeys[peer.PublicKey] = true
+		if err := wgnet.ValidatePublicKey(peer.PublicKey); err != nil {
+			return c, fmt.Errorf("%s.public_key: %w", where, err)
+		}
+		ip, err := netip.ParseAddr(peer.TunnelIP)
+		if err != nil || !prefix.Contains(ip) {
+			return c, fmt.Errorf("%s.tunnel_ip must belong to network.tunnel_cidr", where)
+		}
+		if ip == serverIP {
+			return c, fmt.Errorf("%s.tunnel_ip collides with server tunnel address", where)
+		}
+		if seenPeerIPs[ip.String()] {
+			return c, fmt.Errorf("duplicate native WireGuard tunnel IP %q", ip)
+		}
+		seenPeerIPs[ip.String()] = true
+		if peer.DestinationPolicy != "" {
+			if _, ok := c.DestinationPolicies[peer.DestinationPolicy]; !ok {
+				return c, fmt.Errorf("%s.destination_policy references unknown policy %q", where, peer.DestinationPolicy)
+			}
+		}
+		for _, tunnel := range peer.Tunnels {
+			if !seen[tunnel] {
+				return c, fmt.Errorf("%s.tunnels references unknown tunnel %q", where, tunnel)
+			}
+		}
+	}
+	for _, t := range c.Tunnels {
+		if t.DestinationPolicy != "" {
+			if _, ok := c.DestinationPolicies[t.DestinationPolicy]; !ok {
+				return c, fmt.Errorf("tunnel %q references unknown destination policy %q", t.Name, t.DestinationPolicy)
+			}
 		}
 	}
 	return c, nil

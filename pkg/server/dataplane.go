@@ -6,7 +6,10 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +27,7 @@ type dataPlane struct {
 	next      uint32
 	listeners map[string]*tunnelListener // keyed by tunnel name
 	stop      chan struct{}
+	stopASN   chan struct{}
 	ws        *wstransport.Hybrid
 	multipath *wstransport.ServerMultipathBind
 }
@@ -37,11 +41,9 @@ type tunnelListener struct {
 	socks    *socksRuntime // non-nil only for config.IsSocks() tunnels
 }
 
-// socksRuntime is the live embedded-SOCKS-proxy state for one tunnel: the
-// handler itself plus the background ASN index refresh it owns, if any.
+// socksRuntime is the live embedded-SOCKS-proxy state for one tunnel.
 type socksRuntime struct {
-	server  *socks.Server
-	stopASN chan struct{}
+	server *socks.Server
 }
 
 // newSocksRuntime builds the SOCKS proxy handler for a target: socks tunnel,
@@ -53,11 +55,6 @@ func (s *Server) newSocksRuntime(t TunnelConfig) *socksRuntime {
 	if sc.deniesAllByDefault() {
 		log.Warn("socks tunnel has no destination filters and no allow_all; it will deny every connection")
 	}
-	asnIdx := socks.NewASNIndex()
-	stopASN := make(chan struct{})
-	if sc.WantsASNUpdates() {
-		go asnIdx.Refresh(sc.ASNURL, 0, log, stopASN)
-	}
 	sv, err := socks.New(socks.Config{
 		Filter: socks.FilterConfig{
 			OnlyLocal:      sc.OnlyLocal,
@@ -67,7 +64,11 @@ func (s *Server) newSocksRuntime(t TunnelConfig) *socksRuntime {
 			Invert:         sc.ReverseFilters,
 			AllowAll:       sc.AllowAll,
 		},
-		ASNLookup:  asnIdx,
+		ASNLookup: s.asn,
+		Authorize: func(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) bool {
+			principal, ok := principalFromContext(ctx)
+			return ok && s.destinationAllowed(ctx, principal, t, hostname, ip, port, protocol)
+		},
 		DNSTimeout: sc.DNSTimeout,
 		AllowBind:  sc.AllowBind,
 		Logger:     log,
@@ -76,10 +77,9 @@ func (s *Server) newSocksRuntime(t TunnelConfig) *socksRuntime {
 		// Filters are already validated at config load time; this should be
 		// unreachable, but fail closed rather than proxy unfiltered.
 		log.Warn("failed to build socks server", "error", err)
-		close(stopASN)
 		return nil
 	}
-	return &socksRuntime{server: sv, stopASN: stopASN}
+	return &socksRuntime{server: sv}
 }
 
 // socksConfigChanged reports whether a and b differ in a way that requires
@@ -139,12 +139,23 @@ func (s *Server) StartDataPlane() error {
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
 	}
-	st, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
+	privateKey, err := s.wireGuardPrivateKey()
 	if err != nil {
 		return err
 	}
-	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
+	st, err := wgnet.New(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
+	if err != nil {
+		return err
+	}
+	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
+	if url, ok := s.asnRefreshURL(); ok {
+		go s.asn.Refresh(url, 0, s.log, d.stopASN)
+	}
+	if err := s.installNativePeers(); err != nil {
+		s.Close()
+		return err
+	}
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {
 			s.Close()
@@ -153,6 +164,127 @@ func (s *Server) StartDataPlane() error {
 	}
 	go s.reapLoop(d)
 	return nil
+}
+
+func (s *Server) asnRefreshURL() (string, bool) {
+	for _, policy := range s.Config.DestinationPolicies {
+		if len(policy.ASNFilters) > 0 {
+			return "", true
+		}
+	}
+	for _, tunnel := range s.Config.Tunnels {
+		if tunnel.Socks != nil && tunnel.Socks.WantsASNUpdates() {
+			return tunnel.Socks.ASNURL, true
+		}
+	}
+	return "", false
+}
+
+// EnableNativeWireGuardRelay associates the existing server UDP bind with a
+// tenant-dedicated relay endpoint. The opaque token was issued over the
+// authenticated control connection; no WireGuard key ever reaches the relay.
+func (s *Server) EnableNativeWireGuardRelay(addr, token string) {
+	s.nativeRelayMu.Lock()
+	if s.nativeRelayStop != nil {
+		close(s.nativeRelayStop)
+		s.nativeRelayStop = nil
+	}
+	if addr == "" || token == "" || s.data == nil || !s.Config.NativeWireGuard.Enabled {
+		s.nativeRelayMu.Unlock()
+		return
+	}
+	bind, ok := s.data.ws.UDP.(*wstransport.FilterBind)
+	if !ok {
+		s.nativeRelayMu.Unlock()
+		return
+	}
+	stop := make(chan struct{})
+	s.nativeRelayStop = stop
+	s.nativeRelayMu.Unlock()
+	send := func() {
+		if err := bind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(token), addr); err != nil {
+			s.log.Debug("native WireGuard relay association failed", "error", err)
+		}
+	}
+	send()
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				send()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// wireGuardPrivateKey preserves the server identity only when explicitly
+// configured. Existing deployments retain their historical ephemeral key
+// behavior unless they opt in (native peers should always opt in).
+func (s *Server) wireGuardPrivateKey() (string, error) {
+	path := s.Config.Network.WireGuardPrivateKeyFile
+	if path == "" {
+		return "", nil
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		key := strings.TrimSpace(string(b))
+		if err := wgnet.ValidatePublicKey(key); err != nil {
+			return "", fmt.Errorf("network.wireguard_private_key_file: %w", err)
+		}
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	key, err := wgnet.GenerateKey()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(key.Private), 0600); err != nil {
+		return "", err
+	}
+	return key.Private, nil
+}
+
+func (s *Server) installNativePeers() error {
+	if s.data == nil || !s.Config.NativeWireGuard.Enabled {
+		return nil
+	}
+	for _, peer := range s.Config.NativeWireGuard.Peers {
+		ip, _ := netip.ParseAddr(peer.TunnelIP)
+		mask := "/32"
+		if ip.Is6() {
+			mask = "/128"
+		}
+		if err := s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: peer.PublicKey, Address: ip.String() + mask}); err != nil {
+			return fmt.Errorf("install native WireGuard peer %q: %w", peer.Name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Server) reconcileNativePeers(old, next []NativeWireGuardPeer) {
+	if s.data == nil {
+		return
+	}
+	for _, peer := range old {
+		_ = s.data.stack.RemovePeer(peer.PublicKey)
+	}
+	for _, peer := range next {
+		ip, _ := netip.ParseAddr(peer.TunnelIP)
+		mask := "/32"
+		if ip.Is6() {
+			mask = "/128"
+		}
+		if err := s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: peer.PublicKey, Address: ip.String() + mask}); err != nil {
+			s.log.Warn("native WireGuard peer reload failed", "peer", peer.Name, "error", err)
+		}
+	}
 }
 func portOf(address string) (int, error) {
 	_, p, e := net.SplitHostPort(address)
@@ -188,13 +320,9 @@ func (s *Server) listenTunnel(d *dataPlane, tunnel TunnelConfig) error {
 	return nil
 }
 
-// closeTunnelListener closes tl's listener and, for a SOCKS tunnel, stops
-// its background ASN index refresh.
+// closeTunnelListener closes tl's listener.
 func (s *Server) closeTunnelListener(tl *tunnelListener) {
 	_ = tl.listener.Close()
-	if tl.socks != nil {
-		close(tl.socks.stopASN)
-	}
 }
 
 // reloadTunnels reconciles the live listener set against the newly loaded
@@ -247,14 +375,15 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	if err != nil {
 		return
 	}
-	if !s.allowedIP(host, t.Name) {
+	principal, ok := s.principalForIP(host)
+	if !ok || !principal.Tunnels[t.Name] {
 		return
 	}
 	if t.IsSocks() {
-		s.proxySocks(tl, host, in)
+		s.proxySocks(tl, principal, host, in)
 		return
 	}
-	out, err := net.DialTimeout("tcp", t.Target, 10*time.Second)
+	out, err := s.dialFixedTarget(principal, t)
 	if err != nil {
 		s.log.Debug("tunnel target dial failed", "tunnel", t.Name, "target", t.Target, "error", err)
 		return
@@ -278,7 +407,7 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 // same way a fixed-target tunnel's are: everything read from the client
 // (destined for whatever target the client's SOCKS request names) counts as
 // toTarget, everything written back to the client counts as fromTarget.
-func (s *Server) proxySocks(tl *tunnelListener, host string, in net.Conn) {
+func (s *Server) proxySocks(tl *tunnelListener, principal DataPlanePrincipal, host string, in net.Conn) {
 	t := tl.config
 	if tl.socks == nil {
 		s.log.Warn("socks tunnel has no server instance", "tunnel", t.Name)
@@ -291,7 +420,7 @@ func (s *Server) proxySocks(tl *tunnelListener, host string, in net.Conn) {
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	tl.socks.server.ServeConn(context.Background(), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
+	tl.socks.server.ServeConn(context.WithValue(context.Background(), principalContextKey{}, principal), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
 	s.log.Debug("socks tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
@@ -349,17 +478,79 @@ func (c countingConn) Write(p []byte) (int, error) {
 	}
 	return n, err
 }
-func (s *Server) allowedIP(ip, name string) bool {
+
+type principalContextKey struct{}
+
+func principalFromContext(ctx context.Context) (DataPlanePrincipal, bool) {
+	p, ok := ctx.Value(principalContextKey{}).(DataPlanePrincipal)
+	return p, ok
+}
+
+func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 	for _, v := range s.sessions.All() {
 		if v.TunnelIP == ip {
+			addr, _ := netip.ParseAddr(ip)
+			grants := map[string]bool{}
 			for _, t := range v.Tunnels {
-				if t.Name == name {
-					return true
-				}
+				grants[t.Name] = true
 			}
+			return DataPlanePrincipal{Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants}, true
 		}
 	}
-	return false
+	for _, peer := range s.Config.NativeWireGuard.Peers {
+		if peer.TunnelIP == ip {
+			addr, _ := netip.ParseAddr(ip)
+			grants := map[string]bool{}
+			for _, tunnel := range peer.Tunnels {
+				grants[tunnel] = true
+			}
+			return DataPlanePrincipal{Method: "native-wireguard", Identity: peer.Name, TunnelIP: addr, Tunnels: grants, Policy: peer.DestinationPolicy}, true
+		}
+	}
+	return DataPlanePrincipal{}, false
+}
+
+// allowedIP remains the narrow compatibility helper used by older callers;
+// all new data-plane paths should retain the principal and use it for the
+// subsequent destination decision.
+func (s *Server) allowedIP(ip, tunnel string) bool {
+	p, ok := s.principalForIP(ip)
+	return ok && p.Tunnels[tunnel]
+}
+
+// dialFixedTarget resolves once, evaluates the selected address, then dials
+// that exact address. This prevents DNS rebinding between policy evaluation
+// and the actual outbound connection.
+func (s *Server) dialFixedTarget(principal DataPlanePrincipal, t TunnelConfig) (net.Conn, error) {
+	host, portText, err := net.SplitHostPort(t.Target)
+	if err != nil {
+		return nil, err
+	}
+	port64, err := net.LookupPort("tcp", portText)
+	if err != nil {
+		return nil, err
+	}
+	port := uint16(port64)
+	if ip, err := netip.ParseAddr(host); err == nil {
+		if !s.destinationAllowed(context.Background(), principal, t, "", ip, port, "tcp") {
+			return nil, fmt.Errorf("destination policy denied")
+		}
+		return net.DialTimeout("tcp", netip.AddrPortFrom(ip.Unmap(), port).String(), 10*time.Second)
+	}
+	addrs, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range addrs {
+		if !s.destinationAllowed(context.Background(), principal, t, host, ip, port, "tcp") {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", netip.AddrPortFrom(ip.Unmap(), port).String(), 10*time.Second)
+		if err == nil {
+			return conn, nil
+		}
+	}
+	return nil, fmt.Errorf("no permitted destination address for %s", host)
 }
 func (s *Server) allocateIP() (string, error) {
 	s.data.mu.Lock()
@@ -378,6 +569,12 @@ func (s *Server) allocateIP() (string, error) {
 			ip = ip.Unmap()
 		}
 		used := false
+		for _, peer := range s.Config.NativeWireGuard.Peers {
+			if peer.TunnelIP == ip.String() {
+				used = true
+				break
+			}
+		}
 		for _, x := range s.sessions.All() {
 			if x.TunnelIP == ip.String() {
 				used = true
@@ -454,7 +651,14 @@ func (s *Server) Close() {
 	if s.data == nil {
 		return
 	}
+	s.nativeRelayMu.Lock()
+	if s.nativeRelayStop != nil {
+		close(s.nativeRelayStop)
+		s.nativeRelayStop = nil
+	}
+	s.nativeRelayMu.Unlock()
 	close(s.data.stop)
+	close(s.data.stopASN)
 	s.data.mu.Lock()
 	for _, tl := range s.data.listeners {
 		s.closeTunnelListener(tl)

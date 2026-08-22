@@ -34,6 +34,7 @@ type Relay struct {
 	udpRelayAddr string
 	udpSessions  *udpSessionTable
 	udpSweepStop chan struct{}
+	nativeWG     map[string]*nativeWGRelay
 }
 
 // New constructs a Relay from a loaded Config. It performs no I/O; call
@@ -147,6 +148,18 @@ func (r *Relay) Start() error {
 			}
 		}
 	}
+	nativeWG := map[string]*nativeWGRelay{}
+	for _, reg := range r.cfg.Registrations {
+		if reg.NativeWireGuard.Listen == "" {
+			continue
+		}
+		pc, e := net.ListenPacket("udp", reg.NativeWireGuard.Listen)
+		if e != nil {
+			abortUDPRelay(udpRelayPool, udpRelayLn)
+			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
+		}
+		nativeWG[reg.Name] = newNativeWGRelay(pc)
+	}
 
 	srv := &http.Server{Handler: r.agents.Handler(), ReadHeaderTimeout: 10 * time.Second}
 
@@ -161,11 +174,12 @@ func (r *Relay) Start() error {
 	r.mu.Lock()
 	r.publicLn, r.agentsLn, r.agentsSrv, r.tlsFP = publicLn, agentsLn, srv, fp
 	r.reflectLn, r.reflectAddr = reflectLn, reflectAddr
-	r.udpRelayLn, r.udpRelayPool, r.udpRelayAddr, r.udpSessions, r.udpSweepStop = udpRelayLn, udpRelayPool, udpRelayAddr, udpSessions, udpSweepStop
+	r.udpRelayLn, r.udpRelayPool, r.udpRelayAddr, r.udpSessions, r.udpSweepStop, r.nativeWG = udpRelayLn, udpRelayPool, udpRelayAddr, udpSessions, udpSweepStop, nativeWG
 	r.mu.Unlock()
 	r.agents.setReflectAddr(reflectAddr)
 	r.agents.setUDPRelayAddr(udpRelayAddr)
 	r.agents.setUDPSessions(udpSessions)
+	r.agents.setNative(nativeWG)
 
 	go r.public.serve(publicLn)
 	go func() {
@@ -189,6 +203,10 @@ func (r *Relay) Start() error {
 		r.log.Info("ntwire-relay UDP-relay tier listening", "udp_relay", udpRelayAddr, "port_pool", r.cfg.Listen.UDPRelayPorts, "pool_size", len(udpRelayPool))
 	} else {
 		r.log.Debug("ntwire-relay UDP-relay tier disabled; relayed servers only offer WebSocket and (if enabled) direct-UDP upgrade")
+	}
+	for name, native := range nativeWG {
+		go native.serve()
+		r.log.Info("ntwire-relay native WireGuard listener", "tenant", name, "address", native.conn.LocalAddr())
 	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
@@ -287,6 +305,9 @@ func (r *Relay) Close() error {
 	}
 	for _, pc := range r.udpRelayPool {
 		_ = pc.Close()
+	}
+	for _, native := range r.nativeWG {
+		_ = native.conn.Close()
 	}
 	return nil
 }

@@ -38,6 +38,11 @@ const (
 	// confirms the local half of the handshake, not that the session's other
 	// leg is bound too -- forwarding still doesn't start until both are.
 	FrameRelayBindAck byte = 5
+	// FrameNativeWireGuardAssociate binds a registered server's existing
+	// WireGuard UDP socket to its tenant-specific native-WG relay listener.
+	// Its opaque, random payload is minted only over the authenticated relay
+	// control connection; it is never accepted as a client packet.
+	FrameNativeWireGuardAssociate byte = 6
 )
 
 // MaxRelayDatagram bounds a single datagram the UDP-relay tier will forward:

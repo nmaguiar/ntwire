@@ -25,6 +25,12 @@ type Config struct {
 	// filtering even if Filter.ASNs is non-empty.
 	ASNLookup ASNLookup
 
+	// Authorize, when supplied, is called after DNS resolution and before the
+	// exact resolved address is dialled.  It lets a host application compose
+	// SOCKS' legacy filter with a single destination-policy implementation.
+	// A false result is fail-closed.  The legacy Filter remains the default.
+	Authorize func(context.Context, string, netip.Addr, uint16, string) bool
+
 	// DNSTimeout bounds resolution of SOCKS5 domain requests. Matches
 	// socksd's DNSTIMEOUT, reinterpreted as a resolution timeout rather
 	// than a JVM DNS-cache TTL (Go has no equivalent cache to size).
@@ -62,6 +68,7 @@ type Server struct {
 	resolver    *net.Resolver
 	dial        func(ctx context.Context, network, addr string) (net.Conn, error)
 	log         *slog.Logger
+	authorize   func(context.Context, string, netip.Addr, uint16, string) bool
 }
 
 // New builds a Server from cfg.
@@ -79,6 +86,7 @@ func New(cfg Config) (*Server, error) {
 		resolver:    cfg.Resolver,
 		dial:        cfg.Dial,
 		log:         cfg.Logger,
+		authorize:   cfg.Authorize,
 	}
 	if s.dnsTimeout <= 0 {
 		s.dnsTimeout = 10 * time.Second
@@ -157,6 +165,9 @@ func (s *Server) filterDestination(ctx context.Context, hostname string, ip neti
 	}
 
 	allowed := s.filter.Allowed(hostname, resolved)
+	if allowed && s.authorize != nil {
+		allowed = s.authorize(ctx, hostname, resolved, port, "tcp")
+	}
 	s.logDecision(allowed, hostname, resolved, port)
 	if !allowed {
 		return resolved, outcomeNotAllowed

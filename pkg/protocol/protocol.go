@@ -26,6 +26,10 @@ const CapabilityMultipathV1 = "multipath-v1"
 // to ignore).
 const CapabilityMultipathV2 = "multipath-v2"
 
+// CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
+// forwarding tier used by unmodified official clients.
+const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"
+
 // ErrorUnsupportedCapability is returned when a peer explicitly requires a
 // capability the receiving peer cannot provide. Optional capability strings
 // remain additive and are deliberately ignored when unknown.
@@ -253,6 +257,8 @@ type RelayRegisterResponse struct {
 	// tier never reveals the server's real address to a client, so there is
 	// no advertise_direct-style opt-in gating it. See docs/RELAY.md.
 	UDPRelayAddr         string   `json:"udp_relay_addr,omitempty"`
+	NativeWireGuardAddr  string   `json:"native_wireguard_addr,omitempty"`
+	NativeWireGuardToken string   `json:"native_wireguard_token,omitempty"`
 	RelayVersion         string   `json:"relay_version,omitempty"`
 	Capabilities         []string `json:"capabilities,omitempty"`
 	RequiredCapabilities []string `json:"required_capabilities,omitempty"`

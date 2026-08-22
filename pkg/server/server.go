@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/oidcauth"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"log/slog"
 	"net"
@@ -31,24 +32,33 @@ type Server struct {
 	// authorization, session allocation, and data-plane peer ownership.
 	// Sessions has its own map lock, but that alone cannot make a reload and a
 	// concurrent renewal atomic as a policy decision.
-	operationMu sync.Mutex
-	log         *slog.Logger
-	data        *dataPlane
-	rates       map[string]*rateState
-	tunnelStats sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
-	oidc        *oidcauth.Verifiers
-	tlsManager  *TLSManager
-	auditLog    *slog.Logger
-	lifecycle   *lifecycleCounters
-	direct      *directUDP
-	udpr        atomic.Pointer[udpRelay]
+	operationMu     sync.Mutex
+	log             *slog.Logger
+	data            *dataPlane
+	rates           map[string]*rateState
+	tunnelStats     sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
+	oidc            *oidcauth.Verifiers
+	tlsManager      *TLSManager
+	auditLog        *slog.Logger
+	lifecycle       *lifecycleCounters
+	direct          *directUDP
+	udpr            atomic.Pointer[udpRelay]
+	nativeRelayMu   sync.Mutex
+	nativeRelayStop chan struct{}
+	policies        map[string]*compiledPolicy
+	asn             *socks.ASNIndex
 }
 
 func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}, lifecycle: newLifecycleCounters()}
+	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}, lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex()}
+	for name, policy := range c.DestinationPolicies {
+		if compiled, err := compilePolicy(policy, s.asn); err == nil {
+			s.policies[name] = compiled
+		}
+	}
 	if len(c.Auth.OIDC.Issuers) > 0 {
 		s.oidc = newVerifiers(c, l)
 	}
@@ -817,8 +827,17 @@ func (s *Server) Reload(c Config) {
 	c.TLS = s.Config.TLS
 	c.Relay = s.Config.Relay
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
+	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
+	oldNative := s.Config.NativeWireGuard.Peers
+	oldNativeEnabled := s.Config.NativeWireGuard.Enabled
 	oldIssuers := s.Config.Auth.OIDC.Issuers
 	s.Config = c
+	s.policies = map[string]*compiledPolicy{}
+	for name, policy := range c.DestinationPolicies {
+		if compiled, err := compilePolicy(policy, s.asn); err == nil {
+			s.policies[name] = compiled
+		}
+	}
 	if !reflect.DeepEqual(oldIssuers, c.Auth.OIDC.Issuers) {
 		s.oidc = newVerifiers(c, s.log)
 	}
@@ -828,6 +847,16 @@ func (s *Server) Reload(c Config) {
 		}
 	}
 	s.reloadTunnels(c.Tunnels)
+	if oldNativeEnabled != c.NativeWireGuard.Enabled || !reflect.DeepEqual(oldNative, c.NativeWireGuard.Peers) {
+		if !oldNativeEnabled {
+			oldNative = nil
+		}
+		nextNative := c.NativeWireGuard.Peers
+		if !c.NativeWireGuard.Enabled {
+			nextNative = nil
+		}
+		s.reconcileNativePeers(oldNative, nextNative)
+	}
 	validIssuers := map[string]bool{}
 	for _, iss := range c.Auth.OIDC.Issuers {
 		validIssuers[iss.Name] = true

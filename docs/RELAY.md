@@ -181,6 +181,30 @@ Budget to improve availability of the single active server.
 
 ## Relay-mediated UDP forwarding
 
+## Native WireGuard UDP endpoints
+
+An ordinary official WireGuard client cannot use ntwire's token-bound
+per-session UDP relay. Configure a dedicated public UDP listener for a tenant
+instead:
+
+```yaml
+registrations:
+  - name: home
+    public_key: "ssh-ed25519 ..."
+    native_wireguard:
+      listen: ":51821"
+```
+
+The registered `ntwire-server` receives an authenticated, short-lived relay
+association token over its existing control connection and sends it from the
+same userspace WireGuard UDP socket. The relay then forwards opaque WireGuard
+datagrams only between that associated server address and clients of this one
+tenant endpoint. It parses packet type and public receiver indices solely to
+route handshake/transport responses to multiple clients; it has no WireGuard
+private key and cannot decrypt payloads. Association is invalidated when the
+server registration is replaced or disconnects. This listener is opt-in and
+does not alter `listen.udp_relay` or its token-binding security model.
+
 Relaying WireGuard over `/v1/wg`'s WebSocket fallback works everywhere, but it
 means every packet crosses the relay twice (client→relay, relay→server) over
 TCP, carrying TLS and WebSocket framing on top of WireGuard's own encryption.
