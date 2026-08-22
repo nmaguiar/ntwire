@@ -367,7 +367,7 @@ private func rsaPublicComponents(_ der: Data) throws -> (Data, Data) {
 }
 #endif
 
-private struct DERReader {
+struct DERReader {
     private let data: Data
     private var index = 0
     init(_ data: Data) { self.data = data }

@@ -41,12 +41,15 @@ final class NetworkRelayController {
     func install(
         displayName: String,
         endpoints: NetworkRelayEndpoints,
-        configuration: RelayConfiguration
+        configuration: RelayConfiguration,
+        identity: (data: Data, password: String)
     ) async throws {
         try await load()
         let relay = NERelay()
         relay.http2RelayURL = endpoints.http2
         relay.http3RelayURL = endpoints.http3
+        relay.identityData = identity.data
+        relay.identityDataPassword = identity.password
 
         manager.localizedDescription = displayName
         manager.relays = [relay]

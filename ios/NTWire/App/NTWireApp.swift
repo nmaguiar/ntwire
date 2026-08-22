@@ -183,6 +183,10 @@ private struct ProfileDetailView: View {
     @State private var pendingTrust: PendingTrust?
     @State private var probeResult: String?
     @State private var probing = false
+    @State private var activePin: String?
+    @State private var transportStatus = "Not configured"
+    @State private var relayStatus = "Requires masque-relay-v1"
+    @State private var relayInstalled = false
 
     var body: some View {
         List {
@@ -206,8 +210,8 @@ private struct ProfileDetailView: View {
                 }
             }
             Section("Diagnostics") {
-                LabeledContent("Transport", value: "Not configured")
-                LabeledContent("Relay", value: "Requires masque-relay-v1")
+                LabeledContent("Transport", value: transportStatus)
+                LabeledContent("Relay", value: relayStatus)
                 LabeledContent("Certificate pin", value: profile.certificatePin ?? "Learned on first connect")
                 Button(probing ? "Testing…" : "Test connection (GET /v1/info)") { probeServerInfo() }
                     .disabled(probing)
@@ -284,6 +288,7 @@ private struct ProfileDetailView: View {
                 result = response
                 self.passphrase = ""
                 connectionState = connectionState.applying(.authenticationSucceeded)
+                await configureRelay(after: response)
             } catch SSHAuthenticationError.passphraseRequired {
                 connectionState = .disconnected
                 showingPassphrasePrompt = true
@@ -300,13 +305,71 @@ private struct ProfileDetailView: View {
     /// persists the pin only once the user agrees, and retries exactly once.
     private func performAuthentication(privateKey: Data, passphrase: String?, wireGuardKey: Data) async throws -> AuthenticationResponse {
         do {
-            return try await attemptAuthenticateSSH(pin: profile.certificatePin, privateKey: privateKey, passphrase: passphrase, wireGuardKey: wireGuardKey)
+            let response = try await attemptAuthenticateSSH(pin: profile.certificatePin, privateKey: privateKey, passphrase: passphrase, wireGuardKey: wireGuardKey)
+            activePin = profile.certificatePin
+            return response
         } catch let untrusted as UntrustedServerCertificateError {
             guard await confirmTrust(untrusted) else { throw untrusted }
             var pinned = profile
             pinned.certificatePin = untrusted.presentedPin
             onUpdate(pinned)
+            activePin = untrusted.presentedPin
             return try await attemptAuthenticateSSH(pin: untrusted.presentedPin, privateKey: privateKey, passphrase: passphrase, wireGuardKey: wireGuardKey)
+        }
+    }
+
+    /// Runs after authentication succeeds: installs a Network Relay mTLS
+    /// identity when the server advertises masque-relay-v1, or -- per design
+    /// -- moves straight to `connected` when it doesn't, rather than
+    /// stranding the UI at "Configuring relay" for servers that never intend
+    /// to offer a relay. A masque-advertising server whose setup fails closed
+    /// into `.failed` rather than silently downgrading to an unrelayed
+    /// connection.
+    private func configureRelay(after response: AuthenticationResponse) async {
+        do {
+            let transport = URLSessionTransport(pin: activePin)
+            let api = try NtwireControlAPI(serverURL: profile.serverURL, transport: transport)
+            let info = try await api.serverInfo()
+            guard let masque = info.masque else {
+                transportStatus = "Direct (no relay offered)"
+                relayStatus = "Not offered by this server"
+                connectionState = connectionState.applying(.relayUnavailable)
+                return
+            }
+            // A server that advertises masque-relay-v1 but sends no match
+            // domains is misconfigured, not simply relay-less -- fail closed
+            // like every other setup problem below, rather than silently
+            // routing it into the no-relay path.
+            guard !masque.matchDomains.isEmpty else {
+                throw RelayConfigurationError.emptyMatchDomains
+            }
+
+            let (privateKey, publicKey) = try MASQUEKeyPair.generateP256()
+            let csrPEM = try MASQUECSR.build(privateKey: privateKey, publicKey: publicKey)
+            let certificate = try await api.masqueCertificate(csrPEM: csrPEM, bearerToken: response.token)
+            let (pkcs12Data, pkcs12Password) = try MASQUEPKCS12.assemble(leafCertificatePEM: certificate.certificatePEM, privateKey: privateKey)
+
+            let endpoints = try NetworkRelayEndpoints(http2: masque.http2URL, http3: masque.http3URL)
+            let configuration = try RelayConfiguration(
+                gatewayURL: profile.serverURL,
+                matchDomains: masque.matchDomains,
+                selectedGrantNames: Set(response.tunnels.map(\.name))
+            )
+            try await NetworkRelayController().install(
+                displayName: profile.displayName,
+                endpoints: endpoints,
+                configuration: configuration,
+                identity: (data: pkcs12Data, password: pkcs12Password)
+            )
+
+            relayInstalled = true
+            relayStatus = "Configured (masque-relay-v1)"
+            transportStatus = "Network Relay"
+            connectionState = connectionState.applying(.relayConfigured)
+            connectionState = connectionState.applying(.transportConnected)
+        } catch {
+            connectionState = connectionState.applying(.failed(error.localizedDescription))
+            self.error = error.localizedDescription
         }
     }
 
@@ -358,7 +421,20 @@ private struct ProfileDetailView: View {
         do { try credentialStore.remove(account: ProfileCredentialAccount.sessionToken(for: profile.id)) }
         catch { self.error = error.localizedDescription }
         result = nil
+        activePin = nil
+        transportStatus = "Not configured"
+        relayStatus = "Not configured"
         connectionState = connectionState.applying(.disconnectRequested)
+        // Only tears down the Network Relay preference if this session
+        // actually installed one -- otherwise every disconnect (including
+        // servers that never offer masque-relay-v1) would call into
+        // NERelayManager for nothing. A removal failure here must not
+        // surface as a failed disconnect; the credential/session cleanup
+        // above already completed.
+        if relayInstalled {
+            relayInstalled = false
+            Task { try? await NetworkRelayController().remove() }
+        }
     }
 }
 

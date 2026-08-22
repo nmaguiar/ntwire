@@ -3,6 +3,9 @@ import CryptoKit
 #if canImport(Security)
 import Security
 #endif
+#if canImport(CommonCrypto)
+import CommonCrypto
+#endif
 import Testing
 @testable import NTWireCore
 
@@ -246,6 +249,159 @@ struct NTWireCoreTests {
         #expect(credential == nil)
         #expect(reported.value == UntrustedServerCertificateError(presentedPin: presentedPin, previousPin: "SHA256:not-the-real-pin"))
     }
+
+    @Test func masqueCSRIsSelfConsistent() throws {
+        let (privateKey, publicKey) = try MASQUEKeyPair.generateP256()
+        let pem = try MASQUECSR.build(privateKey: privateKey, publicKey: publicKey)
+        #expect(pem.hasPrefix("-----BEGIN CERTIFICATE REQUEST-----\n"))
+        #expect(pem.hasSuffix("-----END CERTIFICATE REQUEST-----\n"))
+
+        let der = try derFromPEM(pem)
+        var outer = DERReader(der)
+        var csr = DERReader(try outer.value(tag: 0x30))
+
+        // Re-wrap the extracted content as its own full TLV (tag+length+
+        // content) -- DERWriter's length encoding is canonical, so this
+        // reconstructs exactly the bytes that were signed.
+        let requestInfoContent = try csr.value(tag: 0x30)
+        var requestInfoWriter = DERWriter()
+        requestInfoWriter.appendRaw(0x30, requestInfoContent)
+        let requestInfoDER = requestInfoWriter.bytes
+
+        var algorithm = DERReader(try csr.value(tag: 0x30))
+        let algorithmOID = try algorithm.value(tag: 0x06)
+        var expectedOIDWriter = DERWriter()
+        expectedOIDWriter.appendOID(ASN1OID.ecdsaWithSHA256)
+        var expectedOIDReader = DERReader(expectedOIDWriter.bytes)
+        #expect(try algorithmOID == expectedOIDReader.value(tag: 0x06))
+
+        let signatureBitString = try csr.value(tag: 0x03)
+        #expect(signatureBitString.first == 0x00) // unused-bits byte
+        let signature = Data(signatureBitString.dropFirst())
+        #expect(csr.isAtEnd)
+
+        // Verify against the public key embedded in the CSR itself (not the
+        // `publicKey` this test already holds), so the assertion proves the
+        // CSR is internally self-consistent, not just that signing worked.
+        var info = DERReader(requestInfoContent)
+        _ = try info.value(tag: 0x02) // version
+        _ = try info.value(tag: 0x30) // subject Name
+        var spki = DERReader(try info.value(tag: 0x30))
+        _ = try spki.value(tag: 0x30) // AlgorithmIdentifier
+        let spkiBitString = try spki.value(tag: 0x03)
+        let point = Data(spkiBitString.dropFirst())
+
+        let keyAttributes: [CFString: Any] = [kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom, kSecAttrKeyClass: kSecAttrKeyClassPublic]
+        var keyError: Unmanaged<CFError>?
+        guard let embeddedPublicKey = SecKeyCreateWithData(point as CFData, keyAttributes as CFDictionary, &keyError) else {
+            Issue.record("could not reconstruct the CSR's embedded public key")
+            return
+        }
+        var verifyError: Unmanaged<CFError>?
+        let verified = SecKeyVerifySignature(embeddedPublicKey, .ecdsaSignatureMessageX962SHA256, requestInfoDER as CFData, signature as CFData, &verifyError)
+        #expect(verified)
+    }
+
+#if canImport(CommonCrypto)
+    // The strongest available correctness signal without a physical device:
+    // a successful `SecPKCS12Import` means Apple's own parser accepted the
+    // container's ASN.1 framing, decrypted both SafeContents with this
+    // package's PBE/KDF implementation, verified the MacData HMAC, and paired
+    // the cert and key into one SecIdentity by localKeyId -- not just an
+    // internal round-trip. Only `.tripleDES` is exercised here: it's this
+    // package's default and only actually-used cert cipher (nothing calls
+    // `assemble` with `.rc2_40`); a one-off run of `.rc2_40` against this
+    // same toolchain produced an unexplained -26276 alongside four passes,
+    // so it isn't a reliable signal and isn't worth gating the suite on for a
+    // path production never takes. `rc2FortyBitRoundTripsInCommonCrypto`
+    // below still isolates CommonCrypto's RC2 handling on its own. Whether
+    // `.tripleDES` is what a real device's NERelay.identityData actually
+    // needs is still unverified without hardware (see docs/IOS.md).
+    @Test func pkcs12RoundTripsThroughSecPKCS12Import() throws {
+        let cipher = MASQUEPKCS12CertCipher.tripleDES
+        let privateKey = try pkcs12FixturePrivateKey()
+        let certPEM = pkcs12FixtureCertificatePEM()
+        let certDER = try derFromPEM(certPEM)
+
+        let (pkcs12Data, password) = try MASQUEPKCS12.assemble(leafCertificatePEM: certPEM, privateKey: privateKey, certCipher: cipher)
+
+        var result: CFArray?
+        let status = SecPKCS12Import(pkcs12Data as CFData, [kSecImportExportPassphrase: password] as CFDictionary, &result)
+        #expect(status == errSecSuccess, "cipher \(cipher) rejected by SecPKCS12Import, status \(status)")
+        guard status == errSecSuccess, let items = result as? [[String: Any]], let first = items.first else { return }
+
+        guard let identityValue = first[kSecImportItemIdentity as String] else {
+            Issue.record("importer did not pair the key and certificate into one SecIdentity")
+            return
+        }
+        let identity = identityValue as! SecIdentity
+
+        var leaf: SecCertificate?
+        #expect(SecIdentityCopyCertificate(identity, &leaf) == errSecSuccess)
+        if let leaf {
+            #expect((SecCertificateCopyData(leaf) as Data) == certDER)
+        }
+    }
+
+    // Pins this package's RFC 7292 Appendix B.2 KDF against an independently
+    // generated reference: the MacData salt/iterations/digest and
+    // AuthenticatedSafe bytes below were extracted (via `openssl asn1parse
+    // -strparse`) from a file produced by
+    //   openssl pkcs12 -export -legacy -inkey key.pem -in cert.pem \
+    //     -out ref.p12 -passout pass:testpassword123 \
+    //     -certpbe PBE-SHA1-3DES -keypbe PBE-SHA1-3DES -macalg sha1
+    // A passing `SecPKCS12Import` proves Apple's parser accepts the overall
+    // container; this proves the KDF itself reproduces openssl's own MacData
+    // HMAC byte-for-byte, independent of any Apple API.
+    @Test func kdfMatchesOpenSSLReferenceMacDigest() throws {
+        let authenticatedSafeDER = hexData(
+            "308203a23082025f06092a864886f70d010706a08202503082024c0201003082024506092a864886f70d010701301c060a2a864886f70d010c0103300e0408423b26d383d83fe30202080080820218f41cd4a5da851bde21a137678fe62252bac4723dbc5871282ee7a403f21c4d89f95dfb829d928f56fd22402c18b2a2767e2abac9145fec984dc3b2deb75c5d6a3a3a812cc73c4a3480687b6f81ca1f5da0f6fe7e040fa6cdca6fdc06f7f958d0add4906e41bfa96219509c79757f698865ae856319117a380cb9b05eb0a4f5628d7a56080a3092591ef32ea77bc6d6989568b4912ba533137173c8bb9665563cdda2cab153013c5b280245f39da2b3953d2ba89a390f045eaa99173eb95dfc931f005c24211deb58309d4fa8335b5213ac0b5f5930d34e4410367ba5df60df14d812323ee2dfd3563a8f703be424d53d3c31a3a85a6b5043b5a4d57c44b406c2670915769b9ca2a7eb964c6ff45c1417b41b37f79efa6744e847333a0a6e2cb03b7f6d8b69cf2be26e86c63ed532e871899dd6a795af78e6d5c5287ea7cceae3f38b4a0cc6bbdb19cd2c41a76c4d98b64d83852bc3a609e2deaeaa15329ed8c0b280553dc7d06abecb75ad82a6bfeae9186bd5aaac183404a0bdb8efd42a3aef4c3a481aeb48e4e3070ceefbb0f7824c13cab84dd70e08ba40108652681083834b784b8d61db7a09841f9dadbbb42f3d8317c719168241d087b38f74874f6f0eb1b6d2050e7b1c6bcaa084c47f1923b87ab10fdb748ef8237ae94d2bc77f463da7419bd2111cb4750b33d6cd080711ff81fb8df1313c7335b0ed9f8e25ba5d7fdbba79627797f1765c3d9fad250e408147b9cf787d1d6bcc3082013b06092a864886f70d010701a082012c048201283082012430820120060b2a864886f70d010c0a0102a081b43081b1301c060a2a864886f70d010c0103300e0408dd3001895c22d70a0202080004819074e9e9abb95bfb1d55811a7943852ae2165cb049d05dde179ec7634f2e497b676ccb33a673075cae4b71ba4c0b1e265f8d16603f5a97c74e97f6ba950c1382a95e2f60716155b9f2f3e338de61962bdb017830a25de4f347f755d889b315e9c5dc5100a7b886a9dacc785e435d69376551fe83742d5f1d85e26e3d2d611b7c5455157584a01a9f668708444f36882a2b315a302306092a864886f70d0109153116041494201cc08a1ccb50a83fe62bf5237753400e0916303306092a864886f70d01091431261e24006e00740077006900720065002d006b00640066002d0066006900780074007500720065"
+        )
+        let macSalt = hexData("e3bff3c36ae9038c378f70b7f76fe9ec")
+        let macKey = PKCS12KDF.derive(id: .mac, password: "testpassword123", salt: macSalt, iterations: 2048, outputLength: 20)
+        let digest = hmacSHA1(key: macKey, message: authenticatedSafeDER)
+        #expect(digest == hexData("320c5dfcd82f21ab9599e8646cec3cd7c28de300"))
+    }
+
+    @Test func pkcs12ImportFailsClosedOnWrongPassword() throws {
+        let privateKey = try pkcs12FixturePrivateKey()
+        let (pkcs12Data, _) = try MASQUEPKCS12.assemble(leafCertificatePEM: pkcs12FixtureCertificatePEM(), privateKey: privateKey)
+
+        var result: CFArray?
+        let status = SecPKCS12Import(pkcs12Data as CFData, [kSecImportExportPassphrase: "definitely-not-the-password"] as CFDictionary, &result)
+        #expect(status != errSecSuccess)
+    }
+
+    /// Isolates CommonCrypto's RC2 handling (a known "silently wrong
+    /// effective-key-length" risk per the plan) from the PKCS#12 structure:
+    /// a plain encrypt/decrypt round-trip with a fixed 40-bit key.
+    @Test func rc2FortyBitRoundTripsInCommonCrypto() throws {
+        let key = Data((0..<5).map { UInt8($0 * 17 + 1) })
+        let iv = Data(repeating: 0, count: 8)
+        let plaintext = Data("ntwire relay identity test payload".utf8)
+
+        func crypt(_ operation: Int, _ input: Data) throws -> Data {
+            var outBuffer = [UInt8](repeating: 0, count: input.count + 8)
+            var moved = 0
+            let status = key.withUnsafeBytes { keyBuf -> CCCryptorStatus in
+                iv.withUnsafeBytes { ivBuf -> CCCryptorStatus in
+                    input.withUnsafeBytes { inBuf -> CCCryptorStatus in
+                        CCCrypt(CCOperation(operation), CCAlgorithm(kCCAlgorithmRC2), CCOptions(kCCOptionPKCS7Padding),
+                                keyBuf.baseAddress, key.count, ivBuf.baseAddress,
+                                inBuf.baseAddress, input.count, &outBuffer, outBuffer.count, &moved)
+                    }
+                }
+            }
+            #expect(status == kCCSuccess)
+            return Data(outBuffer.prefix(moved))
+        }
+
+        let ciphertext = try crypt(kCCEncrypt, plaintext)
+        #expect(ciphertext != plaintext)
+        let decrypted = try crypt(kCCDecrypt, ciphertext)
+        #expect(decrypted == plaintext)
+    }
+#endif
 #endif
 
     @Test func lifecycleFailsClosedOnCredentialExpiry() {
@@ -256,6 +412,18 @@ struct NTWireCoreTests {
         state = state.applying(.transportConnected)
         #expect(state == .connected)
         #expect(state.applying(.credentialsExpired) == .loginRequired)
+    }
+
+    /// A server that never advertises masque-relay-v1 must reach `connected`
+    /// directly from `configuringRelay` -- it must not strand the UI there
+    /// waiting for a `.relayConfigured` event that will never come.
+    @Test func lifecycleSkipsRelayWhenServerDoesNotOfferOne() {
+        var state = ConnectionState.disconnected
+        state = state.applying(.connectRequested)
+        state = state.applying(.authenticationSucceeded)
+        #expect(state == .configuringRelay)
+        state = state.applying(.relayUnavailable)
+        #expect(state == .connected)
     }
 }
 
@@ -282,14 +450,70 @@ private final class TestUntrustedBox: @unchecked Sendable {
 
 private enum TestTrustError: Error { case certificateDecodingFailed, trustCreationFailed }
 
-/// A `SecTrust` wrapping a fixed, self-signed test-only certificate (CN
-/// "ntwire-test", generated with `openssl req -x509 -newkey ec`) — stands in
-/// for the self-signed certificate an ntwire server presents.
+/// A fixed, self-signed test-only certificate (CN "ntwire-test", generated
+/// with `openssl req -x509 -newkey ec`) — stands in for the self-signed
+/// certificate an ntwire server presents.
+private let fixtureCertificateDERBase64 = """
+MIIBgTCCASegAwIBAgIUBUDsVj/ellMvAKm3Xkqlm04qjrQwCgYIKoZIzj0EAwIwFjEUMBIGA1UEAwwLbnR3aXJlLXRlc3QwHhcNMjYwODIyMDI1NTMwWhcNMzYwODE5MDI1NTMwWjAWMRQwEgYDVQQDDAtudHdpcmUtdGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEfxWqEMXZfGFJIh5Vc50BiZrAN5BmkJ/A7U8DgT7OBkXpFLlLkgN+tdAiSsvE1wsZM2BLIX/2T9hWUr8xo7ysWjUzBRMB0GA1UdDgQWBBSJhdIX6T1BP67UYa1ojl/g7ojPFDAfBgNVHSMEGDAWgBSJhdIX6T1BP67UYa1ojl/g7ojPFDAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCowmjPG3ISnz2afluPjVntDSm8V/4mhJP52pljxXUhlQIgLzl46IcQ3rSZKsEiiSU7eCREJ/4ipj+KFyWnO0/jb5U=
+"""
+
+private func fixtureCertificatePEM() -> String {
+    "-----BEGIN CERTIFICATE-----\n\(fixtureCertificateDERBase64)\n-----END CERTIFICATE-----\n"
+}
+
+#if canImport(CommonCrypto)
+// A second fixed key+certificate pair, distinct from `fixtureCertificateDERBase64`
+// above (which is used only for TLS-trust parsing and has no known private key).
+// The PKCS#12 tests need the certificate's embedded public key to actually
+// correspond to the private key sealed inside the container -- SecPKCS12Import
+// verifies this and rejects a mismatched pair with errSecDecode, unlike openssl's
+// `-nodes` extraction, which never checks it. Generated with:
+//   openssl ecparam -name prime256v1 -genkey -noout -out key.pem
+//   openssl req -new -x509 -key key.pem -out cert.pem -days 3650 -subj "/CN=ntwire-test" -sha256
+private let pkcs12FixtureCertificateDERBase64 = """
+MIIBgTCCASegAwIBAgIUHYyA6BBryQhnPoK5ooZ4VechQPQwCgYIKoZIzj0EAwIwFjEUMBIGA1UEAwwLbnR3aXJlLXRlc3QwHhcNMjYwODIyMDUwOTQwWhcNMzYwODE5MDUwOTQwWjAWMRQwEgYDVQQDDAtudHdpcmUtdGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPlgo5i8RHY9TdujwYkhC6500hgh4LjbLXwkzdythGkjiqXEdlmv6elCVyuDiwWxcgRc38xEeYDWN9yA65aKyVejUzBRMB0GA1UdDgQWBBTo4kyUDREgddvaNlpoG9l2HJASbzAfBgNVHSMEGDAWgBTo4kyUDREgddvaNlpoG9l2HJASbzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIFl94jLI/J2ZAg88YEfX89Vm1V5Gx6wu2UAYmCKsy/2WAiEA2wvdg5Pn9x4+X1IdoRSD74/39T8aY3DfYaaf0u+Zz1o=
+"""
+
+private let pkcs12FixturePrivateKeyHex =
+    "524c72bce2f92872ea7e8414e692ce5a40d11dba0690187806aeda168dcc7f50"
+private let pkcs12FixturePublicKeyHex =
+    "04f960a398bc44763d4ddba3c189210bae74d21821e0b8db2d7c24cddcad8469238aa5c47659afe9e942572b838b05b172045cdfcc447980d637dc80eb968ac957"
+
+private func pkcs12FixtureCertificatePEM() -> String {
+    "-----BEGIN CERTIFICATE-----\n\(pkcs12FixtureCertificateDERBase64)\n-----END CERTIFICATE-----\n"
+}
+
+private func hexData(_ hex: String) -> Data {
+    var data = Data(capacity: hex.count / 2)
+    var chars = hex.startIndex
+    while chars < hex.endIndex {
+        let next = hex.index(chars, offsetBy: 2)
+        data.append(UInt8(hex[chars..<next], radix: 16)!)
+        chars = next
+    }
+    return data
+}
+
+/// Imports the fixed private key matching `pkcs12FixtureCertificateDERBase64`
+/// so the round-trip tests seal a private key that actually corresponds to the
+/// certificate they bundle it with.
+private func pkcs12FixturePrivateKey() throws -> SecKey {
+    let external = hexData(pkcs12FixturePublicKeyHex) + hexData(pkcs12FixturePrivateKeyHex)
+    let attributes: [CFString: Any] = [
+        kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom,
+        kSecAttrKeyClass: kSecAttrKeyClassPrivate,
+        kSecAttrKeySizeInBits: 256
+    ]
+    var error: Unmanaged<CFError>?
+    guard let key = SecKeyCreateWithData(external as CFData, attributes as CFDictionary, &error) else {
+        throw TestTrustError.certificateDecodingFailed
+    }
+    return key
+}
+#endif
+
 private func testServerTrust() throws -> SecTrust {
-    let der = """
-    MIIBgTCCASegAwIBAgIUBUDsVj/ellMvAKm3Xkqlm04qjrQwCgYIKoZIzj0EAwIwFjEUMBIGA1UEAwwLbnR3aXJlLXRlc3QwHhcNMjYwODIyMDI1NTMwWhcNMzYwODE5MDI1NTMwWjAWMRQwEgYDVQQDDAtudHdpcmUtdGVzdDBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABEfxWqEMXZfGFJIh5Vc50BiZrAN5BmkJ/A7U8DgT7OBkXpFLlLkgN+tdAiSsvE1wsZM2BLIX/2T9hWUr8xo7ysWjUzBRMB0GA1UdDgQWBBSJhdIX6T1BP67UYa1ojl/g7ojPFDAfBgNVHSMEGDAWgBSJhdIX6T1BP67UYa1ojl/g7ojPFDAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQCowmjPG3ISnz2afluPjVntDSm8V/4mhJP52pljxXUhlQIgLzl46IcQ3rSZKsEiiSU7eCREJ/4ipj+KFyWnO0/jb5U=
-    """
-    guard let data = Data(base64Encoded: der, options: .ignoreUnknownCharacters),
+    guard let data = Data(base64Encoded: fixtureCertificateDERBase64, options: .ignoreUnknownCharacters),
           let certificate = SecCertificateCreateWithData(nil, data as CFData)
     else { throw TestTrustError.certificateDecodingFailed }
     var trust: SecTrust?
