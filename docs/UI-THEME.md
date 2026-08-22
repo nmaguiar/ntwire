@@ -8,6 +8,13 @@ type: reference
 
 ntwire uses a crisp, operations-focused theme that should feel calm during normal tunnel use and clear during incident response. The local status UI supports both light and dark modes through CSS custom properties and the user's `prefers-color-scheme` setting.
 
+This reference is authoritative for the **client status UI**
+(`pkg/client/webui`). Two other surfaces are separately templated and mostly,
+but not exactly, share this palette: the server operator dashboard
+(`pkg/server/webui`) and the GUI settings window (`internal/gui/webui`). Where
+they diverge from the tables below, or from each other, it's called out
+inline rather than assumed.
+
 ## Design Goals
 
 - **Immediate status recognition:** connection state, tunnel address, traffic volume, and active connections are visually grouped for fast scanning.
@@ -28,8 +35,16 @@ ntwire uses a crisp, operations-focused theme that should feel calm during norma
 | `--accent` | `#10a37f` | Connected indicators |
 | `--danger` | `#c2410c` | Error/status messages |
 | `--border` | `#d9e2f1` | Card and input borders |
+| `--panel-2` | `#eef4ff` | Secondary surfaces (badges, stat tiles, code blocks) — defined identically in all three surfaces |
 
 Light mode should feel airy and readable, with enough brand color to make actions obvious but not noisy.
+
+The server dashboard does not define `--brand-strong`: its own reconnect
+banner has no hover-styled button, just a plain `#fff` background with
+`--danger`-colored text. The GUI settings window additionally defines
+`--danger-strong` (`#9a3412` light / `#fdba74` dark, used the way
+`--brand-strong` is used for `--brand`), which appears nowhere in the client
+status UI or the server dashboard.
 
 ## Dark Mode Palette
 
@@ -44,10 +59,17 @@ Light mode should feel airy and readable, with enough brand color to make action
 | `--accent` | `#4ade80` | Connected indicators |
 | `--danger` | `#fb923c` | Error/status messages |
 | `--border` | `#263753` | Card and input borders |
+| `--panel-2` | `#15223a` | Secondary surfaces — see the light-mode row above |
 
 Dark mode should reduce glare while keeping tunnel metadata legible for long-running monitoring sessions.
 
 ## Component Guidance
+
+The following apply to the client status UI (`pkg/client/webui`), the primary
+subject of this doc. The server dashboard shares the card/grid/badge visual
+language but has no collapsible `<details>` cards, no `localStorage` use, and
+no Markdown rendering. The GUI settings window has `<details>` cards but does
+not persist their open/closed state to `localStorage`.
 
 - Use a single hero card for the connection overview and a responsive card grid for tunnels.
 - Present tunnel addresses in monospace chips so users can copy and distinguish them quickly.

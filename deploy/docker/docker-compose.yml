@@ -8,6 +8,6 @@ services:
     volumes:
       - ./ntwire.yaml:/etc/ntwire/ntwire.yaml:ro
       - ./keys:/etc/ntwire/keys:ro
-  echo:
+  example:
     image: hashicorp/http-echo:1.0
     command: ["-listen=:8080", "-text=ntwire-ok"]

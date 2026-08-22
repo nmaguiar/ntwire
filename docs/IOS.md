@@ -37,12 +37,18 @@ provisioned App ID, code signing, App Store review, and truthful privacy
 disclosures. Apple’s Developer Program terms also require that a Network
 Extension app be primarily for networking and have the entitlement.
 
-This is a **GO for the platform and distribution constraint**, not a claim
-that the currently checked-in server can already serve Network Relay traffic.
-The missing MASQUE gateway is an explicit product component and a prerequisite
-for Phase 4. The checked-in iOS app is limited to the safe control-plane/UI
-foundation; it does not configure a relay or claim a data path until the
-gateway protocol and security contract are agreed and tested.
+This was a **GO for the platform and distribution constraint**, not a claim
+that the server could already serve Network Relay traffic at the time this
+decision was made. The MASQUE gateway has since been implemented
+(`pkg/server/masque_gateway.go`, `pkg/server/masque.go`), and the checked-in
+iOS app now generates its own key/CSR, obtains a certificate, assembles it
+into a PKCS#12 identity, and installs a `NERelayManager` configuration
+immediately after authentication (`NTWireApp.swift`'s `configureRelay`) — see
+[Delivery gates](#delivery-gates). None of this has been validated against a
+physical device yet; that real-device interoperability proof is the actual
+remaining gate before this data path ships, not whether the code exists — see
+the acceptance criteria
+[below](#identity-packaging-spike-required-acceptance-criteria).
 
 ## Apple requirements and evidence
 
@@ -170,20 +176,23 @@ the public issuer certificate. The private key and bearer token are never in
 the response. The server clamps expiry to the shorter of the configured
 certificate TTL, the existing ntwire session, and the issuer certificate.
 
-The certificate endpoint alone does **not** configure a relay. The implemented
+The certificate endpoint alone does **not** configure a relay; the implemented
 gateway validates the certificate against its configured client CA and
-re-checks the session/grant binding before accepting `CONNECT`. The remaining
-iOS-side gate is packaging the identity for `NERelay.identityData`, which
-requires PKCS#12 bytes. The public APIs documented in the installed SDK expose
-that input, but do not themselves establish a safe, general PKCS#12 *creation*
-path for a Keychain-held device key. A real-device spike must therefore prove
-how a locally generated key and returned chain become that identity without
-persisting or logging an export of the private key. If that cannot be done with
-an Apple-supported API or a carefully reviewed local encoder, short-lived mTLS
-is not viable for this product and the design must return to the feasibility
-gate rather than send the private key to the server. It must never put refresh
-tokens, SSH private keys, or a long-lived ntwire bearer token in relay
-preferences.
+re-checks the session/grant binding before accepting `CONNECT`. Packaging the
+identity for `NERelay.identityData` requires PKCS#12 bytes, and the public
+APIs documented in the installed SDK expose that input without themselves
+establishing a safe, general PKCS#12 *creation* path for a Keychain-held
+device key — so the app now does this itself:
+`ios/NTWire/Sources/NTWireCore/PKCS12.swift` is a from-scratch RFC 7292
+encoder that combines a locally generated software key, the certificate
+returned by the server, and the issuer certificate into a password-protected
+container, immediately discarding raw private-key bytes afterward
+(`MASQUEIdentity.swift`, `NetworkRelayController.swift`). This has not yet
+been proven on a real device. If the acceptance criteria below cannot be met
+on physical hardware, short-lived mTLS is not viable for this product and the
+design must return to the feasibility gate rather than send the private key
+to the server. It must never put refresh tokens, SSH private keys, or a
+long-lived ntwire bearer token in relay preferences.
 
 ### Identity-packaging spike: required acceptance criteria
 
@@ -198,9 +207,11 @@ PKCS#12 container locally; then immediately discard raw private-key bytes and
 keep the container/password only in the appropriate system-managed/keychain
 storage needed to configure the relay.
 
-This is not permission to implement an ad-hoc or unreviewed ASN.1/PKCS#12
-encoder. Before production implementation, a signed Individual-team build on
-a physical iOS/iPadOS 17+ device must prove all of the following:
+An ad-hoc, unreviewed ASN.1/PKCS#12 encoder is exactly what has been written
+so far (`PKCS12.swift`) — its existence is not itself proof it is safe to
+ship. Before this path is enabled in a release, a signed Individual-team
+build on a physical iOS/iPadOS 17+ device must still prove all of the
+following:
 
 1. The app can generate the required software-backed key and CSR locally; the
    server receives only the CSR and never a private key.
@@ -327,10 +338,15 @@ Relay direction and is deliberately not introduced here.
    fails the handshake closed and surfaces an `UntrustedServerCertificateError`
    naming the fingerprint(s); the profile detail view prompts for explicit
    trust and retries once, only persisting the pin after the user agrees.
-   OIDC UI and an end-to-end relay installation remain blocked on the optional gateway
-   contract. The app includes a thin `NERelayManager` adapter verified against
-   the iOS SDK; it accepts only explicit H2/H3 gateway URLs and positive
-   domain matches, never a guessed endpoint or bearer-token header.
+   OIDC UI remains unimplemented (no `ASWebAuthenticationSession`/OIDC code
+   exists in the app yet). End-to-end relay installation is implemented: on
+   successful SSH authentication against a server advertising
+   `masque-relay-v1`, the app generates a key/CSR, obtains a certificate,
+   assembles a PKCS#12 identity, and installs it through a thin
+   `NERelayManager` adapter (`NetworkRelayController.swift`) that accepts only
+   explicit H2/H3 gateway URLs and positive domain matches, never a guessed
+   endpoint or bearer-token header. This path has not been validated on a
+   physical device — see [above](#identity-packaging-spike-required-acceptance-criteria).
 4. **Data plane:** implement the optional gateway and one TCP grant, then add
    split DNS, multiple grants, diagnostics, renewal/revocation, and transport
    accounting.

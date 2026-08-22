@@ -23,6 +23,7 @@ like:
 ```json
 {
   "source_ip": "127.0.0.1:50123",
+  "session_id": "",
   "key_fingerprint": "SHA256:...",
   "key_comment": "alice@laptop",
   "auth_method": "ssh",
@@ -39,6 +40,7 @@ name), and `groups` (from `groups_claim`, when configured):
 ```json
 {
   "source_ip": "127.0.0.1:50123",
+  "session_id": "",
   "auth_method": "oidc",
   "identity": "alice@corp.com",
   "issuer": "google",
@@ -48,6 +50,10 @@ name), and `groups` (from `groups_claim`, when configured):
   "requested_at": "2026-07-17T12:00:00Z"
 }
 ```
+
+`session_id` is always present but empty on the initial `/v1/auth`(`/oidc`)
+call; a `/v1/renew` call for an existing session populates it, letting a hook
+tell an initial authorization from a renewal.
 
 ## Response
 
@@ -66,8 +72,12 @@ session TTL.
 [`examples/hooks/oidc-group-risk.py`](../examples/hooks/oidc-group-risk.py) is
 a runnable executable hook that trusts SSH sessions as-is, fully trusts a set
 of OIDC groups, narrows tunnels and shortens the session for a "contractors"
-group, and flags any other OIDC identity as higher risk for audit logging.
-Wire it up with:
+group, and returns a higher `risk_score` for any other OIDC identity. As of
+this writing the server decodes `risk_score` but does not yet forward it into
+its own `audit` log line (every audit event is logged with `risk: 0`
+regardless of what the hook returns) — a hook can still act on it via
+`allow`/`allowed_tunnels`/`ttl_seconds`, but a `risk_score`-only signal is not
+currently observable outside the hook itself. Wire it up with:
 
 ```yaml
 authorizer:

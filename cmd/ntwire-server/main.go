@@ -10,6 +10,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"log/slog"
 	"net/http"
 	"os"
@@ -24,6 +25,7 @@ func main() {
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	generateRelayKey := flag.String("generate-relay-key", "", "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit")
+	generateWireGuardKey := flag.String("generate-wireguard-key", "", "generate a WireGuard key pair at this path (and path.pub) for a native_wireguard peer, print setup instructions, and exit")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
 	noColor := flag.Bool("no-color", false, "disable ANSI colors in text-format logs (or set NO_COLOR)")
@@ -36,6 +38,7 @@ func main() {
 				"ntwire-server -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -generate-relay-key relay_id_ed25519",
+				"ntwire-server -generate-wireguard-key client_wg",
 				"ntwire-server -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -51,6 +54,9 @@ func main() {
 	}
 	if *generateRelayKey != "" {
 		generateRelayKeyAndExit(*generateRelayKey, ui.New(os.Stdout, os.Stderr, *noColor))
+	}
+	if *generateWireGuardKey != "" {
+		generateWireGuardKeyAndExit(*generateWireGuardKey, ui.New(os.Stdout, os.Stderr, *noColor))
 	}
 
 	caps := ui.Detect(os.Stderr, *noColor)
@@ -207,5 +213,63 @@ server's own TLS certificate (which is generated automatically).
 
 See docs/RELAY.md for the full walkthrough.
 `, strings.TrimSpace(string(pub)), path)
+	os.Exit(0)
+}
+
+// generateWireGuardKeyAndExit creates an ordinary WireGuard key pair for a
+// client that will be admitted as a native peer (see docs/NATIVE-WIREGUARD.md),
+// so an operator never needs "wg genkey"/"wg pubkey" from wireguard-tools
+// installed anywhere. It never touches *config or this server's own
+// persistent key (network.wireguard_private_key_file): the two keys are
+// unrelated, and this one is meant to leave the server for the client.
+func generateWireGuardKeyAndExit(path string, u *ui.UI) {
+	key, err := wgnet.GenerateKey()
+	if err != nil {
+		u.Errorf("generate-wireguard-key: %v", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, []byte(key.Private), 0600); err != nil {
+		u.Errorf("generate-wireguard-key: %v", err)
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path+".pub", []byte(key.Public), 0644); err != nil {
+		u.Errorf("generate-wireguard-key: %v", err)
+		os.Exit(1)
+	}
+	u.Success("WireGuard key pair created: %s (public key %s)", path, key.Public)
+	fmt.Fprintf(u.Out, `
+This is an ordinary WireGuard key pair, unrelated to auth.authorized_keys_dir
+and this server's own persistent key (network.wireguard_private_key_file).
+It's meant for a client that will be admitted as a native WireGuard peer.
+
+1. %s (mode 0600) holds the private key. It belongs on the client, not here:
+   move or copy it there, delete it from this server once transferred, and
+   treat it as sensitive from that point on. On the client, it goes into the
+   profile's [Interface] PrivateKey:
+
+     [Interface]
+     PrivateKey = <contents of %s>
+     Address = <tunnel_ip>/32
+
+     [Peer]
+     PublicKey = <this server's public key, from network.wireguard_private_key_file>
+     Endpoint = <this server's address>:<listen.wireguard port, default 51820>
+     AllowedIPs = <network.tunnel_cidr>
+     PersistentKeepalive = 25
+
+2. Add the public key (%s, also saved to %s.pub) to this server's config:
+
+     native_wireguard:
+       enabled: true
+       peers:
+         - name: <name>
+           public_key: "%s"
+           tunnel_ip: <tunnel_ip from step 1>
+           tunnels: [<tunnel name>]
+
+See docs/NATIVE-WIREGUARD.md for the full walkthrough, and
+docs/RELAY.md#native-wireguard-udp-endpoints if this server is reached
+through ntwire-relay instead of directly.
+`, path, path, key.Public, path, key.Public)
 	os.Exit(0)
 }

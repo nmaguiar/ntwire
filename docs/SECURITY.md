@@ -50,11 +50,16 @@ pending an explicit user decision. An App Store application is a public OIDC
 client and must not embed an IdP client secret.
 
 The detailed platform constraints and proposed gateway boundary are in
-[IOS.md](IOS.md). The server-side HTTP/2 CONNECT gateway is implemented, but
-the iOS-side Network Relay identity packaging and real-device interoperability
-gate remains before an iOS data plane can be enabled. The gateway’s MASQUE
-target mapping, credential rotation, revocation, and real-device behavior have
-been proven.
+[IOS.md](IOS.md). The server-side HTTP/2 CONNECT gateway and the iOS-side
+identity packaging (local key/CSR generation, certificate issuance, PKCS#12
+assembly, `NERelayManager` install) are both implemented and wired together —
+see [IOS.md](IOS.md#delivery-gates). The gateway's MASQUE target mapping,
+credential rotation, and revocation are covered by unit tests
+(`pkg/server/masque_gateway_test.go`, `pkg/server/masque_test.go`), but none
+of this has been proven against a physical iOS/iPadOS device. That real-device
+interoperability gate — the acceptance criteria in
+[IOS.md](IOS.md#identity-packaging-spike-required-acceptance-criteria) —
+remains outstanding before an iOS data plane can be enabled by default.
 
 ## Implemented protections
 
@@ -180,10 +185,6 @@ automatically" workarounds; instead, use one of:
 
 ## SOCKS proxy tunnels and egress risk
 
-## Native WireGuard and destination policies
-
-Native peers are static cryptographic peers in the existing userspace WireGuard device, not bearer-token sessions. Their configured IPs are reserved from dynamic allocation. Keep the persistent server WireGuard key and all client private keys out of source control. Tunnel grants are checked before destination policies; peer and tunnel policies compose as restrictive AND rules. Fixed-target policies evaluate the chosen resolved IP before it is dialled. See `NATIVE-WIREGUARD.md` and `DESTINATION-POLICIES.md`.
-
 ### Operator-visible risk capabilities
 
 At startup and after a configuration reload, ntwire logs the stable
@@ -232,6 +233,10 @@ resolutions. Weigh that before granting one broadly:
   connect — the same `socks:` filters gate the request's declared target
   address beforehand, but, matching upstream, the peer that actually
   connects to that listener is never itself re-checked against them.
+
+## Native WireGuard and destination policies
+
+Native peers are static cryptographic peers in the existing userspace WireGuard device, not bearer-token sessions. Their configured IPs are reserved from dynamic allocation. Keep the persistent server WireGuard key and all client private keys out of source control. Tunnel grants are checked before destination policies; peer and tunnel policies compose as restrictive AND rules. Fixed-target policies evaluate the chosen resolved IP before it is dialled. See `NATIVE-WIREGUARD.md` and `DESTINATION-POLICIES.md`.
 
 ## Binding tunnel listeners beyond loopback (`--bind`)
 

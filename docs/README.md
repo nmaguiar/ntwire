@@ -6,6 +6,7 @@ links out to.
 
 | Doc | Read it for |
 | --- | --- |
+| [CONNECTING.md](CONNECTING.md) | Step-by-step setup for every client/endpoint combination: `ntwire` or official WireGuard, against a direct `ntwire-server` or one behind `ntwire-relay` |
 | [CONFIGURATION.md](CONFIGURATION.md) | The complete `ntwire.yaml` option reference, grant matching, hot reload behavior, and the server dashboard |
 | [RELAY.md](RELAY.md) | Reaching an `ntwire-server` behind NAT via `ntwire-relay`, and its trust model |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | The `authorizer:` webhook/executable hook: request/response schema and a worked example |

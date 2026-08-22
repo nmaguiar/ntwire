@@ -2,6 +2,8 @@
 
 ntwire can admit an unmodified official WireGuard client into the same userspace WireGuard device and gVisor netstack used by authenticated ntwire clients. Native peers do not call `/v1/auth`, have no ntwire session or TTL, and are removed only by configuration/reload.
 
+This whole mechanism is for one specific case: a device that must use the *official* WireGuard app rather than `ntwire`. Whenever the `ntwire` client is an option, prefer it — it needs no WireGuard key management at all and gets session auth, per-tunnel grants, TTLs, and revocation that a static native peer does not have. See [CONNECTING.md](CONNECTING.md) for a side-by-side of both paths.
+
 ```yaml
 network:
   tunnel_cidr: 100.64.0.0/16
@@ -16,7 +18,7 @@ native_wireguard:
       destination_policy: mobile
 ```
 
-`wireguard_private_key_file` is created mode `0600` when absent and keeps the server public key stable across restart. Keep it outside source control. Client private keys are generated and retained by the client/operator, never in ordinary server configuration.
+`wireguard_private_key_file` is created mode `0600` when absent and keeps the server public key stable across restart. Keep it outside source control. Client private keys are generated and retained by the client/operator, never in ordinary server configuration — `wg genkey`/`wg pubkey`, an official app's own key generation on first tunnel creation, or `ntwire-server -generate-wireguard-key path` (a convenience wrapper with no server-config side effect, so the private key never has to touch `wireguard-tools`) all produce an equally valid pair; see [CONNECTING.md](CONNECTING.md#generating-a-wireguard-key-pair-for-an-official-client).
 
 ```ini
 [Interface]

@@ -21,3 +21,13 @@ tunnels:
 Policies support legacy SOCKS fields (`filters`, `domain_filters`, `asn_filters`, `only_local`, `reverse_filters`, and `allow_all`) plus `protocols` and `ports`. CIDR/ASN tests use the selected destination IP. Fixed targets resolve, evaluate, and dial the same exact IP to avoid DNS rebinding between authorization and connect.
 
 Existing `tunnels[].socks` filtering remains compatible and is evaluated first; a generic policy is an extra restriction. ASN data is held in a server-wide index rather than one updater per SOCKS tunnel.
+
+## Composing with native WireGuard peer policies
+
+A native WireGuard peer (see [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md)) can
+carry its own `destination_policy` in addition to a tunnel's. The two are
+ANDed, restrictive-only: a destination must pass both the peer's policy and
+the tunnel's `destination_policy` to be allowed, and neither side can widen
+what the other denies. This peer-level policy only ever applies to native
+WireGuard peers — an ordinary SSH/OIDC session has no peer-level policy of its
+own, so a tunnel's `destination_policy` is the only lever for those sessions.
