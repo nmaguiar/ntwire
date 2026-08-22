@@ -62,6 +62,33 @@ func (p *publicListener) serve(ln net.Listener) {
 	}
 }
 
+// serveTenant accepts connections on a dedicated TCP listener for tenantName.
+// It retries on transient accept errors, matching serve.
+func (p *publicListener) serveTenant(ln net.Listener, tenantName string) {
+	var delay time.Duration
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			if delay == 0 {
+				delay = 5 * time.Millisecond
+			} else {
+				delay *= 2
+			}
+			if delay > time.Second {
+				delay = time.Second
+			}
+			p.log.Warn("tenant public listener accept error; retrying", "tenant", tenantName, "error", err, "retry_in", delay)
+			time.Sleep(delay)
+			continue
+		}
+		delay = 0
+		go p.handleTenant(c, tenantName)
+	}
+}
+
 func (p *publicListener) handle(c net.Conn) {
 	defer c.Close()
 	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
@@ -90,6 +117,31 @@ func (p *publicListener) handle(c net.Conn) {
 		return
 	}
 
+	p.dispatch(c, name, host, sni, raw)
+}
+
+func (p *publicListener) handleTenant(c net.Conn, tenantName string) {
+	defer c.Close()
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		host = c.RemoteAddr().String()
+	}
+	if !p.rate.allow(host) {
+		p.log.Debug("tenant public listener: rate limit exceeded", "tenant", tenantName, "client", host)
+		return
+	}
+
+	_ = c.SetReadDeadline(time.Now().Add(p.limits.HandshakeTimeout))
+	sni, raw, err := peekClientHello(c)
+	if err != nil {
+		return
+	}
+	_ = c.SetReadDeadline(time.Time{})
+
+	p.dispatch(c, tenantName, host, sni, raw)
+}
+
+func (p *publicListener) dispatch(c net.Conn, name, host, sni string, raw []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.limits.DialBackTimeout)
 	defer cancel()
 	back, err := p.registry.Open(ctx, name, c.RemoteAddr().String(), sni)

@@ -35,6 +35,7 @@ type Relay struct {
 	udpSessions  *udpSessionTable
 	udpSweepStop chan struct{}
 	nativeWG     map[string]*nativeWGRelay
+	tenantLns    map[string]net.Listener
 }
 
 // New constructs a Relay from a loaded Config. It performs no I/O; call
@@ -74,59 +75,69 @@ func (r *Relay) Start() error {
 	}
 	fp := fingerprint(pair)
 
-	publicLn, err := net.Listen("tcp", r.cfg.Listen.Public)
+	var publicLn net.Listener
+	var agentsLn net.Listener
+	var reflectLn net.PacketConn
+	var udpRelayLn net.PacketConn
+	var udpRelayPool map[uint16]net.PacketConn
+	nativeWG := map[string]*nativeWGRelay{}
+	tenantLns := map[string]net.Listener{}
+
+	abortAll := func() {
+		if publicLn != nil {
+			_ = publicLn.Close()
+		}
+		if agentsLn != nil {
+			_ = agentsLn.Close()
+		}
+		if reflectLn != nil {
+			_ = reflectLn.Close()
+		}
+		if udpRelayLn != nil {
+			_ = udpRelayLn.Close()
+		}
+		for _, pc := range udpRelayPool {
+			_ = pc.Close()
+		}
+		for _, native := range nativeWG {
+			_ = native.conn.Close()
+		}
+		for _, ln := range tenantLns {
+			_ = ln.Close()
+		}
+	}
+
+	publicLn, err = net.Listen("tcp", r.cfg.Listen.Public)
 	if err != nil {
 		return fmt.Errorf("listen.public: %w", err)
 	}
-	agentsLn, err := net.Listen("tcp", r.cfg.Listen.Agents)
+	agentsLn, err = net.Listen("tcp", r.cfg.Listen.Agents)
 	if err != nil {
-		_ = publicLn.Close()
+		abortAll()
 		return fmt.Errorf("listen.agents: %w", err)
 	}
 	tlsAgentsLn := tls.NewListener(agentsLn, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
 
-	var reflectLn net.PacketConn
 	var reflectAddr string
 	if r.cfg.Listen.Reflect != "" {
 		reflectLn, err = net.ListenPacket("udp", r.cfg.Listen.Reflect)
 		if err != nil {
-			_ = publicLn.Close()
-			_ = agentsLn.Close()
+			abortAll()
 			return fmt.Errorf("listen.reflect: %w", err)
 		}
 		reflectAddr = reflectLn.LocalAddr().String()
 	}
 
-	// abortUDPRelay closes everything opened so far (including whatever
-	// UDP-relay pool ports were already bound) on any failure below,
-	// matching the all-or-nothing sequential-close style the block above
-	// uses for publicLn/agentsLn/reflectLn.
-	abortUDPRelay := func(pool map[uint16]net.PacketConn, ln net.PacketConn) {
-		_ = publicLn.Close()
-		_ = agentsLn.Close()
-		if reflectLn != nil {
-			_ = reflectLn.Close()
-		}
-		if ln != nil {
-			_ = ln.Close()
-		}
-		for _, pc := range pool {
-			_ = pc.Close()
-		}
-	}
-
-	var udpRelayLn net.PacketConn
 	var udpRelayAddr string
-	var udpRelayPool map[uint16]net.PacketConn
 	if r.cfg.Listen.UDPRelay != "" {
 		minPort, maxPort, perr := parsePortRange(r.cfg.Listen.UDPRelayPorts)
 		if perr != nil {
-			abortUDPRelay(nil, nil)
+			abortAll()
 			return fmt.Errorf("listen.udp_relay_ports: %w", perr)
 		}
 		udpRelayLn, err = net.ListenPacket("udp", r.cfg.Listen.UDPRelay)
 		if err != nil {
-			abortUDPRelay(nil, nil)
+			abortAll()
 			return fmt.Errorf("listen.udp_relay: %w", err)
 		}
 		udpRelayAddr = udpRelayLn.LocalAddr().String()
@@ -134,12 +145,12 @@ func (r *Relay) Start() error {
 		for port := minPort; ; port++ {
 			poolAddr, perr := udpRelayPoolListenAddr(r.cfg.Listen.UDPRelay, port)
 			if perr != nil {
-				abortUDPRelay(udpRelayPool, udpRelayLn)
+				abortAll()
 				return fmt.Errorf("listen.udp_relay_ports: %w", perr)
 			}
 			pc, perr := net.ListenPacket("udp", poolAddr)
 			if perr != nil {
-				abortUDPRelay(udpRelayPool, udpRelayLn)
+				abortAll()
 				return fmt.Errorf("listen.udp_relay_ports: binding port %d: %w", port, perr)
 			}
 			udpRelayPool[port] = pc
@@ -148,17 +159,28 @@ func (r *Relay) Start() error {
 			}
 		}
 	}
-	nativeWG := map[string]*nativeWGRelay{}
 	for _, reg := range r.cfg.Registrations {
 		if reg.NativeWireGuard.Listen == "" {
 			continue
 		}
 		pc, e := net.ListenPacket("udp", reg.NativeWireGuard.Listen)
 		if e != nil {
-			abortUDPRelay(udpRelayPool, udpRelayLn)
+			abortAll()
 			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
 		}
 		nativeWG[reg.Name] = newNativeWGRelay(pc)
+	}
+
+	for _, reg := range r.cfg.Registrations {
+		if reg.Listen == "" {
+			continue
+		}
+		ln, e := net.Listen("tcp", reg.Listen)
+		if e != nil {
+			abortAll()
+			return fmt.Errorf("registration %q listen: %w", reg.Name, e)
+		}
+		tenantLns[reg.Name] = ln
 	}
 
 	srv := &http.Server{Handler: r.agents.Handler(), ReadHeaderTimeout: 10 * time.Second}
@@ -174,7 +196,7 @@ func (r *Relay) Start() error {
 	r.mu.Lock()
 	r.publicLn, r.agentsLn, r.agentsSrv, r.tlsFP = publicLn, agentsLn, srv, fp
 	r.reflectLn, r.reflectAddr = reflectLn, reflectAddr
-	r.udpRelayLn, r.udpRelayPool, r.udpRelayAddr, r.udpSessions, r.udpSweepStop, r.nativeWG = udpRelayLn, udpRelayPool, udpRelayAddr, udpSessions, udpSweepStop, nativeWG
+	r.udpRelayLn, r.udpRelayPool, r.udpRelayAddr, r.udpSessions, r.udpSweepStop, r.nativeWG, r.tenantLns = udpRelayLn, udpRelayPool, udpRelayAddr, udpSessions, udpSweepStop, nativeWG, tenantLns
 	r.mu.Unlock()
 	r.agents.setReflectAddr(reflectAddr)
 	r.agents.setUDPRelayAddr(udpRelayAddr)
@@ -208,6 +230,10 @@ func (r *Relay) Start() error {
 		go native.serve()
 		r.log.Info("ntwire-relay native WireGuard listener", "tenant", name, "address", native.conn.LocalAddr())
 	}
+	for name, ln := range tenantLns {
+		go r.public.serveTenant(ln, name)
+		r.log.Info("ntwire-relay tenant public TCP listener", "tenant", name, "address", ln.Addr())
+	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
 }
@@ -234,6 +260,17 @@ func (r *Relay) PublicAddr() net.Addr {
 		return nil
 	}
 	return r.publicLn.Addr()
+}
+
+// TenantAddr returns the bound address of a tenant's dedicated TCP listener
+// (registrations[].listen), or nil if it is not configured.
+func (r *Relay) TenantAddr(tenant string) net.Addr {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ln, ok := r.tenantLns[tenant]; ok {
+		return ln.Addr()
+	}
+	return nil
 }
 
 // AgentsAddr returns the bound address of listen.agents.
@@ -290,6 +327,9 @@ func (r *Relay) Close() error {
 	defer r.mu.Unlock()
 	if r.publicLn != nil {
 		_ = r.publicLn.Close()
+	}
+	for _, ln := range r.tenantLns {
+		_ = ln.Close()
 	}
 	if r.agentsSrv != nil {
 		_ = r.agentsSrv.Close()

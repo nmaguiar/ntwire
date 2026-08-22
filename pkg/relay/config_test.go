@@ -104,3 +104,58 @@ func TestLoadConfig_NormalizesAndValidatesDomain(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfig_ValidatesRegistrationListen(t *testing.T) {
+	k1 := generateTestKey(t)
+	k2 := generateTestKey(t)
+
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{
+			name:    "valid dedicated port",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \":8443\"\n",
+			wantErr: false,
+		},
+		{
+			name:    "valid dedicated port with host",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \"127.0.0.1:8443\"\n",
+			wantErr: false,
+		},
+		{
+			name:    "malformed dedicated port",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \"8443\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "duplicate dedicated port across registrations",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \":8443\"\n  - name: lab\n    public_key: \"" + k2.line + "\"\n    listen: \":8443\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "conflict with listen.public",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \":443\"\n",
+			wantErr: true,
+		},
+		{
+			name:    "conflict with listen.agents",
+			yaml:    "domain: relay.example.com\nlisten:\n  public: \":443\"\n  agents: \":8444\"\nregistrations:\n  - name: home\n    public_key: \"" + k1.line + "\"\n    listen: \":8444\"\n",
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir() + "/relay.yaml"
+			if err := os.WriteFile(path, []byte(tc.yaml), 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadConfig(path)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("LoadConfig err = %v, wantErr = %v", err, tc.wantErr)
+			}
+		})
+	}
+}

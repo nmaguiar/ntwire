@@ -77,6 +77,7 @@ type Config struct {
 type RegistrationConfig struct {
 	Name            string `yaml:"name"`
 	PublicKey       string `yaml:"public_key"`
+	Listen          string `yaml:"listen"`
 	NativeWireGuard struct {
 		Listen string `yaml:"listen"`
 	} `yaml:"native_wireguard"`
@@ -120,6 +121,7 @@ limits:
 registrations:
   - name: home                              # first DNS label; clients use https://home.relay.example.com
     public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINA2Gh3ezOG8R0iaD0WVnVsJTQGHqjI96LwGrIc/Kwgc admin@laptop" # authorized_keys line identifying the ntwire-server allowed to claim this name; replace with your own
+    listen: ""                             # optional dedicated TCP public listener for this tenant (e.g. ":8443"); bypasses wildcard DNS and SNI matching
     native_wireguard:
       listen: ""                           # optional dedicated UDP endpoint for ordinary WireGuard clients, e.g. ":51821"
 
@@ -191,6 +193,7 @@ func LoadConfig(path string) (Config, error) {
 		}
 	}
 	seen := map[string]bool{}
+	seenListen := map[string]bool{}
 	seenNative := map[string]bool{}
 	for _, r := range c.Registrations {
 		if r.Name == "" || r.PublicKey == "" {
@@ -208,6 +211,21 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("duplicate registration name %q", r.Name)
 		}
 		seen[r.Name] = true
+		if r.Listen != "" {
+			if _, _, err := net.SplitHostPort(r.Listen); err != nil {
+				return c, fmt.Errorf("registration %q listen: %w", r.Name, err)
+			}
+			if r.Listen == c.Listen.Public {
+				return c, fmt.Errorf("registration %q listen %q conflicts with listen.public", r.Name, r.Listen)
+			}
+			if r.Listen == c.Listen.Agents {
+				return c, fmt.Errorf("registration %q listen %q conflicts with listen.agents", r.Name, r.Listen)
+			}
+			if seenListen[r.Listen] {
+				return c, fmt.Errorf("duplicate TCP listener %q", r.Listen)
+			}
+			seenListen[r.Listen] = true
+		}
 		if r.NativeWireGuard.Listen != "" {
 			if _, _, err := net.SplitHostPort(r.NativeWireGuard.Listen); err != nil {
 				return c, fmt.Errorf("registration %q native_wireguard.listen: %w", r.Name, err)
@@ -257,7 +275,7 @@ func ParseRegistrations(cfgs []RegistrationConfig) ([]Registration, error) {
 		if err != nil {
 			return nil, fmt.Errorf("registration %q: invalid public_key: %w", r.Name, err)
 		}
-		out = append(out, Registration{Name: r.Name, PublicKey: key})
+		out = append(out, Registration{Name: r.Name, PublicKey: key, Listen: r.Listen})
 	}
 	return out, nil
 }
