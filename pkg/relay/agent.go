@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
@@ -29,6 +32,7 @@ type agentServer struct {
 	udpRelayAddr string
 	sessions     *udpSessionTable // nil until Relay.Start wires it (or forever, if listen.udp_relay is unset)
 	native       map[string]*nativeWGRelay
+	socksTargets map[string][]protocol.SocksTarget
 }
 
 // setReflectAddr records the relay's bound UDP reflector address (or ""),
@@ -107,14 +111,136 @@ func newAgentServer(registry *Registry, domain string, limits Limits, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &agentServer{registry: registry, domain: domain, limits: limits, log: log}
+	return &agentServer{registry: registry, domain: domain, limits: limits, log: log, socksTargets: make(map[string][]protocol.SocksTarget)}
 }
 
 func (a *agentServer) Handler() http.Handler {
 	m := http.NewServeMux()
 	m.HandleFunc("GET /v1/relay/control", a.handleControl)
 	m.HandleFunc("GET /v1/relay/data", a.handleData)
-	return m
+	m.HandleFunc("GET /proxy.pac", func(w http.ResponseWriter, r *http.Request) {
+		a.servePAC(w, r, "", false)
+	})
+	m.HandleFunc("GET /proxy-ios.pac", func(w http.ResponseWriter, r *http.Request) {
+		a.servePAC(w, r, "", true)
+	})
+	m.HandleFunc("GET /proxy.ios.pac", func(w http.ResponseWriter, r *http.Request) {
+		a.servePAC(w, r, "", true)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path != "/proxy.pac" && r.URL.Path != "/proxy-ios.pac" && r.URL.Path != "/proxy.ios.pac" && strings.HasPrefix(r.URL.Path, "/proxy") && strings.HasSuffix(r.URL.Path, ".pac") {
+			a.handleNamedPAC(w, r)
+			return
+		}
+		m.ServeHTTP(w, r)
+	})
+}
+
+func (a *agentServer) allSocksTargets() []protocol.SocksTarget {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []protocol.SocksTarget
+	for _, targets := range a.socksTargets {
+		out = append(out, targets...)
+	}
+	return out
+}
+
+func (a *agentServer) findSocksTarget(name string) (protocol.SocksTarget, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, targets := range a.socksTargets {
+		for _, t := range targets {
+			if t.Name == name {
+				return t, true
+			}
+		}
+	}
+	return protocol.SocksTarget{}, false
+}
+
+func (a *agentServer) handleNamedPAC(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if !strings.HasSuffix(path, ".pac") {
+		http.NotFound(w, r)
+		return
+	}
+	raw := strings.TrimSuffix(path, ".pac")
+	var name string
+	isIOS := false
+	if strings.HasPrefix(raw, "/proxy-ios-") {
+		isIOS = true
+		name = strings.TrimPrefix(raw, "/proxy-ios-")
+	} else if strings.HasPrefix(raw, "/proxy.ios-") {
+		isIOS = true
+		name = strings.TrimPrefix(raw, "/proxy.ios-")
+	} else if strings.HasPrefix(raw, "/proxy-") {
+		name = strings.TrimPrefix(raw, "/proxy-")
+	} else {
+		http.NotFound(w, r)
+		return
+	}
+
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	a.servePAC(w, r, name, isIOS)
+}
+
+func (a *agentServer) servePAC(w http.ResponseWriter, r *http.Request, targetName string, isIOS bool) {
+	if !isIOS && (r.URL.Query().Has("ios") || r.URL.Query().Get("platform") == "ios") {
+		isIOS = true
+	}
+
+	targets := a.allSocksTargets()
+	if len(targets) == 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("no socks egress tunnels configured\n"))
+		return
+	}
+
+	var target protocol.SocksTarget
+	if targetName == "" {
+		target = targets[0]
+	} else {
+		found, ok := a.findSocksTarget(targetName)
+		if !ok {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprintf(w, "socks target %q not found\n", targetName)
+			return
+		}
+		target = found
+	}
+
+	var host string
+	var port int
+	if isIOS {
+		host = target.TunnelIP
+		if host == "" {
+			host = "100.64.0.1"
+		}
+		port = target.VirtualPort
+		if port <= 0 {
+			port = target.LocalPort
+		}
+	} else {
+		host = "127.0.0.1"
+		port = target.LocalPort
+		if port <= 0 {
+			port = target.VirtualPort
+		}
+	}
+	if port <= 0 {
+		port = 10080
+	}
+
+	pacScript := pac.Generate(host, port, target.DomainFilters, target.Filters)
+	w.Header().Set("Content-Type", pac.ContentType)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(pacScript))
 }
 
 // handleControl upgrades to a WebSocket, expects exactly one
@@ -196,6 +322,16 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
+	a.mu.Lock()
+	if len(req.SocksTargets) > 0 {
+		a.socksTargets[name] = req.SocksTargets
+	}
+	a.mu.Unlock()
+	defer func() {
+		a.mu.Lock()
+		delete(a.socksTargets, name)
+		a.mu.Unlock()
+	}()
 	reflectAddr := a.getReflectAddr()
 	udpRelayAddr := a.getUDPRelayAddr()
 	native := a.nativeFor(name)

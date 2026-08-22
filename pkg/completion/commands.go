@@ -66,6 +66,8 @@ func ServerCommand() Command {
 		Summary: "ntwire tunnel server",
 		Flags: []Flag{
 			{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+			{Name: "list", Usage: "list configured server tunnels and proxy PAC endpoints and exit", TakesValue: false},
+			{Name: "json", Usage: "output in JSON format (used with -list)", TakesValue: false},
 			{Name: "print-sample-config", Usage: "print a fully commented sample YAML configuration and exit", TakesValue: false},
 			{Name: "version", Usage: "print the build version and exit", TakesValue: false},
 			{Name: "generate-relay-key", Usage: "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit", TakesValue: true, IsFilePath: true},

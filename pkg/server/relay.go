@@ -123,8 +123,9 @@ type RelayAgent struct {
 	OnRegistration func(protocol.RelayRegisterResponse)
 	OnDisconnected func()
 
-	mu     sync.Mutex
-	closed bool
+	mu           sync.Mutex
+	closed       bool
+	socksTargets []protocol.SocksTarget
 
 	// wsMu guards ws (the live control connection, nil while disconnected)
 	// and serializes every write to it -- registration, the keepalive ping,
@@ -457,6 +458,18 @@ func (a *RelayAgent) handleOpen(ctx context.Context, open protocol.RelayOpen) {
 	a.listener.push(&relayConn{Conn: conn, remoteAddr: stringAddr(open.ClientAddr)})
 }
 
+func (a *RelayAgent) SetSocksTargets(targets []protocol.SocksTarget) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.socksTargets = append([]protocol.SocksTarget(nil), targets...)
+}
+
+func (a *RelayAgent) getSocksTargets() []protocol.SocksTarget {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]protocol.SocksTarget(nil), a.socksTargets...)
+}
+
 func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 	pub, err := sshkey.PublicFromPrivate(a.cfg.IdentityFile)
 	if err != nil {
@@ -470,6 +483,7 @@ func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 		Version: protocol.Version, PublicKey: pub, Name: a.cfg.Name,
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n),
 		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1, protocol.CapabilityNativeWireGuardRelay},
+		SocksTargets: a.getSocksTargets(),
 	}
 	payload, err := protocol.RelayRegisterPayload(req)
 	if err != nil {

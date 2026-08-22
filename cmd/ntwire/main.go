@@ -11,6 +11,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
 	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
+	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
@@ -317,6 +318,16 @@ type listEntry struct {
 	Connected   bool                `json:"connected"`
 	Stats       *client.TunnelStats `json:"stats,omitempty"`
 	Description string              `json:"description,omitempty"`
+	PACURL      string              `json:"pac_url,omitempty"`
+	PACURLiOS   string              `json:"pac_url_ios,omitempty"`
+}
+
+func pacURLFor(server, targetName string, isIOS bool) string {
+	normalized, err := client.NormalizeServerURL(server)
+	if err != nil {
+		normalized = server
+	}
+	return pac.URLForPlatform(normalized, targetName, isIOS)
 }
 
 // liveTunnelStatus best-effort looks up a currently-running `ntwire
@@ -610,10 +621,21 @@ func list(args []string, u *ui.UI) {
 		return
 	}
 	live := liveTunnelStatus(server, statusFile)
+	var socksTunnels []protocol.Tunnel
+	for _, tunnel := range r.Tunnels {
+		if tunnel.TargetHint == "socks" {
+			socksTunnels = append(socksTunnels, tunnel)
+		}
+	}
+
 	if jsonOut {
 		entries := make([]listEntry, 0, len(r.Tunnels))
 		for _, tunnel := range r.Tunnels {
 			e := listEntry{Name: tunnel.Name, VirtualPort: tunnel.VirtualPort, LocalPort: tunnel.LocalPort, Description: tunnel.Description}
+			if tunnel.TargetHint == "socks" {
+				e.PACURL = pacURLFor(server, tunnel.Name, false)
+				e.PACURLiOS = pacURLFor(server, tunnel.Name, true)
+			}
 			if wt, ok := live[tunnel.Name]; ok {
 				e.Connected = true
 				stats := wt.Stats
@@ -640,6 +662,25 @@ func list(args []string, u *ui.UI) {
 		t.Rows = append(t.Rows, []string{tunnel.Name, fmt.Sprintf("%d", tunnel.VirtualPort), localPort, status, conns, traffic, tunnel.Description})
 	}
 	fmt.Fprint(u.Out, t.Render(u))
+
+	if len(socksTunnels) > 0 {
+		fmt.Fprintln(u.Out)
+		if len(socksTunnels) == 1 {
+			u.Info("Proxy PAC (Desktop): %s (or %s)", pacURLFor(server, "", false), pacURLFor(server, socksTunnels[0].Name, false))
+			u.Info("Proxy PAC (iOS):     %s (or %s)", pacURLFor(server, "", true), pacURLFor(server, socksTunnels[0].Name, true))
+		} else {
+			u.Info("Proxy PAC URLs (Desktop):")
+			u.Info("  default: %s", pacURLFor(server, "", false))
+			for _, st := range socksTunnels {
+				u.Info("  %s: %s", st.Name, pacURLFor(server, st.Name, false))
+			}
+			u.Info("Proxy PAC URLs (iOS):")
+			u.Info("  default: %s", pacURLFor(server, "", true))
+			for _, st := range socksTunnels {
+				u.Info("  %s: %s", st.Name, pacURLFor(server, st.Name, true))
+			}
+		}
+	}
 }
 
 func settingsFor(args []string) (client.Settings, string) {
