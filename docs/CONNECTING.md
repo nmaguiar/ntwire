@@ -171,6 +171,9 @@ configuration; it's the server and relay operators who opt into it.
    want full routing (never `0.0.0.0/0`/`::/0` by accident).
 3. Connect from the official app as normal — there's no `ntwire connect` step
    for this path.
+4. Reach a target — see [below](#reaching-a-target-once-the-tunnel-is-up); an
+   official client has no local port-forwarding step, so it addresses the
+   server's tunnel IP and the target's `virtual_port` directly.
 
 Full detail, including how peer/tunnel grants and destination policies
 compose: [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md).
@@ -215,6 +218,59 @@ decrypt anything, and the server's real network address is never exposed to
 the client. Because the listener is selected by UDP port rather than by the
 TLS SNI `listen.public` uses, one relay port serves exactly one tenant. Full
 detail: [RELAY.md#native-wireguard-udp-endpoints](RELAY.md#native-wireguard-udp-endpoints).
+
+Reaching a target once this tunnel is up works exactly like scenario 3 —
+see [below](#reaching-a-target-once-the-tunnel-is-up). The relay only
+carries WireGuard datagrams between client and server; it plays no part in
+how a target is addressed once they arrive.
+
+## Reaching a target once the tunnel is up
+
+The `ntwire` client runs `ntwire connect`, which opens a loopback listener
+per tunnel (`local_host:local_port`) and forwards it into the tunnel for you.
+An official WireGuard client has no such process — once the handshake
+completes, `AllowedIPs` has already routed the whole `tunnel_cidr` into the
+device's network stack, and you address a target directly at:
+
+```
+<server tunnel IP>:<virtual_port>
+```
+
+The server's tunnel IP is always the first usable address of
+`network.tunnel_cidr` — `100.64.0.1` for the default `100.64.0.0/16` — never
+`0.10` or any other peer address, and a native peer's `tunnel_ip` is refused
+by config validation if it collides with it. It's the same address the
+`ntwire` client shows as `{{.ServerTunnelIP}}` in a tunnel's `instructions`
+(see [CONFIGURATION.md#tunnel-instructions](CONFIGURATION.md#tunnel-instructions)),
+and `virtual_port` is the same per-tunnel field from `tunnels:` used
+throughout this document.
+
+1. **Fixed-target tunnel** (`target: host:port`) — point whatever tool the
+   target speaks straight at `<server tunnel IP>:<virtual_port>`; the server
+   proxies the connection to the configured `target` over its own ordinary
+   network, and the official client never sees or needs that hostname:
+   ```sh
+   curl http://100.64.0.1:18080/reports/latest
+   psql -h 100.64.0.1 -p 15432 mydb
+   ```
+2. **SOCKS tunnel** (`target: socks`) — point a SOCKS-aware client, or the
+   OS/app's SOCKS proxy setting, at `<server tunnel IP>:<virtual_port>`
+   (SOCKS4 or SOCKS5); the destination is whatever the SOCKS request names,
+   filtered by the tunnel's `socks:` block instead of a fixed `target`:
+   ```sh
+   curl --socks5-hostname 100.64.0.1:11080 https://internal.example/
+   ```
+   See [CONFIGURATION.md#socks-proxy-tunnels](CONFIGURATION.md#socks-proxy-tunnels).
+3. **Which targets a peer can actually reach** — an official client has no
+   ntwire session, so the `allow:` grant list on a tunnel is never consulted
+   for it. Instead, a native peer reaches only the tunnels named in its own
+   `native_wireguard.peers[].tunnels:` list, further narrowed by the AND of
+   its `destination_policy` and the tunnel's own `destination_policy`/
+   `socks:` filters — every other tunnel's `virtual_port` refuses the
+   connection even though WireGuard's `AllowedIPs` would otherwise let the
+   packets reach it. See
+   [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) and
+   [DESTINATION-POLICIES.md#composing-with-native-wireguard-peer-policies](DESTINATION-POLICIES.md#composing-with-native-wireguard-peer-policies).
 
 ## 5. `ntwire-server` → `ntwire-relay` (registering as a tenant)
 
