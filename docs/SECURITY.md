@@ -21,6 +21,33 @@ token-authenticated WebSocket fallback on the HTTPS endpoint. SSH keys and SSO
 (OIDC) logins are parallel, equally-trusted authentication methods; both
 produce the same opaque-bearer-token session.
 
+## Planned iOS/iPadOS Network Relay boundary
+
+The planned iOS/iPadOS client does not run a packet tunnel or repurpose a
+background mode. It configures Apple’s system Network Relay and therefore
+requires an optional MASQUE gateway before it can carry any ntwire traffic.
+The gateway must authenticate every relay flow with a dedicated, short-lived,
+revocable mobile relay credential and map it only to a server-authorized grant;
+it must not accept a raw ntwire bearer token as a durable relay password or
+turn a granted fixed-target tunnel into arbitrary proxy access. The existing
+server remains authoritative for authentication, grants, expiry, and
+revocation.
+
+iOS OIDC refresh/session credentials, SSH key material, WireGuard material,
+and TLS pins belong in Keychain. Do not put them in `UserDefaults`, relay
+preferences, plaintext files, logs, metrics, support exports, or source
+control. Native HTTPS networking must retain system certificate validation and
+then enforce ntwire’s explicit TOFU/pin policy; a changed pin fails closed
+pending an explicit user decision. An App Store application is a public OIDC
+client and must not embed an IdP client secret.
+
+The detailed platform constraints and proposed gateway boundary are in
+[IOS.md](IOS.md). The server-side HTTP/2 CONNECT gateway is implemented, but
+the iOS-side Network Relay identity packaging and real-device interoperability
+gate remains before an iOS data plane can be enabled. The gateway’s MASQUE
+target mapping, credential rotation, revocation, and real-device behavior have
+been proven.
+
 ## Implemented protections
 
 - Client requests are signed over a byte-exact canonical payload.

@@ -1,0 +1,16 @@
+name: iOS
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  swift-core:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios/NTWire
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build unsigned iOS simulator app
+        run: xcodebuild -project NTWire.xcodeproj -scheme NTWire -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+      - name: Test Swift control-plane core
+        run: swift test --scratch-path "$RUNNER_TEMP/ntwire-swift-build"
