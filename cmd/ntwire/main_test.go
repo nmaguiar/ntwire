@@ -400,3 +400,50 @@ func TestCompletionCmd(t *testing.T) {
 		})
 	}
 }
+
+func TestPacURLFor(t *testing.T) {
+	cases := []struct {
+		server   string
+		target   string
+		isIOS    bool
+		expected string
+	}{
+		{"example.com:8443", "", false, "https://example.com:8443/proxy.pac"},
+		{"https://example.com:8443/", "egress", false, "https://example.com:8443/proxy-egress.pac"},
+		{"http://127.0.0.1:8080", "mytarget", false, "http://127.0.0.1:8080/proxy-mytarget.pac"},
+		{"example.com:8443", "", true, "https://example.com:8443/proxy-ios.pac"},
+		{"https://example.com:8443/", "egress", true, "https://example.com:8443/proxy-ios-egress.pac"},
+		{"http://127.0.0.1:8080", "mytarget", true, "http://127.0.0.1:8080/proxy-ios-mytarget.pac"},
+	}
+
+	for _, c := range cases {
+		got := pacURLFor(c.server, c.target, c.isIOS)
+		if got != c.expected {
+			t.Errorf("pacURLFor(%q, %q, %v) = %q, want %q", c.server, c.target, c.isIOS, got, c.expected)
+		}
+	}
+}
+
+func TestListEntry_JSONShapeWithPACURL(t *testing.T) {
+	e := listEntry{
+		Name:        "egress",
+		VirtualPort: 10080,
+		LocalPort:   10080,
+		Connected:   true,
+		Description: "SOCKS Proxy",
+		PACURL:      "https://server.example/proxy-egress.pac",
+		PACURLiOS:   "https://server.example/proxy-ios-egress.pac",
+	}
+
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	dataStr := string(data)
+	if !strings.Contains(dataStr, `"pac_url":"https://server.example/proxy-egress.pac"`) {
+		t.Errorf("expected pac_url in JSON output: %s", dataStr)
+	}
+	if !strings.Contains(dataStr, `"pac_url_ios":"https://server.example/proxy-ios-egress.pac"`) {
+		t.Errorf("expected pac_url_ios in JSON output: %s", dataStr)
+	}
+}

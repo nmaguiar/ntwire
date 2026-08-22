@@ -17,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/oidcclient"
+	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -1630,6 +1631,9 @@ type WebTunnel struct {
 	Description  string      `json:"description"`
 	LocalAddress string      `json:"local_address"`
 	Stats        TunnelStats `json:"stats"`
+	TargetHint   string      `json:"target_hint,omitempty"`
+	PACURL       string      `json:"pac_url,omitempty"`
+	PACURLiOS    string      `json:"pac_url_ios,omitempty"`
 }
 
 // WebStatus is the JSON reported by a running connect process's local
@@ -1686,6 +1690,9 @@ type ListenerState struct {
 	Description  string      `json:"description"`
 	LocalAddress string      `json:"local_address"`
 	Stats        TunnelStats `json:"stats"`
+	TargetHint   string      `json:"target_hint,omitempty"`
+	PACURL       string      `json:"pac_url,omitempty"`
+	PACURLiOS    string      `json:"pac_url_ios,omitempty"`
 }
 
 // TransportState reports both a stable route identifier and human-readable
@@ -1734,7 +1741,12 @@ func (c *Connection) State() ConnectionState {
 	tunnels := make([]ListenerState, 0, len(c.tunnels))
 	for _, t := range c.tunnels {
 		g := granted[t.name]
-		tunnels = append(tunnels, ListenerState{Name: t.name, VirtualPort: t.virtualPort, Description: g.Description, LocalAddress: t.localAddr, Stats: t.stats()})
+		ls := ListenerState{Name: t.name, VirtualPort: t.virtualPort, Description: g.Description, LocalAddress: t.localAddr, Stats: t.stats(), TargetHint: g.TargetHint}
+		if g.TargetHint == "socks" {
+			ls.PACURL = pac.URLForPlatform(c.base, t.name, false)
+			ls.PACURLiOS = pac.URLForPlatform(c.base, t.name, true)
+		}
+		tunnels = append(tunnels, ls)
 	}
 	transport := connectionTransport(c.transport.Load())
 	state := ConnectionState{
@@ -1780,8 +1792,12 @@ func (c *Connection) webStatus() WebStatus {
 	granted := c.grantedByName()
 	tunnels := make([]WebTunnel, 0, len(c.tunnels))
 	for _, t := range c.tunnels {
-		wt := WebTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats()}
-		wt.Description = granted[t.name].Description
+		g := granted[t.name]
+		wt := WebTunnel{Name: t.name, VirtualPort: t.virtualPort, LocalAddress: t.localAddr, Stats: t.stats(), Description: g.Description, TargetHint: g.TargetHint}
+		if g.TargetHint == "socks" {
+			wt.PACURL = pac.URLForPlatform(c.base, t.name, false)
+			wt.PACURLiOS = pac.URLForPlatform(c.base, t.name, true)
+		}
 		tunnels = append(tunnels, wt)
 	}
 	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}

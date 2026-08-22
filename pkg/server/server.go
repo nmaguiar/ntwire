@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/oidcauth"
+	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -102,7 +103,177 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/punch", s.punch)
 	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	m.HandleFunc("POST /v1/masque/certificate", s.masqueCertificate)
-	return m
+	m.HandleFunc("GET /proxy.pac", func(w http.ResponseWriter, r *http.Request) {
+		s.servePAC(w, r, "", false)
+	})
+	m.HandleFunc("GET /proxy-ios.pac", func(w http.ResponseWriter, r *http.Request) {
+		s.servePAC(w, r, "", true)
+	})
+	m.HandleFunc("GET /proxy.ios.pac", func(w http.ResponseWriter, r *http.Request) {
+		s.servePAC(w, r, "", true)
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path != "/proxy.pac" && r.URL.Path != "/proxy-ios.pac" && r.URL.Path != "/proxy.ios.pac" && strings.HasPrefix(r.URL.Path, "/proxy") && strings.HasSuffix(r.URL.Path, ".pac") {
+			s.handleNamedPAC(w, r)
+			return
+		}
+		m.ServeHTTP(w, r)
+	})
+}
+
+// ServerTunnelIP returns the server's netstack IPv4 address within network.tunnel_cidr.
+func (s *Server) ServerTunnelIP() string {
+	s.mu.Lock()
+	cidr := s.Config.Network.TunnelCIDR
+	s.mu.Unlock()
+	if cidr == "" {
+		cidr = "100.64.0.0/16"
+	}
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return "100.64.0.1"
+	}
+	return prefix.Addr().Next().String()
+}
+
+func (s *Server) socksTunnels() []TunnelConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []TunnelConfig
+	for _, t := range s.Config.Tunnels {
+		if t.IsSocks() {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (s *Server) findSocksTunnel(name string) (TunnelConfig, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.Config.Tunnels {
+		if t.IsSocks() && t.Name == name {
+			return t, true
+		}
+	}
+	return TunnelConfig{}, false
+}
+
+// SocksTargets returns protocol descriptor objects for all configured SOCKS egress tunnels.
+func (s *Server) SocksTargets() []protocol.SocksTarget {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tunnelIP := s.ServerTunnelIP()
+	var out []protocol.SocksTarget
+	for _, t := range s.Config.Tunnels {
+		if t.IsSocks() {
+			st := protocol.SocksTarget{
+				Name:        t.Name,
+				LocalPort:   t.LocalPort,
+				VirtualPort: t.VirtualPort,
+				TunnelIP:    tunnelIP,
+			}
+			if t.Socks != nil {
+				st.DomainFilters = append([]string(nil), t.Socks.DomainFilters...)
+				st.Filters = append([]string(nil), t.Socks.Filters...)
+			}
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+func (s *Server) handleNamedPAC(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Path
+	if !strings.HasSuffix(path, ".pac") {
+		http.NotFound(w, r)
+		return
+	}
+	raw := strings.TrimSuffix(path, ".pac")
+	var name string
+	isIOS := false
+	if strings.HasPrefix(raw, "/proxy-ios-") {
+		isIOS = true
+		name = strings.TrimPrefix(raw, "/proxy-ios-")
+	} else if strings.HasPrefix(raw, "/proxy.ios-") {
+		isIOS = true
+		name = strings.TrimPrefix(raw, "/proxy.ios-")
+	} else if strings.HasPrefix(raw, "/proxy-") {
+		name = strings.TrimPrefix(raw, "/proxy-")
+	} else {
+		http.NotFound(w, r)
+		return
+	}
+
+	if name == "" {
+		http.NotFound(w, r)
+		return
+	}
+	s.servePAC(w, r, name, isIOS)
+}
+
+func (s *Server) servePAC(w http.ResponseWriter, r *http.Request, targetName string, isIOS bool) {
+	if !isIOS && (r.URL.Query().Has("ios") || r.URL.Query().Get("platform") == "ios") {
+		isIOS = true
+	}
+	platform := "desktop"
+	if isIOS {
+		platform = "ios"
+	}
+	s.observe("pac_served", platform)
+
+	socksTunnels := s.socksTunnels()
+	if len(socksTunnels) == 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("no socks egress tunnels configured\n"))
+		return
+	}
+
+	var target TunnelConfig
+	if targetName == "" {
+		target = socksTunnels[0]
+	} else {
+		found, ok := s.findSocksTunnel(targetName)
+		if !ok {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprintf(w, "socks target %q not found\n", targetName)
+			return
+		}
+		target = found
+	}
+
+	var host string
+	var port int
+	if isIOS {
+		host = s.ServerTunnelIP()
+		port = target.VirtualPort
+		if port <= 0 {
+			port = target.LocalPort
+		}
+	} else {
+		host = "127.0.0.1"
+		port = target.LocalPort
+		if port <= 0 {
+			port = target.VirtualPort
+		}
+	}
+	if port <= 0 {
+		port = 10080
+	}
+
+	var domainFilters []string
+	var ipFilters []string
+	if target.Socks != nil {
+		domainFilters = target.Socks.DomainFilters
+		ipFilters = target.Socks.Filters
+	}
+
+	pacScript := pac.Generate(host, port, domainFilters, ipFilters)
+	w.Header().Set("Content-Type", pac.ContentType)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(pacScript))
 }
 
 func (s *Server) dashboardAllowed(r *http.Request) bool {
@@ -132,6 +303,8 @@ type dashboardTunnel struct {
 	LatencyMillis uint64               `json:"latency_millis"`
 	Reconnections uint64               `json:"reconnections"`
 	Stats         dashboardTunnelStats `json:"stats"`
+	PACURL        string               `json:"pac_url,omitempty"`
+	PACURLiOS     string               `json:"pac_url_ios,omitempty"`
 }
 
 func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
@@ -147,14 +320,30 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
-			out = append(out, dashboardTunnel{SessionID: session.ID, Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()})
+			dt := dashboardTunnel{SessionID: session.ID, Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()}
+			if config.IsSocks() {
+				dt.PACURL = pac.PathForPlatform(tunnel.Name, false)
+				dt.PACURLiOS = pac.PathForPlatform(tunnel.Name, true)
+			}
+			out = append(out, dt)
+		}
+	}
+	var pacURLs []string
+	socksT := s.socksTunnels()
+	if len(socksT) > 0 {
+		pacURLs = append(pacURLs, pac.PathForPlatform("", false), pac.PathForPlatform("", true))
+		if len(socksT) > 1 {
+			for _, st := range socksT {
+				pacURLs = append(pacURLs, pac.PathForPlatform(st.Name, false), pac.PathForPlatform(st.Name, true))
+			}
 		}
 	}
 	write(w, http.StatusOK, struct {
 		Sessions             int               `json:"sessions"`
 		Tunnels              []dashboardTunnel `json:"tunnels"`
 		SecurityCapabilities []string          `json:"security_capabilities"`
-	}{Sessions: len(sessions), Tunnels: out, SecurityCapabilities: s.SecurityCapabilities()})
+		PACURLs              []string          `json:"pac_urls,omitempty"`
+	}{Sessions: len(sessions), Tunnels: out, SecurityCapabilities: s.SecurityCapabilities(), PACURLs: pacURLs})
 }
 
 func (s *Server) tunnelConfig(name string) (TunnelConfig, bool) {

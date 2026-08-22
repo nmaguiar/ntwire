@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
+	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
@@ -26,8 +28,14 @@ func main() {
 		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "list" {
+		runList(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
+		return
+	}
 
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
+	listFlag := flag.Bool("list", false, "list configured server tunnels and proxy PAC endpoints and exit")
+	jsonFlag := flag.Bool("json", false, "output in JSON format (used with -list)")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	generateRelayKey := flag.String("generate-relay-key", "", "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit")
@@ -50,6 +58,7 @@ func main() {
 			Flags:   ui.FlagsOf(flag.CommandLine),
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
+				"ntwire-server list -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -print-wireguard-config -config ntwire.yaml",
 				"ntwire-server -print-wireguard-conf -config ntwire.yaml > client.conf",
@@ -64,6 +73,16 @@ func main() {
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(buildinfo.String())
+		return
+	}
+	if *listFlag {
+		u := ui.New(os.Stdout, os.Stderr, *noColor)
+		c, err := server.LoadConfig(*config)
+		if err != nil {
+			u.Errorf("configuration error: %v", err)
+			os.Exit(2)
+		}
+		printServerList(c, *jsonFlag, u)
 		return
 	}
 	if *completionShell != "" {
@@ -421,5 +440,147 @@ func runCompletion(args []string, u *ui.UI) {
 	if err := completion.Generate(sh, completion.ServerCommand(), u.Out); err != nil {
 		u.Errorf("completion: %v", err)
 		os.Exit(1)
+	}
+}
+
+type serverListEntry struct {
+	Name        string   `json:"name"`
+	Target      string   `json:"target"`
+	VirtualPort int      `json:"virtual_port"`
+	LocalPort   int      `json:"local_port,omitempty"`
+	Allow       []string `json:"allow,omitempty"`
+	Description string   `json:"description,omitempty"`
+	PACURL      string   `json:"pac_url,omitempty"`
+	PACURLiOS   string   `json:"pac_url_ios,omitempty"`
+}
+
+type serverListOutput struct {
+	Tunnels []serverListEntry `json:"tunnels"`
+	PACURLs []string          `json:"pac_urls,omitempty"`
+}
+
+func runList(args []string, u *ui.UI) {
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	config := fs.String("config", "ntwire.yaml", "server configuration file")
+	jsonOut := fs.Bool("json", false, "output in JSON format")
+	noColor := fs.Bool("no-color", false, "disable ANSI colors (or set NO_COLOR)")
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire-server list",
+			Tagline:  "show configured server tunnels and proxy PAC endpoints",
+			Flags:    ui.FlagsOf(fs),
+			Examples: []string{"ntwire-server list", "ntwire-server list -config ntwire.yaml", "ntwire-server list --json"},
+		}.Fprint(os.Stderr, u)
+	}
+	_ = fs.Parse(args)
+	if *noColor {
+		u = ui.New(os.Stdout, os.Stderr, true)
+	}
+
+	c, err := server.LoadConfig(*config)
+	if err != nil {
+		u.Errorf("configuration error: %v", err)
+		os.Exit(2)
+	}
+	printServerList(c, *jsonOut, u)
+}
+
+func printServerList(c server.Config, jsonOut bool, u *ui.UI) {
+	if len(c.Tunnels) == 0 {
+		if jsonOut {
+			fmt.Fprintln(u.Out, `{"tunnels":[]}`)
+			return
+		}
+		u.WarnOut("no tunnels configured in server configuration")
+		return
+	}
+
+	var socksTunnels []server.TunnelConfig
+	for _, t := range c.Tunnels {
+		if t.IsSocks() {
+			socksTunnels = append(socksTunnels, t)
+		}
+	}
+
+	var pacURLs []string
+	if len(socksTunnels) > 0 {
+		pacURLs = append(pacURLs, pac.PathForPlatform("", false), pac.PathForPlatform("", true))
+		if len(socksTunnels) > 1 {
+			for _, st := range socksTunnels {
+				pacURLs = append(pacURLs, pac.PathForPlatform(st.Name, false), pac.PathForPlatform(st.Name, true))
+			}
+		}
+	}
+
+	if jsonOut {
+		entries := make([]serverListEntry, 0, len(c.Tunnels))
+		for _, t := range c.Tunnels {
+			e := serverListEntry{
+				Name:        t.Name,
+				Target:      t.Target,
+				VirtualPort: t.VirtualPort,
+				LocalPort:   t.LocalPort,
+				Allow:       t.Allow,
+				Description: t.Description,
+			}
+			if t.IsSocks() {
+				e.PACURL = pac.PathForPlatform(t.Name, false)
+				e.PACURLiOS = pac.PathForPlatform(t.Name, true)
+			}
+			entries = append(entries, e)
+		}
+		enc := json.NewEncoder(u.Out)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(serverListOutput{Tunnels: entries, PACURLs: pacURLs})
+		return
+	}
+
+	t := ui.Table{
+		Columns: []ui.Column{
+			{Header: "NAME", Width: 20, Align: "left"},
+			{Header: "TARGET", Width: 22, Align: "left"},
+			{Header: "PORT", Width: 6, Align: "right"},
+			{Header: "LOCAL", Width: 6, Align: "right"},
+			{Header: "ALLOW", Width: 22, Align: "left"},
+			{Header: "DESCRIPTION", Sep: "  "},
+		},
+	}
+	for _, tunnel := range c.Tunnels {
+		localPort := "-"
+		if tunnel.LocalPort != 0 {
+			localPort = fmt.Sprintf("%d", tunnel.LocalPort)
+		}
+		allowStr := "-"
+		if len(tunnel.Allow) > 0 {
+			allowStr = strings.Join(tunnel.Allow, ", ")
+		}
+		t.Rows = append(t.Rows, []string{
+			tunnel.Name,
+			tunnel.Target,
+			fmt.Sprintf("%d", tunnel.VirtualPort),
+			localPort,
+			allowStr,
+			tunnel.Description,
+		})
+	}
+	fmt.Fprint(u.Out, t.Render(u))
+
+	if len(socksTunnels) > 0 {
+		fmt.Fprintln(u.Out)
+		if len(socksTunnels) == 1 {
+			u.Info("Proxy PAC (Desktop): %s (or %s)", pac.PathForPlatform("", false), pac.PathForPlatform(socksTunnels[0].Name, false))
+			u.Info("Proxy PAC (iOS):     %s (or %s)", pac.PathForPlatform("", true), pac.PathForPlatform(socksTunnels[0].Name, true))
+		} else {
+			u.Info("Proxy PAC URLs (Desktop):")
+			u.Info("  default: %s", pac.PathForPlatform("", false))
+			for _, st := range socksTunnels {
+				u.Info("  %s: %s", st.Name, pac.PathForPlatform(st.Name, false))
+			}
+			u.Info("Proxy PAC URLs (iOS):")
+			u.Info("  default: %s", pac.PathForPlatform("", true))
+			for _, st := range socksTunnels {
+				u.Info("  %s: %s", st.Name, pac.PathForPlatform(st.Name, true))
+			}
+		}
 	}
 }
