@@ -179,8 +179,6 @@ and deterministic WireGuard peer routing; until then use Kubernetes restart,
 anti-affinity, persistent identity/certificate storage, and a PodDisruption-
 Budget to improve availability of the single active server.
 
-## Relay-mediated UDP forwarding
-
 ## Native WireGuard UDP endpoints
 
 An ordinary official WireGuard client cannot use ntwire's token-bound
@@ -204,6 +202,36 @@ route handshake/transport responses to multiple clients; it has no WireGuard
 private key and cannot decrypt payloads. Association is invalidated when the
 server registration is replaced or disconnects. This listener is opt-in and
 does not alter `listen.udp_relay` or its token-binding security model.
+
+This tier is opt-in on both sides: the relay needs `registrations[].native_wireguard.listen`
+above, and the server needs `native_wireguard.enabled: true` (see
+[NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md)) — the association frame is never
+sent otherwise. An official client's profile changes in exactly one field
+from the direct-listener case: `Endpoint` becomes the relay's wildcard
+hostname and this tenant's `native_wireguard.listen` port, e.g.
+`home.relay.example.com:51821`. `PublicKey` still pins the *server's*
+WireGuard key, unchanged — the relay only ever forwards opaque datagrams and
+never holds a WireGuard key of its own. `Address` and `AllowedIPs` still come
+from `network.tunnel_cidr` and the peer's `tunnel_ip` on the server, exactly
+as in the direct case:
+
+```ini
+[Interface]
+PrivateKey = <client private key>
+Address = 100.64.0.10/32
+[Peer]
+PublicKey = <server public key>
+Endpoint = home.relay.example.com:51821
+AllowedIPs = 100.64.0.0/16
+PersistentKeepalive = 25
+```
+
+Because this listener is selected by UDP port rather than by the TLS SNI
+`listen.public` uses for `wss://name.relay.example.com`, one relay port
+serves exactly one tenant — hence the duplicate-listener rejection in the
+relay's config validation.
+
+## Relay-mediated UDP forwarding
 
 Relaying WireGuard over `/v1/wg`'s WebSocket fallback works everywhere, but it
 means every packet crosses the relay twice (client→relay, relay→server) over

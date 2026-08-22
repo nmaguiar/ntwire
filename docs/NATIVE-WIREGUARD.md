@@ -31,4 +31,4 @@ PersistentKeepalive = 25
 
 Use the narrow netstack/service range required by ntwire; `AllowedIPs` is WireGuard cryptographic routing, not an ntwire destination authorization rule. Do not use `0.0.0.0/0` or `::/0` unless full routing is explicitly intended. iOS, macOS, Windows, Android, and Linux official clients import this ordinary profile.
 
-Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`; native relay endpoint forwarding is not yet available.
+Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`. Behind a relay (no inbound UDP path to the server), a registered server can still admit native peers via a relay-mediated UDP endpoint — see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints).
