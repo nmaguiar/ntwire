@@ -49,6 +49,14 @@ ntwire-server -config ntwire.yaml -print-wireguard-qr
 
 # Generate configuration for a specific peer
 ntwire-server -config ntwire.yaml -print-wireguard-config -wireguard-peer iphone
+
+# From a running Docker container (e.g. ntwire-server):
+docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
+docker exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr -wireguard-peer iphone
+docker exec ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
+
+# Or via Docker Compose:
+docker compose -f deploy/docker/docker-compose.yml exec -it ntwire-server /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-qr
 ```
 
 Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`. Behind a relay (no inbound UDP path to the server), a registered server can still admit native peers via a relay-mediated UDP endpoint — see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints).
