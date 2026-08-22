@@ -247,21 +247,32 @@ const (
 	ErrorUDPRelayTenantAtCapacity = "udp_relay_tenant_at_capacity"
 )
 
+// SocksTarget describes an embedded SOCKS proxy target advertised by a registered server.
+type SocksTarget struct {
+	Name          string   `json:"name"`
+	LocalPort     int      `json:"local_port,omitempty"`
+	VirtualPort   int      `json:"virtual_port,omitempty"`
+	TunnelIP      string   `json:"tunnel_ip,omitempty"`
+	DomainFilters []string `json:"domain_filters,omitempty"`
+	Filters       []string `json:"filters,omitempty"`
+}
+
 // RelayRegisterRequest is sent by an ntwire-server over its long-lived
 // control connection to claim a tenant name on the relay. It authenticates
 // with the same sshkey primitives as AuthRequest, but under a distinct
 // domain separator (see RelayRegisterPayload) because it binds a Name field
 // that SigningPayload does not cover.
 type RelayRegisterRequest struct {
-	Version              int      `json:"version"`
-	PublicKey            string   `json:"public_key"` // authorized_keys line
-	Name                 string   `json:"name"`       // requested tenant label
-	Timestamp            string   `json:"timestamp"`
-	Nonce                string   `json:"nonce"`
-	Signature            string   `json:"signature"`
-	ServerVersion        string   `json:"server_version,omitempty"`
-	Capabilities         []string `json:"capabilities,omitempty"`
-	RequiredCapabilities []string `json:"required_capabilities,omitempty"`
+	Version              int           `json:"version"`
+	PublicKey            string        `json:"public_key"` // authorized_keys line
+	Name                 string        `json:"name"`       // requested tenant label
+	Timestamp            string        `json:"timestamp"`
+	Nonce                string        `json:"nonce"`
+	Signature            string        `json:"signature"`
+	ServerVersion        string        `json:"server_version,omitempty"`
+	Capabilities         []string      `json:"capabilities,omitempty"`
+	RequiredCapabilities []string      `json:"required_capabilities,omitempty"`
+	SocksTargets         []SocksTarget `json:"socks_targets,omitempty"`
 }
 
 // RelayRegisterResponse answers a RelayRegisterRequest. Name is the

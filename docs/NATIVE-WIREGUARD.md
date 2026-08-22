@@ -64,5 +64,18 @@ kubectl exec -it deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/
 kubectl exec deployment/ntwire-server -- /ntwire-server -config /etc/ntwire/ntwire.yaml -print-wireguard-conf > client.conf
 ```
 
+### Using SOCKS egress with Proxy Auto-Configuration (PAC) on iOS
+
+When native WireGuard peers have access to a `target: socks` tunnel, iOS devices can route Kubernetes internal services, internal DNS names, and private network ranges through the WireGuard tunnel automatically:
+
+1. **Connect WireGuard:** Import the QR code or `.conf` profile in the official WireGuard app and activate the tunnel.
+2. **Configure PAC in iOS Settings:**
+   - Open **Settings** → **Wi-Fi** (or **Cellular** / mobile data profile).
+   - Tap the **(i)** info icon next to your active network connection.
+   - Scroll down to **HTTP Proxy** / **Configure Proxy** and choose **Automatic**.
+   - Enter the iOS PAC URL: `https://<server>:8443/proxy-ios.pac` (or `/proxy-ios-<target>.pac`, or via relay `https://<tenant>.<relay-domain>/proxy-ios.pac`).
+3. **Browse:** Safari and iOS apps will route internal destinations (e.g. `*.svc`, `*.cluster.local`, `*.internal`, `10.0.0.0/8`) through the SOCKS proxy at `100.64.0.1:<virtual_port>` over the WireGuard tunnel, while standard internet traffic goes direct.
+
 Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`. Behind a relay (no inbound UDP path to the server), a registered server can still admit native peers via a relay-mediated UDP endpoint — see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints).
+
 

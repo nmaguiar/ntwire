@@ -101,3 +101,71 @@ func TestServerCompletion(t *testing.T) {
 		})
 	}
 }
+
+func TestPrintServerList_TableAndJSON(t *testing.T) {
+	c := server.Config{
+		Tunnels: []server.TunnelConfig{
+			{
+				Name:        "reports",
+				Target:      "127.0.0.1:8080",
+				VirtualPort: 18080,
+				LocalPort:   8080,
+				Allow:       []string{"*"},
+				Description: "Reports UI",
+			},
+			{
+				Name:        "egress",
+				Target:      "socks",
+				VirtualPort: 10080,
+				LocalPort:   10080,
+				Allow:       []string{"group:eng"},
+				Description: "Internal SOCKS",
+				Socks:       &server.SocksConfig{},
+			},
+			{
+				Name:        "mytarget",
+				Target:      "socks",
+				VirtualPort: 10081,
+				LocalPort:   10081,
+				Allow:       []string{"group:eng"},
+				Description: "Custom SOCKS",
+				Socks:       &server.SocksConfig{},
+			},
+		},
+	}
+
+	// 1. Table format
+	var stdoutTable, stderrTable bytes.Buffer
+	uTable := ui.New(&stdoutTable, &stderrTable, true)
+	printServerList(c, false, uTable)
+
+	outTable := stdoutTable.String()
+	if !strings.Contains(outTable, "reports") || !strings.Contains(outTable, "egress") || !strings.Contains(outTable, "mytarget") {
+		t.Errorf("table output missing tunnels: %s", outTable)
+	}
+	if !strings.Contains(outTable, "Proxy PAC URLs (Desktop):") || !strings.Contains(outTable, "Proxy PAC URLs (iOS):") {
+		t.Errorf("table output missing Proxy PAC URLs: %s", outTable)
+	}
+	if !strings.Contains(outTable, "/proxy.pac") || !strings.Contains(outTable, "/proxy-mytarget.pac") || !strings.Contains(outTable, "/proxy-ios.pac") {
+		t.Errorf("table output missing PAC paths: %s", outTable)
+	}
+
+	// 2. JSON format
+	var stdoutJSON, stderrJSON bytes.Buffer
+	uJSON := ui.New(&stdoutJSON, &stderrJSON, true)
+	printServerList(c, true, uJSON)
+
+	outJSON := stdoutJSON.String()
+	if !strings.Contains(outJSON, `"pac_url": "/proxy-egress.pac"`) {
+		t.Errorf("JSON output missing egress pac_url: %s", outJSON)
+	}
+	if !strings.Contains(outJSON, `"pac_url_ios": "/proxy-ios-egress.pac"`) {
+		t.Errorf("JSON output missing egress pac_url_ios: %s", outJSON)
+	}
+	if !strings.Contains(outJSON, `"pac_url": "/proxy-mytarget.pac"`) {
+		t.Errorf("JSON output missing mytarget pac_url: %s", outJSON)
+	}
+	if !strings.Contains(outJSON, `"/proxy.pac"`) || !strings.Contains(outJSON, `"/proxy-ios.pac"`) {
+		t.Errorf("JSON output missing pac_urls list: %s", outJSON)
+	}
+}

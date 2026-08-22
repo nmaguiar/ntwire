@@ -17,6 +17,10 @@ The reference server serves HTTPS.
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
+| `GET /proxy.pac` | None | Proxy Auto-Configuration (PAC) script for the default SOCKS egress tunnel (Desktop / localhost) |
+| `GET /proxy-<target>.pac` | None | Proxy Auto-Configuration (PAC) script for a named SOCKS egress tunnel (Desktop / localhost) |
+| `GET /proxy-ios.pac` | None | Proxy Auto-Configuration (PAC) script for the default SOCKS egress tunnel on iOS (server tunnel IP) |
+| `GET /proxy-ios-<target>.pac` | None | Proxy Auto-Configuration (PAC) script for a named SOCKS egress tunnel on iOS (server tunnel IP) |
 
 `GET /v1/info` returns:
 

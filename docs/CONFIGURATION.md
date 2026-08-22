@@ -201,6 +201,34 @@ SOCKS BIND is separately disabled by default even when CONNECT and
 needs legacy active-mode behavior: BIND opens a temporary host-network
 listener, so the peer is not limited to the WireGuard tunnel.
 
+### Proxy Auto-Configuration (PAC)
+
+When one or more `target: socks` tunnels are configured, `ntwire-server` and
+`ntwire-relay` serve unauthenticated Proxy Auto-Configuration (.pac) files:
+
+- **Desktop (Localhost):**
+  - `/proxy.pac` — default PAC script targeting `127.0.0.1:<local_port>` for the primary SOCKS tunnel.
+  - `/proxy-<target>.pac` — PAC script targeting `127.0.0.1:<local_port>` for a specific named SOCKS tunnel (e.g. `/proxy-egress.pac`).
+- **iOS & Mobile (WireGuard Netstack):**
+  - `/proxy-ios.pac` (or `/proxy.ios.pac`, or `/proxy.pac?ios`) — default PAC script targeting the server's WireGuard netstack IP (e.g. `100.64.0.1:<virtual_port>`).
+  - `/proxy-ios-<target>.pac` (or `/proxy-<target>.pac?ios`) — PAC script for a specific named SOCKS tunnel on iOS.
+
+These endpoints require no authentication so that OS proxy auto-config settings
+(iOS, macOS, Windows, Linux, Android) and browsers can fetch them directly.
+On iOS, because the official WireGuard app routes network traffic through the WireGuard
+VPN tunnel interface rather than binding local listeners on `127.0.0.1`, the iOS PAC
+variant routes proxied traffic directly to the server's WireGuard netstack IP (`network.tunnel_cidr`,
+default `100.64.0.1`) on the tunnel's virtual port.
+
+The generated PAC files include pattern matching for Kubernetes internal services
+(`*.svc`, `*.svc.cluster.local`, `*.cluster.local`), local domain extensions
+(`*.local`, `*.internal`, `*.lan`, `*.home`, `*.corp`), plain hostnames, and RFC 1918 /
+CGNAT private address ranges, routing matched destinations through SOCKS and sending
+other traffic `DIRECT`.
+
+PAC URLs can be viewed via `ntwire-server list`, `ntwire list`, the server
+web dashboard, and the client status UI.
+
 ## Tunnel local address and port
 
 `local_port` and `local_host` are preferences for the loopback listener

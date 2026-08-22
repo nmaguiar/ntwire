@@ -69,6 +69,15 @@ func NewRelayPool(cfg RelayConfig, log *slog.Logger) (*RelayPool, error) {
 
 func (p *RelayPool) Listener() net.Listener { return p.listener }
 
+// SetSocksTargets propagates the server's SOCKS egress targets to every pool member.
+func (p *RelayPool) SetSocksTargets(targets []protocol.SocksTarget) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, m := range p.members {
+		m.agent.SetSocksTargets(targets)
+	}
+}
+
 // Run keeps all members active until ctx is canceled.
 func (p *RelayPool) Run(ctx context.Context) {
 	var wg sync.WaitGroup

@@ -56,3 +56,19 @@ HTTPS_PROXY=socks5://{{.LocalHost}}:{{.LocalPort}} kubectl get nodes
 This still talks TLS end to end to the real API server, so normal
 certificate verification applies -- unlike a direct forwarding tunnel to the
 API server, no `--tls-server-name` override is needed here.
+
+### Automatic Proxy Configuration (PAC)
+
+Instead of setting manual proxy settings on every app, configure your operating system or browser with the Proxy Auto-Configuration (.pac) URL.
+
+- **Desktop (macOS / Windows / Linux / Browsers):**
+  - Use PAC URL: `https://<server>:8443/proxy.pac` (or `/proxy-{{.Name}}.pac`)
+  - **macOS:** System Settings → Network → (Select Interface) → Details → Proxies → Enable **Automatic Proxy Configuration** → enter the PAC URL.
+  - **Windows:** Settings → Network & Internet → Proxy → Automatic proxy setup → enable **Use setup script** → enter the PAC URL.
+  - **Firefox:** Settings → General → Network Settings → **Automatic proxy configuration URL** → enter the PAC URL.
+
+- **iOS / iPadOS (with official WireGuard app connected):**
+  - Use PAC URL: `https://<server>:8443/proxy-ios.pac` (or `/proxy-ios-{{.Name}}.pac`)
+  - **iOS:** Settings → Wi-Fi (or Cellular) → tap your network's **(i)** info icon → **Configure Proxy** → select **Automatic** → enter the iOS PAC URL.
+  - Safari and iOS apps will route internal domains (`*.svc`, `*.cluster.local`, `*.local`, `10.0.0.0/8`, etc.) through the WireGuard SOCKS proxy at `100.64.0.1:{{.VirtualPort}}` and access external internet sites directly.
+
