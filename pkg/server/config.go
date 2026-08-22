@@ -5,6 +5,7 @@ import (
 	"gopkg.in/yaml.v3"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,11 +47,29 @@ type Config struct {
 	} `yaml:"network"`
 	Authorizer AuthorizerConfig `yaml:"authorizer"`
 	Relay      RelayConfig      `yaml:"relay"`
+	MASQUE     MASQUEConfig     `yaml:"masque"`
 	Tunnels    []TunnelConfig   `yaml:"tunnels"`
 	Log        logging.Config   `yaml:"log"`
 	Audit      struct {
 		LogFile string `yaml:"log_file"`
 	} `yaml:"audit"`
+}
+
+// MASQUEConfig configures the opt-in Network Relay gateway. It is deliberately
+// independent from the existing WireGuard and WebSocket data planes.
+type MASQUEConfig struct {
+	Enabled        bool          `yaml:"enabled"`
+	Listen         string        `yaml:"listen"`
+	HTTP2URL       string        `yaml:"http2_url"`
+	HTTP3URL       string        `yaml:"http3_url"`
+	MatchDomains   []string      `yaml:"match_domains"`
+	ClientCAFile   string        `yaml:"client_ca_file"`
+	IssuerCertFile string        `yaml:"issuer_cert_file"`
+	IssuerKeyFile  string        `yaml:"issuer_key_file"`
+	CertificateTTL time.Duration `yaml:"certificate_ttl"`
+	// Tunnels maps a synthetic relay FQDN to one fixed ntwire tunnel name.
+	// There is deliberately no wildcard or arbitrary destination mapping.
+	Tunnels map[string]string `yaml:"tunnels"`
 }
 
 // RelayConfig configures ntwire-server to dial out to an ntwire-relay
@@ -480,6 +499,41 @@ func LoadConfig(path string) (Config, error) {
 	if c.Relay.ReconnectMax == 0 {
 		c.Relay.ReconnectMax = time.Minute
 	}
+	if c.MASQUE.Enabled {
+		if c.MASQUE.Listen == "" || c.MASQUE.HTTP2URL == "" {
+			return c, fmt.Errorf("masque.enabled requires masque.listen and masque.http2_url")
+		}
+		for _, raw := range []string{c.MASQUE.HTTP2URL, c.MASQUE.HTTP3URL} {
+			if raw == "" {
+				continue
+			}
+			u, err := url.Parse(raw)
+			if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+				return c, fmt.Errorf("masque relay URLs must be absolute https URLs without credentials, query, or fragment")
+			}
+		}
+		if c.MASQUE.HTTP3URL != "" {
+			return c, fmt.Errorf("masque.http3_url is not supported yet: the initial gateway serves HTTP/2 CONNECT only")
+		}
+		if len(c.MASQUE.MatchDomains) == 0 {
+			return c, fmt.Errorf("masque.enabled requires masque.match_domains")
+		}
+		for _, domain := range c.MASQUE.MatchDomains {
+			domain = strings.TrimSuffix(strings.TrimSpace(domain), ".")
+			if domain == "" || strings.ContainsAny(domain, "/:@") || net.ParseIP(domain) != nil {
+				return c, fmt.Errorf("invalid masque.match_domains entry %q", domain)
+			}
+		}
+		if c.MASQUE.ClientCAFile == "" || c.MASQUE.IssuerCertFile == "" || c.MASQUE.IssuerKeyFile == "" {
+			return c, fmt.Errorf("masque.enabled requires client_ca_file, issuer_cert_file, and issuer_key_file")
+		}
+		if c.MASQUE.CertificateTTL == 0 {
+			c.MASQUE.CertificateTTL = 15 * time.Minute
+		}
+		if c.MASQUE.CertificateTTL < time.Minute || c.MASQUE.CertificateTTL > 24*time.Hour {
+			return c, fmt.Errorf("masque.certificate_ttl must be between 1m and 24h")
+		}
+	}
 	seen := map[string]bool{}
 	for i := range c.Tunnels {
 		t := &c.Tunnels[i]
@@ -522,5 +576,33 @@ func LoadConfig(path string) (Config, error) {
 			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
 		}
 	}
+	if c.MASQUE.Enabled {
+		if len(c.MASQUE.Tunnels) == 0 {
+			return c, fmt.Errorf("masque.enabled requires masque.tunnels")
+		}
+		known := map[string]TunnelConfig{}
+		for _, tunnel := range c.Tunnels {
+			known[tunnel.Name] = tunnel
+		}
+		for domain, tunnelName := range c.MASQUE.Tunnels {
+			normalized := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".")
+			if normalized != domain || normalized == "" || !containsDomain(c.MASQUE.MatchDomains, normalized) {
+				return c, fmt.Errorf("masque.tunnels domain %q is not in masque.match_domains", domain)
+			}
+			tunnel, ok := known[tunnelName]
+			if !ok || tunnel.IsSocks() {
+				return c, fmt.Errorf("masque.tunnels domain %q requires a configured non-SOCKS tunnel", domain)
+			}
+		}
+	}
 	return c, nil
+}
+
+func containsDomain(domains []string, want string) bool {
+	for _, domain := range domains {
+		if strings.TrimSuffix(strings.ToLower(strings.TrimSpace(domain)), ".") == want {
+			return true
+		}
+	}
+	return false
 }
