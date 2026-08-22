@@ -30,6 +30,11 @@ const CapabilityMultipathV2 = "multipath-v2"
 // forwarding tier used by unmodified official clients.
 const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"
 
+// CapabilityMASQUERelayV1 advertises the optional, mTLS-authenticated
+// Network Relay gateway. It is intentionally separate from WireGuard and
+// WebSocket transport capabilities so legacy clients remain unchanged.
+const CapabilityMASQUERelayV1 = "masque-relay-v1"
+
 // ErrorUnsupportedCapability is returned when a peer explicitly requires a
 // capability the receiving peer cannot provide. Optional capability strings
 // remain additive and are deliberately ignored when unknown.
@@ -145,6 +150,32 @@ type InfoResponse struct {
 	// authentication. Omission is the legacy-compatible default.
 	RequiredCapabilities []string         `json:"required_capabilities,omitempty"`
 	OIDCIssuers          []OIDCIssuerInfo `json:"oidc_issuers,omitempty"`
+	MASQUE               *MASQUEInfo      `json:"masque,omitempty"`
+}
+
+// MASQUEInfo is published only by an enabled gateway. It contains no
+// credential, identity, target, or grant material.
+type MASQUEInfo struct {
+	HTTP2URL     string   `json:"http2_url,omitempty"`
+	HTTP3URL     string   `json:"http3_url,omitempty"`
+	MatchDomains []string `json:"match_domains"`
+}
+
+// MASQUECertificateRequest asks the control plane to sign a freshly generated
+// client key. The private key is deliberately never sent to ntwire-server.
+// Certificate issuance is available only when the optional MASQUE gateway is
+// enabled.
+type MASQUECertificateRequest struct {
+	CSRPEM string `json:"csr_pem"`
+}
+
+// MASQUECertificateResponse contains a short-lived client certificate and the
+// public issuing chain needed to configure an mTLS Network Relay identity.
+// It never contains a private key or the bearer session token.
+type MASQUECertificateResponse struct {
+	CertificatePEM string    `json:"certificate_pem"`
+	IssuerPEM      string    `json:"issuer_pem"`
+	ExpiresAt      time.Time `json:"expires_at"`
 }
 type Tunnel struct {
 	Name        string `json:"name"`

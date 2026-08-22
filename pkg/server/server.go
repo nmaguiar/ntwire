@@ -101,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	m.HandleFunc("POST /v1/punch", s.punch)
 	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
+	m.HandleFunc("POST /v1/masque/certificate", s.masqueCertificate)
 	return m
 }
 
@@ -195,7 +196,12 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 			issuers = append(issuers, protocol.OIDCIssuerInfo{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, Scopes: iss.Scopes, GroupsClaim: iss.GroupsClaim})
 		}
 	}
-	write(w, http.StatusOK, protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers})
+	info := protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers}
+	if s.Config.MASQUE.Enabled {
+		info.Capabilities = append(info.Capabilities, protocol.CapabilityMASQUERelayV1)
+		info.MASQUE = &protocol.MASQUEInfo{HTTP2URL: s.Config.MASQUE.HTTP2URL, HTTP3URL: s.Config.MASQUE.HTTP3URL, MatchDomains: append([]string(nil), s.Config.MASQUE.MatchDomains...)}
+	}
+	write(w, http.StatusOK, info)
 }
 
 // transportCapabilitiesAvailable describes transport features this server can

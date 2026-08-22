@@ -74,6 +74,19 @@ func main() {
 	}
 	s := server.New(c, slog.Default())
 	s.SetTLSManager(tlsManager)
+	if c.MASQUE.Enabled {
+		gateway, gatewayErr := server.NewMASQUEGateway(s, tlsManager.Config())
+		if gatewayErr != nil {
+			slog.Error("MASQUE gateway configuration error", "error", gatewayErr)
+			os.Exit(2)
+		}
+		go func() {
+			slog.Info("ntwire MASQUE gateway listening", "https", c.MASQUE.Listen)
+			if e := gateway.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+				slog.Error("MASQUE gateway stopped", "error", e)
+			}
+		}()
+	}
 	if c.Audit.LogFile != "" {
 		f, err := os.OpenFile(c.Audit.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if err != nil {

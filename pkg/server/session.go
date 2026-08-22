@@ -97,6 +97,24 @@ func (s *Sessions) Get(t string) (Session, bool) {
 	}
 	return v, true
 }
+
+// FindID returns a live session by its opaque ID. It is used only to bind a
+// short-lived client certificate to the session that obtained it.
+func (s *Sessions) FindID(id string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for token, v := range s.byToken {
+		if now.After(v.Expires) {
+			delete(s.byToken, token)
+			continue
+		}
+		if v.ID == id {
+			return v, true
+		}
+	}
+	return Session{}, false
+}
 func (s *Sessions) Delete(t string) { s.mu.Lock(); defer s.mu.Unlock(); delete(s.byToken, t) }
 
 // DeleteByID finds a live session by its ID (distinct from its bearer

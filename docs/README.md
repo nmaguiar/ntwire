@@ -12,6 +12,7 @@ links out to.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Release binaries, Docker Compose, and Kubernetes manifests |
 | [RELEASE.md](RELEASE.md) | Release-readiness checks and sign-off record |
 | [GUI.md](GUI.md) | `ntwire-gui`: the tray/menu-bar client, its two build modes, profile storage, and autostart |
+| [IOS.md](IOS.md) | iOS/iPadOS Network Relay feasibility, MASQUE gateway architecture, entitlement requirements, and delivery gates |
 | [LOGGING.md](LOGGING.md) | Text vs. Logstash-format JSON logs, the container default, and terminal color/UTF-8 behavior |
 | [OIDC-SETUP.md](OIDC-SETUP.md) | Registering ntwire as a public OAuth client with Google, Microsoft Entra ID, or Keycloak |
 | [OIDC-RELAY-DEPLOYMENT.md](OIDC-RELAY-DEPLOYMENT.md) | Deploying OIDC securely over direct HTTPS or `ntwire-relay` |

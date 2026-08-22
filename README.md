@@ -151,6 +151,15 @@ go build -o bin/ntwire-gui ./cmd/ntwire-gui   # or: ojob tasks.yaml op=gui
 See [docs/GUI.md](docs/GUI.md) for its two build modes (native settings
 window vs. browser fallback), profile storage, and autostart.
 
+### iOS and iPadOS
+
+The initial native iOS/iPadOS client uses Apple Network Relay rather than a
+packet-tunnel VPN. It is feasible for an individual Apple Developer account,
+but the data path requires a new optional MASQUE gateway; existing ntwire
+WireGuard and WebSocket endpoints cannot serve Network Relay directly. The
+current architecture decision, entitlement/distribution research, security
+boundary, and delivery gates are in [docs/IOS.md](docs/IOS.md).
+
 ### SSO login
 
 When a server advertises one or more OIDC issuers, `connect`/`list` use SSO by
