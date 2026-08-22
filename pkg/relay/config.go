@@ -12,6 +12,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"gopkg.in/yaml.v3"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 type Config struct {
@@ -71,7 +72,28 @@ type Config struct {
 		MaxUDPRelaySessionsPerServer int `yaml:"max_udp_relay_sessions_per_server"`
 	} `yaml:"limits"`
 	Registrations []RegistrationConfig `yaml:"registrations"`
+	Kubernetes    KubernetesConfig     `yaml:"kubernetes"`
 	Log           logging.Config       `yaml:"log"`
+}
+
+// KubernetesConfig enables opt-in Service discovery. Services are selected
+// deliberately: a matching label, relay-enabled=true, and a hostname
+// annotation are all required before a Service can receive public traffic.
+type KubernetesConfig struct {
+	Enabled    bool `yaml:"enabled"`
+	Namespaces struct {
+		Mode     string   `yaml:"mode"` // all or selected
+		Names    []string `yaml:"names"`
+		Selector string   `yaml:"selector"`
+	} `yaml:"namespaces"`
+	Service struct {
+		Selector string `yaml:"selector"`
+		PortName string `yaml:"port_name"`
+	} `yaml:"service"`
+	Registration struct {
+		HostnameAnnotation string `yaml:"hostname_annotation"`
+		TenantAnnotation   string `yaml:"tenant_annotation"`
+	} `yaml:"registration"`
 }
 
 type RegistrationConfig struct {
@@ -108,6 +130,22 @@ tls:                                        # applies to listen.agents only
   ephemeral: false                          # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
 
 domain: relay.example.com                 # wildcard suffix; a server registered as "home" is reached at home.relay.example.com
+
+# Optional Kubernetes Service discovery. Disabled by default. The relay uses
+# Service DNS and only splices TLS after SNI selects an explicitly enabled
+# Service; it never terminates client TLS.
+kubernetes:
+  enabled: false
+  namespaces:
+    mode: all                             # all, or selected with names and/or selector
+    names: []
+    selector: ""                          # optional Namespace label selector
+  service:
+    selector: "app.kubernetes.io/name=ntwire-server"
+    port_name: ntwire-relay
+  registration:
+    hostname_annotation: ntwire.io/hostname
+    tenant_annotation: ntwire.io/tenant   # informational, exposed in logs/status
 
 limits:
   handshake_timeout: 5s                    # deadline for reading an inbound client's ClientHello
@@ -190,6 +228,37 @@ func LoadConfig(path string) (Config, error) {
 		}
 		if _, _, err := parsePortRange(c.Listen.UDPRelayPorts); err != nil {
 			return c, fmt.Errorf("listen.udp_relay_ports: %w", err)
+		}
+	}
+	if c.Kubernetes.Enabled {
+		if c.Kubernetes.Namespaces.Mode == "" {
+			c.Kubernetes.Namespaces.Mode = "all"
+		}
+		if c.Kubernetes.Namespaces.Mode != "all" && c.Kubernetes.Namespaces.Mode != "selected" {
+			return c, fmt.Errorf("kubernetes.namespaces.mode must be all or selected")
+		}
+		if c.Kubernetes.Namespaces.Mode == "selected" && len(c.Kubernetes.Namespaces.Names) == 0 && c.Kubernetes.Namespaces.Selector == "" {
+			return c, fmt.Errorf("kubernetes.namespaces.selected requires names or selector")
+		}
+		if c.Kubernetes.Service.Selector == "" {
+			return c, fmt.Errorf("kubernetes.service.selector is required when kubernetes.enabled is true")
+		}
+		if _, err := labels.Parse(c.Kubernetes.Service.Selector); err != nil {
+			return c, fmt.Errorf("kubernetes.service.selector: %w", err)
+		}
+		if c.Kubernetes.Namespaces.Selector != "" {
+			if _, err := labels.Parse(c.Kubernetes.Namespaces.Selector); err != nil {
+				return c, fmt.Errorf("kubernetes.namespaces.selector: %w", err)
+			}
+		}
+		if c.Kubernetes.Service.PortName == "" {
+			return c, fmt.Errorf("kubernetes.service.port_name is required when kubernetes.enabled is true")
+		}
+		if c.Kubernetes.Registration.HostnameAnnotation == "" {
+			c.Kubernetes.Registration.HostnameAnnotation = "ntwire.io/hostname"
+		}
+		if c.Kubernetes.Registration.TenantAnnotation == "" {
+			c.Kubernetes.Registration.TenantAnnotation = "ntwire.io/tenant"
 		}
 	}
 	seen := map[string]bool{}

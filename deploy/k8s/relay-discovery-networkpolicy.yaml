@@ -1,0 +1,35 @@
+# Apply once in the relay namespace: relay may reach only opted-in server TCP.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: ntwire-relay-egress, namespace: ntwire-system}
+spec:
+  podSelector: {matchLabels: {app: ntwire-relay}}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {ntwire.io/enabled: "true"}}
+          podSelector: {matchLabels: {app: ntwire-server}}
+      ports: [{protocol: TCP, port: 8443}]
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+---
+# Template for each tenant namespace. Its server accepts only relay traffic
+# and can egress only to workloads explicitly labelled for that tenant.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: ntwire-server-tenant-isolation, namespace: customer-a}
+spec:
+  podSelector: {matchLabels: {app: ntwire-server}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ntwire-system}}
+          podSelector: {matchLabels: {app: ntwire-relay}}
+      ports: [{protocol: TCP, port: 8443}]
+  egress:
+    - to:
+        - podSelector: {matchLabels: {ntwire.io/tenant: customer-a}}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]

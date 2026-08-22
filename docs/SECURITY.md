@@ -6,6 +6,23 @@ type: reference
 
 # Security notes
 
+## Kubernetes relay discovery
+
+Kubernetes discovery is opt-in. Do not enable it with a broad selector unless
+every matching namespace and Service is trusted to receive public TLS traffic.
+The relay accepts only Services matching the configured label selector plus
+the explicit `ntwire.io/relay-enabled: "true"` label, a valid non-wildcard
+hostname annotation, permitted namespace scope, and required named port.
+Duplicate hostnames fail closed. The Kubernetes ServiceAccount needs only
+`get`, `list`, and `watch` on Services and (when namespace labels are used)
+Namespaces; it never needs mutation permissions or cluster-admin.
+
+Discovery is a routing decision, not an authorization boundary: the relay
+does not decrypt client TLS. Use namespace-local server configuration and
+NetworkPolicy so a tenant server can reach only its own workloads. The relay
+should be allowed to reach only the ntwire-server TCP port; deny cross-tenant
+server egress by default.
+
 ## Current boundary
 
 ntwire protects control-plane requests with TLS and data-plane traffic with
