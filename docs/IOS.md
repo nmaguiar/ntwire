@@ -240,15 +240,22 @@ state, and safe diagnostics.
 - **OIDC first:** use `ASWebAuthenticationSession` with Authorization Code +
   PKCE and an iOS public-client redirect URI. Store refresh/session material
   only in Keychain. The provider must never present authentication UI.
-- **SSH second:** Ed25519 compatibility needs an explicit test vector against
-  ntwire’s canonical signing format. CryptoKit capability and key-storage
-  behavior must be verified; private material stays in Keychain and is never
-  exported/logged unnecessarily.
-- **TLS:** preserve the existing TOFU/pinning model. A native `URLSession`
-  trust delegate must use normal system chain validation first, then compare a
-  stored SHA-256 certificate/SPKI pin as appropriate. A changed pin fails
-  closed and requires explicit user confirmation. There is no iOS equivalent
-  of silently enabling `--insecure`.
+- **SSH second:** The client imports unencrypted PKCS#8 Ed25519, RSA, and
+  NIST P-256 ECDSA keys and emits the corresponding OpenSSH signature format
+  against ntwire’s canonical signing payload. Private material stays in
+  Keychain and is never exported/logged unnecessarily. Encrypted OpenSSH
+  containers currently remain limited to the existing Ed25519 path.
+- **TLS:** preserve the existing TOFU/pinning model, matching the `ntwire`
+  CLI's known_servers prompt (cmd/ntwire/main.go). ntwire server listeners
+  default to a self-signed certificate, so system chain validation is not
+  meaningful here; a native `URLSession` trust delegate never auto-accepts a
+  certificate, including on first connect — it always fails the handshake
+  closed and reports the presented SHA-256 fingerprint (matching the
+  `tls_fingerprint` the server logs and `TLSManager.Fingerprint()` reports)
+  so the UI can prompt for explicit trust before retrying once, pinned. A
+  later mismatch prompts again with both fingerprints shown, same as a
+  changed SSH host key. There is no iOS equivalent of silently enabling
+  `--insecure`.
 - **OIDC client secrets:** an App Store binary is a public client. Never embed
   `NTWIRE_OIDC_CLIENT_SECRET` or a provider secret; issuers that require one
   need a different public-client registration.
@@ -295,9 +302,21 @@ Relay direction and is deliberately not introduced here.
    and a dependency-free Swift package. It has profile/add-edit, authentication
    state, grant, and diagnostics screens; strict HTTPS URL validation;
    `/v1/info` discovery; Keychain and profile-store abstractions; and unit
-   tests. CI builds the app unsigned for the simulator and runs the core tests.
-   OIDC UI, certificate pinning, authentication/session creation, and an
-   end-to-end relay installation remain blocked on the optional gateway
+   tests. Profiles persist in Application Support; users can edit or delete a
+   profile, and can import, replace, or remove an SSH private key through the
+   Files picker. SSH private-key bytes are kept only in the Keychain, never in
+   the profile file or diagnostics. CI builds the app unsigned for the
+   simulator and runs the core tests. SSH authentication creates a signed
+   session using a Keychain-held unencrypted PKCS#8 Ed25519, RSA, or NIST
+   P-256 ECDSA key and a per-profile WireGuard identity; the issued session
+   token is also Keychain-only. Encrypted OpenSSH Ed25519 keys are supported
+   with a request-only passphrase; RSA and ECDSA imports must remain
+   unencrypted PKCS#8. `URLSessionTransport` pins the server's certificate
+   per the TOFU model above: an unrecognized or changed certificate always
+   fails the handshake closed and surfaces an `UntrustedServerCertificateError`
+   naming the fingerprint(s); the profile detail view prompts for explicit
+   trust and retries once, only persisting the pin after the user agrees.
+   OIDC UI and an end-to-end relay installation remain blocked on the optional gateway
    contract. The app includes a thin `NERelayManager` adapter verified against
    the iOS SDK; it accepts only explicit H2/H3 gateway URLs and positive
    domain matches, never a guessed endpoint or bearer-token header.
@@ -311,7 +330,11 @@ Relay direction and is deliberately not introduced here.
 ## Security additions
 
 The iOS client/gateway must preserve the server as the authorization authority
-and add: Keychain-only secrets; strict ATS/TLS validation plus pinning; secure
+and add: Keychain-only secrets; certificate pinning that replaces ATS's
+PKI-based TLS validation rather than layering on top of it (the server URL is
+user-specified and typically self-signed, so the app carries a broad
+`NSAllowsArbitraryLoads` ATS exception and enforces trust itself via
+`PinningURLSessionDelegate`, per the TLS bullet above); secure
 randomness; bounded/validated server responses; expiry and logout cleanup;
 minimal entitlement use; and diagnostics that omit tokens, private keys,
 identities, private targets, and raw server errors. Gateway logs and metrics

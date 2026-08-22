@@ -156,6 +156,9 @@ public struct AuthenticationResponse: Codable, Equatable, Sendable {
     public let identity: String
     public let method: String
     public let serverName: String
+    public let tunnelIP: String
+    public let serverTunnelIP: String
+    public let serverPublicKey: String
 
     enum CodingKeys: String, CodingKey {
         case tunnels, identity, method
@@ -163,9 +166,12 @@ public struct AuthenticationResponse: Codable, Equatable, Sendable {
         case token
         case ttlSeconds = "ttl_seconds"
         case serverName = "server_name"
+        case tunnelIP = "tunnel_ip"
+        case serverTunnelIP = "server_tunnel_ip"
+        case serverPublicKey = "server_public_key"
     }
 
-    public init(sessionID: String = "", token: String = "", ttlSeconds: Int = 0, tunnels: [TunnelGrant] = [], identity: String = "", method: String = "", serverName: String = "") {
+    public init(sessionID: String = "", token: String = "", ttlSeconds: Int = 0, tunnels: [TunnelGrant] = [], identity: String = "", method: String = "", serverName: String = "", tunnelIP: String = "", serverTunnelIP: String = "", serverPublicKey: String = "") {
         self.sessionID = sessionID
         self.token = token
         self.ttlSeconds = ttlSeconds
@@ -173,6 +179,9 @@ public struct AuthenticationResponse: Codable, Equatable, Sendable {
         self.identity = identity
         self.method = method
         self.serverName = serverName
+        self.tunnelIP = tunnelIP
+        self.serverTunnelIP = serverTunnelIP
+        self.serverPublicKey = serverPublicKey
     }
 
     public init(from decoder: any Decoder) throws {
@@ -184,5 +193,8 @@ public struct AuthenticationResponse: Codable, Equatable, Sendable {
         identity = try values.decodeIfPresent(String.self, forKey: .identity) ?? ""
         method = try values.decodeIfPresent(String.self, forKey: .method) ?? ""
         serverName = try values.decodeIfPresent(String.self, forKey: .serverName) ?? ""
+        tunnelIP = try values.decodeIfPresent(String.self, forKey: .tunnelIP) ?? ""
+        serverTunnelIP = try values.decodeIfPresent(String.self, forKey: .serverTunnelIP) ?? ""
+        serverPublicKey = try values.decodeIfPresent(String.self, forKey: .serverPublicKey) ?? ""
     }
 }

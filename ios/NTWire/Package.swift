@@ -8,7 +8,8 @@ let package = Package(
         .library(name: "NTWireCore", targets: ["NTWireCore"])
     ],
     targets: [
-        .target(name: "NTWireCore"),
+        .target(name: "CNtwireBcrypt", publicHeadersPath: "include"),
+        .target(name: "NTWireCore", dependencies: ["CNtwireBcrypt"]),
         .testTarget(name: "NTWireCoreTests", dependencies: ["NTWireCore"])
     ]
 )

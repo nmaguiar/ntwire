@@ -72,6 +72,23 @@ public protocol ProfileStore: Sendable {
     func save(_ profiles: [ServerProfile]) throws
 }
 
+/// Stable Keychain account names for credentials which must never be encoded
+/// with a server profile. Keeping this mapping in the core package makes the
+/// UI lifecycle testable without access to the iOS Keychain.
+public enum ProfileCredentialAccount {
+    public static func sshPrivateKey(for profileID: UUID) -> String {
+        "profile/\(profileID.uuidString)/ssh-private-key"
+    }
+
+    public static func wireGuardPrivateKey(for profileID: UUID) -> String {
+        "profile/\(profileID.uuidString)/wireguard-private-key"
+    }
+
+    public static func sessionToken(for profileID: UUID) -> String {
+        "profile/\(profileID.uuidString)/session-token"
+    }
+}
+
 public final class JSONProfileStore: ProfileStore, @unchecked Sendable {
     private let fileURL: URL
     private let fileManager: FileManager

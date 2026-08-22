@@ -1,0 +1,4 @@
+module CNtwireBcrypt [system][extern_c] {
+ header "ntwire_bcrypt.h"
+ export *
+}
