@@ -103,8 +103,13 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 	if err := serverBind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(registration.NativeWireGuardToken), registration.NativeWireGuardAddr); err != nil {
 		t.Fatalf("server association to %q: %v", registration.NativeWireGuardAddr, err)
 	}
+	time.Sleep(50 * time.Millisecond) // allow association frame to reach relay
 
-	client, err := net.ListenPacket("udp", "127.0.0.1:0")
+	clientHost := "127.0.0.1"
+	if advertised.IP.To4() == nil {
+		clientHost = "::1"
+	}
+	client, err := net.ListenPacket("udp", net.JoinHostPort(clientHost, "0"))
 	if err != nil {
 		t.Skipf("client UDP bind unavailable: %v", err)
 	}
@@ -112,9 +117,20 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 	init := make([]byte, 148)
 	binary.LittleEndian.PutUint32(init, 1)
 	binary.LittleEndian.PutUint32(init[4:8], 77)
-	if _, err := client.WriteTo(init, advertised); err != nil {
-		t.Fatal(err)
-	}
+
+	stopInit := make(chan struct{})
+	defer close(stopInit)
+	go func() {
+		for {
+			_, _ = client.WriteTo(init, advertised)
+			select {
+			case <-stopInit:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}()
+
 	if got := receiveNativeWGPacket(t, recvFns); string(got) != string(init) {
 		t.Fatalf("relay forwarded %d bytes to server, want initiation %d bytes", len(got), len(init))
 	}
@@ -150,15 +166,20 @@ func receiveNativeWGPacket(t *testing.T, fns []conn.ReceiveFunc) []byte {
 	got := make(chan result, len(fns))
 	for _, fn := range fns {
 		go func(fn conn.ReceiveFunc) {
-			bufs := [][]byte{make([]byte, 2048)}
-			sizes := make([]int, 1)
-			eps := make([]conn.Endpoint, 1)
-			n, err := fn(bufs, sizes, eps)
-			if err != nil || n == 0 {
-				got <- result{err: err}
-				return
+			for {
+				bufs := [][]byte{make([]byte, 2048)}
+				sizes := make([]int, 1)
+				eps := make([]conn.Endpoint, 1)
+				n, err := fn(bufs, sizes, eps)
+				if err != nil {
+					got <- result{err: err}
+					return
+				}
+				if n > 0 {
+					got <- result{packet: append([]byte(nil), bufs[0][:sizes[0]]...)}
+					return
+				}
 			}
-			got <- result{packet: append([]byte(nil), bufs[0][:sizes[0]]...)}
 		}(fn)
 	}
 	select {
