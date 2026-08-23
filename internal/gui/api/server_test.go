@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
@@ -141,6 +143,10 @@ func TestRequestsWithWrongTokenAre404(t *testing.T) {
 }
 
 func TestProfileCRUD(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
 	s := newTestServer(t)
 
 	resp := s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "home-lab", Server: "https://home.example:8443"})
@@ -167,9 +173,18 @@ func TestProfileCRUD(t *testing.T) {
 		t.Fatalf("PUT /api/profiles/{id} status = %d, want 200", resp.StatusCode)
 	}
 
+	bpDir := filepath.Join(homeDir, ".ntwire", "browser-profiles", created.ID+"-socks")
+	if err := os.MkdirAll(bpDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
 	resp = s.do(t, http.MethodDelete, "/api/profiles/"+created.ID, nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("DELETE /api/profiles/{id} status = %d, want 204", resp.StatusCode)
+	}
+
+	if _, err := os.Stat(bpDir); !os.IsNotExist(err) {
+		t.Errorf("browser profile %s still exists after DELETE /api/profiles/{id}", bpDir)
 	}
 
 	resp = s.get(t, "/api/profiles")
@@ -452,4 +467,94 @@ func TestEventsStreamsInitialSnapshotThenUpdate(t *testing.T) {
 		}
 	}
 	t.Fatal("did not observe a StateConnected event on the SSE stream in time")
+}
+
+func TestBrowserProfilesListAndClean(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	s := newTestServer(t)
+
+	// 1. List against missing profiles dir -> returns empty list []
+	resp := s.get(t, "/api/browser-profiles")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/browser-profiles status = %d, want 200", resp.StatusCode)
+	}
+	initialList := decode[[]browseropen.ProfileEntry](t, resp)
+	if len(initialList) != 0 {
+		t.Fatalf("initial GET /api/browser-profiles = %+v, want empty slice", initialList)
+	}
+
+	// 2. Create locked + unlocked dirs
+	base := filepath.Join(homeDir, ".ntwire", "browser-profiles")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	unlockedDir := filepath.Join(base, "unlocked-prof")
+	if err := os.MkdirAll(unlockedDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	lockedDir := filepath.Join(base, "locked-prof")
+	if err := os.MkdirAll(lockedDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	lock := filepath.Join(lockedDir, "SingletonLock")
+	if err := os.Symlink("target", lock); err != nil {
+		if err := os.WriteFile(lock, []byte("123"), 0o600); err != nil {
+			t.Fatalf("WriteFile() lock error = %v", err)
+		}
+	}
+
+	// List with locked + unlocked dir
+	resp = s.get(t, "/api/browser-profiles")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/browser-profiles status = %d, want 200", resp.StatusCode)
+	}
+	entries := decode[[]browseropen.ProfileEntry](t, resp)
+	if len(entries) != 2 {
+		t.Fatalf("GET /api/browser-profiles returned %d entries, want 2", len(entries))
+	}
+	if entries[0].Key != "locked-prof" || !entries[0].InUse {
+		t.Errorf("entries[0] = %+v, want Key: locked-prof, InUse: true", entries[0])
+	}
+	if entries[1].Key != "unlocked-prof" || entries[1].InUse {
+		t.Errorf("entries[1] = %+v, want Key: unlocked-prof, InUse: false", entries[1])
+	}
+
+	// 3. Clean of nonexistent key is a no-op (no error in errors map)
+	resp = s.do(t, http.MethodPost, "/api/browser-profiles/clean", map[string]any{
+		"keys": []string{"nonexistent-profile"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/browser-profiles/clean status = %d, want 200", resp.StatusCode)
+	}
+	cleanResult := decode[map[string]map[string]string](t, resp)
+	if len(cleanResult["errors"]) != 0 {
+		t.Errorf("clean of nonexistent profile returned errors = %+v, want empty", cleanResult["errors"])
+	}
+
+	// 4. Clean of locked key comes back in errors map without deleting it, while unlocked key is deleted
+	resp = s.do(t, http.MethodPost, "/api/browser-profiles/clean", map[string]any{
+		"keys": []string{"locked-prof", "unlocked-prof"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/browser-profiles/clean status = %d, want 200", resp.StatusCode)
+	}
+	cleanResult = decode[map[string]map[string]string](t, resp)
+	if errStr, ok := cleanResult["errors"]["locked-prof"]; !ok || !strings.Contains(errStr, "in use") {
+		t.Errorf("cleanResult errors for locked-prof = %q, want 'in use' error", errStr)
+	}
+	if _, ok := cleanResult["errors"]["unlocked-prof"]; ok {
+		t.Errorf("cleanResult errors contained unlocked-prof: %v", cleanResult["errors"])
+	}
+
+	if _, err := os.Stat(unlockedDir); !os.IsNotExist(err) {
+		t.Errorf("unlockedDir still exists on disk, stat err = %v", err)
+	}
+	if _, err := os.Stat(lockedDir); err != nil {
+		t.Errorf("lockedDir should still exist on disk, stat err = %v", err)
+	}
 }

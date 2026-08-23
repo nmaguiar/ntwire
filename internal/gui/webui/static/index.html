@@ -81,6 +81,16 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
       </div>
     </form>
   </section>
+
+  <section class="panel">
+    <h2>🧹 Browser profile cleanup</h2>
+    <p class="lede">Persistent Chrome profiles created by tunnels' "Open browser" action. Profiles still open in Chrome are shown but can't be deleted until closed.</p>
+    <div id="browser-profiles" class="empty">Loading…</div>
+    <div class="row" style="margin-top:1rem">
+      <button class="danger" id="delete-browser-profiles-btn" disabled>🗑️ Delete selected</button>
+      <button class="secondary" id="refresh-browser-profiles-btn">🔄 Refresh</button>
+    </div>
+  </section>
 </main>
 
 <div id="modal-root"></div>
@@ -94,10 +104,15 @@ const formTitle = document.getElementById('form-title');
 const form = document.getElementById('profile-form');
 const generatedFields = document.getElementById('generated-fields');
 const modalRoot = document.getElementById('modal-root');
+const browserProfilesEl = document.getElementById('browser-profiles');
+const deleteBrowserProfilesBtn = document.getElementById('delete-browser-profiles-btn');
+const refreshBrowserProfilesBtn = document.getElementById('refresh-browser-profiles-btn');
 
 let schema = [];
 let profiles = new Map(); // id -> Snapshot
 let editingID = null; // null while the form is hidden or creating
+let browserProfiles = [];
+const selectedBrowserProfiles = new Set();
 
 function q(path) { return path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token); }
 
@@ -227,6 +242,7 @@ function renderProfileRow(snap) {
       await api('DELETE', `/api/profiles/${p.ID}`);
       profiles.delete(p.ID);
       renderProfiles();
+      await refreshBrowserProfiles();
     } catch (e) { setMessage(e.message); }
   });
 
@@ -330,6 +346,7 @@ function renderTunnelSection(profileID, tunnels) {
         try {
           await api('POST', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}/reset-browser-profile`);
           setMessage(`Reset browser profile for "${t.name}".`);
+          await refreshBrowserProfiles();
         } catch (e) { setMessage(e.message); }
       });
       line.append(openBrowser, resetProfile);
@@ -688,6 +705,111 @@ async function refreshProfiles() {
   renderPrompts();
 }
 
+async function refreshBrowserProfiles() {
+  try {
+    const list = await api('GET', '/api/browser-profiles');
+    browserProfiles = list || [];
+    const validKeys = new Set(browserProfiles.map(p => p.Key));
+    for (const k of selectedBrowserProfiles) {
+      if (!validKeys.has(k)) {
+        selectedBrowserProfiles.delete(k);
+      }
+    }
+    renderBrowserProfiles();
+  } catch (e) {
+    setMessage(e.message);
+  }
+}
+
+function renderBrowserProfiles() {
+  if (!browserProfiles.length) {
+    browserProfilesEl.className = 'empty';
+    browserProfilesEl.textContent = 'No browser profiles yet.';
+    deleteBrowserProfilesBtn.disabled = true;
+    return;
+  }
+  browserProfilesEl.className = '';
+  browserProfilesEl.replaceChildren(...browserProfiles.map(renderBrowserProfileRow));
+  deleteBrowserProfilesBtn.disabled = selectedBrowserProfiles.size === 0;
+}
+
+function renderBrowserProfileRow(p) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.style.padding = '.4rem 0';
+  row.style.borderBottom = '1px solid var(--border)';
+  if (p.InUse) {
+    row.style.opacity = '0.65';
+  }
+
+  const left = document.createElement('div');
+  left.className = 'row';
+  left.style.flex = '1';
+  left.style.minWidth = '0';
+
+  const cb = document.createElement('input');
+  cb.type = 'checkbox';
+  cb.checked = selectedBrowserProfiles.has(p.Key);
+  cb.disabled = p.InUse;
+  cb.addEventListener('change', () => {
+    if (cb.checked) {
+      selectedBrowserProfiles.add(p.Key);
+    } else {
+      selectedBrowserProfiles.delete(p.Key);
+    }
+    deleteBrowserProfilesBtn.disabled = selectedBrowserProfiles.size === 0;
+  });
+
+  const name = document.createElement('span');
+  name.className = 'server';
+  name.style.fontWeight = '600';
+  name.textContent = p.Key;
+
+  left.append(cb, name);
+
+  if (p.InUse) {
+    const badge = document.createElement('span');
+    badge.className = 'badge connected';
+    badge.textContent = 'Chrome running';
+    left.append(badge);
+  }
+
+  const right = document.createElement('div');
+  right.className = 'live';
+  if (p.ModTime) {
+    const d = new Date(p.ModTime);
+    if (!isNaN(d.getTime())) {
+      right.textContent = d.toLocaleString();
+    }
+  }
+
+  row.append(left, right);
+  return row;
+}
+
+deleteBrowserProfilesBtn.addEventListener('click', async () => {
+  const count = selectedBrowserProfiles.size;
+  if (!count) return;
+  if (!confirm(`Delete ${count} selected browser profile${count > 1 ? 's' : ''}?`)) return;
+  try {
+    const res = await api('POST', '/api/browser-profiles/clean', { Keys: [...selectedBrowserProfiles] });
+    if (res && res.errors && Object.keys(res.errors).length > 0) {
+      const msgs = Object.entries(res.errors).map(([k, err]) => `${k}: ${err}`).join(', ');
+      setMessage(`Failed to delete some profiles: ${msgs}`);
+    } else {
+      setMessage(`Deleted ${count} browser profile${count > 1 ? 's' : ''}.`);
+    }
+    selectedBrowserProfiles.clear();
+    await refreshBrowserProfiles();
+  } catch (e) {
+    setMessage(e.message);
+  }
+});
+
+refreshBrowserProfilesBtn.addEventListener('click', async () => {
+  await refreshBrowserProfiles();
+});
+
 async function refreshSchema() {
   schema = await api('GET', '/api/schema');
 }
@@ -763,6 +885,7 @@ function connectEvents() {
   try {
     await refreshSchema();
     await refreshProfiles();
+    await refreshBrowserProfiles();
   } catch (e) {
     setMessage('Could not load settings: ' + e.message);
   }

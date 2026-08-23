@@ -241,6 +241,16 @@ var registry = []Option{
 		GUIHidden: true,
 	},
 	{
+		Name: "list", Kind: KindBool, Usage: "list persistent browser profile directories and exit",
+		Bind:      []Binding{{Command: "browser"}},
+		GUIHidden: true,
+	},
+	{
+		Name: "clean-all", Kind: KindBool, Usage: "remove all unused persistent browser profile directories and exit",
+		Bind:      []Binding{{Command: "browser"}},
+		GUIHidden: true,
+	},
+	{
 		Name: "o", Kind: KindString, Usage: "private key output",
 		Bind:    []Binding{{Command: "keygen"}},
 		Default: func(d Defaults) string { return d.GeneratedIdentityFile },

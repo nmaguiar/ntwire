@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"time"
 )
 
 // FindChrome locates a Chrome or Chromium binary for this OS. It checks the
@@ -125,4 +127,80 @@ func CleanProfile(key string) error {
 		return fmt.Errorf("browser profile still in use (close the browser first)")
 	}
 	return os.RemoveAll(dir)
+}
+
+// ProfileEntry describes a persistent browser profile directory under
+// ~/.ntwire/browser-profiles.
+type ProfileEntry struct {
+	Key     string // directory name = the sanitized key CleanProfile/ProfileDir use
+	Path    string
+	InUse   bool // SingletonLock present
+	ModTime time.Time
+}
+
+// ListProfiles returns all browser profile directories under
+// ~/.ntwire/browser-profiles, sorted by Key. If the base directory does not
+// exist, it returns (nil, nil).
+func ListProfiles() ([]ProfileEntry, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Join(home, ".ntwire", "browser-profiles")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var profiles []ProfileEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		p := filepath.Join(base, entry.Name())
+		var modTime time.Time
+		if info, err := entry.Info(); err == nil {
+			modTime = info.ModTime()
+		}
+		_, lstatErr := os.Lstat(filepath.Join(p, "SingletonLock"))
+		profiles = append(profiles, ProfileEntry{
+			Key:     entry.Name(),
+			Path:    p,
+			InUse:   lstatErr == nil,
+			ModTime: modTime,
+		})
+	}
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Key < profiles[j].Key
+	})
+	return profiles, nil
+}
+
+// CleanProfilesForProfile removes every persistent browser profile directory
+// associated with profileID (i.e. whose key matches sanitize(profileID) or has
+// prefix sanitize(profileID) + "-"). It skips any directory still locked by
+// a running Chrome instance without aborting, and reports any errors encountered.
+func CleanProfilesForProfile(profileID string) error {
+	prefix := sanitize(profileID)
+	if prefix == "" {
+		return nil
+	}
+	profiles, err := ListProfiles()
+	if err != nil {
+		return err
+	}
+	var errs []string
+	for _, p := range profiles {
+		if p.Key == prefix || strings.HasPrefix(p.Key, prefix+"-") {
+			if err := CleanProfile(p.Key); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", p.Key, err))
+			}
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to clean browser profiles: %s", strings.Join(errs, ", "))
+	}
+	return nil
 }

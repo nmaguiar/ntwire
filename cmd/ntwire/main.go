@@ -246,10 +246,53 @@ func port(args []string, u *ui.UI) {
 func browser(args []string, u *ui.UI) {
 	fs := clientopts.NewFlagSet("browser", clientopts.Defaults{})
 	setUsage(fs.FlagSet, u, "open a browser configured for a SOCKS tunnel",
-		"ntwire browser", "ntwire browser reports", "ntwire browser --clean reports")
+		"ntwire browser", "ntwire browser reports", "ntwire browser --clean reports",
+		"ntwire browser --list", "ntwire browser --clean-all")
 	fs.Parse(args)
 	path := fs.Str("status-file")
 	clean := fs.BoolVal("clean")
+	list := fs.BoolVal("list")
+	cleanAll := fs.BoolVal("clean-all")
+
+	if list {
+		profiles, err := browseropen.ListProfiles()
+		if err != nil {
+			u.Errorf("list browser profiles: %v", err)
+			os.Exit(1)
+		}
+		for _, p := range profiles {
+			status := "unused"
+			if p.InUse {
+				status = "in use"
+			}
+			if !p.ModTime.IsZero() {
+				u.Info("%s [%s] (modified %s)", p.Key, status, p.ModTime.Format("2006-01-02 15:04:05"))
+			} else {
+				u.Info("%s [%s]", p.Key, status)
+			}
+		}
+		return
+	}
+
+	if cleanAll {
+		profiles, err := browseropen.ListProfiles()
+		if err != nil {
+			u.Errorf("list browser profiles: %v", err)
+			os.Exit(1)
+		}
+		for _, p := range profiles {
+			if p.InUse {
+				continue
+			}
+			if err := browseropen.CleanProfile(p.Key); err != nil {
+				u.Errorf("failed to remove %s: %v", p.Key, err)
+			} else {
+				u.Info("removed browser profile %s", p.Key)
+			}
+		}
+		return
+	}
+
 	if fs.NArg() > 1 {
 		u.Errorf("usage: ntwire browser [--clean] [name]")
 		os.Exit(2)

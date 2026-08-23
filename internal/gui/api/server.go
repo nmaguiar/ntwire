@@ -20,6 +20,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
 	"github.com/nmaguiar/ntwire/internal/gui/webui"
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 )
 
 // Server is the loopback HTTP+SSE API in front of a Manager.
@@ -110,6 +111,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/profiles/{id}/tunnels/{name}", s.requireToken(s.handleReplacePort))
 	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/open-browser", s.requireToken(s.handleOpenBrowser))
 	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/reset-browser-profile", s.requireToken(s.handleResetBrowserProfile))
+	s.mux.HandleFunc("GET /api/browser-profiles", s.requireToken(s.handleListBrowserProfiles))
+	s.mux.HandleFunc("POST /api/browser-profiles/clean", s.requireToken(s.handleCleanBrowserProfiles))
 	s.mux.HandleFunc("POST /api/prompts/{id}/trust", s.requireToken(s.handleAnswerTrust))
 	s.mux.HandleFunc("POST /api/prompts/{id}/passphrase", s.requireToken(s.handleAnswerPassphrase))
 	s.mux.HandleFunc("POST /api/keygen", s.requireToken(s.handleKeygen))
@@ -253,6 +256,30 @@ func (s *Server) handleResetBrowserProfile(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleListBrowserProfiles(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.mgr.ListBrowserProfiles()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	if entries == nil {
+		entries = []browseropen.ProfileEntry{}
+	}
+	writeJSON(w, http.StatusOK, entries)
+}
+
+func (s *Server) handleCleanBrowserProfiles(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	errs := s.mgr.CleanBrowserProfiles(body.Keys)
+	writeJSON(w, http.StatusOK, map[string]any{"errors": errs})
 }
 
 // handleProbe previews the tunnels a profile is allowed, without

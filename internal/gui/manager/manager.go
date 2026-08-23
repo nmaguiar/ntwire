@@ -228,12 +228,12 @@ func (m *Manager) UpdateProfile(p config.Profile) error {
 	return m.persist()
 }
 
-// RemoveProfile deletes a profile. It refuses while the profile is
-// connected -- disconnect first -- so a removal can never orphan a running
-// *client.Connection. A profile that is mid-connect (including one parked
-// awaiting a trust or passphrase prompt) can be removed; closing s.cancel
-// unblocks its runConnect goroutine, which then exits without touching the
-// now-deleted session.
+// RemoveProfile deletes a profile and any associated persistent browser
+// profiles. It refuses while the profile is connected -- disconnect first --
+// so a removal can never orphan a running *client.Connection. A profile that
+// is mid-connect (including one parked awaiting a trust or passphrase prompt)
+// can be removed; closing s.cancel unblocks its runConnect goroutine, which
+// then exits without touching the now-deleted session.
 func (m *Manager) RemoveProfile(id string) error {
 	m.mu.Lock()
 	s, ok := m.sessions[id]
@@ -248,6 +248,9 @@ func (m *Manager) RemoveProfile(id string) error {
 	delete(m.sessions, id)
 	close(s.cancel)
 	m.mu.Unlock()
+
+	_ = browseropen.CleanProfilesForProfile(id)
+
 	return m.persist()
 }
 
@@ -449,6 +452,26 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 // from a clean slate.
 func (m *Manager) ResetBrowserProfile(id, tunnelName string) error {
 	return browseropen.CleanProfile(id + "-" + tunnelName)
+}
+
+// ListBrowserProfiles returns all browser profile directories under
+// ~/.ntwire/browser-profiles, sorted by key.
+func (m *Manager) ListBrowserProfiles() ([]browseropen.ProfileEntry, error) {
+	return browseropen.ListProfiles()
+}
+
+// CleanBrowserProfiles removes each named profile directory, skipping (and
+// reporting, not aborting on) any still in use. Returns key -> error string
+// only for entries that failed; empty map means everything requested was
+// removed.
+func (m *Manager) CleanBrowserProfiles(keys []string) map[string]string {
+	errs := map[string]string{}
+	for _, k := range keys {
+		if err := browseropen.CleanProfile(k); err != nil {
+			errs[k] = err.Error()
+		}
+	}
+	return errs
 }
 
 // Probe previews the tunnels a profile is allowed, without establishing a
