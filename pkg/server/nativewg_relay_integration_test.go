@@ -140,7 +140,7 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 		}
 	}()
 
-	if got := receiveNativeWGPacket(t, recvFns); string(got) != string(init) {
+	if got := receiveNativeWGPacket(t, serverBind, recvFns); string(got) != string(init) {
 		t.Fatalf("relay forwarded %d bytes to server, want initiation %d bytes", len(got), len(init))
 	}
 
@@ -175,27 +175,33 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 	}
 }
 
-func receiveNativeWGPacket(t *testing.T, fns []conn.ReceiveFunc) []byte {
+func receiveNativeWGPacket(t *testing.T, bind conn.Bind, fns []conn.ReceiveFunc) []byte {
 	t.Helper()
 	type result struct {
 		packet []byte
 		err    error
 	}
+	batch := bind.BatchSize()
 	got := make(chan result, len(fns))
 	for _, fn := range fns {
 		go func(fn conn.ReceiveFunc) {
+			bufs := make([][]byte, batch)
+			for i := range bufs {
+				bufs[i] = make([]byte, 2048)
+			}
+			sizes := make([]int, batch)
+			eps := make([]conn.Endpoint, batch)
 			for {
-				bufs := [][]byte{make([]byte, 2048)}
-				sizes := make([]int, 1)
-				eps := make([]conn.Endpoint, 1)
 				n, err := fn(bufs, sizes, eps)
 				if err != nil {
 					got <- result{err: err}
 					return
 				}
-				if n > 0 {
-					got <- result{packet: append([]byte(nil), bufs[0][:sizes[0]]...)}
-					return
+				for i := 0; i < n; i++ {
+					if sizes[i] > 0 {
+						got <- result{packet: append([]byte(nil), bufs[i][:sizes[i]]...)}
+						return
+					}
 				}
 			}
 		}(fn)
