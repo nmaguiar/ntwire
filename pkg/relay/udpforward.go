@@ -77,7 +77,8 @@ func addrPort(addr net.Addr) (netip.AddrPort, bool) {
 	if !ok {
 		return netip.AddrPort{}, false
 	}
-	return udpAddr.AddrPort(), true
+	ap := udpAddr.AddrPort()
+	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), true
 }
 
 // handleClientDatagram processes one datagram received on the shared

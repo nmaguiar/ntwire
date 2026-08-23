@@ -100,10 +100,19 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 		t.Skipf("server UDP bind unavailable: %v", err)
 	}
 	defer serverBind.Close()
-	if err := serverBind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(registration.NativeWireGuardToken), registration.NativeWireGuardAddr); err != nil {
-		t.Fatalf("server association to %q: %v", registration.NativeWireGuardAddr, err)
-	}
-	time.Sleep(50 * time.Millisecond) // allow association frame to reach relay
+
+	stopAssociate := make(chan struct{})
+	defer close(stopAssociate)
+	go func() {
+		for {
+			_ = serverBind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(registration.NativeWireGuardToken), registration.NativeWireGuardAddr)
+			select {
+			case <-stopAssociate:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
 
 	clientHost := "127.0.0.1"
 	if advertised.IP.To4() == nil {
@@ -143,9 +152,18 @@ func TestNativeWireGuardRelayHostnameEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := serverBind.Send([][]byte{response}, ep); err != nil {
-		t.Fatal(err)
-	}
+	stopResp := make(chan struct{})
+	defer close(stopResp)
+	go func() {
+		for {
+			_ = serverBind.Send([][]byte{response}, ep)
+			select {
+			case <-stopResp:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
 	buf := make([]byte, 256)
 	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
 	n, _, err := client.ReadFrom(buf)
