@@ -165,12 +165,23 @@ func (r *Relay) Start() error {
 		if reg.NativeWireGuard.Listen == "" {
 			continue
 		}
-		pc, e := net.ListenPacket("udp", reg.NativeWireGuard.Listen)
+		listenAddr, e := resolveNativeWGListenAddr(reg.NativeWireGuard.Listen)
 		if e != nil {
 			abortAll()
 			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
 		}
-		nativeWG[reg.Name] = newNativeWGRelay(pc)
+		pc, e := net.ListenPacket("udp", listenAddr)
+		if e != nil {
+			abortAll()
+			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
+		}
+		advertise, e := nativeWGAdvertiseAddr(reg.Name, r.cfg.Domain, reg.NativeWireGuard.Listen, pc.LocalAddr())
+		if e != nil {
+			_ = pc.Close()
+			abortAll()
+			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
+		}
+		nativeWG[reg.Name] = newNativeWGRelay(pc, advertise)
 	}
 
 	for _, reg := range r.cfg.Registrations {
@@ -250,6 +261,47 @@ func (r *Relay) Start() error {
 	}
 	r.log.Info("ntwire-relay listening", "public", r.cfg.Listen.Public, "agents", r.cfg.Listen.Agents, "domain", r.cfg.Domain, "tls_fingerprint", fp)
 	return nil
+}
+
+// resolveNativeWGListenAddr turns an explicit DNS host into the concrete
+// address/interface to bind. Wildcard binds stay wildcards; they are handled
+// separately when deriving the address advertised to the server.
+func resolveNativeWGListenAddr(addr string) (string, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if host == "" || net.ParseIP(host) != nil {
+		return addr, nil
+	}
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return "", fmt.Errorf("resolve host %q: %w", host, err)
+	}
+	return udpAddr.String(), nil
+}
+
+// nativeWGAdvertiseAddr returns an address the remote ntwire-server can send
+// its association frame to. LocalAddr is intentionally not used for wildcard
+// listeners: it is 0.0.0.0/[::], neither of which is a relay destination.
+func nativeWGAdvertiseAddr(tenant, domain, configured string, bound net.Addr) (string, error) {
+	host, _, err := net.SplitHostPort(configured)
+	if err != nil {
+		return "", err
+	}
+	_, port, err := net.SplitHostPort(bound.String())
+	if err != nil {
+		return "", fmt.Errorf("bound UDP address %q: %w", bound, err)
+	}
+	ip := net.ParseIP(host)
+	if host == "" || (ip != nil && ip.IsUnspecified()) {
+		return net.JoinHostPort(tenant+"."+domain, port), nil
+	}
+	udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
+	if err != nil {
+		return "", fmt.Errorf("resolve host %q: %w", host, err)
+	}
+	return udpAddr.String(), nil
 }
 
 // udpRelayPoolListenAddr returns the server-leg address for a pooled relay

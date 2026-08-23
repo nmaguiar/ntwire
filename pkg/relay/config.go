@@ -161,7 +161,7 @@ registrations:
     public_key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINA2Gh3ezOG8R0iaD0WVnVsJTQGHqjI96LwGrIc/Kwgc admin@laptop" # authorized_keys line identifying the ntwire-server allowed to claim this name; replace with your own
     listen: ""                             # optional dedicated TCP public listener for this tenant (e.g. ":8443"); bypasses wildcard DNS and SNI matching
     native_wireguard:
-      listen: ""                           # optional dedicated UDP endpoint for ordinary WireGuard clients, e.g. ":51821"
+      listen: ""                           # optional dedicated UDP endpoint for ordinary WireGuard clients, e.g. ":51821" or "relay.example.com:51821" (a hostname is resolved when the relay starts)
 
 log:
   format: text                              # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT

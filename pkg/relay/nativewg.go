@@ -17,19 +17,20 @@ import (
 // visible routing metadata; the bounded, expiring map only associates them
 // with a source address long enough to return the server's response.
 type nativeWGRelay struct {
-	conn    net.PacketConn
-	mu      sync.Mutex
-	tokens  map[string]string // token -> tenant
-	servers map[string]netip.AddrPort
-	indices map[uint32]nativeWGRoute
+	conn      net.PacketConn
+	advertise string // routable address sent to the registered server
+	mu        sync.Mutex
+	tokens    map[string]string // token -> tenant
+	servers   map[string]netip.AddrPort
+	indices   map[uint32]nativeWGRoute
 }
 type nativeWGRoute struct {
 	client  netip.AddrPort
 	expires time.Time
 }
 
-func newNativeWGRelay(c net.PacketConn) *nativeWGRelay {
-	return &nativeWGRelay{conn: c, tokens: map[string]string{}, servers: map[string]netip.AddrPort{}, indices: map[uint32]nativeWGRoute{}}
+func newNativeWGRelay(c net.PacketConn, advertise string) *nativeWGRelay {
+	return &nativeWGRelay{conn: c, advertise: advertise, tokens: map[string]string{}, servers: map[string]netip.AddrPort{}, indices: map[uint32]nativeWGRoute{}}
 }
 func (n *nativeWGRelay) issue(tenant string) string {
 	b := make([]byte, 32)
@@ -72,7 +73,7 @@ func validWGPacket(b []byte) (typ uint32, receiver uint32, ok bool) {
 		if len(b) != 92 {
 			return 0, 0, false
 		}
-		return typ, binary.LittleEndian.Uint32(b[4:8]), true
+		return typ, binary.LittleEndian.Uint32(b[8:12]), true
 	case 3:
 		if len(b) != 64 {
 			return 0, 0, false

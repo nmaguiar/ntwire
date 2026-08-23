@@ -337,7 +337,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	native := a.nativeFor(name)
 	nativeAddr, nativeToken := "", ""
 	if native != nil {
-		nativeAddr, nativeToken = native.conn.LocalAddr().String(), native.issue(name)
+		nativeAddr, nativeToken = native.advertise, native.issue(name)
 		defer native.remove(name)
 	}
 	// reflect_addr records this tenant's wss-vs-direct-UDP posture at

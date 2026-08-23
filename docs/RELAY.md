@@ -244,7 +244,7 @@ registrations:
   - name: home
     public_key: "ssh-ed25519 ..."
     native_wireguard:
-      listen: ":51821"
+      listen: ":51821" # or relay.example.com:51821
 ```
 
 The registered `ntwire-server` receives an authenticated, short-lived relay
@@ -256,6 +256,14 @@ route handshake/transport responses to multiple clients; it has no WireGuard
 private key and cannot decrypt payloads. Association is invalidated when the
 server registration is replaced or disconnects. This listener is opt-in and
 does not alter `listen.udp_relay` or its token-binding security model.
+
+`native_wireguard.listen` accepts a numeric local interface or a hostname.
+For a hostname, the relay resolves it at startup and binds the resulting IP
+address; use this when the relay should bind one explicit interface. A
+wildcard listener such as `":51821"` remains supported: its association is
+advertised to the server as `home.<domain>:51821`, never as `0.0.0.0` or
+`[::]`. Ensure that this tenant hostname resolves to the relay for both
+ordinary clients and the registered server.
 
 This tier is opt-in on both sides: the relay needs `registrations[].native_wireguard.listen`
 above, and the server needs `native_wireguard.enabled: true` (see
