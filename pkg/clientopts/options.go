@@ -113,7 +113,7 @@ var registry = []Option{
 	{
 		Name: "v", Kind: KindBool, Usage: "show connection diagnostics",
 		Bind:  []Binding{{Command: "connect"}, {Command: "list"}},
-		Group: "Advanced", GUIHidden: true,
+		Group: "🛠️ Advanced", GUIHidden: true,
 	},
 	{
 		Name: "config", Kind: KindString, Usage: "persistent client configuration",
@@ -125,38 +125,45 @@ var registry = []Option{
 		Name: "i", Kind: KindString, Usage: "SSH private key",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.IdentityFile }),
-		Label:   "SSH private key", Group: "Identity", Widget: WidgetPath,
+		Label:   "SSH private key", Group: "🪪 Identity", Widget: WidgetPath,
 	},
 	{
 		Name: "ca", Kind: KindString, Usage: "PEM CA certificate",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.CAFile }),
-		Label:   "CA certificate", Group: "TLS", Widget: WidgetPath, Advanced: true,
+		Label:   "CA certificate", Group: "🔒 TLS", Widget: WidgetPath, Advanced: true,
 	},
 	{
 		Name: "insecure", Kind: KindBool, Usage: "skip TLS certificate verification",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: boolDefault(func(s client.Settings) bool { return s.Insecure }),
-		Label:   "Skip TLS certificate verification", Group: "TLS", Widget: WidgetToggle, Advanced: true,
+		Label:   "Skip TLS certificate verification", Group: "🔒 TLS", Widget: WidgetToggle, Advanced: true,
 	},
 	{
 		Name: "https-proxy", Kind: KindString, Usage: "explicit HTTP(S) proxy URL for HTTPS control traffic",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.HTTPSProxy }),
-		Label:   "HTTPS proxy", Group: "Connection", Widget: WidgetText, Advanced: true,
+		Label:   "HTTPS proxy", Group: "🌐 Connection", Widget: WidgetText, Advanced: true,
 		Help: "Overrides HTTPS_PROXY and HTTP_PROXY for this ntwire connection. Use http:// or https://, optionally with credentials.",
 	},
 	{
 		Name: "no-system-proxy", Kind: KindBool, Usage: "ignore HTTP(S)_PROXY and NO_PROXY environment variables",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: boolDefault(func(s client.Settings) bool { return s.NoSystemProxy }),
-		Label:   "Ignore system proxy", Group: "Connection", Widget: WidgetToggle, Advanced: true,
+		Label:   "Ignore system proxy", Group: "🌐 Connection", Widget: WidgetToggle, Advanced: true,
 		Help: "Connect directly instead of using HTTP_PROXY, HTTPS_PROXY, or NO_PROXY. An explicit HTTPS proxy still takes precedence.",
+	},
+	{
+		Name: "ip-version", Kind: KindString, Usage: `restrict the server connection to "4" or "6" (default: either)`,
+		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
+		Default: strDefault(func(s client.Settings) string { return s.IPVersion }),
+		Label:   "IP version preference", Group: "🌐 Connection", Widget: WidgetText, Advanced: true,
+		Help: `Leave empty to allow either family (default). Set to "4" or "6" to connect over only that family -- the other is never attempted, even if it would have worked. Applies to every connection ntwire makes: the control-plane/WebSocket connection to the server (or to the proxy, if one is configured) and the direct-UDP WireGuard data plane, including relay-assisted NAT punching and upgrade attempts.`,
 	},
 	{
 		Name: "known-servers", Kind: KindString, Usage: "known servers file",
 		Bind:  []Binding{{Command: "connect"}, {Command: "list"}},
-		Label: "Known servers file", Group: "TLS", Widget: WidgetPath, Advanced: true,
+		Label: "Known servers file", Group: "🔒 TLS", Widget: WidgetPath, Advanced: true,
 	},
 	{
 		Name: "no-browser", Kind: KindBool,
@@ -169,19 +176,19 @@ var registry = []Option{
 		// The GUI always sets NoWebUI:true, NoBrowser:false itself (see
 		// config.Profile.ToClientOptions's doc comment) -- it is never a
 		// per-profile choice there, so this is not a form field to expose.
-		Label: "Do not open a browser", Group: "Connection", Widget: WidgetToggle, GUIHidden: true,
+		Label: "Do not open a browser", Group: "🌐 Connection", Widget: WidgetToggle, GUIHidden: true,
 	},
 	{
 		Name: "sso", Kind: KindBool, Usage: "use SSO (OIDC) authentication instead of an SSH key",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: boolDefault(func(s client.Settings) bool { return s.SSO }),
-		Label:   "Use SSO (OIDC)", Group: "SSO", Widget: WidgetToggle,
+		Label:   "Use SSO (OIDC)", Group: "🔑 SSO", Widget: WidgetToggle,
 	},
 	{
 		Name: "provider", Kind: KindString, Usage: "oidc issuer name (when the server advertises more than one)",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.Provider }),
-		Label:   "OIDC provider", Group: "SSO", Widget: WidgetText,
+		Label:   "OIDC provider", Group: "🔑 SSO", Widget: WidgetText,
 	},
 	{
 		Name: "token-cache", Kind: KindString,
@@ -191,31 +198,31 @@ var registry = []Option{
 			{Command: "logout", Usage: "token cache file"},
 		},
 		Usage: "SSO token cache file",
-		Label: "Token cache file", Group: "SSO", Widget: WidgetPath, Advanced: true,
+		Label: "Token cache file", Group: "🔑 SSO", Widget: WidgetPath, Advanced: true,
 	},
 	{
 		Name: "websocket", Kind: KindBool, Usage: "use the WebSocket WireGuard transport",
 		Bind:  []Binding{{Command: "connect"}},
-		Label: "Force WebSocket transport", Group: "Advanced", Widget: WidgetToggle, Advanced: true,
+		Label: "Force WebSocket transport", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,
 	},
 	{
 		Name: "collect-exec", Kind: KindString, Usage: "command that emits JSON client-info fields",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.CollectExec }),
-		Label:   "Client-info collector command", Group: "Advanced", Widget: WidgetText, Advanced: true,
+		Label:   "Client-info collector command", Group: "🛠️ Advanced", Widget: WidgetText, Advanced: true,
 	},
 	{
 		Name: "bind", Kind: KindString,
 		Usage:   "local address to bind tunnel listeners to, instead of 127.0.0.1 (numeric IP only; exposes tunneled targets beyond this host)",
 		Bind:    []Binding{{Command: "connect"}},
 		Default: strDefault(func(s client.Settings) string { return s.BindAddress }),
-		Label:   "Bind address", Group: "Advanced", Widget: WidgetText, Advanced: true,
+		Label:   "Bind address", Group: "🛠️ Advanced", Widget: WidgetText, Advanced: true,
 		Help: "Leave empty for 127.0.0.1 (default, most secure). A LAN IP or 0.0.0.0 makes tunneled targets reachable from other hosts on that network -- there is no additional access control at the listener.",
 	},
 	{
 		Name: "port", Kind: KindKeyValue, Usage: "name=[host:]local-port (repeatable)",
 		Bind:  []Binding{{Command: "connect"}},
-		Label: "Local ports", Group: "Tunnels", Widget: WidgetPortMap,
+		Label: "Local ports", Group: "🔌 Tunnels", Widget: WidgetPortMap,
 		Help: "name=local-port, or name=host:local-port (IPv6 as name=[::1]:local-port) to also pin the tunnel's loopback address, e.g. 127.70.0.1 -- lets distinct tunnels share a memorable port without colliding. Falls back to 127.0.0.1 if the address can't be bound; on macOS a non-default 127.x.x.x address needs `sudo ifconfig lo0 alias <address> up` first (Linux binds it out of the box).",
 	},
 	{
@@ -232,7 +239,7 @@ var registry = []Option{
 		Name: "o", Kind: KindString, Usage: "private key output",
 		Bind:    []Binding{{Command: "keygen"}},
 		Default: func(d Defaults) string { return d.GeneratedIdentityFile },
-		Label:   "Output path", Group: "Identity", Widget: WidgetPath,
+		Label:   "Output path", Group: "🪪 Identity", Widget: WidgetPath,
 	},
 	{
 		Name: "no-color", Kind: KindBool, Usage: "disable ANSI colors (or set NO_COLOR)",

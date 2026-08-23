@@ -395,7 +395,7 @@ func TestSetEndpointReturnsErrorWhenWebSocketDisconnected(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	hybrid := wstransport.NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	hybrid := wstransport.NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, "")
 	defer hybrid.Close()
 	// This test wants the disconnect below to stay observably disconnected,
 	// not race the client's automatic reconnect (see Bind.redial). redial's

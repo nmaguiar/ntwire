@@ -41,6 +41,8 @@ type Profile struct {
 	// BindAddress is the advanced, opt-in override for the loopback-only
 	// default tunnel listeners bind to; see client.Options.BindAddress.
 	BindAddress string `yaml:"bind_address"`
+	// IPVersion is "", "4", or "6"; see client.Options.IPVersion.
+	IPVersion string `yaml:"ip_version"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

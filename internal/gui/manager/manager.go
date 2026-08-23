@@ -46,7 +46,18 @@ type Manager struct {
 
 	mu       sync.Mutex
 	settings config.Settings
-	sessions map[string]*session
+	// settingsURL is this process's own settings-window URL (api.Server.URL(),
+	// set once via SetSettingsURL after the API server starts listening). It
+	// is threaded into every profile's client.Options.SettingsURL so that
+	// profile's status page can link back to these settings.
+	settingsURL string
+	// promptHook, when set via SetPromptHook, is called whenever a profile
+	// begins showing a trust or passphrase prompt while no other profile
+	// currently has one pending -- edge-triggered so a ConnectOnStart fan-out
+	// across several profiles opens at most one settings window rather than
+	// one per profile.
+	promptHook func()
+	sessions   map[string]*session
 	// reservations holds each profile's explicitly-configured local
 	// listener addresses ("host:port"), keyed by profile ID then tunnel
 	// name. It starts as what was requested (reservePorts, before
@@ -120,6 +131,37 @@ func (m *Manager) Close() {
 	for _, id := range ids {
 		_ = m.Disconnect(id)
 	}
+}
+
+// SetSettingsURL records this process's own settings-window URL, threaded
+// into every profile connected from now on (see the settingsURL field doc).
+// It has no effect on already-connected profiles.
+func (m *Manager) SetSettingsURL(url string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settingsURL = url
+}
+
+// SetPromptHook records f as the callback fired the moment a profile needs
+// a trust or passphrase decision that only the settings window can render
+// and answer (see the promptHook field doc). f must not block or call back
+// into the Manager.
+func (m *Manager) SetPromptHook(f func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.promptHook = f
+}
+
+// pendingPromptCountLocked counts sessions currently showing a trust or
+// passphrase prompt. Callers must hold m.mu.
+func (m *Manager) pendingPromptCountLocked() int {
+	n := 0
+	for _, s := range m.sessions {
+		if s.prompt != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // Settings returns ntwire-gui's app-wide preferences.
@@ -246,6 +288,7 @@ func snapshotOf(s *session) Snapshot {
 	if s.handle != nil {
 		state := s.handle.State()
 		snap.Connection = &state
+		snap.DashboardURL = s.handle.DashboardURL()
 	}
 	return snap
 }
@@ -402,7 +445,7 @@ func (m *Manager) Probe(id string) ([]protocol.Tunnel, error) {
 	if keyPath == "" && !p.SSO {
 		keyPath = client.DefaultIdentityFile()
 	}
-	opts, err := p.ToClientOptions(config.StatusFilePath(p.ID), "")
+	opts, err := p.ToClientOptions(config.StatusFilePath(p.ID), "", "")
 	if err != nil {
 		return nil, err
 	}
@@ -615,7 +658,11 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 		return // setFailed or cancellation already handled
 	}
 
-	opts, err := p.ToClientOptions(config.StatusFilePath(p.ID), passphrase)
+	m.mu.Lock()
+	settingsURL := m.settingsURL
+	m.mu.Unlock()
+
+	opts, err := p.ToClientOptions(config.StatusFilePath(p.ID), passphrase, settingsURL)
 	if err != nil {
 		m.setFailed(id, err)
 		return
@@ -698,8 +745,13 @@ func (m *Manager) resolvePassphrase(id, keyPath string) (string, bool) {
 	s.prompt = &Prompt{Kind: PromptPassphrase, KeyPath: keyPath}
 	s.passphraseReply = reply
 	cancel := s.cancel
+	firstPrompt := m.pendingPromptCountLocked() == 1
+	hook := m.promptHook
 	m.mu.Unlock()
 	m.publish(id)
+	if firstPrompt && hook != nil {
+		hook()
+	}
 
 	var ans passphraseAnswer
 	select {
@@ -746,8 +798,13 @@ func (m *Manager) resolveTrust(id string, unknown *client.UnknownCertificateErro
 	s.prompt = &Prompt{Kind: PromptTrust, Host: unknown.Host, Fingerprint: unknown.Fingerprint, Previous: unknown.Previous}
 	s.trustReply = reply
 	cancel := s.cancel
+	firstPrompt := m.pendingPromptCountLocked() == 1
+	hook := m.promptHook
 	m.mu.Unlock()
 	m.publish(id)
+	if firstPrompt && hook != nil {
+		hook()
+	}
 
 	var trust bool
 	select {

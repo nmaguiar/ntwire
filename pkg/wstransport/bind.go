@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/nmaguiar/ntwire/pkg/ipfamily"
 	"golang.zx2c4.com/wireguard/conn"
 )
 
@@ -96,16 +97,23 @@ const WSSentinel = "ws:relay"
 // its single peer's endpoint at AddPeer time and again on every upgrade
 // attempt or revert, so ParseEndpoint must be able to produce either
 // endpoint type. See WSSentinel.
-func NewHybridClient(url string, client *http.Client, header http.Header) *Hybrid {
-	return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewClient(url, client, header)}
+//
+// ipVersion restricts the UDP bind (self-reflection, NAT priming, the direct
+// and UDP-relay upgrade rungs, and ordinary WireGuard traffic once upgraded)
+// to one IP family: "4" or "6". "" leaves it dual-stack. It has no effect on
+// the WebSocket carrier itself, which is a single TCP connection to a host
+// already resolved (and, if set, family-filtered) by the caller's HTTP
+// client -- see pkg/ipfamily.
+func NewHybridClient(url string, client *http.Client, header http.Header, ipVersion string) *Hybrid {
+	return &Hybrid{UDP: NewFilterBind(ipfamily.New(conn.NewStdNetBind(), ipVersion)), WebSocket: NewClient(url, client, header)}
 }
 
 // NewMultipathHybridClient returns the existing carrier pair plus the stable
 // logical bind used by capable relay peers. WSS is registered first and is
 // immediately usable; UDP candidates are added only after their authenticated
-// setup succeeds.
-func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2 bool, opts V2Options) (*Hybrid, *MultipathBind) {
-	h := NewHybridClient(url, client, header)
+// setup succeeds. ipVersion is forwarded to NewHybridClient; see its doc.
+func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2 bool, opts V2Options, ipVersion string) (*Hybrid, *MultipathBind) {
+	h := NewHybridClient(url, client, header, ipVersion)
 	m := NewMultipathBind(h, "relay-server", v2, opts)
 	h.UDP.(*FilterBind).SetProbeHandler(m.handlePathControl)
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open

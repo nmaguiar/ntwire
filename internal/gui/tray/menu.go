@@ -23,19 +23,24 @@ const (
 	maxProfiles          = 16
 	maxTunnelsPerProfile = 8
 
-	dashboardSlotID = "dashboard"
+	dashboardSlotID  = "dashboard"
+	connectSlotID    = "connect"
+	disconnectSlotID = "disconnect"
 )
 
 // profileSlot is one pre-created row in the tray's fixed profile pool: the
-// row itself (click toggles connect/disconnect), a single-item pool for
-// its "Open dashboard…" entry, and its own small pool of tunnel rows
-// (click copies that tunnel's local address). dashboard is a slotPool of
-// size one, rather than a bare *systray.MenuItem, purely so its click
-// dispatch goes through the same tested acquire/release/setAction
-// machinery as everything else instead of a bespoke bind-once path.
+// row itself (click toggles connect/disconnect), single-item pools for its
+// "Open dashboard…", "Connect" and "Disconnect" entries, and its own small
+// pool of tunnel rows (click copies that tunnel's local address). Each of
+// these single-item pools is a slotPool of size one, rather than a bare
+// *systray.MenuItem, purely so its click dispatch goes through the same
+// tested acquire/release/setAction machinery as everything else instead of
+// a bespoke bind-once path.
 type profileSlot struct {
 	item          *systray.MenuItem
 	dashboard     *slotPool
+	connect       *slotPool
+	disconnect    *slotPool
 	tunnelsHeader *systray.MenuItem
 	tunnelsShown  bool // guards tunnelsHeader.Hide(); see hideTunnelsHeader
 	tunnels       *slotPool
@@ -102,6 +107,8 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 		item := systray.AddMenuItem("", "")
 
 		dashboardItem := item.AddSubMenuItem("Open dashboard…", "Open this profile's local status page")
+		connectItem := item.AddSubMenuItem("Connect", "Connect this profile")
+		disconnectItem := item.AddSubMenuItem("Disconnect", "Disconnect this profile")
 
 		tunnelsHeader := item.AddSubMenuItem("Tunnels", "")
 		tunnelSlots := make([]Slot, maxTunnelsPerProfile)
@@ -112,10 +119,14 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 		}
 		tunnelsHeader.Hide()
 		dashboardItem.Hide()
+		connectItem.Hide()
+		disconnectItem.Hide()
 
 		m.slots[i] = profileSlot{
 			item:          item,
 			dashboard:     newSlotPool([]Slot{menuItemSlot{dashboardItem}}),
+			connect:       newSlotPool([]Slot{menuItemSlot{connectItem}}),
+			disconnect:    newSlotPool([]Slot{menuItemSlot{disconnectItem}}),
 			tunnelsHeader: tunnelsHeader,
 			tunnels:       newSlotPool(tunnelSlots),
 		}
@@ -209,6 +220,7 @@ func (m *menu) renderProfile(snap manager.Snapshot) {
 	m.profiles.setAction(id, func() { m.toggleConnect(id) })
 
 	m.renderDashboardItem(slot, snap)
+	m.renderConnectDisconnectItems(slot, snap)
 	m.renderTunnels(slot, snap)
 }
 
@@ -242,6 +254,8 @@ func (m *menu) clearProfileChildren(id string) {
 		return
 	}
 	slot.dashboard.release(dashboardSlotID)
+	slot.connect.release(connectSlotID)
+	slot.disconnect.release(disconnectSlotID)
 	slot.tunnels.releaseAllExcept(nil)
 	slot.hideTunnelsHeader()
 }
@@ -263,6 +277,33 @@ func (m *menu) renderDashboardItem(slot *profileSlot, snap manager.Snapshot) {
 			_ = browseropen.Open(url)
 		}
 	})
+}
+
+// renderConnectDisconnectItems shows exactly one of "Connect"/"Disconnect"
+// per profile row, mirroring toggleConnect's own state reasoning: neither
+// is shown mid-attempt (StateConnecting or an awaiting-prompt state), since
+// Manager.Disconnect fails silently before a session reaches StateConnected
+// and there is nothing for Connect to do while an attempt is already
+// running.
+func (m *menu) renderConnectDisconnectItems(slot *profileSlot, snap manager.Snapshot) {
+	id := snap.Profile.ID
+	switch snap.State {
+	case manager.StateConnected, manager.StateReconnecting:
+		slot.connect.release(connectSlotID)
+		if s, ok := slot.disconnect.acquire(disconnectSlotID); ok {
+			s.Show()
+			slot.disconnect.setAction(disconnectSlotID, func() { _ = m.mgr.Disconnect(id) })
+		}
+	case manager.StateConnecting, manager.StateAwaitingTrust, manager.StateAwaitingPassphrase:
+		slot.connect.release(connectSlotID)
+		slot.disconnect.release(disconnectSlotID)
+	default:
+		slot.disconnect.release(disconnectSlotID)
+		if s, ok := slot.connect.acquire(connectSlotID); ok {
+			s.Show()
+			slot.connect.setAction(connectSlotID, func() { _ = m.mgr.Connect(id) })
+		}
+	}
 }
 
 func (m *menu) renderTunnels(slot *profileSlot, snap manager.Snapshot) {

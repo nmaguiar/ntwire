@@ -17,9 +17,11 @@ func TestStatusPageShowsLatencyTransportHistory(t *testing.T) {
 		"UDP via relay",
 		"WSS through relay",
 		"WSS fallback",
-		"connectionType:s.connection_type||'unknown'",
+		"connectionType:hs.connection_type||'unknown'",
 		"transportBand",
-		"connection transport history",
+		"connection transport and downtime history",
+		"chart-down-band",
+		"Connection down",
 	} {
 		if !strings.Contains(string(page), want) {
 			t.Errorf("status page is missing %q", want)
@@ -32,7 +34,7 @@ func TestStatusPageAttachesTargetGrid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(page), "list.append(item(t,recordTraffic(t))));app.append(list)") {
+	if !strings.Contains(string(page), "list.append(item(t,trafficSeries(statusHistory.samples,t.name))));app.append(list)") {
 		t.Error("status page creates target cards but does not attach their grid to the app container")
 	}
 }

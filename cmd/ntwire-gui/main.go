@@ -147,6 +147,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ntwire-gui:", err)
 		os.Exit(1)
 	}
+	mgr.SetSettingsURL(srv.URL())
 
 	if *headless {
 		runHeadless(srv)
@@ -168,6 +169,13 @@ func main() {
 		}
 	}()
 	defer srv.Close()
+
+	// Open the settings window on its own, without waiting for a tray
+	// click, the moment any profile needs a trust or passphrase decision --
+	// otherwise a ConnectOnStart profile with an encrypted key (or an
+	// unrecognized server) parks silently until the user happens to open
+	// the tray menu themselves.
+	mgr.SetPromptHook(openSettingsFunc(srv))
 
 	// Deliberately after srv.Serve has started: a ConnectOnStart profile
 	// with an encrypted key parks in StateAwaitingPassphrase, answerable

@@ -7,7 +7,7 @@ import (
 
 func TestToClientOptionsRejectsEmptyStatusFile(t *testing.T) {
 	p := Profile{Name: "home-lab", Server: "https://home.example:8443"}
-	if _, err := p.ToClientOptions("", ""); err == nil {
+	if _, err := p.ToClientOptions("", "", ""); err == nil {
 		t.Fatal("ToClientOptions(\"\", ...) = nil error, want an error -- an empty StatusFile " +
 			"makes Connection.Close delete ~/.ntwire/status.json out from under a running ntwire connect")
 	}
@@ -15,7 +15,7 @@ func TestToClientOptionsRejectsEmptyStatusFile(t *testing.T) {
 
 func TestToClientOptionsSetsNoWebUITrueAndNoBrowserFalse(t *testing.T) {
 	p := Profile{Name: "home-lab"}
-	o, err := p.ToClientOptions("/tmp/status.json", "")
+	o, err := p.ToClientOptions("/tmp/status.json", "", "")
 	if err != nil {
 		t.Fatalf("ToClientOptions() error = %v", err)
 	}
@@ -29,7 +29,7 @@ func TestToClientOptionsSetsNoWebUITrueAndNoBrowserFalse(t *testing.T) {
 
 func TestToClientOptionsIncludesHTTPSProxyControls(t *testing.T) {
 	p := Profile{HTTPSProxy: "http://proxy.example:8080", NoSystemProxy: true}
-	o, err := p.ToClientOptions("/tmp/status.json", "")
+	o, err := p.ToClientOptions("/tmp/status.json", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +40,7 @@ func TestToClientOptionsIncludesHTTPSProxyControls(t *testing.T) {
 
 func TestToClientOptionsIncludesProfileOIDCClientSecret(t *testing.T) {
 	p := Profile{OIDCClientSecret: "gui-only-secret"}
-	o, err := p.ToClientOptions("/tmp/status.json", "")
+	o, err := p.ToClientOptions("/tmp/status.json", "", "")
 	if err != nil {
 		t.Fatalf("ToClientOptions() error = %v", err)
 	}
@@ -51,7 +51,7 @@ func TestToClientOptionsIncludesProfileOIDCClientSecret(t *testing.T) {
 
 func TestToClientOptionsCopiesPortsAndPassphrase(t *testing.T) {
 	p := Profile{Ports: map[string]int{"web": 8080, "db": 5432}}
-	o, err := p.ToClientOptions("/tmp/status.json", "hunter2")
+	o, err := p.ToClientOptions("/tmp/status.json", "hunter2", "")
 	if err != nil {
 		t.Fatalf("ToClientOptions() error = %v", err)
 	}
@@ -65,6 +65,17 @@ func TestToClientOptionsCopiesPortsAndPassphrase(t *testing.T) {
 	o.Ports["web"] = 9999
 	if p.Ports["web"] != 8080 {
 		t.Errorf("ToClientOptions() aliased the profile's Ports map")
+	}
+}
+
+func TestToClientOptionsIncludesSettingsURL(t *testing.T) {
+	p := Profile{Name: "home-lab"}
+	o, err := p.ToClientOptions("/tmp/status.json", "", "http://127.0.0.1:9999/?token=abc")
+	if err != nil {
+		t.Fatalf("ToClientOptions() error = %v", err)
+	}
+	if o.SettingsURL != "http://127.0.0.1:9999/?token=abc" {
+		t.Errorf("SettingsURL = %q, want the settings window URL", o.SettingsURL)
 	}
 }
 

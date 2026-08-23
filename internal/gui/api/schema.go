@@ -35,6 +35,7 @@ var profileField = map[string]string{
 	"collect-exec":    "CollectExec",
 	"port":            "Ports",
 	"bind":            "BindAddress",
+	"ip-version":      "IPVersion",
 }
 
 // schemaField is one generated form field, as served by GET /api/schema.
