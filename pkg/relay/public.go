@@ -107,8 +107,9 @@ func (p *publicListener) handle(c net.Conn) {
 	}
 	_ = c.SetReadDeadline(time.Time{})
 
-	name, ok := resolveTenant(sni, p.domain)
-	if !ok {
+	name, staticOK := resolveTenant(sni, p.domain)
+	_, discovered := p.registry.Lookup(sni)
+	if !staticOK && !discovered {
 		// Reset with no reply either way, but log it: LoadConfig validates
 		// domain and registration names as DNS labels, so a mismatch here
 		// in practice means a client is using the wrong SNI, not a
@@ -144,7 +145,7 @@ func (p *publicListener) handleTenant(c net.Conn, tenantName string) {
 func (p *publicListener) dispatch(c net.Conn, name, host, sni string, raw []byte) {
 	ctx, cancel := context.WithTimeout(context.Background(), p.limits.DialBackTimeout)
 	defer cancel()
-	back, err := p.registry.Open(ctx, name, c.RemoteAddr().String(), sni)
+	back, routeName, err := p.registry.OpenSNI(ctx, name, sni, c.RemoteAddr().String(), sni)
 	if err != nil {
 		// Unknown/offline tenant and at-capacity are deliberately
 		// indistinguishable to the client: both just reset. Server-side logs
@@ -162,13 +163,13 @@ func (p *publicListener) dispatch(c net.Conn, name, host, sni string, raw []byte
 	}
 	defer func() {
 		_ = back.Close()
-		p.registry.Release(name)
+		p.registry.Release(routeName)
 	}()
 
 	if _, err := back.Write(raw); err != nil {
 		return
 	}
-	p.log.Info("relay connection spliced", "tenant", name, "client", host, "sni", sni)
+	p.log.Info("relay connection spliced", "tenant", routeName, "client", host, "sni", sni)
 	splice(c, back)
 }
 

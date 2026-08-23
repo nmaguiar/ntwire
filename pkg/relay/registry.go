@@ -54,6 +54,28 @@ type Agent struct {
 	Close func()
 }
 
+// RegistrationSource identifies how a route entered the relay. Static routes
+// authorize outbound agents; Kubernetes routes are direct Service endpoints.
+type RegistrationSource string
+
+const (
+	SourceStatic     RegistrationSource = "static"
+	SourceOutbound   RegistrationSource = "outbound"
+	SourceKubernetes RegistrationSource = "kubernetes"
+)
+
+// ServerEndpoint is a non-secret routing target. Kubernetes endpoints use
+// Service DNS, never pod IPs.
+type ServerEndpoint struct {
+	Hostname  string
+	Address   string
+	Namespace string
+	Service   string
+	Tenant    string
+	Source    RegistrationSource
+	ID        string // stable source identity, e.g. Service UID
+}
+
 // RegisterError is a machine-readable registration failure, mirroring the
 // shape of protocol.Error used by the client-facing /v1/auth endpoint.
 type RegisterError struct {
@@ -96,6 +118,8 @@ type Registry struct {
 	tenants       map[string]*tenantState
 	pending       map[string]*pendingConn
 	nonces        map[string]time.Time
+	kubernetes    map[string]ServerEndpoint
+	conflicts     map[string]map[string]ServerEndpoint
 	limits        Limits
 }
 
@@ -105,6 +129,8 @@ func NewRegistry(registrations []Registration, limits Limits) *Registry {
 		tenants:       map[string]*tenantState{},
 		pending:       map[string]*pendingConn{},
 		nonces:        map[string]time.Time{},
+		kubernetes:    map[string]ServerEndpoint{},
+		conflicts:     map[string]map[string]ServerEndpoint{},
 		limits:        limits,
 	}
 	for _, reg := range registrations {
@@ -112,6 +138,68 @@ func NewRegistry(registrations []Registration, limits Limits) *Registry {
 		r.tenants[reg.Name] = &tenantState{}
 	}
 	return r
+}
+
+// UpsertKubernetes adds or updates a Service endpoint. Multiple distinct
+// Services claiming one hostname deliberately make that hostname unavailable
+// until the conflict is resolved; routing never makes an arbitrary choice.
+func (r *Registry) UpsertKubernetes(ep ServerEndpoint) error {
+	if ep.Source != SourceKubernetes || ep.Hostname == "" || ep.Address == "" || ep.ID == "" {
+		return fmt.Errorf("invalid Kubernetes endpoint")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if old, ok := r.kubernetes[ep.Hostname]; ok && old.ID != ep.ID {
+		if r.conflicts[ep.Hostname] == nil {
+			r.conflicts[ep.Hostname] = map[string]ServerEndpoint{old.ID: old}
+		}
+		r.conflicts[ep.Hostname][ep.ID] = ep
+		delete(r.kubernetes, ep.Hostname)
+		return fmt.Errorf("duplicate Kubernetes hostname %q", ep.Hostname)
+	}
+	if c := r.conflicts[ep.Hostname]; c != nil {
+		c[ep.ID] = ep
+		return fmt.Errorf("duplicate Kubernetes hostname %q", ep.Hostname)
+	}
+	r.kubernetes[ep.Hostname] = ep
+	return nil
+}
+
+// RemoveKubernetes removes only the source object that created an endpoint.
+func (r *Registry) RemoveKubernetes(hostname, id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if ep, ok := r.kubernetes[hostname]; ok && ep.ID == id {
+		delete(r.kubernetes, hostname)
+	}
+	if c := r.conflicts[hostname]; c != nil {
+		delete(c, id)
+		if len(c) == 1 {
+			for _, ep := range c {
+				r.kubernetes[hostname] = ep
+			}
+			delete(r.conflicts, hostname)
+		} else if len(c) == 0 {
+			delete(r.conflicts, hostname)
+		}
+	}
+}
+
+func (r *Registry) Lookup(hostname string) (ServerEndpoint, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ep, ok := r.kubernetes[hostname]
+	return ep, ok
+}
+
+func (r *Registry) List() []ServerEndpoint {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]ServerEndpoint, 0, len(r.kubernetes))
+	for _, ep := range r.kubernetes {
+		out = append(out, ep)
+	}
+	return out
 }
 
 // maxNonces backstops useNonceLocked's normal 5-minute expiry: it bounds
@@ -299,6 +387,34 @@ func (r *Registry) Open(ctx context.Context, name, clientAddr, sni string) (net.
 		close(done)
 		return nil, ctx.Err()
 	}
+}
+
+// OpenSNI applies source precedence: an authenticated outbound registration
+// for the configured tenant wins, then an unambiguous discovered Service,
+// then the legacy static/outbound lookup. A Kubernetes Service is dialed only
+// after SNI has been validated by the caller.
+func (r *Registry) OpenSNI(ctx context.Context, tenant, hostname, clientAddr, sni string) (net.Conn, string, error) {
+	r.mu.Lock()
+	active := tenant != "" && r.tenants[tenant] != nil && r.tenants[tenant].agent != nil
+	ep, found := r.kubernetes[hostname]
+	r.mu.Unlock()
+	if active {
+		c, err := r.Open(ctx, tenant, clientAddr, sni)
+		return c, tenant, err
+	}
+	if found {
+		var d net.Dialer
+		c, err := d.DialContext(ctx, "tcp", ep.Address)
+		if err != nil {
+			return nil, ep.Hostname, fmt.Errorf("dial Kubernetes service %s/%s: %w", ep.Namespace, ep.Service, err)
+		}
+		return c, ep.Hostname, nil
+	}
+	if tenant == "" {
+		return nil, "", ErrTenantUnknown
+	}
+	c, err := r.Open(ctx, tenant, clientAddr, sni)
+	return c, tenant, err
 }
 
 func drainPending(ch chan net.Conn) {

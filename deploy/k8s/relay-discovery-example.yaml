@@ -1,0 +1,58 @@
+# Generic Kubernetes/EKS relay. An AWS ALB may expose TCP 443 (HTTPS/WSS)
+# while an NLB exposes UDP relay ports; those load balancers are infrastructure
+# choices, not required by ntwire discovery.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: ntwire-relay-config, namespace: ntwire-system}
+data:
+  ntwire-relay.yaml: |
+    listen: {public: ":443", agents: ":8444", udp_relay: ":3481", udp_relay_ports: "40000-40099"}
+    tls: {state_dir: /var/lib/ntwire}
+    domain: ntwire.example.com
+    kubernetes:
+      enabled: true
+      namespaces: {mode: all, selector: "ntwire.io/enabled=true"}
+      service: {selector: "app.kubernetes.io/name=ntwire-server", port_name: ntwire-relay}
+      registration: {hostname_annotation: ntwire.io/hostname, tenant_annotation: ntwire.io/tenant}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: ntwire-relay, namespace: ntwire-system}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: ntwire-relay}}
+  template:
+    metadata: {labels: {app: ntwire-relay}}
+    spec:
+      serviceAccountName: ntwire-relay
+      containers:
+        - name: relay
+          image: nmaguiar/ntwire-relay:build
+          args: [--config, /etc/ntwire/ntwire-relay.yaml]
+          ports: [{name: public, containerPort: 443}, {name: agents, containerPort: 8444}, {name: udp-relay, containerPort: 3481, protocol: UDP}]
+          volumeMounts: [{name: config, mountPath: /etc/ntwire, readOnly: true}]
+      volumes: [{name: config, configMap: {name: ntwire-relay-config}}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: ntwire-relay, namespace: ntwire-system}
+spec:
+  selector: {app: ntwire-relay}
+  ports: [{name: public, port: 443, targetPort: public}, {name: agents, port: 8444, targetPort: agents}, {name: udp-relay, port: 3481, targetPort: udp-relay, protocol: UDP}]
+---
+# Each opted-in tenant namespace needs the namespace label and an explicit
+# relay-enabled Service. Its selector must match only that tenant's server.
+apiVersion: v1
+kind: Namespace
+metadata: {name: customer-a, labels: {ntwire.io/enabled: "true"}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ntwire-server
+  namespace: customer-a
+  labels: {app.kubernetes.io/name: ntwire-server, ntwire.io/relay-enabled: "true"}
+  annotations: {ntwire.io/hostname: customer-a.ntwire.example.com, ntwire.io/tenant: customer-a}
+spec:
+  selector: {app: ntwire-server}
+  ports: [{name: ntwire-relay, port: 8443, targetPort: https}]

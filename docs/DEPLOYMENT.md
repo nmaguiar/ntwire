@@ -1,5 +1,22 @@
 # Deployment
 
+## Kubernetes discovery deployment
+
+For an ALB/NLB EKS topology, terminate neither client TLS nor WireGuard at
+the relay: expose relay TCP 443 through the ALB and the configured UDP relay
+ports through the NLB. Run the relay with its ServiceAccount and the minimal
+RBAC in `deploy/k8s/relay-discovery-rbac.yaml`; apply the example in
+`deploy/k8s/relay-discovery-example.yaml` as a starting point. AWS resources
+are optional—the discovery implementation uses standard in-cluster Kubernetes
+authentication and Service DNS.
+
+For restricted deployments use `kubernetes.namespaces.mode: selected` with
+explicit names and create Role/RoleBinding pairs for Services only in those
+namespaces. If `namespaces.selector` is used, namespace list/watch access is
+also required. Add NetworkPolicies that allow relay namespace pods to TCP
+8443 on selected tenant ntwire-server pods, allow each ntwire-server only its
+namespace's workload ports/DNS, and otherwise deny tenant-to-tenant traffic.
+
 ## Building from source
 
 ```sh

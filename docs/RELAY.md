@@ -6,6 +6,54 @@ type: guide
 
 # Relay mode (NAT traversal)
 
+## Kubernetes Service discovery
+
+`ntwire-relay` can optionally discover tenant origins from Kubernetes
+Services. It is disabled unless `kubernetes.enabled: true`; existing relay
+registrations and outbound NAT traversal require no changes.
+
+```
+Internet ── ALB (HTTPS/WSS) ─┐
+Internet ── NLB (UDP) ───────┼── ntwire-relay ── Kubernetes registry
+                             │        ├─ customer-a/ntwire-server
+                             │        └─ customer-b/ntwire-server
+```
+
+The relay watches Services (and Namespaces when a namespace selector is
+configured) through Kubernetes shared informers. It does not poll. A selected
+Service must match `kubernetes.service.selector`, carry
+`ntwire.io/relay-enabled: "true"`, have the hostname annotation, and expose
+the configured named port. It is reached through Service DNS, never a cached
+Pod IP. The public listener still only reads ClientHello SNI and splices raw
+TLS bytes; it does not terminate client TLS.
+
+```yaml
+kubernetes:
+  enabled: true
+  namespaces: {mode: selected, names: [customer-a, customer-b]}
+  # Or: {mode: all, selector: "ntwire.io/enabled=true"}
+  service: {selector: "app.kubernetes.io/name=ntwire-server", port_name: ntwire-relay}
+  registration: {hostname_annotation: ntwire.io/hostname, tenant_annotation: ntwire.io/tenant}
+```
+
+Registration precedence is: live authenticated outbound registration, then
+an unambiguous Kubernetes Service, then the legacy static registration state.
+If two Services claim the same hostname, that hostname fails closed until the
+conflict is removed; the relay logs conflict events and never picks one. An
+API/watch interruption retains already accepted Service entries and the
+informer reconnects with Kubernetes resource versions. Explicit deletion
+removes the route promptly. A Service with no ready Pods remains registered
+but connection attempts fail normally until its endpoints return.
+
+Kubernetes discovery provides TCP TLS-passthrough routing. It does not turn a
+Service into an authenticated outbound relay agent, so native WireGuard UDP
+and UDP-relay allocation continue to require the existing live outbound
+server registration and capability negotiation. No WireGuard protocol changes.
+
+See `deploy/k8s/relay-discovery-rbac.yaml` and
+`deploy/k8s/relay-discovery-example.yaml` for minimal RBAC and a generic
+Kubernetes/EKS-shaped deployment.
+
 Today's default topology is strictly one-directional: only `ntwire-server`
 listens on a public network, and clients always dial in. A server behind NAT
 or on a home/lab network with no inbound connectivity cannot be reached at

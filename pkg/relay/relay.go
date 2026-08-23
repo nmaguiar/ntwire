@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -29,13 +30,14 @@ type Relay struct {
 	reflectLn   net.PacketConn
 	reflectAddr string
 
-	udpRelayLn   net.PacketConn            // shared client-facing socket
-	udpRelayPool map[uint16]net.PacketConn // pooled server-leg sockets, one per listen.udp_relay_ports port
-	udpRelayAddr string
-	udpSessions  *udpSessionTable
-	udpSweepStop chan struct{}
-	nativeWG     map[string]*nativeWGRelay
-	tenantLns    map[string]net.Listener
+	udpRelayLn       net.PacketConn            // shared client-facing socket
+	udpRelayPool     map[uint16]net.PacketConn // pooled server-leg sockets, one per listen.udp_relay_ports port
+	udpRelayAddr     string
+	udpSessions      *udpSessionTable
+	udpSweepStop     chan struct{}
+	nativeWG         map[string]*nativeWGRelay
+	tenantLns        map[string]net.Listener
+	kubernetesCancel context.CancelFunc
 }
 
 // New constructs a Relay from a loaded Config. It performs no I/O; call
@@ -202,6 +204,18 @@ func (r *Relay) Start() error {
 	r.agents.setUDPRelayAddr(udpRelayAddr)
 	r.agents.setUDPSessions(udpSessions)
 	r.agents.setNative(nativeWG)
+	if r.cfg.Kubernetes.Enabled {
+		ctx, cancel := context.WithCancel(context.Background())
+		if _, err := startInClusterKubernetesDiscovery(ctx, r.cfg.Kubernetes, r.registry, r.log); err != nil {
+			cancel()
+			abortAll()
+			return err
+		}
+		r.mu.Lock()
+		r.kubernetesCancel = cancel
+		r.mu.Unlock()
+		r.log.Info("Kubernetes Service discovery enabled", "namespace_mode", r.cfg.Kubernetes.Namespaces.Mode, "service_selector", r.cfg.Kubernetes.Service.Selector)
+	}
 
 	go r.public.serve(publicLn)
 	go func() {
@@ -325,6 +339,10 @@ func (r *Relay) ReloadRegistrations(cfgs []RegistrationConfig) error {
 func (r *Relay) Close() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.kubernetesCancel != nil {
+		r.kubernetesCancel()
+		r.kubernetesCancel = nil
+	}
 	if r.publicLn != nil {
 		_ = r.publicLn.Close()
 	}
