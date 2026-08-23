@@ -16,6 +16,7 @@ func ClientCommand() Command {
 		{"status", "show the running connection"},
 		{"disconnect", "stop the running connection"},
 		{"port", "replace a tunnel's local port"},
+		{"browser", "open a browser configured for a SOCKS tunnel"},
 		{"logout", "clear cached SSO tokens"},
 	}
 

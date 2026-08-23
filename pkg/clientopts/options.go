@@ -227,12 +227,17 @@ var registry = []Option{
 	},
 	{
 		Name: "status-file", Kind: KindString, Usage: "local status file",
-		Bind:      []Binding{{Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}},
+		Bind:      []Binding{{Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}, {Command: "browser"}},
 		GUIHidden: true,
 	},
 	{
 		Name: "json", Kind: KindBool, Usage: "output as JSON",
 		Bind:      []Binding{{Command: "list"}, {Command: "status"}},
+		GUIHidden: true,
+	},
+	{
+		Name: "clean", Kind: KindBool, Usage: "remove the target's persistent browser profile instead of opening it",
+		Bind:      []Binding{{Command: "browser"}},
 		GUIHidden: true,
 	},
 	{
@@ -245,7 +250,7 @@ var registry = []Option{
 		Name: "no-color", Kind: KindBool, Usage: "disable ANSI colors (or set NO_COLOR)",
 		Bind: []Binding{
 			{Command: "connect"}, {Command: "list"}, {Command: "status"}, {Command: "disconnect"},
-			{Command: "port"}, {Command: "logout"}, {Command: "keygen"},
+			{Command: "port"}, {Command: "browser"}, {Command: "logout"}, {Command: "keygen"},
 		},
 		Discarded: true, GUIHidden: true,
 	},

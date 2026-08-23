@@ -108,6 +108,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/profiles/{id}/probe", s.requireToken(s.handleProbe))
 	s.mux.HandleFunc("POST /api/profiles/{id}/logout", s.requireToken(s.handleLogout))
 	s.mux.HandleFunc("PUT /api/profiles/{id}/tunnels/{name}", s.requireToken(s.handleReplacePort))
+	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/open-browser", s.requireToken(s.handleOpenBrowser))
+	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/reset-browser-profile", s.requireToken(s.handleResetBrowserProfile))
 	s.mux.HandleFunc("POST /api/prompts/{id}/trust", s.requireToken(s.handleAnswerTrust))
 	s.mux.HandleFunc("POST /api/prompts/{id}/passphrase", s.requireToken(s.handleAnswerPassphrase))
 	s.mux.HandleFunc("POST /api/keygen", s.requireToken(s.handleKeygen))
@@ -235,6 +237,22 @@ func (s *Server) handleReplacePort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"local_address": addr})
+}
+
+func (s *Server) handleOpenBrowser(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.OpenBrowser(r.PathValue("id"), r.PathValue("name")); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleResetBrowserProfile(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.ResetBrowserProfile(r.PathValue("id"), r.PathValue("name")); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // handleProbe previews the tunnels a profile is allowed, without

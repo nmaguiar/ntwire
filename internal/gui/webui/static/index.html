@@ -313,6 +313,27 @@ function renderTunnelSection(profileID, tunnels) {
       } catch (e) { setMessage(e.message); }
     });
     line.append(label, input, apply);
+    if (t.target_hint === 'socks') {
+      const openBrowser = document.createElement('button');
+      openBrowser.className = 'secondary';
+      openBrowser.textContent = '🌐 Open in browser';
+      openBrowser.addEventListener('click', async () => {
+        try {
+          await api('POST', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}/open-browser`);
+          setMessage(`Opening a browser for "${t.name}".`);
+        } catch (e) { setMessage(e.message); }
+      });
+      const resetProfile = document.createElement('button');
+      resetProfile.className = 'secondary';
+      resetProfile.textContent = '🧹 Reset browser profile';
+      resetProfile.addEventListener('click', async () => {
+        try {
+          await api('POST', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}/reset-browser-profile`);
+          setMessage(`Reset browser profile for "${t.name}".`);
+        } catch (e) { setMessage(e.message); }
+      });
+      line.append(openBrowser, resetProfile);
+    }
     list.append(line);
   }
   details.append(list);

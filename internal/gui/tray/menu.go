@@ -44,6 +44,9 @@ type profileSlot struct {
 	tunnelsHeader *systray.MenuItem
 	tunnelsShown  bool // guards tunnelsHeader.Hide(); see hideTunnelsHeader
 	tunnels       *slotPool
+	browserHeader *systray.MenuItem
+	browserShown  bool // guards browserHeader.Hide(); see hideBrowserHeader
+	browser       *slotPool
 }
 
 // hideTunnelsHeader hides tunnelsHeader only if it isn't already hidden.
@@ -64,6 +67,22 @@ func (s *profileSlot) hideTunnelsHeader() {
 func (s *profileSlot) showTunnelsHeader() {
 	s.tunnelsHeader.Show()
 	s.tunnelsShown = true
+}
+
+// hideBrowserHeader/showBrowserHeader are hideTunnelsHeader/
+// showTunnelsHeader's counterparts for browserHeader, guarding repeat
+// Hide() calls for the same Windows-specific reason.
+func (s *profileSlot) hideBrowserHeader() {
+	if !s.browserShown {
+		return
+	}
+	s.browserHeader.Hide()
+	s.browserShown = false
+}
+
+func (s *profileSlot) showBrowserHeader() {
+	s.browserHeader.Show()
+	s.browserShown = true
 }
 
 // menu owns the tray's entire fixed structure and the live state needed to
@@ -118,6 +137,16 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 			tunnelSlots[j] = menuItemSlot{row}
 		}
 		tunnelsHeader.Hide()
+
+		browserHeader := item.AddSubMenuItem("Open in browser", "")
+		browserSlots := make([]Slot, maxTunnelsPerProfile)
+		for j := 0; j < maxTunnelsPerProfile; j++ {
+			row := browserHeader.AddSubMenuItem("", "Open a browser configured for this SOCKS tunnel")
+			row.Hide()
+			browserSlots[j] = menuItemSlot{row}
+		}
+		browserHeader.Hide()
+
 		dashboardItem.Hide()
 		connectItem.Hide()
 		disconnectItem.Hide()
@@ -129,6 +158,8 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 			disconnect:    newSlotPool([]Slot{menuItemSlot{disconnectItem}}),
 			tunnelsHeader: tunnelsHeader,
 			tunnels:       newSlotPool(tunnelSlots),
+			browserHeader: browserHeader,
+			browser:       newSlotPool(browserSlots),
 		}
 		profileItems[i] = menuItemSlot{item}
 		item.Hide()
@@ -222,6 +253,7 @@ func (m *menu) renderProfile(snap manager.Snapshot) {
 	m.renderDashboardItem(slot, snap)
 	m.renderConnectDisconnectItems(slot, snap)
 	m.renderTunnels(slot, snap)
+	m.renderBrowserTunnels(slot, snap)
 }
 
 // slotFor finds the profileSlot a given *systray.MenuItem belongs to. The
@@ -258,6 +290,8 @@ func (m *menu) clearProfileChildren(id string) {
 	slot.disconnect.release(disconnectSlotID)
 	slot.tunnels.releaseAllExcept(nil)
 	slot.hideTunnelsHeader()
+	slot.browser.releaseAllExcept(nil)
+	slot.hideBrowserHeader()
 }
 
 func (m *menu) renderDashboardItem(slot *profileSlot, snap manager.Snapshot) {
@@ -340,6 +374,48 @@ func (m *menu) renderTunnels(slot *profileSlot, snap manager.Snapshot) {
 		row.Show()
 		addr := t.LocalAddress
 		slot.tunnels.setAction(t.Name, func() { _ = copyToClipboard(addr) })
+	}
+}
+
+// renderBrowserTunnels populates the "Open in browser" submenu with one row
+// per SOCKS egress tunnel -- the tray's per-target counterpart to
+// renderDashboardItem's per-profile "Open dashboard…" action, using
+// manager.Manager.OpenBrowser instead of browseropen.Open directly since it
+// needs to look the tunnel's current local address up by name first.
+func (m *menu) renderBrowserTunnels(slot *profileSlot, snap manager.Snapshot) {
+	var tunnels []client.ListenerState
+	if snap.Connection != nil {
+		for _, t := range snap.Connection.Tunnels {
+			if t.TargetHint == "socks" {
+				tunnels = append(tunnels, t)
+			}
+		}
+	}
+	if len(tunnels) > maxTunnelsPerProfile {
+		tunnels = tunnels[:maxTunnelsPerProfile]
+	}
+
+	tunnelKeep := make(map[string]bool, len(tunnels))
+	for _, t := range tunnels {
+		tunnelKeep[t.Name] = true
+	}
+	slot.browser.releaseAllExcept(tunnelKeep)
+
+	if len(tunnels) == 0 {
+		slot.hideBrowserHeader()
+		return
+	}
+	slot.showBrowserHeader()
+	id := snap.Profile.ID
+	for _, t := range tunnels {
+		row, ok := slot.browser.acquire(t.Name)
+		if !ok {
+			continue
+		}
+		row.SetTitle("Open browser: " + t.Name)
+		row.Show()
+		name := t.Name
+		slot.browser.setAction(t.Name, func() { _ = m.mgr.OpenBrowser(id, name) })
 	}
 }
 

@@ -33,7 +33,15 @@ func (fakeConnector) Authenticate(server, keyPath string, info protocol.ClientIn
 
 type fakeHandle struct{}
 
-func (fakeHandle) State() client.ConnectionState { return client.ConnectionState{Connected: true} }
+func (fakeHandle) State() client.ConnectionState {
+	return client.ConnectionState{
+		Connected: true,
+		Tunnels: []client.ListenerState{
+			{Name: "web", LocalAddress: "127.0.0.1:8080"},
+			{Name: "socks", LocalAddress: "127.0.0.1:1080", TargetHint: "socks"},
+		},
+	}
+}
 func (fakeHandle) ReplaceListener(name, host string, port int) (string, error) {
 	if host == "" {
 		host = "127.0.0.1"
@@ -265,6 +273,55 @@ func TestConnectDisconnectAndReplacePort(t *testing.T) {
 	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/disconnect", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("disconnect status = %d, want 204", resp.StatusCode)
+	}
+}
+
+// TestOpenBrowserRejectsNonSocksAndUnknownTunnels exercises the validation
+// handleOpenBrowser performs before ever touching browseropen.OpenSocks (and
+// thus before it would need a real Chrome/Chromium binary, which a test
+// environment may not have) -- an unconnected profile, an unknown tunnel
+// name, and a tunnel that isn't a SOCKS target must all fail with 400
+// without launching anything.
+func TestOpenBrowserRejectsNonSocksAndUnknownTunnels(t *testing.T) {
+	s := newTestServer(t)
+	resp := s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "home-lab", Server: "https://home.example:8443"})
+	created := decode[config.Profile](t, resp)
+
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/socks/open-browser", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("open-browser before connect status = %d, want 400", resp.StatusCode)
+	}
+
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/connect", nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("connect status = %d, want 202", resp.StatusCode)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp = s.get(t, "/api/profiles")
+		list := decode[[]manager.Snapshot](t, resp)
+		if len(list) == 1 && list[0].State == manager.StateConnected {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/does-not-exist/open-browser", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("open-browser for unknown tunnel status = %d, want 400", resp.StatusCode)
+	}
+
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/web/open-browser", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("open-browser for non-SOCKS tunnel status = %d, want 400", resp.StatusCode)
+	}
+
+	// Resetting a profile that was never opened is a deterministic, Chrome-
+	// independent no-op success -- CleanProfile treats a missing directory
+	// as nothing to clean.
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/socks/reset-browser-profile", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reset-browser-profile status = %d, want 204", resp.StatusCode)
 	}
 }
 
