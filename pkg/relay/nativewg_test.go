@@ -16,7 +16,7 @@ func TestNativeWGRelayRoutesHandshakeByReceiverIndex(t *testing.T) {
 	defer serverConn.Close()
 	clientConn := mustListenUDPForTest(t)
 	defer clientConn.Close()
-	n := newNativeWGRelay(relayConn)
+	n := newNativeWGRelay(relayConn, relayConn.LocalAddr().String())
 	token := n.issue("home")
 	serverAddr := serverConn.LocalAddr().(*net.UDPAddr).AddrPort()
 	n.handle(wstransport.EncodeControlFrame(wstransport.FrameNativeWireGuardAssociate, []byte(token)), serverAddr)
@@ -40,11 +40,29 @@ func TestNativeWGRelayRoutesHandshakeByReceiverIndex(t *testing.T) {
 func TestNativeWGRelayRejectsMalformedAndUnassociatedPackets(t *testing.T) {
 	pc := mustListenUDPForTest(t)
 	defer pc.Close()
-	n := newNativeWGRelay(pc)
+	n := newNativeWGRelay(pc, pc.LocalAddr().String())
 	from := mustListenUDPForTest(t)
 	defer from.Close()
 	n.handle([]byte{1, 0, 0, 0}, from.LocalAddr().(*net.UDPAddr).AddrPort())
 	if len(n.indices) != 0 {
 		t.Fatal("malformed packet created routing state")
+	}
+}
+
+func TestNativeWGHostnameListenAndWildcardAdvertisement(t *testing.T) {
+	resolved, err := resolveNativeWGListenAddr("localhost:51821")
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, _, err := net.SplitHostPort(resolved)
+	if err != nil || net.ParseIP(host) == nil {
+		t.Fatalf("resolved hostname listener = %q, want numeric IP:port", resolved)
+	}
+	advertised, err := nativeWGAdvertiseAddr("home", "relay.example.com", ":51821", &net.UDPAddr{IP: net.IPv4zero, Port: 51821})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if advertised != "home.relay.example.com:51821" {
+		t.Fatalf("wildcard advertised address = %q", advertised)
 	}
 }
