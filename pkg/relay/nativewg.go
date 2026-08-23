@@ -73,7 +73,7 @@ func validWGPacket(b []byte) (typ uint32, receiver uint32, ok bool) {
 		if len(b) != 92 {
 			return 0, 0, false
 		}
-		return typ, binary.LittleEndian.Uint32(b[4:8]), true
+		return typ, binary.LittleEndian.Uint32(b[8:12]), true
 	case 3:
 		if len(b) != 64 {
 			return 0, 0, false

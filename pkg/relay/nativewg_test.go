@@ -30,7 +30,8 @@ func TestNativeWGRelayRoutesHandshakeByReceiverIndex(t *testing.T) {
 	}
 	response := make([]byte, 92)
 	binary.LittleEndian.PutUint32(response, 2)
-	binary.LittleEndian.PutUint32(response[4:8], 77)
+	binary.LittleEndian.PutUint32(response[4:8], 99)
+	binary.LittleEndian.PutUint32(response[8:12], 77)
 	n.handle(response, serverAddr)
 	if _, ok := readWithTimeout(t, clientConn, time.Second); !ok {
 		t.Fatal("server handshake response was not routed to client")
