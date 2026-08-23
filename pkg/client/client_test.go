@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,6 +57,27 @@ func TestSelectTransport(t *testing.T) {
 				t.Fatalf("useWS = %v, want %v", got, tc.wantWS)
 			}
 		})
+	}
+}
+
+func TestMatchesIPVersion(t *testing.T) {
+	cases := []struct {
+		hostport, ipVersion string
+		want                bool
+	}{
+		{"1.2.3.4:51820", "", true},
+		{"[::1]:51820", "", true},
+		{"1.2.3.4:51820", "4", true},
+		{"1.2.3.4:51820", "6", false},
+		{"[::1]:51820", "6", true},
+		{"[::1]:51820", "4", false},
+		{"vpn.example:51820", "4", false}, // hostname, not a literal IP
+		{"", "4", false},
+	}
+	for _, tc := range cases {
+		if got := matchesIPVersion(tc.hostport, tc.ipVersion); got != tc.want {
+			t.Errorf("matchesIPVersion(%q, %q) = %v, want %v", tc.hostport, tc.ipVersion, got, tc.want)
+		}
 	}
 }
 
@@ -369,6 +391,74 @@ func TestResolveBindAddress(t *testing.T) {
 				t.Fatalf("resolveBindAddress(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+func TestFilterIPVersion(t *testing.T) {
+	v4a := net.IPAddr{IP: net.ParseIP("192.0.2.1")}
+	v4b := net.IPAddr{IP: net.ParseIP("192.0.2.2")}
+	v6a := net.IPAddr{IP: net.ParseIP("2001:db8::1")}
+	v6b := net.IPAddr{IP: net.ParseIP("2001:db8::2")}
+	mixed := []net.IPAddr{v4a, v6a, v4b, v6b}
+	v6Only := []net.IPAddr{v6a, v6b}
+
+	cases := []struct {
+		name      string
+		in        []net.IPAddr
+		ipVersion string
+		want      []net.IPAddr
+	}{
+		{name: "empty keeps every address", in: mixed, ipVersion: "", want: mixed},
+		{name: "4 excludes ipv6, preserving resolver order", in: mixed, ipVersion: "4", want: []net.IPAddr{v4a, v4b}},
+		{name: "6 excludes ipv4, preserving resolver order", in: mixed, ipVersion: "6", want: []net.IPAddr{v6a, v6b}},
+		{name: "4 with no ipv4 addresses returns empty", in: v6Only, ipVersion: "4", want: []net.IPAddr{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := filterIPVersion(append([]net.IPAddr(nil), c.in...), c.ipVersion)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("filterIPVersion(%q) = %v, want %v", c.ipVersion, got, c.want)
+			}
+		})
+	}
+}
+
+// TestRaceResolvedDialExcludesOtherFamily is a regression test for the bug
+// the advisor caught in review: dialing a single surviving candidate by
+// re-handing the (still-family-ambiguous) hostname to net.Dialer would let
+// the OS resolver silently reintroduce the excluded family. localhost
+// resolves to both 127.0.0.1 and ::1 on every CI platform this runs on, so
+// filtering to "6" here must connect over ::1, never 127.0.0.1.
+func TestRaceResolvedDialExcludesOtherFamily(t *testing.T) {
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("no IPv6 loopback available: %v", err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	conn, err := raceResolvedDial(context.Background(), "tcp", net.JoinHostPort("localhost", port), "6")
+	if err != nil {
+		t.Fatalf("raceResolvedDial: %v", err)
+	}
+	defer conn.Close()
+	if host, _, _ := net.SplitHostPort(conn.RemoteAddr().String()); host != "::1" {
+		t.Fatalf("connected to %s, want ::1", host)
+	}
+}
+
+func TestHTTPClientRejectsInvalidIPVersion(t *testing.T) {
+	_, err := httpClient("https://example.com", Options{IPVersion: "5"})
+	if err == nil {
+		t.Fatal("httpClient with IPVersion \"5\" = nil error, want an error")
 	}
 }
 

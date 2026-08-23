@@ -50,7 +50,11 @@ func (p Profile) IdentityFilePath() string {
 // deliberately different from the CLI, which conflates both meanings behind
 // one --no-browser flag. Getting this backwards would silently force every
 // GUI-managed SSO login into the device-code flow.
-func (p Profile) ToClientOptions(statusFile, passphrase string) (client.Options, error) {
+//
+// settingsURL, when non-empty, is the running ntwire-gui settings window's
+// own URL (api.Server.URL()); it is only ever surfaced back to the operator
+// as a link on this profile's per-connection status page, never dialed.
+func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (client.Options, error) {
 	if statusFile == "" {
 		return client.Options{}, fmt.Errorf("gui: profile %q has no status file", p.Name)
 	}
@@ -80,5 +84,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase string) (client.Options,
 		TokenCacheFile:   ExpandHome(p.TokenCacheFile),
 		OIDCClientSecret: p.OIDCClientSecret,
 		BindAddress:      p.BindAddress,
+		IPVersion:        p.IPVersion,
+		SettingsURL:      settingsURL,
 	}, nil
 }

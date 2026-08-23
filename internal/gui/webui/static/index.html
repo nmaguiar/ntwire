@@ -14,7 +14,7 @@ h1{font-size:1.9rem;margin:0 0 .25rem}
 .row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
 .row + .row{margin-top:.6rem}
 h2{font-size:1.1rem;margin:0 0 .75rem}
-.profile{display:flex;align-items:center;gap:.75rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
+.profile{display:flex;flex-direction:column;gap:.5rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
 .profile:last-child{border-bottom:none}
 .profile .name{font-weight:700}
 .profile .server{color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Consolas,monospace}
@@ -24,8 +24,8 @@ h2{font-size:1.1rem;margin:0 0 .75rem}
 .badge::before{content:"";width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}
 .badge.connected::before,.badge.reconnecting::before{background:var(--accent)}
 .badge.failed::before,.badge.awaiting_trust::before,.badge.awaiting_passphrase::before{background:var(--danger)}
-button{border:0;border-radius:10px;background:var(--brand);color:var(--bg);padding:.5rem .8rem;font-weight:700;font-size:.85rem;cursor:pointer}
-button.secondary{background:var(--panel-2);color:var(--text);border:1px solid var(--border)}
+button,a.button{border:0;border-radius:10px;background:var(--brand);color:var(--bg);padding:.5rem .8rem;font-weight:700;font-size:.85rem;cursor:pointer;display:inline-block;text-decoration:none;line-height:1.4}
+button.secondary,a.button.secondary{background:var(--panel-2);color:var(--text);border:1px solid var(--border)}
 button.danger{background:var(--danger)}
 button:hover,button:focus-visible{filter:brightness(1.08)}
 button:disabled{cursor:not-allowed;opacity:.5}
@@ -46,26 +46,30 @@ legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-
 .modal .warn{color:var(--danger-strong);font-weight:700}
 .empty{color:var(--muted)}
 .hidden{display:none !important}
-.unreachable-banner{position:fixed;top:0;left:0;right:0;z-index:100;display:flex;gap:1rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.75rem 1rem;background:var(--danger);color:#fff;font-weight:700;box-shadow:var(--shadow)}
-.unreachable-banner button{border:0;border-radius:10px;background:#fff;color:var(--danger);padding:.45rem .8rem;font-weight:700;font-size:.85rem;cursor:pointer}
+.reconnect-banner{position:sticky;top:0;z-index:100;display:flex;gap:.75rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.7rem 1rem;background:#fee2e2;color:#7f1d1d;border-bottom:1px solid #fca5a5;font-weight:700;box-shadow:0 2px 8px rgba(127,29,29,.12)}
+.reconnect-banner button{border:1px solid #fca5a5;border-radius:10px;background:#fff1f2;color:#9f1239;padding:.4rem .75rem;font-weight:700;cursor:pointer}
+.reconnect-banner button:hover,.reconnect-banner button:focus-visible{background:#ffe4e6}
 details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:.5rem 0}
+.ports-toggle{border:1px solid var(--border);border-radius:12px;margin-top:.6rem;padding:.5rem .7rem}
+.ports-toggle summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text)}
+.ports-list{margin-top:.5rem}
 </style>
 <main>
-  <h1>ntwire settings</h1>
+  <h1>⚙️ ntwire settings</h1>
   <p class="lede">Configure server profiles for ntwire-gui. Changes here never touch the CLI's own ~/.ntwire/config.yaml.</p>
   <p id="message" role="status"></p>
 
   <section class="panel">
-    <h2>Profiles</h2>
+    <h2>👤 Profiles</h2>
     <div id="profiles" class="empty">Loading…</div>
     <div class="row" style="margin-top:1rem">
-      <button id="add-profile-btn">Add profile…</button>
-      <button class="secondary" id="keygen-btn">Generate new identity…</button>
+      <button id="add-profile-btn">➕ Add profile…</button>
+      <button class="secondary" id="keygen-btn">🔑 Generate new identity…</button>
     </div>
   </section>
 
   <section class="panel hidden" id="form-panel">
-    <h2 id="form-title">Add profile</h2>
+    <h2 id="form-title">➕ Add profile</h2>
     <form id="profile-form">
       <label>Name<input type="text" name="Name" required></label>
       <label>Server URL<input type="text" name="Server" placeholder="https://relay.example.com" required></label>
@@ -122,7 +126,28 @@ function stateLabel(s) {
   }
 }
 
+// portsExpanded tracks which profiles' "Local ports" section the user has
+// explicitly opened, keyed by profile ID. renderProfiles rebuilds every row
+// from scratch on every SSE update, so a plain <details open> attribute
+// would snap shut on the next update -- this (and localStorage) is what
+// keeps it open across renders and page reloads, the same pattern the
+// dashboard uses for its own collapsible sections.
+const portsExpandedKey = 'ntwire.settings.portsExpanded';
+let portsExpanded = new Set();
+try { portsExpanded = new Set(JSON.parse(localStorage.getItem(portsExpandedKey) || '[]')); } catch {}
+function setPortsExpanded(id, v) {
+  v ? portsExpanded.add(id) : portsExpanded.delete(id);
+  try { localStorage.setItem(portsExpandedKey, JSON.stringify([...portsExpanded])); } catch {}
+}
+
 function renderProfiles() {
+  // Rebuilding while the user has a port input mid-edit here would both
+  // steal focus and discard what they typed -- the next update after they
+  // click away or blur will catch up. Scoped to <input> specifically:
+  // buttons (Connect/Disconnect, Delete, ...) are also focused on click,
+  // and this must not block their own state changes from rendering.
+  const active = document.activeElement;
+  if (active && active.tagName === 'INPUT' && profilesEl.contains(active)) return;
   const list = [...profiles.values()].sort((a, b) => a.profile.Name.localeCompare(b.profile.Name));
   if (!list.length) {
     profilesEl.className = 'empty';
@@ -138,14 +163,15 @@ function renderProfileRow(snap) {
   const block = document.createElement('div');
   block.className = 'profile';
 
-  const row = document.createElement('div');
-  row.className = 'row';
+  // Line 1: name, server, and live status.
+  const infoRow = document.createElement('div');
+  infoRow.className = 'row';
 
   const info = document.createElement('div');
   info.className = 'info';
   const name = document.createElement('div');
   name.className = 'name';
-  name.textContent = p.Name;
+  name.textContent = '👤 ' + p.Name;
   const server = document.createElement('div');
   server.className = 'server';
   server.textContent = p.Server;
@@ -167,11 +193,17 @@ function renderProfileRow(snap) {
     live.textContent = parts.join(' · ');
     info.append(live);
   }
+  infoRow.append(info, badge);
+
+  // Line 2: actions, on their own line below the text rather than crowded
+  // in beside it.
+  const actions = document.createElement('div');
+  actions.className = 'row';
 
   const connected = snap.state === 'connected' || snap.state === 'reconnecting';
   const connectBtn = document.createElement('button');
   connectBtn.className = connected ? 'secondary' : '';
-  connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
+  connectBtn.textContent = connected ? '⏹️ Disconnect' : '▶️ Connect';
   connectBtn.disabled = snap.state === 'connecting';
   connectBtn.addEventListener('click', async () => {
     try {
@@ -181,12 +213,12 @@ function renderProfileRow(snap) {
 
   const editBtn = document.createElement('button');
   editBtn.className = 'secondary';
-  editBtn.textContent = 'Edit';
+  editBtn.textContent = '✏️ Edit';
   editBtn.addEventListener('click', () => openForm(p));
 
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'danger';
-  deleteBtn.textContent = 'Delete';
+  deleteBtn.textContent = '🗑️ Delete';
   deleteBtn.disabled = connected;
   deleteBtn.title = connected ? 'Disconnect first' : '';
   deleteBtn.addEventListener('click', async () => {
@@ -198,35 +230,59 @@ function renderProfileRow(snap) {
     } catch (e) { setMessage(e.message); }
   });
 
-  row.append(info, badge, connectBtn, editBtn, deleteBtn);
+  actions.append(connectBtn, editBtn, deleteBtn);
+
+  if (connected && snap.dashboard_url) {
+    const dashboardLink = document.createElement('a');
+    dashboardLink.className = 'button secondary';
+    dashboardLink.href = snap.dashboard_url;
+    dashboardLink.target = '_blank';
+    dashboardLink.rel = 'noopener noreferrer';
+    dashboardLink.textContent = '📊 Open dashboard';
+    actions.append(dashboardLink);
+  }
 
   if (p.SSO) {
     const logoutBtn = document.createElement('button');
     logoutBtn.className = 'secondary';
-    logoutBtn.textContent = 'Clear SSO tokens';
+    logoutBtn.textContent = '🔓 Clear SSO tokens';
     logoutBtn.addEventListener('click', async () => {
       try {
         await api('POST', `/api/profiles/${p.ID}/logout`);
         setMessage(`Cleared cached SSO tokens for "${p.Name}".`);
       } catch (e) { setMessage(e.message); }
     });
-    row.append(logoutBtn);
+    actions.append(logoutBtn);
   }
 
-  block.append(row);
+  block.append(infoRow, actions);
+
+  // Line 3: local target ports for a running connection, collapsed by
+  // default -- most visits to this page don't need it.
   if (connected && snap.connection && snap.connection.tunnels && snap.connection.tunnels.length) {
-    block.append(renderTunnelList(p.ID, snap.connection.tunnels));
+    block.append(renderTunnelSection(p.ID, snap.connection.tunnels));
   }
   return block;
 }
 
-// renderTunnelList is the live equivalent of `ntwire port`: each row can
+// renderTunnelSection is the live equivalent of `ntwire port`: each row can
 // PUT /api/profiles/{id}/tunnels/{name} to rebind a *running* tunnel's
 // local port, distinct from the Local ports field in the edit form (which
-// only takes effect on the next connect).
-function renderTunnelList(profileID, tunnels) {
+// only takes effect on the next connect). Its open/closed state lives in
+// portsExpanded, not the <details> element itself -- see that variable's
+// doc comment.
+function renderTunnelSection(profileID, tunnels) {
+  const details = document.createElement('details');
+  details.className = 'ports-toggle';
+  details.open = portsExpanded.has(profileID);
+  details.addEventListener('toggle', () => setPortsExpanded(profileID, details.open));
+
+  const summary = document.createElement('summary');
+  summary.textContent = `🔌 Local ports (${tunnels.length})`;
+  details.append(summary);
+
   const list = document.createElement('div');
-  list.style.margin = '.4rem 0 0 .5rem';
+  list.className = 'ports-list';
   for (const t of tunnels) {
     const line = document.createElement('div');
     line.className = 'row';
@@ -259,7 +315,8 @@ function renderTunnelList(profileID, tunnels) {
     line.append(label, input, apply);
     list.append(line);
   }
-  return list;
+  details.append(list);
+  return details;
 }
 
 // --- generated form -------------------------------------------------------
@@ -351,11 +408,11 @@ function renderGeneratedFields(profile) {
       legend.textContent = group;
       fs.append(legend);
       basic.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined, profile)));
-      if (group === 'Tunnels' && profile) {
+      if (group === '🔌 Tunnels' && profile) {
         const preview = document.createElement('button');
         preview.type = 'button';
         preview.className = 'secondary';
-        preview.textContent = 'Preview tunnels…';
+        preview.textContent = '👀 Preview tunnels…';
         preview.addEventListener('click', () => previewTunnels(profile.ID));
         fs.append(preview);
       }
@@ -369,13 +426,13 @@ function renderGeneratedFields(profile) {
       details.append(summary);
       const fs = document.createElement('fieldset');
       advanced.forEach(f => fs.append(fieldControl(f, profile ? profile[f.field] : undefined, profile)));
-      if (group === 'SSO') fs.append(oidcClientSecretControl(profile));
+      if (group === '🔑 SSO') fs.append(oidcClientSecretControl(profile));
       details.append(fs);
       generatedFields.append(details);
     }
     // The SSO group normally has both basic and advanced fields. Keep the
     // write-only secret in Advanced even if that changes in the future.
-    if (group === 'SSO' && !advanced.length) {
+    if (group === '🔑 SSO' && !advanced.length) {
       const details = document.createElement('details');
       details.className = 'advanced';
       const summary = document.createElement('summary');
@@ -391,7 +448,7 @@ function renderGeneratedFields(profile) {
 
 function openForm(profile) {
   editingID = profile ? profile.ID : null;
-  formTitle.textContent = profile ? `Edit ${profile.Name}` : 'Add profile';
+  formTitle.textContent = profile ? `✏️ Edit ${profile.Name}` : '➕ Add profile';
   form.Name.value = profile ? profile.Name : '';
   form.Server.value = profile ? profile.Server : '';
   form.ConnectOnStart.checked = !!(profile && profile.ConnectOnStart);
@@ -523,7 +580,7 @@ function trustModal(snap) {
   const modal = document.createElement('div');
   modal.className = 'modal' + (changed ? ' danger' : '');
   const h = document.createElement('h3');
-  h.textContent = changed ? '⚠ Server fingerprint changed' : 'Unknown server';
+  h.textContent = changed ? '⚠️ Server fingerprint changed' : '🔒 Unknown server';
   const body = document.createElement('div');
   if (changed) {
     const warn = document.createElement('p');
@@ -570,7 +627,7 @@ function passphraseModal(snap) {
   const modal = document.createElement('div');
   modal.className = 'modal';
   const h = document.createElement('h3');
-  h.textContent = `Passphrase needed for "${snap.profile.Name}"`;
+  h.textContent = `🔑 Passphrase needed for "${snap.profile.Name}"`;
   const desc = document.createElement('p');
   desc.textContent = `The identity key at ${p.key_path} is encrypted. Enter its passphrase to connect; it is never stored.`;
   const label = document.createElement('label');
@@ -615,27 +672,53 @@ async function refreshSchema() {
 }
 
 const maxEventFailures = 5;
+let reconnectBanner = null;
+let eventSource = null;
 
-function showUnreachable() {
-  if (document.querySelector('.unreachable-banner')) return;
-  const banner = document.createElement('div');
-  banner.className = 'unreachable-banner';
+// hideReconnectBanner/showReconnectBanner mirror the dashboard's own
+// "Lost contact with the ntwire client…" banner (pkg/client/webui) so the
+// same situation looks and behaves the same way from either window.
+function hideReconnectBanner() {
+  if (!reconnectBanner) return;
+  reconnectBanner.remove();
+  reconnectBanner = null;
+}
+
+function showReconnectBanner() {
+  if (reconnectBanner) return;
+  reconnectBanner = document.createElement('div');
+  reconnectBanner.className = 'reconnect-banner';
+  reconnectBanner.setAttribute('role', 'alert');
   const text = document.createElement('span');
-  text.textContent = `Lost contact with the ntwire background process after ${maxEventFailures} attempts. You can close this tab.`;
+  text.textContent = `⚠️ Lost contact with the ntwire client after ${maxEventFailures} attempts.`;
+  const retryBtn = document.createElement('button');
+  retryBtn.type = 'button';
+  retryBtn.textContent = '🔄 Retry now';
+  retryBtn.addEventListener('click', async () => {
+    hideReconnectBanner();
+    // /api/events sends deltas, not an initial snapshot (init() calls
+    // refreshProfiles() before connectEvents() for exactly that reason) --
+    // so profiles held from before the outage need a fresh full fetch here
+    // too, not just a reconnected stream.
+    try { await refreshProfiles(); } catch (e) { setMessage(e.message); }
+    connectEvents();
+  });
   const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
   closeBtn.textContent = 'Close tab';
   closeBtn.addEventListener('click', () => window.close());
-  banner.append(text, closeBtn);
-  document.body.prepend(banner);
-  window.close();
+  reconnectBanner.append(text, retryBtn, closeBtn);
+  document.body.prepend(reconnectBanner);
 }
 
 function connectEvents() {
   let failures = 0;
-  const es = new EventSource(q('/api/events'));
-  es.onopen = () => { failures = 0; };
-  es.onmessage = (ev) => {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource(q('/api/events'));
+  eventSource.onopen = () => { failures = 0; hideReconnectBanner(); };
+  eventSource.onmessage = (ev) => {
     failures = 0;
+    hideReconnectBanner();
     try {
       const update = JSON.parse(ev.data);
       profiles.set(update.ProfileID, update.Snapshot);
@@ -643,12 +726,14 @@ function connectEvents() {
       renderPrompts();
     } catch {}
   };
-  es.onerror = () => {
-    // EventSource retries on its own; give up only after repeated failures.
+  eventSource.onerror = () => {
+    // EventSource retries on its own; give up only after repeated failures,
+    // closing it so "Retry now" (rather than the browser) drives the next
+    // attempt.
     failures++;
     if (failures >= maxEventFailures) {
-      es.close();
-      showUnreachable();
+      eventSource.close();
+      showReconnectBanner();
     }
   };
 }

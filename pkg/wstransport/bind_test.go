@@ -93,7 +93,7 @@ func TestHybridClientRoutesBySentinelEndpoint(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	client := NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	client := NewHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, "")
 	if _, _, err := client.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, V2Options{})
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, V2Options{}, "")
 	clientFns, _, err := client.Open(0)
 	if err != nil {
 		t.Fatal(err)

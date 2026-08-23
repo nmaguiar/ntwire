@@ -92,7 +92,23 @@ type Options struct {
 	HTTPSProxy string
 	// NoSystemProxy bypasses HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. It has no
 	// effect when HTTPSProxy is set.
-	NoSystemProxy    bool
+	NoSystemProxy bool
+	// IPVersion restricts every connection ntwire makes -- control-plane
+	// HTTPS/WebSocket, direct-UDP WireGuard data plane, and the
+	// WebSocket-fallback's UDP-based self-reflection, NAT priming, and
+	// direct/UDP-relay upgrade rungs -- to one IP family. "" (default) races
+	// every resolved address regardless of family and leaves the UDP data
+	// plane dual-stack; "4" restricts everything to IPv4; "6" restricts
+	// everything to IPv6 -- the excluded family is never attempted, even if
+	// the chosen family fails outright. Any other value is rejected.
+	//
+	// A server-advertised direct-UDP endpoint of the excluded family is
+	// treated as unusable: the connection falls back to the WebSocket
+	// transport instead of dialing it (see ConnectWithOptions). The UDP
+	// bind itself is also restricted at the transport layer (pkg/ipfamily),
+	// so even a relay-punched or NAT-roamed candidate of the excluded
+	// family can never carry traffic.
+	IPVersion        string
 	KnownServersFile string
 	NoWebUI          bool
 	StatusFile       string
@@ -172,6 +188,12 @@ type Options struct {
 	// indirectly) -- do no more than a non-blocking send on a buffered
 	// channel or an atomic update. It is never called from Close.
 	OnEvent func(Event)
+
+	// SettingsURL, when set, is a caller-supplied link back to a management
+	// UI for this connection (ntwire-gui's settings window). It is surfaced
+	// to the local status UI (WebStatus.SettingsURL) as a "back to settings"
+	// link; the CLI leaves it empty since it has no such UI to link to.
+	SettingsURL string
 }
 
 // EventKind identifies which control-plane lifecycle transition an Event
@@ -313,11 +335,14 @@ func httpClient(url string, o Options) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
+		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
+	}
 	if !strings.HasPrefix(strings.ToLower(url), "https://") {
-		return resilientHTTPClient(nil, proxy), nil
+		return resilientHTTPClient(nil, proxy, o.IPVersion), nil
 	}
 	if o.Insecure {
-		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, proxy), nil
+		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, proxy, o.IPVersion), nil
 	} // #nosec G402 -- explicit CLI escape hatch
 	if o.CAFile != "" {
 		b, err := os.ReadFile(o.CAFile)
@@ -328,7 +353,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		if !pool.AppendCertsFromPEM(b) {
 			return nil, fmt.Errorf("no certificate found in %s", o.CAFile)
 		}
-		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, proxy), nil
+		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, proxy, o.IPVersion), nil
 	}
 	path := o.KnownServersFile
 	if path == "" {
@@ -349,7 +374,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
 		}
 		return nil
-	}}, proxy), nil
+	}}, proxy, o.IPVersion), nil
 }
 
 // proxyFunc selects the HTTPS control-plane proxy. An explicit proxy wins;
@@ -372,19 +397,55 @@ func proxyFunc(o Options) (func(*http.Request) (*urlpkg.URL, error), error) {
 // A normal net.Dialer retries same-family DNS answers serially, which leaves
 // a client stuck behind one failed relay replica. The hostname and TLS SNI
 // remain unchanged; only the TCP address selection becomes pool-aware.
-func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error)) *http.Client {
-	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: raceResolvedDial}
+//
+// ipVersion is "", "4", or "6" (see Options.IPVersion): "" races every
+// resolved address regardless of family; "4"/"6" excludes every address of
+// the other family before racing, so the connection is pinned to that
+// family rather than merely preferring it.
+func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error), ipVersion string) *http.Client {
+	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		return raceResolvedDial(ctx, network, address, ipVersion)
+	}}
 	return &http.Client{Transport: transport}
 }
 
-func raceResolvedDial(ctx context.Context, network, address string) (net.Conn, error) {
+// filterIPVersion drops every address not of the family named by ipVersion
+// ("4" or "6"), preserving resolver order. It returns addrs unchanged for
+// "" (httpClient rejects any other value before this is ever reached).
+func filterIPVersion(addrs []net.IPAddr, ipVersion string) []net.IPAddr {
+	if ipVersion == "" {
+		return addrs
+	}
+	wantV4 := ipVersion == "4"
+	out := make([]net.IPAddr, 0, len(addrs))
+	for _, a := range addrs {
+		if (a.IP.To4() != nil) == wantV4 {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || net.ParseIP(host) != nil {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil || len(addrs) < 2 {
+	if err != nil {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	addrs = filterIPVersion(addrs, ipVersion)
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("%s has no IPv%s address", host, ipVersion)
+	}
+	// A single candidate is dialed by its literal address, not by
+	// re-handing the hostname to net.Dialer -- that would let the OS
+	// resolver and its own family preference pick the address again,
+	// silently undoing an ipVersion filter that excluded every other
+	// family's results above.
+	if len(addrs) == 1 {
+		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
 	}
 	type result struct {
 		conn net.Conn
@@ -731,6 +792,14 @@ type Connection struct {
 	expiresAt      time.Time
 	reconnectState ReconnectState
 
+	// historyMu guards history, a bounded ring buffer of periodic status
+	// snapshots (see recordHistorySample/historyLoop) that back the local
+	// status UI's charts. It is a separate lock from mu -- recording a
+	// sample calls webStatus, which takes mu itself -- and is never held
+	// while doing I/O.
+	historyMu sync.Mutex
+	history   []WebHistorySample
+
 	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
 	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
 	// resolved once at connect time and never mutated after, so
@@ -935,11 +1004,23 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
 	}
-	useWS, err := selectTransport(options.UseWebSocket, r.UDP, r.WebSocket)
+	// A direct UDP endpoint of the wrong family is treated as if the server
+	// hadn't advertised one at all: selectTransport falls back to WebSocket
+	// rather than dialing a family the caller explicitly excluded. mismatch
+	// only feeds the transportReason banner below -- the actual UDP data
+	// plane (direct or via the WebSocket-fallback's opportunistic upgrade
+	// ladder) is restricted to options.IPVersion structurally, via
+	// pkg/ipfamily, regardless of this check.
+	udpEndpoint, mismatch := r.UDP, ""
+	if r.UDP != "" && !matchesIPVersion(r.UDP, options.IPVersion) {
+		mismatch = fmt.Sprintf("server's direct UDP endpoint (%s) is not IPv%s", r.UDP, options.IPVersion)
+		udpEndpoint = ""
+	}
+	useWS, err := selectTransport(options.UseWebSocket, udpEndpoint, r.WebSocket)
 	if err != nil {
 		return nil, err
 	}
-	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}}
+	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}, IPVersion: options.IPVersion}
 	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
 	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
 	// self-reflect, prime, and move the peer's endpoint between transports.
@@ -950,10 +1031,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if useWS {
 		if r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1) {
 			v2 := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, v2, resolveMultipathV2Options(options.MultipathV2))
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, v2, resolveMultipathV2Options(options.MultipathV2), options.IPVersion)
 			stackConfig.Bind = multipath
 		} else {
-			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}})
+			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion)
 			stackConfig.Bind = hybrid
 		}
 	}
@@ -1007,6 +1088,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		// surprising, often-support-question-worthy one.
 		if !options.UseWebSocket {
 			c.transportReason = "server did not advertise a direct UDP WireGuard endpoint"
+			if mismatch != "" {
+				c.transportReason = mismatch
+			}
 		}
 	}
 	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "reason", c.transportReason, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
@@ -1053,6 +1137,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		go c.forward(lt, l, target)
 	}
 	go c.renewLoop()
+	go c.historyLoop()
 	if hybrid != nil && !options.NoDirectUpgrade && !options.UseWebSocket {
 		go c.directUpgradeLoop()
 	}
@@ -1133,6 +1218,26 @@ func selectTransport(explicit bool, udp, websocket string) (useWS bool, err erro
 		return false, fmt.Errorf("server did not advertise a WireGuard endpoint")
 	}
 	return useWS, nil
+}
+
+// matchesIPVersion reports whether hostport's host is a literal address of
+// the requested family ("4" or "6"). "" (no restriction) always matches.
+func matchesIPVersion(hostport, ipVersion string) bool {
+	if ipVersion == "" {
+		return true
+	}
+	host, _, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false
+	}
+	if ipVersion == "6" {
+		return addr.Unmap().Is6()
+	}
+	return addr.Unmap().Is4()
 }
 
 // resolveServerTunnelIP determines the server's own tunnel address. Before
@@ -1567,6 +1672,13 @@ func (c *Connection) startWebUI() {
 		}
 		_ = json.NewEncoder(w).Encode(c.webStatus())
 	})
+	mux.HandleFunc("/history", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(c.webHistory())
+	})
 	mux.HandleFunc("/instructions", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
 			http.NotFound(w, r)
@@ -1655,6 +1767,9 @@ type WebStatus struct {
 	Reconnections  uint64                   `json:"reconnections"`
 	Paths          []wstransport.PathStatus `json:"paths,omitempty"`
 	Duplication    bool                     `json:"duplication_active,omitempty"`
+	// SettingsURL mirrors Options.SettingsURL; empty when the caller (e.g.
+	// the CLI) supplied none.
+	SettingsURL string `json:"settings_url,omitempty"`
 }
 
 // ConnectionState is the complete typed, race-free state of a running
@@ -1800,12 +1915,92 @@ func (c *Connection) webStatus() WebStatus {
 		}
 		tunnels = append(tunnels, wt)
 	}
-	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load()}
+	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), SettingsURL: c.options.SettingsURL}
 	if c.multipath != nil {
 		status.Paths = c.multipath.Paths()
 		_, _, status.Duplication = c.multipath.Scheduler().Select()
 	}
 	return status
+}
+
+// historySampleInterval is how often historyLoop records a sample. The
+// local status UI's charts assume samples are evenly spaced at this
+// interval when mapping a sample's index to elapsed time, so this is the
+// one place that cadence is allowed to change.
+const historySampleInterval = 5 * time.Second
+
+// historySampleLimit bounds Connection.history to five minutes of samples
+// at historySampleInterval.
+const historySampleLimit = int(5 * time.Minute / historySampleInterval)
+
+// WebHistorySample is one point-in-time snapshot in a running connect
+// process's history, as reported by its local status UI's /history
+// endpoint. It is recorded independently of any browser polling (see
+// Connection.historyLoop), so a freshly opened status UI tab can render up
+// to five minutes of history immediately instead of starting empty.
+type WebHistorySample struct {
+	Time time.Time `json:"time"`
+	// Connected is true only when the control-plane session is both
+	// established and not currently reconnecting -- see
+	// Connection.recordHistorySample. Charts use it to mark periods the
+	// connection was down.
+	Connected      bool        `json:"connected"`
+	ConnectionType string      `json:"connection_type"`
+	LatencyMillis  uint64      `json:"latency_millis"`
+	Tunnels        []WebTunnel `json:"tunnels"`
+}
+
+// WebHistory is the local status UI's GET /history response: the current
+// contents of Connection.history, oldest first.
+type WebHistory struct {
+	Samples []WebHistorySample `json:"samples"`
+}
+
+// recordHistorySample appends one snapshot to the ring buffer, trimming to
+// historySampleLimit. It is safe to call from any goroutine.
+func (c *Connection) recordHistorySample() {
+	status := c.webStatus()
+	c.mu.Lock()
+	reconnecting := c.reconnectState.Reconnecting
+	c.mu.Unlock()
+	sample := WebHistorySample{
+		Time:           time.Now(),
+		Connected:      status.Connected && !reconnecting,
+		ConnectionType: status.ConnectionType,
+		LatencyMillis:  status.LatencyMillis,
+		Tunnels:        status.Tunnels,
+	}
+	c.historyMu.Lock()
+	c.history = append(c.history, sample)
+	if over := len(c.history) - historySampleLimit; over > 0 {
+		c.history = c.history[over:]
+	}
+	c.historyMu.Unlock()
+}
+
+// webHistory returns a copy of the current history ring buffer, as served
+// at GET /history.
+func (c *Connection) webHistory() WebHistory {
+	c.historyMu.Lock()
+	defer c.historyMu.Unlock()
+	return WebHistory{Samples: append([]WebHistorySample(nil), c.history...)}
+}
+
+// historyLoop records one status snapshot immediately, then again on every
+// historySampleInterval tick until Close -- the same <-c.stop shutdown
+// pattern renewLoop uses, so this goroutine never outlives the connection.
+func (c *Connection) historyLoop() {
+	c.recordHistorySample()
+	t := time.NewTicker(historySampleInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-t.C:
+			c.recordHistorySample()
+		}
+	}
 }
 
 // grantedByName indexes the tunnels the server granted this session by name.

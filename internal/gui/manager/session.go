@@ -65,6 +65,11 @@ type Snapshot struct {
 	// sole connected-state input; it never derives state from client logs or
 	// reaches into Connection's mutable fields.
 	Connection *client.ConnectionState `json:"connection,omitempty"`
+	// DashboardURL is this profile's per-connection local status page (see
+	// Manager.DashboardURL), set only while Connection is non-nil. It lets
+	// the settings window link out to the same page the tray's "Open
+	// dashboard…" item opens.
+	DashboardURL string `json:"dashboard_url,omitempty"`
 }
 
 // session is one profile's live connection state, owned by exactly one

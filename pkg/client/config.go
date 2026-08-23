@@ -72,6 +72,9 @@ type Settings struct {
 	// BindAddress is the advanced, opt-in override for the loopback-only
 	// default tunnel listeners bind to; see client.Options.BindAddress.
 	BindAddress string `yaml:"bind_address"`
+	// IPVersion is the persisted default for client.Options.IPVersion
+	// ("", "4", or "6").
+	IPVersion string `yaml:"ip_version"`
 }
 
 func DefaultConfigFile() string {

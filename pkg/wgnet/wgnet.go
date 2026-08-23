@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/ipfamily"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -39,6 +40,12 @@ type Config struct {
 	// Bind overrides the default UDP transport. It is used by the WebSocket
 	// fallback while retaining the same WireGuard device and netstack.
 	Bind conn.Bind
+	// IPVersion restricts the default UDP transport (used only when Bind is
+	// nil) to one IP family: "4" or "6". "" (default) leaves it dual-stack.
+	// A caller that supplies its own Bind is responsible for applying this
+	// restriction itself -- see pkg/ipfamily and pkg/wstransport's
+	// NewHybridClient/NewMultipathHybridClient.
+	IPVersion string
 }
 
 // Stack owns both the WireGuard device and its in-memory TCP/IP stack.
@@ -73,7 +80,7 @@ func New(c Config) (*Stack, error) {
 	}
 	bind := c.Bind
 	if bind == nil {
-		bind = conn.NewStdNetBind()
+		bind = ipfamily.New(conn.NewStdNetBind(), c.IPVersion)
 	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
 	// ntwire carries WireGuard keys as Base64, while WireGuard's IPC protocol

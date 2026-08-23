@@ -484,6 +484,7 @@ func connect(args []string, u *ui.UI) {
 	websocket := fs.BoolVal("websocket")
 	collect := fs.Str("collect-exec")
 	bind := fs.Str("bind")
+	ipVersion := fs.Str("ip-version")
 	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -512,7 +513,7 @@ func connect(args []string, u *ui.UI) {
 	o := client.Options{
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
-		BindAddress: bind,
+		BindAddress: bind, IPVersion: ipVersion,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)
@@ -571,6 +572,7 @@ func list(args []string, u *ui.UI) {
 	provider := fs.Str("provider")
 	tokenCache := fs.Str("token-cache")
 	collect := fs.Str("collect-exec")
+	ipVersion := fs.Str("ip-version")
 	statusFile := fs.Str("status-file")
 	jsonOut := fs.BoolVal("json")
 	server := settings.Server
@@ -595,7 +597,7 @@ func list(args []string, u *ui.UI) {
 	o := client.Options{
 		CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache,
-		QueryOnly: true, KeyPassphrase: passphrase,
+		QueryOnly: true, KeyPassphrase: passphrase, IPVersion: ipVersion,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	r, err := client.AuthenticateWithOptions(server, key, info, o)
