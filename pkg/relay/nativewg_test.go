@@ -59,11 +59,27 @@ func TestNativeWGHostnameListenAndWildcardAdvertisement(t *testing.T) {
 	if err != nil || net.ParseIP(host) == nil {
 		t.Fatalf("resolved hostname listener = %q, want numeric IP:port", resolved)
 	}
-	advertised, err := nativeWGAdvertiseAddr("home", "relay.example.com", ":51821", &net.UDPAddr{IP: net.IPv4zero, Port: 51821})
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name       string
+		configured string
+		bound      net.Addr
+		want       string
+	}{
+		{"empty-host-wildcard", ":51821", &net.UDPAddr{IP: net.IPv4zero, Port: 51821}, "home.relay.example.com:51821"},
+		{"ipv4-wildcard", "0.0.0.0:51821", &net.UDPAddr{IP: net.IPv4zero, Port: 51821}, "home.relay.example.com:51821"},
+		{"ipv6-wildcard", "[::]:51821", &net.UDPAddr{IP: net.IPv6zero, Port: 51821}, "home.relay.example.com:51821"},
+		{"concrete-ip", "127.0.0.1:0", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 56423}, "127.0.0.1:56423"},
+		{"concrete-hostname", "localhost:0", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 56423}, "127.0.0.1:56423"},
 	}
-	if advertised != "home.relay.example.com:51821" {
-		t.Fatalf("wildcard advertised address = %q", advertised)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			advertised, err := nativeWGAdvertiseAddr("home", "relay.example.com", tc.configured, tc.bound)
+			if err != nil {
+				t.Fatalf("nativeWGAdvertiseAddr error: %v", err)
+			}
+			if advertised != tc.want {
+				t.Fatalf("advertised = %q, want %q", advertised, tc.want)
+			}
+		})
 	}
 }

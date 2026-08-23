@@ -297,11 +297,7 @@ func nativeWGAdvertiseAddr(tenant, domain, configured string, bound net.Addr) (s
 	if host == "" || (ip != nil && ip.IsUnspecified()) {
 		return net.JoinHostPort(tenant+"."+domain, port), nil
 	}
-	udpAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
-	if err != nil {
-		return "", fmt.Errorf("resolve host %q: %w", host, err)
-	}
-	return udpAddr.String(), nil
+	return bound.String(), nil
 }
 
 // udpRelayPoolListenAddr returns the server-leg address for a pooled relay
