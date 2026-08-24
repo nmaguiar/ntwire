@@ -30,6 +30,7 @@ button:disabled{cursor:wait;opacity:.65}
 #message.err{color:var(--danger)}
 .advanced-toggle{color:var(--brand);font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:.85rem}
 .advanced[hidden]{display:none}
+.reconnect-banner{position:sticky;top:0;z-index:100;display:flex;gap:.75rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.7rem 1rem;background:#fee2e2;color:#7f1d1d;border-bottom:1px solid #fca5a5;font-weight:700;box-shadow:0 2px 8px rgba(127,29,29,.12)}.reconnect-banner button{border:1px solid #fca5a5;border-radius:10px;background:#fff1f2;color:#9f1239;padding:.4rem .75rem;font-weight:700;cursor:pointer}.reconnect-banner button:hover,.reconnect-banner button:focus-visible{background:#ffe4e6}
 </style>
 <main>
   <section class="hero">
@@ -107,4 +108,18 @@ saveBtn.addEventListener('click',async()=>{
   finally{saveBtn.disabled=false}
 });
 load().catch(e=>{groupsEl.textContent='Could not load settings: '+e.message});
+// This settings server runs inside `ntwire connect` itself (see
+// startSettingsUI) and closes the moment that process exits, so unlike
+// load() above -- a one-shot render on open -- pingServer polls
+// indefinitely and never touches the form, just to notice the server going
+// away while the tab stays open. Mirrors the reconnect banner on the local
+// status UI (pkg/client/webui) so both tabs behave the same way when the
+// connection dies.
+const retryDelay=5000;let retryTimer=null,retryTicker=null,nextRetryAt=0,reconnectBanner=null;
+function updateReconnectBanner(){if(!reconnectBanner)return;const seconds=Math.max(0,Math.ceil((nextRetryAt-Date.now())/1000));reconnectBanner.querySelector('[data-retry-countdown]').textContent=`Retrying in ${seconds}s.`}
+function showReconnectBanner(){if(!reconnectBanner){const text=document.createElement('span'),btn=document.createElement('button');reconnectBanner=document.createElement('div');reconnectBanner.className='reconnect-banner';reconnectBanner.setAttribute('role','alert');text.textContent='⚠️ Lost contact with the ntwire client. ';const countdown=document.createElement('span');countdown.dataset.retryCountdown='';text.append(countdown);btn.type='button';btn.textContent='Close tab';btn.addEventListener('click',()=>window.close());reconnectBanner.append(text,btn);document.body.prepend(reconnectBanner);retryTicker=setInterval(updateReconnectBanner,250)}updateReconnectBanner()}
+function hideReconnectBanner(){if(!reconnectBanner)return;reconnectBanner.remove();reconnectBanner=null;clearInterval(retryTicker);retryTicker=null}
+function scheduleRefresh(){clearTimeout(retryTimer);nextRetryAt=Date.now()+retryDelay;updateReconnectBanner();retryTimer=setTimeout(pingServer,retryDelay)}
+async function pingServer(){clearTimeout(retryTimer);try{const r=await fetch('/api/schema?token='+encodeURIComponent(token),{cache:'no-store'});if(!r.ok)throw Error();hideReconnectBanner()}catch{showReconnectBanner()}finally{scheduleRefresh()}}
+pingServer();
 </script>
