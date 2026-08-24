@@ -229,8 +229,14 @@ The generated PAC files include pattern matching for Kubernetes internal service
 CGNAT private address ranges, routing matched destinations through SOCKS and sending
 other traffic `DIRECT`.
 
-PAC URLs can be viewed via `ntwire-server list`, `ntwire list`, the server
-web dashboard, and the client status UI.
+PAC URLs can be viewed via `ntwire-server list`, `ntwire list`, and the server
+web dashboard. The client status UI no longer displays them automatically;
+a tunnel's `instructions` can surface them with the `{{.PACURL}}` /
+`{{.PACURLiOS}}` template fields (see "Tunnel instructions" below). Instead,
+for `target: socks` tunnels, the client status UI offers **Open in browser**
+(launches an isolated Chromium-family browser profile pre-configured to use
+the tunnel's local SOCKS proxy) and **Reset browser profile** (clears that
+isolated profile) buttons.
 
 ## Tunnel local address and port
 
@@ -315,6 +321,8 @@ fields are available:
 | `{{.TunnelIP}}` | the client's address inside the tunnel |
 | `{{.ServerTunnelIP}}` | the server's address inside the tunnel |
 | `{{.Server}}` | control-plane URL the client is connected to |
+| `{{.PACURL}}` | Desktop Proxy Auto-Configuration URL (`target: socks` tunnels only; empty otherwise) |
+| `{{.PACURLiOS}}` | iOS/mobile Proxy Auto-Configuration URL (`target: socks` tunnels only; empty otherwise) |
 
 Supported Markdown is headings, paragraphs, bullet and numbered lists, fenced
 code blocks, inline code, emphasis, and `http(s)` links. Fenced code blocks get

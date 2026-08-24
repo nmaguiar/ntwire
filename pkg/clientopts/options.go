@@ -284,3 +284,49 @@ func Lookup(command, name string) (Option, bool) {
 	}
 	return Option{}, false
 }
+
+// Field is one generated settings-form field, derived from an Option and
+// the name of the config struct field its value is read from and written
+// back to (a GUI profile field, or a persisted client.Settings field).
+type Field struct {
+	Name        string // the Option's Name
+	ConfigField string // the config struct field name this maps to
+	Kind        string // "string", "bool", or "keyvalue"
+	Label       string
+	Help        string
+	Group       string
+	Widget      string
+	Advanced    bool
+}
+
+func kindName(k Kind) string {
+	switch k {
+	case KindBool:
+		return "bool"
+	case KindKeyValue:
+		return "keyvalue"
+	default:
+		return "string"
+	}
+}
+
+// Fields builds a settings-form field list for command from the registry,
+// so a generated form can never drift from the flags cmd/ntwire actually
+// parses. fieldMap names, for each Option.Name a settings UI wants to
+// expose, the config struct field it reads/writes -- an option missing
+// from fieldMap (deliberately, e.g. one with nothing persisted to write to)
+// is skipped rather than producing a field that writes nowhere.
+func Fields(command string, fieldMap map[string]string) []Field {
+	var out []Field
+	for _, o := range For(command) {
+		field, ok := fieldMap[o.Name]
+		if !ok {
+			continue
+		}
+		out = append(out, Field{
+			Name: o.Name, ConfigField: field, Kind: kindName(o.Kind),
+			Label: o.Label, Help: o.Help, Group: o.Group, Widget: string(o.Widget), Advanced: o.Advanced,
+		})
+	}
+	return out
+}

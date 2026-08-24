@@ -189,10 +189,11 @@ type Options struct {
 	// channel or an atomic update. It is never called from Close.
 	OnEvent func(Event)
 
-	// SettingsURL, when set, is a caller-supplied link back to a management
-	// UI for this connection (ntwire-gui's settings window). It is surfaced
-	// to the local status UI (WebStatus.SettingsURL) as a "back to settings"
-	// link; the CLI leaves it empty since it has no such UI to link to.
+	// SettingsURL, when set, is a caller-supplied link to a settings UI for
+	// this connection: ntwire-gui's settings window, or cmd/ntwire's own
+	// local settings page (see startSettingsUI) for the persisted
+	// ~/.ntwire/config.yaml a plain `ntwire connect` reads. It is surfaced
+	// to the local status UI (WebStatus.SettingsURL) as a "Settings" link.
 	SettingsURL string
 }
 
@@ -1687,12 +1688,37 @@ func (c *Connection) startWebUI() {
 			http.NotFound(w, r)
 			return
 		}
+		rest := strings.TrimPrefix(r.URL.Path, "/tunnels/")
+		if name, action, ok := strings.Cut(rest, "/browser/"); ok {
+			// name becomes a filesystem path component in browserProfileDir,
+			// so ".." must be rejected as strictly as "/" -- a tunnel named
+			// ".." would otherwise resolve the profile directory to
+			// ~/.ntwire itself, and "reset" would RemoveAll it.
+			if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
+				http.Error(w, "invalid tunnel name", http.StatusBadRequest)
+				return
+			}
+			if r.Method != http.MethodPost {
+				w.Header().Set("Allow", http.MethodPost)
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			switch action {
+			case "open":
+				c.openTunnelBrowser(w, name)
+			case "reset":
+				c.resetTunnelBrowserProfile(w, name)
+			default:
+				http.NotFound(w, r)
+			}
+			return
+		}
 		if r.Method != http.MethodPut {
 			w.Header().Set("Allow", http.MethodPut)
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		name := strings.TrimPrefix(r.URL.Path, "/tunnels/")
+		name := rest
 		if name == "" || strings.Contains(name, "/") {
 			http.Error(w, "invalid tunnel name", http.StatusBadRequest)
 			return
@@ -2013,6 +2039,81 @@ func (c *Connection) grantedByName() map[string]protocol.Tunnel {
 	return m
 }
 
+// socksTunnelLocalAddr returns the bound loopback address of the named
+// tunnel, or an error naming why it can't back a browser proxy: unknown
+// name, or a tunnel that isn't a `target: socks` proxy -- opening a plain
+// port-forward tunnel as a browser's proxy would silently break it.
+func (c *Connection) socksTunnelLocalAddr(name string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	granted := c.grantedByName()
+	for _, t := range c.tunnels {
+		if t.name != name {
+			continue
+		}
+		if granted[t.name].TargetHint != "socks" {
+			return "", fmt.Errorf("tunnel %q is not a SOCKS proxy", name)
+		}
+		return t.localAddr, nil
+	}
+	return "", fmt.Errorf("unknown tunnel %q", name)
+}
+
+// browserProfileDir returns the isolated Chromium profile directory used by
+// the "Open in browser" / "Reset browser profile" buttons for the named
+// SOCKS tunnel, one per tunnel name so distinct tunnels (and distinct
+// servers, since names are only unique per connection) never share
+// cookies or saved sessions.
+func browserProfileDir(name string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".ntwire", "browser-profiles", name), nil
+}
+
+// openTunnelBrowser backs POST /tunnels/{name}/browser/open: it launches an
+// isolated Chromium-family browser proxied through the named SOCKS
+// tunnel's local listener.
+func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
+	addr, err := c.socksTunnelLocalAddr(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dir, err := browserProfileDir(name)
+	if err != nil {
+		http.Error(w, "cannot resolve browser profile directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := browseropen.OpenSOCKSBrowser(dir, addr); err != nil {
+		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resetTunnelBrowserProfile backs POST /tunnels/{name}/browser/reset: it
+// deletes the named SOCKS tunnel's isolated browser profile directory, so
+// the next "Open in browser" starts with no cached cookies, site data, or
+// saved credentials.
+func (c *Connection) resetTunnelBrowserProfile(w http.ResponseWriter, name string) {
+	if _, err := c.socksTunnelLocalAddr(name); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dir, err := browserProfileDir(name)
+	if err != nil {
+		http.Error(w, "cannot resolve browser profile directory: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := browseropen.ResetSOCKSBrowserProfile(dir); err != nil {
+		http.Error(w, "cannot reset browser profile: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // WebInstructions is the rendered setup guidance for one tunnel, as reported
 // by a running connect process's local status UI. It is served separately from
 // WebStatus because it is static for the lifetime of a local listener, while
@@ -2080,13 +2181,18 @@ func (c *Connection) webInstructions() WebInstructionsList {
 			}
 		}
 		p, _ := strconv.Atoi(port)
-		wi.Blocks = instructions.Render(g.Instructions, instructions.Data{
+		data := instructions.Data{
 			Name: t.name, Description: g.Description,
 			LocalAddress: net.JoinHostPort(instructionHost, port), LocalHost: instructionHost, LocalPort: p,
 			VirtualPort: t.virtualPort, TargetHint: g.TargetHint,
 			TunnelIP: c.Response.TunnelIP, ServerTunnelIP: c.Response.ServerTunnelIP,
 			Server: c.base,
-		})
+		}
+		if g.TargetHint == "socks" {
+			data.PACURL = pac.URLForPlatform(c.base, t.name, false)
+			data.PACURLiOS = pac.URLForPlatform(c.base, t.name, true)
+		}
+		wi.Blocks = instructions.Render(g.Instructions, data)
 		if wi.DocsURL == "" && len(wi.Blocks) == 0 {
 			continue
 		}

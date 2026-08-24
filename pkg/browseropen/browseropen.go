@@ -2,6 +2,9 @@
 // way every ntwire binary that needs it does it: pkg/client's SSO login
 // flow, and ntwire-gui's tray "Open dashboard…" action and its settings
 // window's browser fallback when no native webview runtime is available.
+// It also launches an isolated, proxy-configured Chromium-family browser
+// for the client status UI's "Open in browser" button on target: socks
+// tunnels -- see OpenSOCKSBrowser.
 package browseropen
 
 import (

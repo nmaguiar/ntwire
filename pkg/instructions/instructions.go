@@ -39,6 +39,12 @@ type Data struct {
 	TunnelIP       string // this client's address inside the tunnel
 	ServerTunnelIP string // the server's address inside the tunnel
 	Server         string // control-plane base URL this client is connected to
+	// PACURL/PACURLiOS are the Desktop and iOS Proxy Auto-Configuration
+	// URLs for this tunnel, populated only when TargetHint is "socks" --
+	// empty otherwise, so a template using them on a non-SOCKS tunnel
+	// degrades to blank rather than a broken link.
+	PACURL    string
+	PACURLiOS string
 }
 
 // Span is a run of inline content within a Block.

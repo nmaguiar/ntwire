@@ -50,41 +50,19 @@ type schemaField struct {
 	Advanced bool   `json:"advanced"`
 }
 
-func kindName(k clientopts.Kind) string {
-	switch k {
-	case clientopts.KindBool:
-		return "bool"
-	case clientopts.KindKeyValue:
-		return "keyvalue"
-	default:
-		return "string"
-	}
-}
-
 // profileSchema is the settings form's field list, derived from
-// pkg/clientopts's registry rather than hand-maintained -- adding an
-// Option to the registry (with a profileField entry) makes it appear in
-// the generated form with no other change needed here.
+// pkg/clientopts's registry (via clientopts.Fields) rather than
+// hand-maintained -- adding an Option to the registry (with a profileField
+// entry) makes it appear in the generated form with no other change
+// needed here.
 func profileSchema() []schemaField {
-	var out []schemaField
-	for _, o := range clientopts.For("connect") {
-		if o.GUIHidden || o.Discarded {
-			continue
+	fields := clientopts.Fields("connect", profileField)
+	out := make([]schemaField, len(fields))
+	for i, f := range fields {
+		out[i] = schemaField{
+			Name: f.Name, Field: f.ConfigField, Kind: f.Kind,
+			Label: f.Label, Help: f.Help, Group: f.Group, Widget: f.Widget, Advanced: f.Advanced,
 		}
-		field, ok := profileField[o.Name]
-		if !ok {
-			continue // covered by schema_test.go; see profileField's doc comment
-		}
-		out = append(out, schemaField{
-			Name:     o.Name,
-			Field:    field,
-			Kind:     kindName(o.Kind),
-			Label:    o.Label,
-			Help:     o.Help,
-			Group:    o.Group,
-			Widget:   string(o.Widget),
-			Advanced: o.Advanced,
-		})
 	}
 	return out
 }

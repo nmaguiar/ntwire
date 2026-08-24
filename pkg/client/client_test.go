@@ -12,7 +12,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -1018,5 +1020,130 @@ func TestRenewCannotRestoreStateAfterClose(t *testing.T) {
 	}
 	if c.Response.Token != "old-token" || c.token != "old-token" {
 		t.Fatalf("closed connection state was restored: response=%q token=%q", c.Response.Token, c.token)
+	}
+}
+
+func newSocksTestConnection() *Connection {
+	return &Connection{
+		Response: protocol.AuthResponse{Tunnels: []protocol.Tunnel{
+			{Name: "egress", TargetHint: "socks"},
+			{Name: "database", TargetHint: "postgres.internal:5432"},
+		}},
+		tunnels: []*localTunnel{
+			{name: "egress", virtualPort: 11080, localAddr: "127.0.0.1:51080"},
+			{name: "database", virtualPort: 15432, localAddr: "127.0.0.1:55432"},
+		},
+	}
+}
+
+func TestSocksTunnelLocalAddr(t *testing.T) {
+	c := newSocksTestConnection()
+	addr, err := c.socksTunnelLocalAddr("egress")
+	if err != nil || addr != "127.0.0.1:51080" {
+		t.Fatalf("socksTunnelLocalAddr(egress) = (%q, %v)", addr, err)
+	}
+	if _, err := c.socksTunnelLocalAddr("database"); err == nil {
+		t.Fatal("socksTunnelLocalAddr(database) should reject a non-SOCKS tunnel")
+	}
+	if _, err := c.socksTunnelLocalAddr("nope"); err == nil {
+		t.Fatal("socksTunnelLocalAddr(nope) should reject an unknown tunnel")
+	}
+}
+
+// openTunnelBrowser's guard clauses must reject before it ever reaches
+// browseropen.OpenSOCKSBrowser: this test only exercises the rejecting
+// paths, since the success path launches a real browser process.
+func TestOpenTunnelBrowserRejectsNonSocksOrUnknown(t *testing.T) {
+	c := newSocksTestConnection()
+	for _, name := range []string{"database", "nope"} {
+		w := httptest.NewRecorder()
+		c.openTunnelBrowser(w, name)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("openTunnelBrowser(%q) status = %d, want 400", name, w.Code)
+		}
+	}
+}
+
+func TestResetTunnelBrowserProfileRejectsNonSocksOrUnknown(t *testing.T) {
+	c := newSocksTestConnection()
+	for _, name := range []string{"database", "nope"} {
+		w := httptest.NewRecorder()
+		c.resetTunnelBrowserProfile(w, name)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("resetTunnelBrowserProfile(%q) status = %d, want 400", name, w.Code)
+		}
+	}
+}
+
+// TestTunnelBrowserRouteRejectsDotDotTunnelName guards the actual HTTP route
+// (not just socksTunnelLocalAddr) against a server-supplied tunnel named
+// ".." -- browserProfileDir(name) turns name into a path component, so
+// unless the route itself rejects it, POST /tunnels/../browser/reset would
+// resolve to ~/.ntwire and RemoveAll it.
+func TestTunnelBrowserRouteRejectsDotDotTunnelName(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	marker := filepath.Join(home, ".ntwire", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("private key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Connection{Response: protocol.AuthResponse{Tunnels: []protocol.Tunnel{{Name: "..", TargetHint: "socks"}}}}
+	c.startWebUI()
+	defer c.Close()
+
+	u, err := url.Parse(c.UIURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// net/http.Client follows a POST redirect as a converted GET, which
+	// would mask what actually happened here (net/http.ServeMux itself
+	// 301s any unclean path, ".." included, before any handler runs) --
+	// stop at the first response instead of following it, so a pass
+	// reflects this server's own behavior rather than the client's.
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for _, action := range []string{"open", "reset"} {
+		u.Path = "/tunnels/../browser/" + action
+		resp, err := client.Post(u.String(), "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent {
+			t.Fatalf("%s: status = %d, want anything but success", action, resp.StatusCode)
+		}
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("identity key was removed: %v", err)
+	}
+}
+
+// TestResetTunnelBrowserProfileRemovesProfileDir exercises the real deletion
+// path (unlike "open", it does not launch anything), pointed at a temp home
+// so it never touches the real ~/.ntwire/browser-profiles.
+func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir, err := browserProfileDir("egress")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	c := newSocksTestConnection()
+	w := httptest.NewRecorder()
+	c.resetTunnelBrowserProfile(w, "egress")
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("resetTunnelBrowserProfile(egress) status = %d, body = %s", w.Code, w.Body)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("profile dir still exists after reset: err=%v", err)
 	}
 }

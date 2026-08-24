@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"gopkg.in/yaml.v3"
@@ -113,6 +114,71 @@ func LoadSettings(path string) (Settings, error) {
 // UpdateSettings merges connection fields without replacing comments or other
 // user-owned YAML settings. It returns true only when a file was changed.
 func UpdateSettings(path string, update Settings) (bool, error) {
+	return editSettings(path, func(m *yaml.Node) bool {
+		values := map[string]string{"server": update.Server, "identity_file": update.IdentityFile, "provider": update.Provider}
+		changed := false
+		for key, value := range values {
+			if value != "" {
+				changed = setYAMLString(m, key, value) || changed
+			}
+		}
+		return setYAMLBool(m, "sso", update.SSO) || changed
+	})
+}
+
+// settingsUIFields is the settings UI's ordered field list: it is the
+// complete set of scalar (non-map) Settings fields the "ntwire connect"
+// settings page can read and save, each paired with its YAML key. Ports
+// and Hosts are deliberately absent -- those stay the job of `ntwire port`
+// and the local status UI's per-tunnel "Replace" control, not this page.
+var settingsUIFields = []struct {
+	Field, YAMLKey string
+	Bool           bool
+}{
+	{Field: "Server", YAMLKey: "server"},
+	{Field: "IdentityFile", YAMLKey: "identity_file"},
+	{Field: "CAFile", YAMLKey: "ca_file"},
+	{Field: "Insecure", YAMLKey: "insecure", Bool: true},
+	{Field: "HTTPSProxy", YAMLKey: "https_proxy"},
+	{Field: "NoSystemProxy", YAMLKey: "no_system_proxy", Bool: true},
+	{Field: "NoBrowser", YAMLKey: "no_browser", Bool: true},
+	{Field: "CollectExec", YAMLKey: "collect_exec"},
+	{Field: "SSO", YAMLKey: "sso", Bool: true},
+	{Field: "Provider", YAMLKey: "provider"},
+	{Field: "BindAddress", YAMLKey: "bind_address"},
+	{Field: "IPVersion", YAMLKey: "ip_version"},
+}
+
+// SaveSettings writes every settingsUIFields value from s into the
+// configuration file, unconditionally -- unlike UpdateSettings, an empty
+// string or false is written as such rather than treated as "leave
+// untouched". This is what the local settings UI's "Save" button needs:
+// the form always submits its complete current state (including fields the
+// user cleared), so a partial-update merge would be unable to tell
+// "cleared" apart from "never touched" and would leave stale values behind.
+// Ports, Hosts, and any YAML this package does not model are preserved as
+// on-disk, the same as UpdateSettings.
+func SaveSettings(path string, s Settings) (bool, error) {
+	return editSettings(path, func(m *yaml.Node) bool {
+		changed := false
+		for _, f := range settingsUIFields {
+			v := reflect.ValueOf(s).FieldByName(f.Field)
+			if f.Bool {
+				changed = setYAMLBool(m, f.YAMLKey, v.Bool()) || changed
+			} else {
+				changed = setYAMLString(m, f.YAMLKey, v.String()) || changed
+			}
+		}
+		return changed
+	})
+}
+
+// editSettings loads path as a YAML document (an empty mapping when the
+// file does not yet exist), applies edit to its root mapping node, and
+// rewrites the file only when edit reports a change -- shared by
+// UpdateSettings and SaveSettings so both go through the same
+// comment-preserving read/write and atomic-rename path.
+func editSettings(path string, edit func(m *yaml.Node) bool) (bool, error) {
 	if path == "" {
 		path = DefaultConfigFile()
 	}
@@ -131,16 +197,7 @@ func UpdateSettings(path string, update Settings) (bool, error) {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return false, fmt.Errorf("configuration root must be a mapping")
 	}
-	m := doc.Content[0]
-	values := map[string]string{"server": update.Server, "identity_file": update.IdentityFile, "provider": update.Provider}
-	changed := false
-	for key, value := range values {
-		if value != "" {
-			changed = setYAMLString(m, key, value) || changed
-		}
-	}
-	changed = setYAMLBool(m, "sso", update.SSO) || changed
-	if !changed {
+	if !edit(doc.Content[0]) {
 		return false, nil
 	}
 	out, err := yaml.Marshal(&doc)

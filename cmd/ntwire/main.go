@@ -510,10 +510,16 @@ func connect(args []string, u *ui.UI) {
 		u.Errorf("%v", e)
 		os.Exit(1)
 	}
+	settingsURL, closeSettingsUI, sErr := startSettingsUI(configPath)
+	if sErr != nil {
+		u.Warn("could not start local settings UI: %v", sErr)
+	} else {
+		defer closeSettingsUI()
+	}
 	o := client.Options{
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
-		BindAddress: bind, IPVersion: ipVersion,
+		BindAddress: bind, IPVersion: ipVersion, SettingsURL: settingsURL,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)
