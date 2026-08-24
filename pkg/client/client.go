@@ -1690,10 +1690,10 @@ func (c *Connection) startWebUI() {
 		}
 		rest := strings.TrimPrefix(r.URL.Path, "/tunnels/")
 		if name, action, ok := strings.Cut(rest, "/browser/"); ok {
-			// name becomes a filesystem path component in browserProfileDir,
-			// so ".." must be rejected as strictly as "/" -- a tunnel named
-			// ".." would otherwise resolve the profile directory to
-			// ~/.ntwire itself, and "reset" would RemoveAll it.
+			// name feeds browserProfileKey into browseropen's profile-key
+			// sanitizer, so "/" and ".." are already neutralized there, but
+			// reject them here too as defense in depth for anything else
+			// this path segment might later be used for.
 			if name == "" || strings.Contains(name, "/") || strings.Contains(name, "..") {
 				http.Error(w, "invalid tunnel name", http.StatusBadRequest)
 				return
@@ -2059,17 +2059,13 @@ func (c *Connection) socksTunnelLocalAddr(name string) (string, error) {
 	return "", fmt.Errorf("unknown tunnel %q", name)
 }
 
-// browserProfileDir returns the isolated Chromium profile directory used by
-// the "Open in browser" / "Reset browser profile" buttons for the named
-// SOCKS tunnel, one per tunnel name so distinct tunnels (and distinct
-// servers, since names are only unique per connection) never share
-// cookies or saved sessions.
-func browserProfileDir(name string) (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".ntwire", "browser-profiles", name), nil
+// browserProfileKey returns the browseropen profile key used by the "Open
+// in browser" / "Reset browser profile" buttons for the named SOCKS
+// tunnel, namespaced under "client-" so it never collides with the
+// profiles cmd/ntwire's CLI ("cli-<tunnel>") or ntwire-gui
+// ("<connection>-<tunnel>") keep for the same tunnel name.
+func browserProfileKey(name string) string {
+	return "client-" + name
 }
 
 // openTunnelBrowser backs POST /tunnels/{name}/browser/open: it launches an
@@ -2081,12 +2077,7 @@ func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	dir, err := browserProfileDir(name)
-	if err != nil {
-		http.Error(w, "cannot resolve browser profile directory: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := browseropen.OpenSOCKSBrowser(dir, addr); err != nil {
+	if err := browseropen.OpenSocks(browserProfileKey(name), addr); err != nil {
 		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2102,12 +2093,7 @@ func (c *Connection) resetTunnelBrowserProfile(w http.ResponseWriter, name strin
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	dir, err := browserProfileDir(name)
-	if err != nil {
-		http.Error(w, "cannot resolve browser profile directory: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if err := browseropen.ResetSOCKSBrowserProfile(dir); err != nil {
+	if err := browseropen.CleanProfile(browserProfileKey(name)); err != nil {
 		http.Error(w, "cannot reset browser profile: "+err.Error(), http.StatusInternalServerError)
 		return
 	}

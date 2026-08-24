@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
@@ -1051,8 +1052,8 @@ func TestSocksTunnelLocalAddr(t *testing.T) {
 }
 
 // openTunnelBrowser's guard clauses must reject before it ever reaches
-// browseropen.OpenSOCKSBrowser: this test only exercises the rejecting
-// paths, since the success path launches a real browser process.
+// browseropen.OpenSocks: this test only exercises the rejecting paths,
+// since the success path launches a real browser process.
 func TestOpenTunnelBrowserRejectsNonSocksOrUnknown(t *testing.T) {
 	c := newSocksTestConnection()
 	for _, name := range []string{"database", "nope"} {
@@ -1077,9 +1078,10 @@ func TestResetTunnelBrowserProfileRejectsNonSocksOrUnknown(t *testing.T) {
 
 // TestTunnelBrowserRouteRejectsDotDotTunnelName guards the actual HTTP route
 // (not just socksTunnelLocalAddr) against a server-supplied tunnel named
-// ".." -- browserProfileDir(name) turns name into a path component, so
-// unless the route itself rejects it, POST /tunnels/../browser/reset would
-// resolve to ~/.ntwire and RemoveAll it.
+// ".." -- browserProfileKey(name) feeds name into browseropen's profile-key
+// sanitizer as a path component, so unless the route itself rejects it,
+// POST /tunnels/../browser/reset would depend solely on that sanitizer to
+// avoid resolving outside ~/.ntwire/browser-profiles.
 func TestTunnelBrowserRouteRejectsDotDotTunnelName(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -1129,7 +1131,7 @@ func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	dir, err := browserProfileDir("egress")
+	dir, err := browseropen.ProfileDir(browserProfileKey("egress"))
 	if err != nil {
 		t.Fatal(err)
 	}

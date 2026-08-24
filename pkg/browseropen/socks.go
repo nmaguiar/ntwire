@@ -1,101 +1,206 @@
 package browseropen
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
+	"time"
 )
 
-// ErrChromiumNotFound is returned by OpenSOCKSBrowser when no Chromium-family
-// browser (Chrome, Chromium, Edge, or Brave) can be located on this host.
-// Only that family supports the --proxy-server flag OpenSOCKSBrowser relies
-// on; Safari and Firefox have no command-line equivalent.
-var ErrChromiumNotFound = errors.New("no Chromium-family browser (Chrome, Chromium, Edge, or Brave) found")
+// FindChrome locates a Chrome or Chromium binary for this OS. It checks the
+// same handful of places the reference newChrome.sh scripts (mac/unix/win)
+// rely on, plus -- on Windows -- the common install paths those scripts
+// leave to cmd's own "start" (which consults the App Paths registry key
+// that exec.Command does not).
+func FindChrome() (string, error) {
+	switch runtime.GOOS {
+	case "darwin":
+		candidates := []string{
+			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+			"/Applications/Chromium.app/Contents/MacOS/Chromium",
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
+		}
+	case "windows":
+		if p, err := exec.LookPath("chrome.exe"); err == nil {
+			return p, nil
+		}
+		var candidates []string
+		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LocalAppData"} {
+			if dir := os.Getenv(env); dir != "" {
+				candidates = append(candidates,
+					filepath.Join(dir, "Google", "Chrome", "Application", "chrome.exe"),
+					filepath.Join(dir, "Chromium", "Application", "chrome.exe"),
+					filepath.Join(dir, "Microsoft", "Edge", "Application", "msedge.exe"),
+				)
+			}
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c, nil
+			}
+		}
+	default:
+		for _, name := range []string{"google-chrome", "chromium-browser", "chromium"} {
+			if p, err := exec.LookPath(name); err == nil {
+				return p, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("no Chrome or Chromium installation found")
+}
 
-// OpenSOCKSBrowser launches a Chromium-family browser with an isolated
-// profile directory and all its traffic sent through the SOCKS5 proxy at
-// proxyAddr (host:port). This is the flow documented for `target: socks`
-// tunnels in examples/instructions/socks-client.md -- run for the user by
-// the client status UI's "Open in browser" button instead of by hand,
-// because the OS's default browser has no notion of this tunnel's proxy.
-// profileDir is created if it does not already exist, and is never removed
-// by this function -- see ResetSOCKSBrowserProfile for that.
-func OpenSOCKSBrowser(profileDir, proxyAddr string) error {
-	bin, err := chromiumBinary(chromiumCandidates())
+// sanitize replaces every rune outside [A-Za-z0-9_.-] with "_", so key can
+// be used as a single path element.
+func sanitize(key string) string {
+	var b strings.Builder
+	for _, r := range key {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('_')
+		}
+	}
+	return b.String()
+}
+
+// ProfileDir returns the persistent, isolated Chrome user-data-dir for key,
+// creating its parent directory if needed. Every (caller, target) pair gets
+// its own directory under ~/.ntwire/browser-profiles so cookies and logins
+// for one SOCKS egress target never leak into another's session.
+func ProfileDir(key string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Join(home, ".ntwire", "browser-profiles")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		return "", err
+	}
+	return filepath.Join(base, sanitize(key)), nil
+}
+
+// OpenSocks launches Chrome/Chromium against localAddr ("host:port") via
+// --proxy-server=socks5://<localAddr>, using the persistent, isolated
+// profile directory for key (see ProfileDir). It starts the process and
+// returns immediately -- it does not wait for the browser to exit.
+func OpenSocks(key, localAddr string) error {
+	bin, err := FindChrome()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(profileDir, 0o700); err != nil {
-		return fmt.Errorf("create browser profile directory: %w", err)
+	dir, err := ProfileDir(key)
+	if err != nil {
+		return err
 	}
 	args := []string{
-		"--user-data-dir=" + profileDir,
-		"--proxy-server=socks5://" + proxyAddr,
+		"--user-data-dir=" + dir,
+		"--proxy-server=socks5://" + localAddr,
 		"--no-first-run",
+		"--no-default-browser-check",
+		"--disable-sync",
 	}
 	return exec.Command(bin, args...).Start()
 }
 
-// ResetSOCKSBrowserProfile deletes an isolated profile directory previously
-// used by OpenSOCKSBrowser, so the next "Open in browser" starts clean --
-// no cached cookies, site data, or saved credentials from prior sessions.
-// It is not an error for profileDir not to exist yet.
-func ResetSOCKSBrowserProfile(profileDir string) error {
-	return os.RemoveAll(profileDir)
+// CleanProfile removes the persistent profile directory for key (see
+// ProfileDir). It refuses -- returning an error rather than deleting -- if
+// the profile's SingletonLock indicates a Chrome instance is still running
+// against it, the same check newChrome.sh itself makes before deleting.
+func CleanProfile(key string) error {
+	dir, err := ProfileDir(key)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "SingletonLock")); err == nil {
+		return fmt.Errorf("browser profile still in use (close the browser first)")
+	}
+	return os.RemoveAll(dir)
 }
 
-// chromiumBinary returns the path to the first candidate that resolves to
-// an executable: an absolute path is checked with os.Stat (the common case
-// on macOS and Windows, where browsers are not on PATH), anything else is
-// looked up on PATH (the common case on Linux).
-func chromiumBinary(candidates []string) (string, error) {
-	for _, c := range candidates {
-		if filepath.IsAbs(c) {
-			if info, err := os.Stat(c); err == nil && !info.IsDir() {
-				return c, nil
-			}
+// ProfileEntry describes a persistent browser profile directory under
+// ~/.ntwire/browser-profiles.
+type ProfileEntry struct {
+	Key     string // directory name = the sanitized key CleanProfile/ProfileDir use
+	Path    string
+	InUse   bool // SingletonLock present
+	ModTime time.Time
+}
+
+// ListProfiles returns all browser profile directories under
+// ~/.ntwire/browser-profiles, sorted by Key. If the base directory does not
+// exist, it returns (nil, nil).
+func ListProfiles() ([]ProfileEntry, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Join(home, ".ntwire", "browser-profiles")
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var profiles []ProfileEntry
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		if p, err := exec.LookPath(c); err == nil {
-			return p, nil
+		p := filepath.Join(base, entry.Name())
+		var modTime time.Time
+		if info, err := entry.Info(); err == nil {
+			modTime = info.ModTime()
 		}
+		_, lstatErr := os.Lstat(filepath.Join(p, "SingletonLock"))
+		profiles = append(profiles, ProfileEntry{
+			Key:     entry.Name(),
+			Path:    p,
+			InUse:   lstatErr == nil,
+			ModTime: modTime,
+		})
 	}
-	return "", ErrChromiumNotFound
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Key < profiles[j].Key
+	})
+	return profiles, nil
 }
 
-// chromiumCandidates lists this OS's usual Chromium-family install
-// locations, most-preferred first (Chrome, then Chromium, then Edge, then
-// Brave).
-func chromiumCandidates() []string {
-	switch runtime.GOOS {
-	case "darwin":
-		return []string{
-			"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-			"/Applications/Chromium.app/Contents/MacOS/Chromium",
-			"/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-			"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-		}
-	case "windows":
-		var out []string
-		for _, base := range []string{os.Getenv("ProgramFiles"), os.Getenv("ProgramFiles(x86)"), os.Getenv("LocalAppData")} {
-			if base == "" {
-				continue
+// CleanProfilesForProfile removes every persistent browser profile directory
+// associated with profileID (i.e. whose key matches sanitize(profileID) or has
+// prefix sanitize(profileID) + "-"). It skips any directory still locked by
+// a running Chrome instance without aborting, and reports any errors encountered.
+func CleanProfilesForProfile(profileID string) error {
+	prefix := sanitize(profileID)
+	if prefix == "" {
+		return nil
+	}
+	profiles, err := ListProfiles()
+	if err != nil {
+		return err
+	}
+	var errs []string
+	for _, p := range profiles {
+		if p.Key == prefix || strings.HasPrefix(p.Key, prefix+"-") {
+			if err := CleanProfile(p.Key); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %v", p.Key, err))
 			}
-			out = append(out,
-				filepath.Join(base, "Google", "Chrome", "Application", "chrome.exe"),
-				filepath.Join(base, "Chromium", "Application", "chrome.exe"),
-				filepath.Join(base, "Microsoft", "Edge", "Application", "msedge.exe"),
-				filepath.Join(base, "BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
-			)
-		}
-		return append(out, "chrome.exe", "msedge.exe", "brave.exe")
-	default:
-		return []string{
-			"google-chrome", "google-chrome-stable", "chromium", "chromium-browser",
-			"microsoft-edge", "microsoft-edge-stable", "brave-browser",
 		}
 	}
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to clean browser profiles: %s", strings.Join(errs, ", "))
+	}
+	return nil
 }

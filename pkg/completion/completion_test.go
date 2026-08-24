@@ -84,7 +84,7 @@ func TestBashCompletionDetails(t *testing.T) {
 		t.Fatalf("GenerateString error: %v", err)
 	}
 
-	for _, subcmd := range []string{"connect", "keygen", "list", "status", "disconnect", "port", "logout", "completion", "version"} {
+	for _, subcmd := range []string{"connect", "keygen", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"} {
 		if !strings.Contains(out, subcmd) {
 			t.Errorf("expected bash script to mention subcommand %q", subcmd)
 		}

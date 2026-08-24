@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
@@ -50,6 +51,8 @@ func main() {
 		disconnect(os.Args[2:], u)
 	case "port":
 		port(os.Args[2:], u)
+	case "browser":
+		browser(os.Args[2:], u)
 	case "logout":
 		logout(os.Args[2:], u)
 	case "completion":
@@ -83,6 +86,7 @@ func usage(u *ui.UI) {
 			{Name: "status", Summary: "show the running connection"},
 			{Name: "disconnect", Summary: "stop the running connection"},
 			{Name: "port", Summary: "replace a tunnel's local port"},
+			{Name: "browser", Summary: "open a browser configured for a SOCKS tunnel"},
 			{Name: "logout", Summary: "clear cached SSO tokens"},
 			{Name: "completion", Summary: "generate shell completion script"},
 			{Name: "version", Summary: "print the build version"},
@@ -232,6 +236,128 @@ func port(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(parts[0]), out.LocalAddress)
+}
+
+// browser opens a Chrome/Chromium instance configured (via --proxy-server)
+// to route through a running SOCKS egress tunnel's local port, using a
+// persistent, isolated profile directory per tunnel name so logins/cookies
+// survive between launches. --clean removes that profile directory instead
+// of opening it.
+func browser(args []string, u *ui.UI) {
+	fs := clientopts.NewFlagSet("browser", clientopts.Defaults{})
+	setUsage(fs.FlagSet, u, "open a browser configured for a SOCKS tunnel",
+		"ntwire browser", "ntwire browser reports", "ntwire browser --clean reports",
+		"ntwire browser --list", "ntwire browser --clean-all")
+	fs.Parse(args)
+	path := fs.Str("status-file")
+	clean := fs.BoolVal("clean")
+	list := fs.BoolVal("list")
+	cleanAll := fs.BoolVal("clean-all")
+
+	if list {
+		profiles, err := browseropen.ListProfiles()
+		if err != nil {
+			u.Errorf("list browser profiles: %v", err)
+			os.Exit(1)
+		}
+		for _, p := range profiles {
+			status := "unused"
+			if p.InUse {
+				status = "in use"
+			}
+			if !p.ModTime.IsZero() {
+				u.Info("%s [%s] (modified %s)", p.Key, status, p.ModTime.Format("2006-01-02 15:04:05"))
+			} else {
+				u.Info("%s [%s]", p.Key, status)
+			}
+		}
+		return
+	}
+
+	if cleanAll {
+		profiles, err := browseropen.ListProfiles()
+		if err != nil {
+			u.Errorf("list browser profiles: %v", err)
+			os.Exit(1)
+		}
+		for _, p := range profiles {
+			if p.InUse {
+				continue
+			}
+			if err := browseropen.CleanProfile(p.Key); err != nil {
+				u.Errorf("failed to remove %s: %v", p.Key, err)
+			} else {
+				u.Info("removed browser profile %s", p.Key)
+			}
+		}
+		return
+	}
+
+	if fs.NArg() > 1 {
+		u.Errorf("usage: ntwire browser [--clean] [name]")
+		os.Exit(2)
+	}
+	name := fs.Arg(0)
+
+	s, err := client.ReadStatus(path)
+	if err != nil {
+		u.Errorf("not connected: %v", err)
+		os.Exit(1)
+	}
+	ws, err := client.FetchWebStatus(s.UIURL)
+	if err != nil {
+		u.Errorf("fetch status: %v", err)
+		os.Exit(1)
+	}
+	var socksTunnels []client.WebTunnel
+	for _, t := range ws.Tunnels {
+		if t.TargetHint == "socks" {
+			socksTunnels = append(socksTunnels, t)
+		}
+	}
+	if len(socksTunnels) == 0 {
+		u.Errorf("no SOCKS tunnels on this connection")
+		os.Exit(1)
+	}
+
+	var tunnel client.WebTunnel
+	switch {
+	case name != "":
+		found := false
+		for _, t := range socksTunnels {
+			if t.Name == name {
+				tunnel, found = t, true
+				break
+			}
+		}
+		if !found {
+			u.Errorf("no SOCKS tunnel named %q", name)
+			os.Exit(1)
+		}
+	case len(socksTunnels) == 1:
+		tunnel = socksTunnels[0]
+	default:
+		names := make([]string, len(socksTunnels))
+		for i, t := range socksTunnels {
+			names[i] = t.Name
+		}
+		u.Errorf("multiple SOCKS tunnels; specify one: %s", strings.Join(names, ", "))
+		os.Exit(2)
+	}
+
+	if clean {
+		if err := browseropen.CleanProfile("cli-" + tunnel.Name); err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
+		u.Info("removed browser profile for %s", tunnel.Name)
+		return
+	}
+	if err := browseropen.OpenSocks("cli-"+tunnel.Name, tunnel.LocalAddress); err != nil {
+		u.Errorf("open browser: %v", err)
+		os.Exit(1)
+	}
+	u.Info("opening browser for %s via socks5://%s", tunnel.Name, tunnel.LocalAddress)
 }
 
 // formatBytes renders a byte count the same way the local status UI's
