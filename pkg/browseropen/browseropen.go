@@ -3,8 +3,9 @@
 // tray "Open dashboard…" action, and its settings window's browser fallback
 // when no native webview runtime is available), or, via OpenSocks, a
 // Chrome/Chromium instance pre-configured to route through a SOCKS egress
-// tunnel's local port (cmd/ntwire's "browser" command and ntwire-gui's
-// per-tunnel "Open in browser" actions).
+// tunnel's local port (cmd/ntwire's "browser" command, ntwire-gui's
+// per-tunnel "Open in browser" actions, and the client status UI's "Open in
+// browser" button on target: socks tunnels).
 package browseropen
 
 import (

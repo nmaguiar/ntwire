@@ -1,0 +1,110 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ntwire settings</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f9fc;--panel:#fff;--panel-2:#eef4ff;--text:#162033;--muted:#607089;--brand:#246bfe;--brand-strong:#174fc5;--accent:#10a37f;--danger:#c2410c;--border:#d9e2f1;--shadow:0 20px 60px rgba(22,32,51,.12)}
+@media (prefers-color-scheme:dark){:root{--bg:#0b1120;--panel:#111a2e;--panel-2:#15223a;--text:#edf4ff;--muted:#9fb0ca;--brand:#79a7ff;--brand-strong:#a9c5ff;--accent:#4ade80;--danger:#fb923c;--border:#263753;--shadow:0 20px 60px rgba(0,0,0,.35)}}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text);background:radial-gradient(circle at top left,color-mix(in srgb,var(--brand) 18%,transparent),transparent 34rem),var(--bg)}
+main{width:min(90%,52rem);margin:0 auto;padding:3rem 0}
+.hero,.card{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:24px;box-shadow:var(--shadow)}
+.hero{padding:2rem;margin-bottom:1.25rem;display:grid;gap:.5rem}
+.eyebrow{margin:0;color:var(--muted);font-size:.78rem;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
+h1{font-size:clamp(1.8rem,5vw,2.6rem);margin:.15rem 0}
+.lede{margin:0;color:var(--muted);max-width:42rem}
+.card{padding:1.1rem 1.4rem;margin-bottom:1rem}
+.card h2{font-size:1.02rem;margin:0 0 .9rem}
+.field{display:grid;gap:.3rem;margin-bottom:1rem}
+.field:last-child{margin-bottom:0}
+.field label{font-weight:600;font-size:.9rem}
+.field .help{color:var(--muted);font-size:.8rem}
+.field input[type=text],.field input[type=password]{width:100%;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text);padding:.55rem .65rem;font:inherit}
+.toggle{display:flex;align-items:center;gap:.6rem}
+.toggle label{font-weight:600;font-size:.9rem}
+.actions{display:flex;gap:.75rem;align-items:center;position:sticky;bottom:0;padding:1rem 0;background:linear-gradient(to top,var(--bg) 60%,transparent)}
+button{border:0;border-radius:10px;background:var(--brand);color:var(--bg);padding:.65rem 1.1rem;font-weight:800;cursor:pointer}
+button:hover,button:focus-visible{background:var(--brand-strong)}
+button:disabled{cursor:wait;opacity:.65}
+#message{min-height:1.4em;font-weight:600}
+#message.ok{color:var(--accent)}
+#message.err{color:var(--danger)}
+.advanced-toggle{color:var(--brand);font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:.85rem}
+.advanced[hidden]{display:none}
+</style>
+<main>
+  <section class="hero">
+    <p class="eyebrow">ntwire connect</p>
+    <h1>Settings</h1>
+    <p class="lede">Persisted to <code>~/.ntwire/config.yaml</code>. Changes apply the next time you run <code>ntwire connect</code> -- this running connection is unaffected.</p>
+  </section>
+  <div id="groups">Loading…</div>
+  <div class="actions">
+    <button id="save" type="button">Save</button>
+    <span id="message" role="status"></span>
+  </div>
+</main>
+<script>
+const token=new URLSearchParams(location.search).get('token'),groupsEl=document.getElementById('groups'),message=document.getElementById('message'),saveBtn=document.getElementById('save');
+let schema=[],inputs={};
+function group(name){let s=document.createElement('section');s.className='card';let h=document.createElement('h2');h.textContent=name;s.append(h);return s}
+function fieldRow(f,value){
+  let row=document.createElement('div');
+  if(f.kind==='bool'){
+    row.className='field toggle';
+    let input=document.createElement('input');input.type='checkbox';input.id='f-'+f.name;input.checked=!!value;
+    let label=document.createElement('label');label.htmlFor=input.id;label.textContent=f.label;
+    row.append(input,label);
+    inputs[f.field]={el:input,bool:true};
+  }else{
+    row.className='field';
+    let label=document.createElement('label');label.htmlFor='f-'+f.name;label.textContent=f.label;
+    let input=document.createElement('input');input.type='text';input.id='f-'+f.name;input.value=value||'';
+    row.append(label,input);
+    inputs[f.field]={el:input,bool:false};
+  }
+  if(f.help){let help=document.createElement('div');help.className='help';help.textContent=f.help;row.append(help)}
+  return row;
+}
+async function load(){
+  const q='?token='+encodeURIComponent(token);
+  const [schemaResp,valuesResp]=await Promise.all([fetch('/api/schema'+q),fetch('/api/values'+q)]);
+  if(!schemaResp.ok||!valuesResp.ok)throw Error('could not load settings');
+  schema=await schemaResp.json();
+  const values=await valuesResp.json();
+  inputs={};
+  groupsEl.replaceChildren();
+  // Grouped by group name first, and within each group split into regular
+  // vs. advanced fields, so a later non-advanced field in schema order
+  // (e.g. "no-browser") still renders above the "Show advanced" toggle
+  // instead of being appended after it.
+  const order=[],byGroup=new Map();
+  for(const f of schema){
+    if(!byGroup.has(f.group)){order.push(f.group);byGroup.set(f.group,{regular:[],advanced:[]})}
+    byGroup.get(f.group)[f.advanced?'advanced':'regular'].push(f);
+  }
+  for(const name of order){
+    const g=group(name),{regular,advanced}=byGroup.get(name);
+    for(const f of regular)g.append(fieldRow(f,values[f.field]));
+    if(advanced.length){
+      const toggle=document.createElement('button');toggle.type='button';toggle.className='advanced-toggle';toggle.textContent='Show advanced';
+      const adv=document.createElement('div');adv.className='advanced';adv.hidden=true;
+      toggle.addEventListener('click',()=>{adv.hidden=!adv.hidden;toggle.textContent=adv.hidden?'Show advanced':'Hide advanced'});
+      for(const f of advanced)adv.append(fieldRow(f,values[f.field]));
+      g.append(toggle,adv);
+    }
+    groupsEl.append(g);
+  }
+}
+saveBtn.addEventListener('click',async()=>{
+  message.textContent='';message.className='';saveBtn.disabled=true;
+  try{
+    const body={};
+    for(const [field,{el,bool}] of Object.entries(inputs))body[field]=bool?el.checked:el.value.trim();
+    const r=await fetch('/api/values?token='+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw Error(await r.text());
+    message.textContent='Saved.';message.className='ok';
+  }catch(e){message.textContent='Could not save: '+e.message;message.className='err'}
+  finally{saveBtn.disabled=false}
+});
+load().catch(e=>{groupsEl.textContent='Could not load settings: '+e.message});
+</script>

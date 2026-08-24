@@ -34,13 +34,32 @@ func TestRenderSubstitutesPortInsideCodeFence(t *testing.T) {
 
 func TestRenderExposesEveryDataField(t *testing.T) {
 	src := "{{.Name}} {{.Description}} {{.LocalAddress}} {{.LocalHost}} {{.LocalPort}} " +
-		"{{.VirtualPort}} {{.TargetHint}} {{.TunnelIP}} {{.ServerTunnelIP}} {{.Server}}"
+		"{{.VirtualPort}} {{.TargetHint}} {{.TunnelIP}} {{.ServerTunnelIP}} {{.Server}} " +
+		"[{{.PACURL}}] [{{.PACURLiOS}}]"
 	blocks := Render(src, data())
 	if len(blocks) != 1 || blocks[0].Type != "paragraph" {
 		t.Fatalf("blocks = %+v", blocks)
 	}
 	got := blocks[0].Spans[0].Text
-	want := "reports Reporting service 127.0.0.1:58080 127.0.0.1 58080 18080 reports.internal:8080 10.90.0.7 10.90.0.1 https://ntwire.example:8443"
+	want := "reports Reporting service 127.0.0.1:58080 127.0.0.1 58080 18080 reports.internal:8080 10.90.0.7 10.90.0.1 https://ntwire.example:8443 [] []"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+// A SOCKS tunnel's Instructions gets the PAC URLs populated; the fixture
+// above intentionally leaves them empty because TargetHint there isn't
+// "socks" -- see Connection.webInstructions, which is where that gating
+// happens (this package renders whatever Data it is handed).
+func TestRenderSubstitutesPACURLs(t *testing.T) {
+	d := data()
+	d.TargetHint, d.PACURL, d.PACURLiOS = "socks", "https://ntwire.example:8443/proxy-reports.pac", "https://ntwire.example:8443/proxy-ios-reports.pac"
+	blocks := Render("{{.PACURL}} {{.PACURLiOS}}", d)
+	if len(blocks) != 1 {
+		t.Fatalf("blocks = %+v", blocks)
+	}
+	got := blocks[0].Spans[0].Text
+	want := "https://ntwire.example:8443/proxy-reports.pac https://ntwire.example:8443/proxy-ios-reports.pac"
 	if got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
