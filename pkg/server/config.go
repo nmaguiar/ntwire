@@ -43,9 +43,10 @@ type Config struct {
 		WebUIToken string `yaml:"web_ui_token"`
 	} `yaml:"admin"`
 	Network struct {
-		TunnelCIDR              string `yaml:"tunnel_cidr"`
-		AdvertisedEndpoint      string `yaml:"advertised_endpoint"`
-		WireGuardPrivateKeyFile string `yaml:"wireguard_private_key_file"`
+		TunnelCIDR              string    `yaml:"tunnel_cidr"`
+		AdvertisedEndpoint      string    `yaml:"advertised_endpoint"`
+		WireGuardPrivateKeyFile string    `yaml:"wireguard_private_key_file"`
+		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
@@ -213,6 +214,25 @@ type NativeWireGuardPeer struct {
 	DestinationPolicy string   `yaml:"destination_policy"`
 }
 
+// DNSConfig configures the in-tunnel DNS discovery server on UDP port 53.
+type DNSConfig struct {
+	Enabled *bool  `yaml:"enabled"`
+	Domain  string `yaml:"domain"`
+}
+
+// IsEnabled reports whether the in-tunnel DNS server is enabled (defaults to true).
+func (d DNSConfig) IsEnabled() bool {
+	return d.Enabled == nil || *d.Enabled
+}
+
+// EffectiveDomain returns the normalized DNS top-level domain suffix (defaults to "ntwire").
+func (d DNSConfig) EffectiveDomain() string {
+	if d.Domain != "" {
+		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d.Domain)), ".")
+	}
+	return "ntwire"
+}
+
 // socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
 // embedded SOCKS proxy rather than a fixed host:port forward.
 const socksTarget = "socks"
@@ -306,6 +326,9 @@ network:
   tunnel_cidr: 100.64.0.0/16              # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
   wireguard_private_key_file: ""          # optional persistent server WireGuard private key; use for native official WireGuard clients
+  # dns:
+  #   enabled: true                       # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
+  #   domain: ntwire                      # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 
 # Named reusable egress policy. A tunnel and a native peer can each name one;
 # when both do, both must allow the selected destination.
@@ -499,6 +522,12 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	}
 	if _, _, e = net.ParseCIDR(c.Network.TunnelCIDR); e != nil {
 		return c, fmt.Errorf("network.tunnel_cidr: %w", e)
+	}
+	if c.Network.DNS.Domain != "" {
+		dom := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(c.Network.DNS.Domain)), ".")
+		if dom == "" || strings.ContainsAny(dom, "/: @") {
+			return c, fmt.Errorf("network.dns.domain %q is not a valid DNS domain", c.Network.DNS.Domain)
+		}
 	}
 	prefix, _ := netip.ParsePrefix(c.Network.TunnelCIDR)
 	if c.Relay.Enabled {

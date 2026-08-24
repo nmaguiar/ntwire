@@ -35,12 +35,19 @@ func TestGenerateWireGuardClientConfig_Defaults(t *testing.T) {
 		t.Errorf("ServerPublicKeySample should be true for default config")
 	}
 
+	if cfg.DNS != "100.64.0.1" {
+		t.Errorf("DNS = %q, want 100.64.0.1", cfg.DNS)
+	}
+
 	conf := cfg.Conf()
 	if !strings.Contains(conf, "[Interface]") || !strings.Contains(conf, "[Peer]") {
 		t.Errorf("Conf() missing WireGuard sections:\n%s", conf)
 	}
 	if !strings.Contains(conf, "Address = 100.64.0.2/32") {
 		t.Errorf("Conf() missing Address:\n%s", conf)
+	}
+	if !strings.Contains(conf, "DNS = 100.64.0.1") {
+		t.Errorf("Conf() missing DNS:\n%s", conf)
 	}
 	if !strings.Contains(conf, "PersistentKeepalive = 25") {
 		t.Errorf("Conf() missing PersistentKeepalive:\n%s", conf)
@@ -52,6 +59,25 @@ func TestGenerateWireGuardClientConfig_Defaults(t *testing.T) {
 	}
 	if len(qr) == 0 {
 		t.Errorf("QRCodeText() returned empty string")
+	}
+}
+
+func TestGenerateWireGuardClientConfig_DNSDisabled(t *testing.T) {
+	c := Config{}
+	c.Network.TunnelCIDR = "100.64.0.0/16"
+	disabled := false
+	c.Network.DNS.Enabled = &disabled
+
+	cfg, err := GenerateWireGuardClientConfig(c, WireGuardClientOptions{})
+	if err != nil {
+		t.Fatalf("GenerateWireGuardClientConfig failed: %v", err)
+	}
+	if cfg.DNS != "" {
+		t.Errorf("DNS = %q, want empty when disabled", cfg.DNS)
+	}
+	conf := cfg.Conf()
+	if strings.Contains(conf, "DNS =") {
+		t.Errorf("Conf() should not contain DNS = when disabled:\n%s", conf)
 	}
 }
 

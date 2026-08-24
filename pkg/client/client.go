@@ -1017,10 +1017,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		udpEndpoint = ""
 	}
 	useWS, err := selectTransport(options.UseWebSocket, udpEndpoint, r.WebSocket)
+	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
 	if err != nil {
 		return nil, err
 	}
-	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}, IPVersion: options.IPVersion}
+	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion}
 	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
 	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
 	// self-reflect, prime, and move the peer's endpoint between transports.
@@ -1049,11 +1050,6 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		} else {
 			endpoint = wstransport.WSSentinel
 		}
-	}
-	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
-	if err != nil {
-		st.Close()
-		return nil, err
 	}
 	if err = st.AddPeer(wgnet.Endpoint{PublicKey: r.ServerPublicKey, Address: allowedIPsForFamily(clientIP) + "@" + endpoint}); err != nil {
 		st.Close()
