@@ -16,7 +16,7 @@ links out to.
 | [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) | Connecting official WireGuard clients (iOS, macOS, Windows, Android, Linux) straight to `ntwire-server` as native peers |
 | [IOS.md](IOS.md) | **Archived** — native iOS/iPadOS Network Relay feasibility, MASQUE gateway architecture, entitlement requirements, and delivery gates |
 | [LOGGING.md](LOGGING.md) | Text vs. Logstash-format JSON logs, the container default, and terminal color/UTF-8 behavior |
-| [OIDC-SETUP.md](OIDC-SETUP.md) | Registering ntwire as a public OAuth client with Google, Microsoft Entra ID, or Keycloak |
+| [OIDC-SETUP.md](OIDC-SETUP.md) | Registering ntwire as a public OAuth client with Google, Microsoft Entra ID, Keycloak, and Cognito compatibility guidance |
 | [OIDC-RELAY-DEPLOYMENT.md](OIDC-RELAY-DEPLOYMENT.md) | Deploying OIDC securely over direct HTTPS or `ntwire-relay` |
 | [PROTOCOL.md](PROTOCOL.md) | The wire-level control protocol: endpoints, signing payloads, and relay registration |
 | [SECURITY.md](SECURITY.md) | The TLS trust model, OIDC threat model, and operator guidance |
