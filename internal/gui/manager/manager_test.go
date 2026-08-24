@@ -311,6 +311,41 @@ func TestRemoveProfileRefusedWhileConnected(t *testing.T) {
 	}
 }
 
+func TestRemoveProfileCleansAssociatedBrowserProfiles(t *testing.T) {
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
+
+	m, _ := newTestManager(t, &fakeConnector{})
+	p1, _ := m.AddProfile(config.Profile{Name: "profile-1", Server: "https://p1.example:8443"})
+	p2, _ := m.AddProfile(config.Profile{Name: "profile-2", Server: "https://p2.example:8443"})
+
+	base := filepath.Join(homeDir, ".ntwire", "browser-profiles")
+	p1Socks := filepath.Join(base, p1.ID+"-socks")
+	p1Web := filepath.Join(base, p1.ID+"-web")
+	p2Socks := filepath.Join(base, p2.ID+"-socks")
+
+	for _, d := range []string{p1Socks, p1Web, p2Socks} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s) error = %v", d, err)
+		}
+	}
+
+	if err := m.RemoveProfile(p1.ID); err != nil {
+		t.Fatalf("RemoveProfile() error = %v", err)
+	}
+
+	if _, err := os.Stat(p1Socks); !os.IsNotExist(err) {
+		t.Errorf("p1-socks browser profile dir still exists: %v", err)
+	}
+	if _, err := os.Stat(p1Web); !os.IsNotExist(err) {
+		t.Errorf("p1-web browser profile dir still exists: %v", err)
+	}
+	if _, err := os.Stat(p2Socks); err != nil {
+		t.Errorf("p2-socks browser profile dir should still exist: %v", err)
+	}
+}
+
 func TestReplacePortCallsHandle(t *testing.T) {
 	m, _ := newTestManager(t, &fakeConnector{})
 	p, _ := m.AddProfile(config.Profile{Name: "home-lab", Server: "https://home.example:8443"})

@@ -63,7 +63,9 @@ first run, if a CLI `~/.ntwire/config.yaml` exists, it seeds one imported
 profile from it -- and after that, never writes `config.yaml` again;
 `ntwire connect` remains its only writer. Each profile gets its own status
 file under `~/.ntwire/gui/`, so a GUI-managed connection can never delete
-or overwrite a CLI session's status file.
+or overwrite a CLI session's status file. Deleting a profile removes its
+configuration and cleans any associated persistent Chrome browser profiles
+stored under `~/.ntwire/browser-profiles/`.
 
 For an OIDC provider that requires a client secret, open a profile's **SSO
 (advanced)** section and enter it as **OIDC client secret**. The secret is
@@ -119,6 +121,7 @@ starting a second connection manager.
 | `logout` | "Clear SSO tokens" |
 | `keygen` | Settings window's "Generate new identity…" |
 | `status` | Tray labels and the settings window's live profile list, both fed by the typed `Connection.State()` snapshot and lifecycle events |
+| `browser` | "Open in browser", per-tunnel profile reset, and settings window's "Browser profile cleanup" (`GET /api/browser-profiles`, `POST /api/browser-profiles/clean`) |
 
 ## Live connection state
 

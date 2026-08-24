@@ -25,6 +25,7 @@ var wantSurface = map[string][]string{
 	"status":     {"status-file", "json", "no-color"},
 	"disconnect": {"status-file", "no-color"},
 	"port":       {"status-file", "no-color"},
+	"browser":    {"status-file", "clean", "list", "clean-all", "no-color"},
 	"logout":     {"config", "token-cache", "no-color"},
 	"keygen":     {"o", "no-color"},
 }

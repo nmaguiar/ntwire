@@ -447,3 +447,63 @@ func TestListEntry_JSONShapeWithPACURL(t *testing.T) {
 		t.Errorf("expected pac_url_ios in JSON output: %s", dataStr)
 	}
 }
+
+func TestBrowserListAndCleanAll(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+
+	base := filepath.Join(dir, ".ntwire", "browser-profiles")
+	if err := os.MkdirAll(base, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	reportsDir := filepath.Join(base, "cli-reports")
+	if err := os.MkdirAll(reportsDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+
+	adminDir := filepath.Join(base, "cli-admin")
+	if err := os.MkdirAll(adminDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll() error: %v", err)
+	}
+	lock := filepath.Join(adminDir, "SingletonLock")
+	if err := os.Symlink("target", lock); err != nil {
+		if err := os.WriteFile(lock, []byte("123"), 0o600); err != nil {
+			t.Fatalf("failed to create lock file: %v", err)
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	u := ui.New(&stdout, &stderr, true)
+
+	browser([]string{"--list"}, u)
+
+	out := stdout.String()
+	if !strings.Contains(out, "cli-admin [in use]") {
+		t.Errorf("browser --list output %q does not contain cli-admin [in use]", out)
+	}
+	if !strings.Contains(out, "cli-reports [unused]") {
+		t.Errorf("browser --list output %q does not contain cli-reports [unused]", out)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+
+	browser([]string{"--clean-all"}, u)
+
+	cleanOut := stdout.String()
+	if !strings.Contains(cleanOut, "removed browser profile cli-reports") {
+		t.Errorf("browser --clean-all output %q does not contain removed browser profile cli-reports", cleanOut)
+	}
+	if strings.Contains(cleanOut, "cli-admin") {
+		t.Errorf("browser --clean-all should have skipped cli-admin, got output %q", cleanOut)
+	}
+
+	if _, err := os.Stat(reportsDir); !os.IsNotExist(err) {
+		t.Errorf("reportsDir %q still exists after --clean-all", reportsDir)
+	}
+	if _, err := os.Stat(adminDir); err != nil {
+		t.Errorf("adminDir %q should still exist, got err: %v", adminDir, err)
+	}
+}
