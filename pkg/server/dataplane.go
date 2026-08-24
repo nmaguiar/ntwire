@@ -26,6 +26,7 @@ type dataPlane struct {
 	mu        sync.Mutex
 	next      uint32
 	listeners map[string]*tunnelListener // keyed by tunnel name
+	dnsConn   net.PacketConn
 	stop      chan struct{}
 	stopASN   chan struct{}
 	ws        *wstransport.Hybrid
@@ -160,6 +161,11 @@ func (s *Server) StartDataPlane() error {
 		if err := s.listenTunnel(d, tunnel); err != nil {
 			s.Close()
 			return err
+		}
+	}
+	if s.Config.Network.DNS.IsEnabled() {
+		if err := s.startDNS(d); err != nil {
+			s.log.Warn("in-tunnel DNS server startup failed", "error", err)
 		}
 	}
 	go s.reapLoop(d)
@@ -664,6 +670,9 @@ func (s *Server) Close() {
 		s.closeTunnelListener(tl)
 	}
 	s.data.mu.Unlock()
+	if s.data.dnsConn != nil {
+		_ = s.data.dnsConn.Close()
+	}
 	_ = s.data.stack.Close()
 	s.data = nil
 }

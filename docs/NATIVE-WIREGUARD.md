@@ -24,6 +24,8 @@ native_wireguard:
 [Interface]
 PrivateKey = <client private key>
 Address = 100.64.0.10/32
+DNS = 100.64.0.1
+
 [Peer]
 PublicKey = <server public key>
 Endpoint = vpn.example.com:51820
@@ -76,6 +78,45 @@ When native WireGuard peers have access to a `target: socks` tunnel, iOS devices
    - Enter the iOS PAC URL: `https://<server>:8443/proxy-ios.pac` (or `/proxy-ios-<target>.pac`, or via relay `https://<tenant>.<relay-domain>/proxy-ios.pac`).
 3. **Browse:** Safari and iOS apps will route internal destinations (e.g. `*.svc`, `*.cluster.local`, `*.internal`, `10.0.0.0/8`) through the SOCKS proxy at `100.64.0.1:<virtual_port>` over the WireGuard tunnel, while standard internet traffic goes direct.
 
+### In-tunnel DNS and Target Discovery
+
+`ntwire-server` includes an in-tunnel DNS server listening on UDP port 53 inside the WireGuard netstack (`100.64.0.1:53`). Official WireGuard clients configured with `DNS = 100.64.0.1` can resolve and discover available targets directly over the tunnel:
+
+1. **Discover all available targets (SRV discovery):**
+   ```sh
+   # Returns SRV records for all tunnels granted to this peer, along with their virtual ports
+   dig SRV _ntwire._tcp.ntwire @100.64.0.1
+   # (also aliases: _ntwire._tcp.tunnel, _services._dns-sd._udp.ntwire)
+   ```
+
+2. **Discover targets via TXT records:**
+   ```sh
+   # Returns metadata (name, port, backend target, description) for all granted tunnels
+   dig TXT _ntwire.ntwire @100.64.0.1
+   ```
+
+3. **Resolve tunnel names directly:**
+   ```sh
+   # Resolves to the server tunnel IP (100.64.0.1)
+   dig A reports.ntwire @100.64.0.1
+   # (.tunnel and .ntwire.internal are also supported as aliases)
+   dig A reports.tunnel @100.64.0.1
+   ```
+
+4. **Look up a specific tunnel's port and metadata:**
+   ```sh
+   # Look up virtual port
+   dig SRV _reports._tcp.ntwire @100.64.0.1
+   dig SRV reports.ntwire @100.64.0.1
+
+   # Look up target metadata
+   dig TXT reports.ntwire @100.64.0.1
+   ```
+
+5. **Access control & Zero-trust discovery:**
+   Target discovery and name resolution over DNS are strictly filtered by the querying peer's `tunnel_ip`. A native WireGuard peer only discovers and resolves tunnels listed in its `native_wireguard.peers[].tunnels` grant list; queries for ungranted tunnels return `NXDOMAIN`. Queries from unrecognized IP addresses return `REFUSED`.
+
 Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`. Behind a relay (no inbound UDP path to the server), a registered server can still admit native peers via a relay-mediated UDP endpoint — see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints).
+
 
 

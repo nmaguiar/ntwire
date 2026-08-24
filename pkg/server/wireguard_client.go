@@ -31,20 +31,25 @@ type WireGuardClientConfig struct {
 	Endpoint              string
 	AllowedIPs            string
 	PersistentKeepalive   int
+	DNS                   string
 }
 
 // Conf returns the WireGuard INI configuration format (.conf).
 func (c *WireGuardClientConfig) Conf() string {
+	dnsLine := ""
+	if c.DNS != "" {
+		dnsLine = fmt.Sprintf("DNS = %s\n", c.DNS)
+	}
 	return fmt.Sprintf(`[Interface]
 PrivateKey = %s
 Address = %s
-
+%s
 [Peer]
 PublicKey = %s
 Endpoint = %s
 AllowedIPs = %s
 PersistentKeepalive = %d
-`, c.ClientPrivateKey, c.ClientAddress, c.ServerPublicKey, c.Endpoint, c.AllowedIPs, c.PersistentKeepalive)
+`, c.ClientPrivateKey, c.ClientAddress, dnsLine, c.ServerPublicKey, c.Endpoint, c.AllowedIPs, c.PersistentKeepalive)
 }
 
 // QRCodeText returns an ASCII/Unicode text representation of the QR code
@@ -76,6 +81,12 @@ func GenerateWireGuardClientConfig(c Config, opts WireGuardClientOptions) (*Wire
 	if allowedIPs == "" {
 		allowedIPs = "100.64.0.0/16"
 	}
+	dns := ""
+	if c.Network.DNS.IsEnabled() {
+		if prefix, err := netip.ParsePrefix(allowedIPs); err == nil {
+			dns = prefix.Addr().Next().String()
+		}
+	}
 	return &WireGuardClientConfig{
 		PeerName:              peerName,
 		ClientPrivateKey:      clientPriv,
@@ -86,6 +97,7 @@ func GenerateWireGuardClientConfig(c Config, opts WireGuardClientOptions) (*Wire
 		Endpoint:              endpoint,
 		AllowedIPs:            allowedIPs,
 		PersistentKeepalive:   25,
+		DNS:                   dns,
 	}, nil
 }
 

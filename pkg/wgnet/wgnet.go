@@ -36,6 +36,7 @@ type Endpoint struct{ PublicKey, Address string }
 type Config struct {
 	PrivateKey string
 	Addresses  []netip.Addr
+	DNSServers []netip.Addr
 	ListenPort int
 	// Bind overrides the default UDP transport. It is used by the WebSocket
 	// fallback while retaining the same WireGuard device and netstack.
@@ -74,7 +75,7 @@ func New(c Config) (*Stack, error) {
 		return nil, err
 	}
 	key.Public = base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes())
-	td, ns, err := netstack.CreateNetTUN(c.Addresses, nil, 1420)
+	td, ns, err := netstack.CreateNetTUN(c.Addresses, c.DNSServers, 1420)
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +271,17 @@ func (s *Stack) Listen(network, address string) (net.Listener, error) {
 		return nil, err
 	}
 	return s.Net.ListenTCP(a)
+}
+
+func (s *Stack) ListenUDP(network, address string) (net.PacketConn, error) {
+	if network != "udp" && network != "udp4" && network != "udp6" {
+		return nil, fmt.Errorf("unsupported netstack listener network %q", network)
+	}
+	a, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	return s.Net.ListenUDP(a)
 }
 
 // Close tears the device down. It deliberately does not also close s.tun:
