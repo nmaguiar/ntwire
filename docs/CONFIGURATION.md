@@ -1,13 +1,61 @@
 # Server configuration reference
 
-## Client HTTPS proxy settings
+## Client proxy settings
 
-The `ntwire` client uses `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` by default
-for HTTPS control traffic. Set `https_proxy: http://proxy.example:8080` in
-`~/.ntwire/config.yaml`, or pass `--https-proxy URL`, to use one explicit
-HTTP(S) proxy instead. Set `no_system_proxy: true` or pass
-`--no-system-proxy` to connect directly and ignore those environment
-variables. An explicit `https_proxy` takes precedence over `no_system_proxy`.
+The `ntwire` client uses `HTTPS_PROXY`/`HTTP_PROXY` and `NO_PROXY` environment variables by default
+for HTTPS control traffic. Set `https_proxy: URL` in `~/.ntwire/config.yaml`, or pass `--https-proxy URL`,
+to route outbound traffic through an explicit HTTP(S) or SOCKS5 proxy instead. Set `no_system_proxy: true`
+or pass `--no-system-proxy` to connect directly and ignore environment variables. An explicit `https_proxy`
+takes precedence over `no_system_proxy`.
+
+### Supported proxy schemes
+
+The client supports the following proxy URL schemes:
+
+* `http://proxy:8080` — standard HTTP forward proxy.
+* `https://proxy:8443` — HTTPS forward proxy (TLS to proxy).
+* `socks5://proxy:1080` — SOCKS5 proxy with **local destination DNS resolution**.
+* `socks5h://proxy:1080` — SOCKS5 proxy with **remote/proxy-side destination DNS resolution**.
+
+Proxy URLs support optional authentication credentials (e.g. `socks5://user:password@proxy:1080`). Passwords are never logged or surfaced in error messages.
+
+### SOCKS5 vs SOCKS5h DNS semantics
+
+* `socks5://` — ntwire resolves the destination server or relay hostname locally on the client before asking the SOCKS server to connect (sending the resolved IP address). This respects `--ip-version 4` and `--ip-version 6` filters and participates in multi-address racing.
+* `socks5h://` — ntwire sends the destination hostname directly through SOCKS for DNS resolution on the proxy side. This is essential for Tor-like environments, private domains accessible only from the proxy, and avoiding local DNS leakage.
+
+### Traffic scope
+
+When a proxy is configured, it transports both:
+
+* **HTTPS control plane** (authentication, info, session renewal, and reconnection)
+* **WSS data plane** (WireGuard transport over WebSocket and automatic redials)
+
+### CLI examples
+
+Connect through a SOCKS5 proxy with local DNS resolution:
+
+```bash
+ntwire connect \
+  --https-proxy socks5://127.0.0.1:1080 \
+  server.example.com
+```
+
+Connect through a SOCKS5 proxy with remote proxy-side DNS resolution:
+
+```bash
+ntwire connect \
+  --https-proxy socks5h://127.0.0.1:1080 \
+  server.internal.example
+```
+
+Authenticated SOCKS5 proxy:
+
+```bash
+ntwire connect \
+  --https-proxy socks5h://alice:secret@proxy.corp.internal:1080 \
+  server.internal.example
+```
 
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to

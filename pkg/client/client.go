@@ -22,6 +22,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
+	"golang.org/x/net/proxy"
 	"io"
 	"log/slog"
 	"net"
@@ -86,9 +87,10 @@ type Options struct {
 	Hosts    map[string]string
 	CAFile   string
 	Insecure bool
-	// HTTPSProxy is an explicit HTTP or HTTPS proxy URL for the HTTPS
-	// control plane. When set, it takes precedence over proxy environment
-	// variables. Authentication credentials in the URL are supported.
+	// HTTPSProxy is an explicit HTTP, HTTPS, SOCKS5, or SOCKS5h proxy URL for
+	// the HTTPS control plane and WSS data plane. When set, it takes precedence
+	// over proxy environment variables. Authentication credentials in the URL
+	// are supported.
 	HTTPSProxy string
 	// NoSystemProxy bypasses HTTP_PROXY, HTTPS_PROXY, and NO_PROXY. It has no
 	// effect when HTTPSProxy is set.
@@ -331,19 +333,130 @@ func TrustServer(path, host, fingerprint string) error {
 	return os.WriteFile(path, b, 0600)
 }
 
-func httpClient(url string, o Options) (*http.Client, error) {
-	proxy, err := proxyFunc(o)
-	if err != nil {
-		return nil, err
+// RedactProxyURL removes passwords from a proxy URL string so it is safe to log
+// or return in error messages.
+func RedactProxyURL(raw string) string {
+	if raw == "" {
+		return ""
 	}
+	u, err := urlpkg.Parse(raw)
+	if err != nil {
+		return redactUserinfoString(raw)
+	}
+	return u.Redacted()
+}
+
+func redactUserinfoString(raw string) string {
+	if idx := strings.Index(raw, "://"); idx != -1 {
+		prefix := raw[:idx+3]
+		rest := raw[idx+3:]
+		if at := strings.Index(rest, "@"); at != -1 {
+			userinfo := rest[:at]
+			after := rest[at+1:]
+			if colon := strings.Index(userinfo, ":"); colon != -1 {
+				userinfo = userinfo[:colon] + ":xxxxx"
+			}
+			return prefix + userinfo + "@" + after
+		}
+	}
+	return raw
+}
+
+type socksForwardDialer struct {
+	ipVersion string
+}
+
+func (d *socksForwardDialer) Dial(network, address string) (net.Conn, error) {
+	return d.DialContext(context.Background(), network, address)
+}
+
+func (d *socksForwardDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return raceResolvedDial(ctx, network, address, d.ipVersion)
+}
+
+func newSOCKS5Dialer(proxyURL *urlpkg.URL, ipVersion string) (proxy.Dialer, error) {
+	proxyHost := proxyURL.Hostname()
+	proxyPort := proxyURL.Port()
+	if proxyPort == "" {
+		proxyPort = "1080"
+	}
+	proxyAddr := net.JoinHostPort(proxyHost, proxyPort)
+
+	var auth *proxy.Auth
+	if proxyURL.User != nil {
+		auth = &proxy.Auth{
+			User: proxyURL.User.Username(),
+		}
+		if pass, ok := proxyURL.User.Password(); ok {
+			auth.Password = pass
+		}
+	}
+
+	forward := &socksForwardDialer{ipVersion: ipVersion}
+	return proxy.SOCKS5("tcp", proxyAddr, auth, forward)
+}
+
+// configureProxy configures the HTTP proxy func and DialContext dialer based on
+// the requested proxy scheme (http, https, socks5, socks5h) and options.
+func configureProxy(o Options) (func(*http.Request) (*urlpkg.URL, error), func(context.Context, string, string) (net.Conn, error), error) {
+	if o.HTTPSProxy != "" {
+		proxyURL, err := urlpkg.Parse(o.HTTPSProxy)
+		if err != nil || proxyURL.Hostname() == "" {
+			return nil, nil, fmt.Errorf("invalid HTTPS proxy %q: must be an http://, https://, socks5://, or socks5h:// URL", RedactProxyURL(o.HTTPSProxy))
+		}
+		switch proxyURL.Scheme {
+		case "http", "https":
+			return http.ProxyURL(proxyURL), func(ctx context.Context, network, address string) (net.Conn, error) {
+				return raceResolvedDial(ctx, network, address, o.IPVersion)
+			}, nil
+		case "socks5":
+			// socks5://: destination hostname is resolved locally before asking SOCKS proxy to connect.
+			d, err := newSOCKS5Dialer(proxyURL, o.IPVersion)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, func(ctx context.Context, network, address string) (net.Conn, error) {
+				return raceSOCKSResolvedDial(ctx, d, network, address, o.IPVersion)
+			}, nil
+		case "socks5h":
+			// socks5h://: destination hostname is passed directly to SOCKS proxy for remote resolution.
+			// Client-side address racing for the destination is bypassed because DNS resolution happens on the proxy.
+			d, err := newSOCKS5Dialer(proxyURL, o.IPVersion)
+			if err != nil {
+				return nil, nil, err
+			}
+			return nil, func(ctx context.Context, network, address string) (net.Conn, error) {
+				if cd, ok := d.(proxy.ContextDialer); ok {
+					return cd.DialContext(ctx, network, address)
+				}
+				return d.Dial(network, address)
+			}, nil
+		default:
+			return nil, nil, fmt.Errorf("invalid HTTPS proxy %q: must be an http://, https://, socks5://, or socks5h:// URL", RedactProxyURL(o.HTTPSProxy))
+		}
+	}
+	var pFunc func(*http.Request) (*urlpkg.URL, error)
+	if !o.NoSystemProxy {
+		pFunc = http.ProxyFromEnvironment
+	}
+	return pFunc, func(ctx context.Context, network, address string) (net.Conn, error) {
+		return raceResolvedDial(ctx, network, address, o.IPVersion)
+	}, nil
+}
+
+func httpClient(url string, o Options) (*http.Client, error) {
 	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
 		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
 	}
+	proxy, dialContext, err := configureProxy(o)
+	if err != nil {
+		return nil, err
+	}
 	if !strings.HasPrefix(strings.ToLower(url), "https://") {
-		return resilientHTTPClient(nil, proxy, o.IPVersion), nil
+		return resilientHTTPClient(nil, proxy, dialContext), nil
 	}
 	if o.Insecure {
-		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, proxy, o.IPVersion), nil
+		return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}, proxy, dialContext), nil
 	} // #nosec G402 -- explicit CLI escape hatch
 	if o.CAFile != "" {
 		b, err := os.ReadFile(o.CAFile)
@@ -354,7 +467,7 @@ func httpClient(url string, o Options) (*http.Client, error) {
 		if !pool.AppendCertsFromPEM(b) {
 			return nil, fmt.Errorf("no certificate found in %s", o.CAFile)
 		}
-		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, proxy, o.IPVersion), nil
+		return resilientHTTPClient(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}, proxy, dialContext), nil
 	}
 	path := o.KnownServersFile
 	if path == "" {
@@ -375,38 +488,19 @@ func httpClient(url string, o Options) (*http.Client, error) {
 			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
 		}
 		return nil
-	}}, proxy, o.IPVersion), nil
+	}}, proxy, dialContext), nil
 }
 
-// proxyFunc selects the HTTPS control-plane proxy. An explicit proxy wins;
-// otherwise callers may opt out of the process-wide proxy environment.
+// proxyFunc selects the HTTPS control-plane proxy if an HTTP/HTTPS proxy is configured.
+// An explicit proxy wins; otherwise callers may opt out of the process-wide proxy environment.
 func proxyFunc(o Options) (func(*http.Request) (*urlpkg.URL, error), error) {
-	if o.HTTPSProxy != "" {
-		proxyURL, err := urlpkg.Parse(o.HTTPSProxy)
-		if err != nil || proxyURL.Host == "" || (proxyURL.Scheme != "http" && proxyURL.Scheme != "https") {
-			return nil, fmt.Errorf("invalid HTTPS proxy %q: must be an http:// or https:// URL", o.HTTPSProxy)
-		}
-		return http.ProxyURL(proxyURL), nil
-	}
-	if o.NoSystemProxy {
-		return nil, nil
-	}
-	return http.ProxyFromEnvironment, nil
+	pFunc, _, err := configureProxy(o)
+	return pFunc, err
 }
 
-// resilientHTTPClient races resolved addresses for a shared relay hostname.
-// A normal net.Dialer retries same-family DNS answers serially, which leaves
-// a client stuck behind one failed relay replica. The hostname and TLS SNI
-// remain unchanged; only the TCP address selection becomes pool-aware.
-//
-// ipVersion is "", "4", or "6" (see Options.IPVersion): "" races every
-// resolved address regardless of family; "4"/"6" excludes every address of
-// the other family before racing, so the connection is pinned to that
-// family rather than merely preferring it.
-func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error), ipVersion string) *http.Client {
-	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-		return raceResolvedDial(ctx, network, address, ipVersion)
-	}}
+// resilientHTTPClient creates an http.Client configured with custom TLS, proxy, and dialer.
+func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error), dialContext func(context.Context, string, string) (net.Conn, error)) *http.Client {
+	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: dialContext}
 	return &http.Client{Transport: transport}
 }
 
@@ -427,26 +521,9 @@ func filterIPVersion(addrs []net.IPAddr, ipVersion string) []net.IPAddr {
 	return out
 }
 
-func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || net.ParseIP(host) != nil {
-		return (&net.Dialer{}).DialContext(ctx, network, address)
-	}
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil {
-		return (&net.Dialer{}).DialContext(ctx, network, address)
-	}
-	addrs = filterIPVersion(addrs, ipVersion)
-	if len(addrs) == 0 {
-		return nil, fmt.Errorf("%s has no IPv%s address", host, ipVersion)
-	}
-	// A single candidate is dialed by its literal address, not by
-	// re-handing the hostname to net.Dialer -- that would let the OS
-	// resolver and its own family preference pick the address again,
-	// silently undoing an ipVersion filter that excluded every other
-	// family's results above.
+func raceDialAddrs(ctx context.Context, dialFn func(context.Context, string) (net.Conn, error), addrs []net.IPAddr, port, host string) (net.Conn, error) {
 	if len(addrs) == 1 {
-		return (&net.Dialer{}).DialContext(ctx, network, net.JoinHostPort(addrs[0].IP.String(), port))
+		return dialFn(ctx, net.JoinHostPort(addrs[0].IP.String(), port))
 	}
 	type result struct {
 		conn net.Conn
@@ -467,7 +544,7 @@ func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (
 				case <-t.C:
 				}
 			}
-			conn, dialErr := (&net.Dialer{}).DialContext(child, network, net.JoinHostPort(ip.String(), port))
+			conn, dialErr := dialFn(child, net.JoinHostPort(ip.String(), port))
 			results <- result{conn: conn, err: dialErr}
 		}(i, ip.IP)
 	}
@@ -489,6 +566,48 @@ func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (
 		first = fmt.Errorf("all resolved addresses for %s failed", host)
 	}
 	return nil, first
+}
+
+func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) != nil {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	addrs = filterIPVersion(addrs, ipVersion)
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("%s has no IPv%s address", host, ipVersion)
+	}
+	return raceDialAddrs(ctx, func(ctx context.Context, addr string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}, addrs, port, host)
+}
+
+func raceSOCKSResolvedDial(ctx context.Context, socksDialer proxy.Dialer, network, address, ipVersion string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || net.ParseIP(host) != nil {
+		if cd, ok := socksDialer.(proxy.ContextDialer); ok {
+			return cd.DialContext(ctx, network, address)
+		}
+		return socksDialer.Dial(network, address)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	addrs = filterIPVersion(addrs, ipVersion)
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("%s has no IPv%s address", host, ipVersion)
+	}
+	return raceDialAddrs(ctx, func(ctx context.Context, addr string) (net.Conn, error) {
+		if cd, ok := socksDialer.(proxy.ContextDialer); ok {
+			return cd.DialContext(ctx, network, addr)
+		}
+		return socksDialer.Dial(network, addr)
+	}, addrs, port, host)
 }
 
 func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, options Options) (protocol.AuthResponse, error) {

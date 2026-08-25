@@ -324,7 +324,7 @@ func TestClientBindRedialsAfterDrop(t *testing.T) {
 	defer h.Close()
 
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
-	client.redialMin, client.redialMax, client.dialTimeout = 5*time.Millisecond, 20*time.Millisecond, time.Second
+	client.SetRedialBackoff(5*time.Millisecond, 20*time.Millisecond, time.Second)
 	events := make(chan string, 4)
 	client.OnPeerConnected = func(string, conn.Endpoint) { events <- "connected" }
 	client.OnPeerDisconnected = func(string, conn.Endpoint) { events <- "disconnected" }
@@ -440,7 +440,7 @@ func TestClientBindRedialUsesUpdatedHeader(t *testing.T) {
 	defer h.Close()
 
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), http.Header{"Authorization": {"Bearer old-token"}})
-	client.redialMin, client.redialMax, client.dialTimeout = 5*time.Millisecond, 15*time.Millisecond, 500*time.Millisecond
+	client.SetRedialBackoff(5*time.Millisecond, 15*time.Millisecond, 500*time.Millisecond)
 	if _, _, err := client.Open(0); err != nil {
 		t.Fatal(err)
 	}

@@ -140,11 +140,11 @@ var registry = []Option{
 		Label:   "Skip TLS certificate verification", Group: "🔒 TLS", Widget: WidgetToggle, Advanced: true,
 	},
 	{
-		Name: "https-proxy", Kind: KindString, Usage: "explicit HTTP(S) proxy URL for HTTPS control traffic",
+		Name: "https-proxy", Kind: KindString, Usage: "explicit HTTP(S) or SOCKS5 proxy URL for HTTPS and WSS traffic",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.HTTPSProxy }),
 		Label:   "HTTPS proxy", Group: "🌐 Connection", Widget: WidgetText, Advanced: true,
-		Help: "Overrides HTTPS_PROXY and HTTP_PROXY for this ntwire connection. Use http:// or https://, optionally with credentials.",
+		Help: "Overrides HTTPS_PROXY and HTTP_PROXY for this ntwire connection. Use http://, https://, socks5://, or socks5h://, optionally with credentials.",
 	},
 	{
 		Name: "no-system-proxy", Kind: KindBool, Usage: "ignore HTTP(S)_PROXY and NO_PROXY environment variables",
