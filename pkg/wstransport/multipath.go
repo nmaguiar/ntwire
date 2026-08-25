@@ -460,13 +460,13 @@ func ValidateTransportName(s string) (string, error) {
 
 // PathStatus is a race-free scheduler snapshot. Loss is in [0,1].
 type PathStatus struct {
-	Name        string
-	Kind        PathKind
-	Healthy     bool
-	RTT         time.Duration
-	Loss        float64
-	LastSuccess time.Time
-	Primary     bool
+	Name        string        `json:"name"`
+	Kind        PathKind      `json:"kind"`
+	Healthy     bool          `json:"healthy"`
+	RTT         time.Duration `json:"rtt"`
+	Loss        float64       `json:"loss"`
+	LastSuccess time.Time     `json:"last_success"`
+	Primary     bool          `json:"primary"`
 	// DeliveryRatio is an EWMA-smoothed fraction, in [0,1], of mirrored bytes
 	// sent to this candidate that the peer actually reported receiving back
 	// (see Scheduler.ReportDeliveryRatio) -- a relative "is this candidate
@@ -475,9 +475,9 @@ type PathStatus struct {
 	// it could never prove an absolute throughput ceiling. -1 means "no
 	// comparable sample yet", not "confirmed total loss" -- see
 	// Scheduler.score's doc comment.
-	DeliveryRatio float64
+	DeliveryRatio float64 `json:"delivery_ratio"`
 	// Forced indicates whether this candidate is the user's manual selection.
-	Forced bool
+	Forced bool `json:"forced"`
 }
 
 type candidate struct {

@@ -2,9 +2,27 @@ package wstransport
 
 import (
 	"encoding/binary"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
+	b, err := json.Marshal(PathStatus{Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1, DeliveryRatio: 0.9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	for _, want := range []string{`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`, `"delivery_ratio":0.9`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("Marshal() = %s, missing %s", got, want)
+		}
+	}
+	if strings.Contains(got, `"Name"`) || strings.Contains(got, `"RTT"`) {
+		t.Errorf("Marshal() = %s, contains Go field names", got)
+	}
+}
 
 func TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded(t *testing.T) {
 	s := NewScheduler()
@@ -27,6 +45,20 @@ func TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded(t *testing.T) {
 	primary, alternate, dup = s.Select()
 	if primary != "wss" || alternate != "relay" || !dup {
 		t.Fatalf("loss trigger = %q %q %v", primary, alternate, dup)
+	}
+}
+
+func TestSchedulerSelectsWSSWhenItOutperformsDirectUDP(t *testing.T) {
+	s := NewScheduler()
+	s.Register("direct-udp", PathDirect)
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("direct-udp", 80*time.Millisecond, true, now)
+		s.ProbeResult("wss", 40*time.Millisecond, true, now)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("primary = %q, want wss when it has half the direct-UDP RTT", primary)
 	}
 }
 

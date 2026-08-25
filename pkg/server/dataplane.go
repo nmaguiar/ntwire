@@ -125,6 +125,7 @@ func (s *Server) StartDataPlane() error {
 			MirrorRateBytesPerSec: mc.MirrorRateBytesPerSec, MinDeliveryRatio: mc.MinDeliveryRatio,
 			SwitchMargin: mc.SwitchMargin, MinDwell: mc.MinDwell, ReportInterval: mc.ReportInterval,
 		})
+		multipath.SetForced(s.Config.Transport.Force)
 		bind = multipath
 		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
 		// handler's ServeHTTP call). Gate on that session's own negotiated
@@ -142,6 +143,17 @@ func (s *Server) StartDataPlane() error {
 			}
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
+		// Direct clients use this authenticated control-plane registration flow
+		// to associate their reflected source address. Answer the reflection
+		// request on the same UDP socket; responses and all other controls keep
+		// their existing consumers (relay self-reflection, UDP relay binds).
+		ws.UDP.(*wstransport.FilterBind).SetControlHandler(func(cp wstransport.ControlPacket) bool {
+			if cp.Type != wstransport.FrameReflectRequest {
+				return false
+			}
+			_ = ws.UDP.(*wstransport.FilterBind).SendControl(wstransport.FrameReflectResponse, []byte(cp.From.String()), cp.From.String())
+			return true
+		})
 	}
 	privateKey, err := s.wireGuardPrivateKey()
 	if err != nil {

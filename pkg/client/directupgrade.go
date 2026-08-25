@@ -620,6 +620,65 @@ func (c *Connection) postPunch(clientAddr string) (protocol.PunchResponse, error
 	return out, nil
 }
 
+// bootstrapDirectMultipath turns an ordinary server's advertised direct UDP
+// endpoint into a peer candidate without giving up the already-connected WSS
+// path. The reflection is answered by that server's UDP bind; the observed
+// address then travels over the authenticated HTTPS control plane, allowing
+// the server to register the reciprocal candidate before either scheduler is
+// allowed to select it.
+func (c *Connection) bootstrapDirectMultipath(serverAddr string) {
+	c.mu.Lock()
+	multipath, hybrid := c.multipath, c.hybrid
+	c.mu.Unlock()
+	if multipath == nil || hybrid == nil {
+		return
+	}
+	bind, ok := hybrid.UDP.(*wstransport.FilterBind)
+	if !ok {
+		return
+	}
+	ep, err := hybrid.UDP.ParseEndpoint(serverAddr)
+	if err != nil {
+		c.log.Debug("direct multipath candidate is invalid", "candidate", serverAddr, "error", err)
+		return
+	}
+	multipath.RegisterPath("direct-udp", wstransport.PathDirect, ep)
+	clientAddr, err := selfReflect(bind, serverAddr, c.upgradeTiming.reflectTimeout)
+	if err != nil {
+		c.log.Debug("direct multipath reflection failed", "candidate", serverAddr, "error", err)
+		return
+	}
+	if err := c.postDirectTransport(clientAddr); err != nil {
+		c.log.Debug("direct multipath registration failed", "candidate", serverAddr, "error", err)
+		return
+	}
+	if waitForMultipathPath(multipath, "direct-udp", c.upgradeTiming.probeTimeout, c.stop) {
+		c.log.Info("direct UDP multipath candidate established", "server", c.DisplayName(), "candidate", serverAddr)
+	}
+}
+
+func (c *Connection) postDirectTransport(address string) error {
+	c.mu.Lock()
+	base, token := c.base, c.token
+	c.mu.Unlock()
+	b, _ := json.Marshal(protocol.TransportPathRequest{Address: address})
+	req, err := http.NewRequest(http.MethodPost, base+"/v1/transport/direct", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("direct transport registration failed: %s", resp.Status)
+	}
+	return nil
+}
+
 // udpRelayUnavailableReason marks tryUDPRelayUpgrade's "the relay does not
 // offer this tier at all" outcome, distinct from every other failure reason
 // it can return. It is the one reason directUpgradeLoop treats as licensing

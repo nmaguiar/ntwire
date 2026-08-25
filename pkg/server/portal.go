@@ -31,6 +31,10 @@ func (s *Server) portalHandler(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	portalCfg := s.Config.Portal
 	s.mu.Unlock()
+	if !portalCfg.Enabled {
+		http.NotFound(w, r)
+		return
+	}
 
 	var targetInfos []portal.TargetInfo
 	for _, st := range session.Tunnels {
@@ -100,6 +104,13 @@ func (s *Server) portalActionHandler(w http.ResponseWriter, r *http.Request) {
 	session, ok := s.sessions.Get(token)
 	if !ok {
 		fail(w, http.StatusUnauthorized, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	s.mu.Lock()
+	portalEnabled := s.Config.Portal.Enabled
+	s.mu.Unlock()
+	if !portalEnabled {
+		http.NotFound(w, r)
 		return
 	}
 

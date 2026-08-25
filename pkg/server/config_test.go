@@ -38,9 +38,20 @@ func TestMultipathEnabledDefaultsOnAndCanBeDisabled(t *testing.T) {
 	}
 	no := false
 	if (Config{Transport: struct {
-		Multipath *bool `yaml:"multipath"`
+		Multipath *bool  `yaml:"multipath"`
+		Force     string `yaml:"force"`
 	}{Multipath: &no}}).MultipathEnabled() {
 		t.Fatal("transport.multipath=false was ignored")
+	}
+}
+
+func TestParseConfigValidatesTransportForce(t *testing.T) {
+	base := "auth:\n  authorized_keys_dir: keys\ntransport:\n  force: "
+	if _, err := ParseConfig([]byte(base+"wss\n"), t.TempDir()); err != nil {
+		t.Fatalf("valid transport.force: %v", err)
+	}
+	if _, err := ParseConfig([]byte(base+"nope\n"), t.TempDir()); err == nil {
+		t.Fatal("invalid transport.force accepted")
 	}
 }
 

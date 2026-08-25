@@ -1279,7 +1279,14 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	go c.renewLoop()
 	go c.historyLoop()
-	if hybrid != nil && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
+	// A direct server advertising both legs starts a real multipath session:
+	// retain WSS as a live fallback and register the direct UDP candidate in
+	// both schedulers. Relay-only sessions still use the upgrade ladder to
+	// discover their relay/direct UDP candidates.
+	if multipath != nil && udpEndpoint != "" && !options.UseWebSocket {
+		go c.bootstrapDirectMultipath(udpEndpoint)
+	}
+	if hybrid != nil && udpEndpoint == "" && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
 		go c.directUpgradeLoop()
 	}
 	c.startWebUI()
@@ -1361,6 +1368,9 @@ func selectTransport(explicit bool, transport string, multipath bool, udp, webso
 		if udp == "" {
 			return false, fmt.Errorf("transport direct-udp requested but server did not advertise a WireGuard endpoint")
 		}
+		if multipath && websocket != "" {
+			return true, nil
+		}
 		return false, nil
 	case string(wstransport.PathUDPRelay):
 		if websocket == "" {
@@ -1371,9 +1381,10 @@ func selectTransport(explicit bool, transport string, multipath bool, udp, webso
 		}
 		return true, nil
 	}
-	// A multipath-capable server exposes both legs through the WSS bootstrap.
-	// Starting there lets the upgrade ladder register direct UDP as a second
-	// candidate; without it auto would take UDP before a scheduler existed.
+	// When both legs negotiated multipath, bootstrap over WSS so it remains a
+	// live candidate while direct UDP is independently reflected, registered,
+	// and probed. Selecting raw UDP here would discard WSS entirely, making
+	// automatic comparison and failover impossible.
 	useWS = explicit || (udp == "" && websocket != "") || (transport == "" && multipath && udp != "" && websocket != "")
 	if useWS && websocket == "" {
 		return false, fmt.Errorf("server did not advertise a WebSocket endpoint")
@@ -2033,6 +2044,7 @@ type WebStatus struct {
 	Duplication     bool                     `json:"duplication_active,omitempty"`
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective,omitempty"`
+	PortalEnabled   bool                     `json:"portal_enabled"`
 	// SettingsURL mirrors Options.SettingsURL; empty when the caller (e.g.
 	// the CLI) supplied none.
 	SettingsURL string `json:"settings_url,omitempty"`
@@ -2158,6 +2170,9 @@ func (c *Connection) State() ConnectionState {
 	if c.multipath != nil {
 		state.Transport.Paths = append([]wstransport.PathStatus(nil), c.multipath.Paths()...)
 		primary, _, dup := c.multipath.Scheduler().Select()
+		if primary != "" {
+			state.Transport.Description = multipathDescription(primary)
+		}
 		state.Transport.Duplication = dup
 		state.Transport.Forced = c.multipath.Forced()
 		if state.Transport.Forced != "" && primary == state.Transport.Forced {
@@ -2188,10 +2203,13 @@ func (c *Connection) webStatus() WebStatus {
 		}
 		tunnels = append(tunnels, wt)
 	}
-	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), SettingsURL: c.options.SettingsURL}
+	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), PortalEnabled: c.Response.PortalEnabled, SettingsURL: c.options.SettingsURL}
 	if c.multipath != nil {
 		status.Paths = c.multipath.Paths()
 		primary, _, dup := c.multipath.Scheduler().Select()
+		if primary != "" {
+			status.ConnectionType = multipathDescription(primary)
+		}
 		status.Duplication = dup
 		status.Forced = c.multipath.Forced()
 		if status.Forced != "" && primary == status.Forced {
@@ -2199,6 +2217,19 @@ func (c *Connection) webStatus() WebStatus {
 		}
 	}
 	return status
+}
+
+func multipathDescription(primary string) string {
+	switch primary {
+	case string(wstransport.PathDirect):
+		return "UDP direct"
+	case string(wstransport.PathUDPRelay):
+		return "UDP via relay"
+	case string(wstransport.PathWSS):
+		return "WSS through relay"
+	default:
+		return "Transport unavailable"
+	}
 }
 
 // SetTransport overrides the active transport selection at runtime ("auto",

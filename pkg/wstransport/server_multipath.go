@@ -30,7 +30,8 @@ type ServerMultipathBind struct {
 	// peer.
 	cache *DuplicateCache
 
-	opts V2Options
+	opts   V2Options
+	forced string
 
 	stop      chan struct{}
 	closeOnce sync.Once
@@ -122,6 +123,7 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	m.mu.Lock()
 	p := m.peer(peerID)
 	m.bySource[ep.DstToString()] = p
+	forced := m.forced
 	m.mu.Unlock()
 
 	p.mu.Lock()
@@ -129,9 +131,27 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.v2 = v2
 	p.mu.Unlock()
 	p.scheduler.SetV2(v2)
+	p.scheduler.SetForced(forced)
 
 	p.scheduler.Register(name, kind)
 	m.sendProbe(p, name, time.Now())
+}
+
+// SetForced applies a server operator's default transport selection to every
+// existing and future peer. An unhealthy/unregistered choice still uses the
+// scheduler's normal safe fallback behavior.
+func (m *ServerMultipathBind) SetForced(name string) {
+	normalized := NormalizeTransportName(name)
+	m.mu.Lock()
+	m.forced = normalized
+	peers := make([]*serverMultipathPeer, 0, len(m.peers))
+	for _, p := range m.peers {
+		peers = append(peers, p)
+	}
+	m.mu.Unlock()
+	for _, p := range peers {
+		p.scheduler.SetForced(normalized)
+	}
 }
 func (m *ServerMultipathBind) RemovePeer(id string) {
 	m.mu.Lock()

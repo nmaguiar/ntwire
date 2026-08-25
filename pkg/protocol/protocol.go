@@ -221,6 +221,10 @@ type AuthResponse struct {
 	// distinguish several servers it is connected to at once. Empty when
 	// unset; clients fall back to the host:port they connected to.
 	ServerName string `json:"server_name,omitempty"`
+	// PortalEnabled tells clients whether this server has enabled its optional
+	// Portal. It is always present so an omitted value from an older server is
+	// safely treated as unavailable.
+	PortalEnabled bool `json:"portal_enabled"`
 }
 type RenewRequest struct {
 	Info ClientInfo `json:"client_info"`
@@ -314,6 +318,19 @@ type RelayRegisterResponse struct {
 // again with ClientAddr filled in once it knows its own NAT-mapped endpoint.
 type PunchRequest struct {
 	ClientAddr string `json:"client_addr,omitempty"`
+}
+
+// TransportPathRequest registers an authenticated client's observed UDP
+// address as a candidate for the server-to-client half of a multipath
+// session. Unlike PunchRequest it does not disclose a relay-mode server
+// address and is therefore safe for ordinary direct servers as well.
+//
+// The address is learned by sending a reflection frame to the advertised UDP
+// endpoint, then is submitted over the existing authenticated HTTPS control
+// connection. The server still treats it only as a candidate: probes must
+// succeed before its scheduler can select it.
+type TransportPathRequest struct {
+	Address string `json:"address"`
 }
 
 // PunchResponse answers a PunchRequest. ServerAddr is the server's own most

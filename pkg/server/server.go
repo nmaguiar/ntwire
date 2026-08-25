@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	m.HandleFunc("POST /v1/punch", s.punch)
+	m.HandleFunc("POST /v1/transport/direct", s.registerDirectTransport)
 	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	m.HandleFunc("POST /v1/masque/certificate", s.masqueCertificate)
 	m.HandleFunc("GET /v1/portal", s.portalHandler)
@@ -566,7 +567,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	if req.QueryOnly {
 		s.observe("authentication_success", req.Method)
 		s.log.Info("query-only authentication allowed", "method", req.Method, "identity", req.Identity)
-		write(w, 200, protocol.AuthResponse{Tunnels: v, Identity: req.Identity, Method: req.Method})
+		write(w, 200, protocol.AuthResponse{Tunnels: v, Identity: req.Identity, Method: req.Method, PortalEnabled: s.Config.Portal.Enabled})
 		return true
 	}
 	tunnelIP := ""
@@ -610,7 +611,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.observe("authentication_success", session.Method)
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2)})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2)})
 	return true
 }
 
@@ -743,6 +744,39 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 	write(w, 200, protocol.PunchResponse{ServerAddr: candidate.ServerAddr, RelayReflectAddr: candidate.RelayReflectAddr, Candidates: []protocol.DirectCandidate{candidate}})
 }
 
+// registerDirectTransport associates an authenticated client's reflected UDP
+// source address with its stable server-side multipath peer. This makes the
+// direct and WSS candidates usable in both directions for ordinary servers;
+// relay-mode direct upgrades keep using /v1/punch as before.
+func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request) {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	sess, ok := s.sessions.Get(token)
+	if !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	if !sess.Multipath || s.data == nil || s.data.multipath == nil || s.data.ws == nil {
+		http.Error(w, "multipath transport is not active", http.StatusConflict)
+		return
+	}
+	var body protocol.TransportPathRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body) != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
+		return
+	}
+	if _, err := netip.ParseAddrPort(body.Address); err != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
+		return
+	}
+	ep, err := s.data.ws.UDP.ParseEndpoint(body.Address)
+	if err != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
+		return
+	}
+	s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // udpRelayHandler answers a client's request for a session on the relay's
 // UDP-relay forwarding tier (see pkg/server/udprelay.go) -- the middle rung
 // between the WebSocket fallback and the full direct-UDP escape /v1/punch
@@ -823,7 +857,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2)})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()

@@ -30,23 +30,25 @@ import (
 
 func TestSelectTransport(t *testing.T) {
 	cases := []struct {
-		name     string
-		explicit bool
-		udp      string
-		ws       string
-		wantWS   bool
-		wantErr  bool
+		name      string
+		explicit  bool
+		multipath bool
+		udp       string
+		ws        string
+		wantWS    bool
+		wantErr   bool
 	}{
-		{"direct server, UDP only", false, "vpn.example:51820", "", false, false},
-		{"direct server, both endpoints, UDP preferred", false, "vpn.example:51820", "wss://vpn.example/v1/wg", false, false},
-		{"relay-only server auto-selects websocket", false, "", "wss://home.relay.example/v1/wg", true, false},
-		{"explicit --websocket overrides UDP availability", true, "vpn.example:51820", "wss://vpn.example/v1/wg", true, false},
-		{"explicit --websocket with no websocket endpoint errors", true, "vpn.example:51820", "", false, true},
-		{"neither endpoint advertised errors", false, "", "", false, true},
+		{"direct server, UDP only", false, false, "vpn.example:51820", "", false, false},
+		{"direct server, both endpoints, UDP preferred", false, false, "vpn.example:51820", "wss://vpn.example/v1/wg", false, false},
+		{"multipath direct server retains WSS and UDP candidates", false, true, "vpn.example:51820", "wss://vpn.example/v1/wg", true, false},
+		{"relay-only server auto-selects websocket", false, true, "", "wss://home.relay.example/v1/wg", true, false},
+		{"explicit --websocket overrides UDP availability", true, false, "vpn.example:51820", "wss://vpn.example/v1/wg", true, false},
+		{"explicit --websocket with no websocket endpoint errors", true, false, "vpn.example:51820", "", false, true},
+		{"neither endpoint advertised errors", false, false, "", "", false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := selectTransport(tc.explicit, "", false, tc.udp, tc.ws)
+			got, err := selectTransport(tc.explicit, "", tc.multipath, tc.udp, tc.ws)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error")
@@ -70,7 +72,8 @@ func TestSelectTransportPreference(t *testing.T) {
 	}{
 		{"wss with both", "wss", "vpn.example:51820", "wss://vpn.example/v1/wg", false, true, false},
 		{"wss without websocket", "wss", "vpn.example:51820", "", false, false, true},
-		{"direct with both", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, false},
+		{"direct with both without multipath", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, false},
+		{"direct with both retains multipath fallback", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", true, true, false},
 		{"direct without udp", "direct-udp", "", "wss://vpn.example/v1/wg", false, false, true},
 		{"relay with multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", true, true, false},
 		{"relay without multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, true},

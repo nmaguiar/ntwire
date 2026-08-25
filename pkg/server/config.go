@@ -15,6 +15,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 type Config struct {
@@ -54,6 +55,11 @@ type Config struct {
 		// are available. Nil is enabled for backward-compatible defaults;
 		// set false only to retain the legacy one-leg data plane.
 		Multipath *bool `yaml:"multipath"`
+		// Force pins every negotiated multipath peer to this candidate while it
+		// is healthy. Valid values are auto (the default), wss, udp-relay, and
+		// direct-udp. An unavailable forced path safely falls back to automatic
+		// scheduling rather than disconnecting the peer.
+		Force string `yaml:"force"`
 	} `yaml:"transport"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
@@ -349,6 +355,7 @@ network:
 
 transport:
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
+  force: auto                              # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
 
 # Named reusable egress policy. A tunnel and a native peer can each name one;
 # when both do, both must allow the selected destination.
@@ -571,6 +578,14 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			return c, fmt.Errorf("network.dns.domain %q is not a valid DNS domain", c.Network.DNS.Domain)
 		}
 	}
+	force, err := wstransport.ValidateTransportName(c.Transport.Force)
+	if err != nil {
+		return c, fmt.Errorf("transport.force: %w", err)
+	}
+	if force != "" && !c.MultipathEnabled() {
+		return c, fmt.Errorf("transport.force requires transport.multipath")
+	}
+	c.Transport.Force = force
 	prefix, _ := netip.ParsePrefix(c.Network.TunnelCIDR)
 	if c.Relay.Enabled {
 		if c.Relay.Name == "" || c.Relay.IdentityFile == "" {

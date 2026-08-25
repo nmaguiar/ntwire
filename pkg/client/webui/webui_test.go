@@ -39,6 +39,30 @@ func TestStatusPageAttachesTargetGrid(t *testing.T) {
 	}
 }
 
+func TestStatusPageCollapsesAndSafelyRendersTransportPaths(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"const transportExpandedKey='ntwire.transportExpanded'",
+		"card.open=transportExpanded",
+		"card.className='stats-toggle'",
+		"head.className='stats-toggle-head'",
+		"body.className='stats-toggle-body'",
+		"function pathText(v){return v===null||v===undefined||v===''?'n/a':String(v)}",
+		"const tr=document.createElement('tr'),hasStatus=typeof p.healthy==='boolean'",
+		"const rtt=pathNumber(p.rtt)?Math.round(p.rtt/1000000)+' ms':'n/a'",
+		"const loss=pathNumber(p.loss)?(p.loss*100).toFixed(1)+'%':'n/a'",
+		"const delivery=pathNumber(p.delivery_ratio)&&p.delivery_ratio>=0?Math.round(p.delivery_ratio*100)+'%':'n/a'",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status page is missing transport rendering behavior %q", want)
+		}
+	}
+}
+
 func TestStatusPageKeepsViewTabsBeforeTargetAccordion(t *testing.T) {
 	page, err := fs.ReadFile(mustFiles(t), "index.html")
 	if err != nil {
@@ -77,6 +101,9 @@ func TestStatusPageUsesFragmentsAndEmbedsProtectedSettings(t *testing.T) {
 		"frame.src=settingsURL",
 		"frame.title='Local connection settings'",
 		"switchTab('tunnels');setMessage('Portal is not configured or unavailable for this session.','err')",
+		`id="tab-portal" type="button" class="tab-btn" role="tab" aria-controls="portal-app" aria-selected="false" hidden`,
+		"function setPortalEnabled(enabled){portalEnabled=enabled===true;tabPortal.hidden=!portalEnabled",
+		"setPortalEnabled(s.portal_enabled)",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status page is missing fragment/settings behavior %q", want)

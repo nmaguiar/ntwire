@@ -115,6 +115,13 @@ recovery does not require a session reconnect. Receivers suppress repeated
 type-4 WireGuard transport packets by receiver index and counter in a short
 bounded cache; handshake packets are never suppressed.
 
+The server independently schedules its return traffic through the same
+candidate set, including when it is connected to an `ntwire-relay`. Operators
+can set `transport.force: wss`, `udp-relay`, or `direct-udp` in
+`ntwire-server` configuration to prefer one path for every multipath peer;
+if that candidate is unhealthy or unavailable, the scheduler safely falls
+back to the best healthy path. `transport.force: auto` is the default.
+
 Probe/ack controls have fixed-size payloads and invalid or oversized frames
 are ignored. There are no tuning options in v1. A server without `multipath`
 uses the original WSS → UDP-relay → direct-UDP endpoint upgrade ladder.

@@ -17,6 +17,7 @@ The reference server serves HTTPS.
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
+| `POST /v1/transport/direct` | Bearer token | Registers a reflected direct-UDP client candidate for a negotiated multipath session |
 | `GET /v1/portal` | Bearer token | Rendered portal Markdown/HTML and authorized targets |
 | `POST /v1/portal/action` | Bearer token | Dispatches and resolves an action against authorized targets |
 | `GET /proxy.pac` | None | Proxy Auto-Configuration (PAC) script for the default SOCKS egress tunnel (Desktop / localhost) |
@@ -515,3 +516,17 @@ pair for backwards compatibility.
 self-reflected candidate, empty if it has none yet. A server without
 `relay.advertise_direct` enabled (or predating this feature) answers `404`
 to `/v1/punch` entirely.
+
+For a direct server that advertises both UDP and WSS, the client reflects its
+UDP source address from the server and submits it over the authenticated
+control plane instead:
+
+```json
+{"address": "203.0.113.5:51422"}
+```
+
+`POST /v1/transport/direct` returns `204 No Content` after parsing and
+registering the candidate for that session's WireGuard public key. The server
+and client probe it before either scheduler selects it; WSS stays active as a
+candidate throughout. The endpoint returns `409 Conflict` when multipath was
+not negotiated.

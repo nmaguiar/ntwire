@@ -131,6 +131,24 @@ func TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy(t *testi
 	}
 }
 
+func TestServerMultipathForcedTransportAppliesToExistingAndFuturePeers(t *testing.T) {
+	m := NewServerMultipathBind(conn.NewStdNetBind(), V2Options{})
+	defer m.Close()
+	m.SetForced("wss")
+	ep := fakeEndpoint{id: "peer-wss"}
+	m.RegisterPath("peer-1", "wss", PathWSS, ep, false)
+	m.mu.RLock()
+	p := m.peers["peer-1"]
+	m.mu.RUnlock()
+	if p == nil || p.scheduler.Forced() != "wss" {
+		t.Fatalf("future peer force = %q, want wss", p.scheduler.Forced())
+	}
+	m.SetForced("direct-udp")
+	if got := p.scheduler.Forced(); got != "direct-udp" {
+		t.Fatalf("existing peer force = %q, want direct-udp", got)
+	}
+}
+
 // TestServerMultipathWrapInterceptsWSSControlFrames confirms wrap (the WSS
 // receive path, which has no FilterBind-style interception of its own)
 // consumes a probe frame -- answering it and never forwarding it to

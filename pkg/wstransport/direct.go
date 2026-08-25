@@ -126,6 +126,10 @@ type FilterBind struct {
 	// those transient readers already share would let a persistent reader
 	// steal a message meant for one of them, or vice versa.
 	probeHandler func(typ byte, payload []byte, ep conn.Endpoint)
+	// controlHandler may consume non-probe control frames before they reach
+	// Control(). It is used by a direct server to answer UDP reflection
+	// requests without racing its own relay-reflection reader.
+	controlHandler func(ControlPacket) bool
 }
 
 // NewFilterBind wraps bind. Control frames beyond the internal 32-entry
@@ -142,6 +146,10 @@ func NewFilterBind(bind conn.Bind) *FilterBind {
 func (f *FilterBind) SetProbeHandler(fn func(typ byte, payload []byte, ep conn.Endpoint)) {
 	f.probeHandler = fn
 }
+
+// SetControlHandler installs the optional non-probe control-frame handler.
+// Like SetProbeHandler it must be called before receiving begins.
+func (f *FilterBind) SetControlHandler(fn func(ControlPacket) bool) { f.controlHandler = fn }
 
 // Control receives intercepted control frames.
 func (f *FilterBind) Control() <-chan ControlPacket { return f.control }
@@ -213,6 +221,10 @@ func (f *FilterBind) deliverControl(b []byte, ep conn.Endpoint) {
 	payload := append([]byte(nil), b[controlHeaderLen:]...)
 	addr, err := netip.ParseAddrPort(ep.DstToString())
 	if err != nil {
+		return
+	}
+	cp := ControlPacket{Type: typ, Payload: append([]byte(nil), payload...), From: addr}
+	if f.controlHandler != nil && f.controlHandler(cp) {
 		return
 	}
 	select {
