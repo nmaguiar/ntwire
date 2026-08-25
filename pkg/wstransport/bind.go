@@ -210,6 +210,15 @@ func (b *Bind) DisableRedial() {
 	b.mu.Unlock()
 }
 
+// SetRedialBackoff overrides the default backoff and dial timeout for the
+// client-side reconnect loop. It is intended for tests that need fast
+// reconnects without sleeping through production backoff intervals.
+func (b *Bind) SetRedialBackoff(min, max, dialTimeout time.Duration) {
+	b.mu.Lock()
+	b.redialMin, b.redialMax, b.dialTimeout = min, max, dialTimeout
+	b.mu.Unlock()
+}
+
 // NewServer creates a bind whose ServeHTTP method attaches authenticated
 // WebSocket connections. The id is usually the ntwire session ID.
 func NewServer() *Bind { return &Bind{} }
@@ -370,8 +379,8 @@ func (b *Bind) remove(p *peer) {
 func (b *Bind) redial() {
 	b.mu.Lock()
 	done := b.done
-	b.mu.Unlock()
 	backoff := b.redialMin
+	b.mu.Unlock()
 	for attempt := 0; ; attempt++ {
 		if attempt > 0 {
 			// Full jitter: spreads out redial attempts from many peers that
@@ -386,7 +395,10 @@ func (b *Bind) redial() {
 				return
 			case <-time.After(wait):
 			}
-			backoff = min(backoff*2, b.redialMax)
+			b.mu.Lock()
+			redialMax := b.redialMax
+			b.mu.Unlock()
+			backoff = min(backoff*2, redialMax)
 		}
 		select {
 		case <-done:
@@ -395,8 +407,9 @@ func (b *Bind) redial() {
 		}
 		b.mu.Lock()
 		url, client, header := b.url, b.client, b.header
+		dialTimeout := b.dialTimeout
 		b.mu.Unlock()
-		dialCtx, cancel := context.WithTimeout(context.Background(), b.dialTimeout)
+		dialCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 		ws, _, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{HTTPClient: client, HTTPHeader: header})
 		cancel()
 		if err != nil {

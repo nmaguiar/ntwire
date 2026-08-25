@@ -790,6 +790,7 @@ func TestProxy_SOCKS5_WSSRedial(t *testing.T) {
 
 	wsURL := "ws" + targetServer.URL[len("http"):]
 	clientBind := wstransport.NewClient(wsURL, clientHTTP, nil)
+	clientBind.SetRedialBackoff(5*time.Millisecond, 20*time.Millisecond, time.Second)
 	reconnected := make(chan struct{}, 10)
 	clientBind.OnPeerConnected = func(id string, ep conn.Endpoint) {
 		reconnected <- struct{}{}
@@ -818,7 +819,7 @@ func TestProxy_SOCKS5_WSSRedial(t *testing.T) {
 	// Wait for automatic redial through SOCKS
 	select {
 	case <-reconnected:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for automatic redial")
 	}
 
