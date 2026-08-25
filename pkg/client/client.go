@@ -18,6 +18,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/oidcclient"
 	"github.com/nmaguiar/ntwire/pkg/pac"
+	"github.com/nmaguiar/ntwire/pkg/portal"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -1802,6 +1803,39 @@ func (c *Connection) startWebUI() {
 		}
 		_ = json.NewEncoder(w).Encode(c.webInstructions())
 	})
+	mux.HandleFunc("/portal", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		p, err := c.Portal(r.Context())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(p)
+	})
+	mux.HandleFunc("/portal/action", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var in struct {
+			Action   string `json:"action"`
+			TargetID string `json:"target_id"`
+			URL      string `json:"url"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		c.executePortalAction(w, in.Action, in.TargetID, in.URL)
+	})
 	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
 			http.NotFound(w, r)
@@ -2217,6 +2251,95 @@ func (c *Connection) resetTunnelBrowserProfile(w http.ResponseWriter, name strin
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Portal fetches the rendered portal and authorized target context from the server.
+func (c *Connection) Portal(ctx context.Context) (*portal.RenderedPortal, error) {
+	c.mu.Lock()
+	serverURL := c.base
+	token := c.token
+	httpClient := c.http
+	c.mu.Unlock()
+
+	if serverURL == "" || token == "" || httpClient == nil {
+		return nil, fmt.Errorf("client is not connected")
+	}
+
+	reqURL := strings.TrimRight(serverURL, "/") + "/v1/portal?mode=native"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch portal: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+
+	var res portal.RenderedPortal
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("decode portal response: %w", err)
+	}
+	return &res, nil
+}
+
+func (c *Connection) executePortalAction(w http.ResponseWriter, action, targetID, targetURL string) {
+	if targetID == "" {
+		http.Error(w, "target_id is required", http.StatusBadRequest)
+		return
+	}
+	c.mu.Lock()
+	tunnels := c.tunnels
+	c.mu.Unlock()
+
+	var matchedTunnel *localTunnel
+	for _, t := range tunnels {
+		if strings.EqualFold(t.name, targetID) {
+			matchedTunnel = t
+			break
+		}
+	}
+	if matchedTunnel == nil {
+		http.Error(w, fmt.Sprintf("target %q is not authorized", targetID), http.StatusForbidden)
+		return
+	}
+
+	// Determine SOCKS local proxy address
+	var socksAddr string
+	for _, t := range tunnels {
+		if addr, err := c.socksTunnelLocalAddr(t.name); err == nil {
+			socksAddr = addr
+			break
+		}
+	}
+
+	switch action {
+	case "open", "browser":
+		if socksAddr != "" {
+			if err := browseropen.OpenSocks(browserProfileKey(targetID), socksAddr, targetURL); err != nil {
+				http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else if targetURL != "" {
+			if err := browseropen.Open(targetURL); err != nil {
+				http.Error(w, "cannot open URL: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+		} else {
+			http.Error(w, "no SOCKS proxy or URL available for target", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "unsupported action", http.StatusBadRequest)
+	}
 }
 
 // WebInstructions is the rendered setup guidance for one tunnel, as reported

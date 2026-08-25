@@ -1,0 +1,74 @@
+# Example ntwire server configuration with Portal enabled
+
+tls:
+  ephemeral: true
+
+listen:
+  https: ":8443"
+  wireguard: ":51820"
+  name: "Production Gateway"
+
+auth:
+  authorized_keys_dir: keys
+  session_ttl: 1h
+
+network:
+  tunnel_cidr: "100.64.0.0/16"
+
+portal:
+  enabled: true
+  title: "Acme Corp Developer Portal"
+  template: "examples/portal/portal.md"
+  variables:
+    environment: "Production"
+  web:
+    enabled: true
+    listen: "100.64.0.1:8080"
+
+tunnels:
+  - name: egress
+    target: socks
+    virtual_port: 1080
+    local_port: 1080
+    socks:
+      filters:
+        - "10.0.0.0/8"
+        - "172.16.0.0/12"
+        - "192.168.0.0/16"
+    portal:
+      name: "Corporate Egress"
+      description: "Secure SOCKS5 egress for internal corporate network"
+      category: "Network"
+      icon: "network"
+
+  - name: grafana
+    target: grafana.internal:3000
+    virtual_port: 3000
+    local_port: 3000
+    portal:
+      name: "Grafana Dashboards"
+      description: "Infrastructure metrics, alerts, and system telemetry"
+      category: "Observability"
+      icon: "chart"
+      url: "http://grafana.internal:3000"
+      applications:
+        - "grafana"
+        - "prometheus"
+
+  - name: pgsql
+    target: postgres.internal:5432
+    virtual_port: 5432
+    local_port: 5432
+    instructions: |
+      Connect with psql:
+      ```bash
+      psql -h {{.LocalHost}} -p {{.LocalPort}} -U appuser dbname
+      ```
+    portal:
+      name: "Customer Database"
+      description: "PostgreSQL database primary instance"
+      category: "Databases"
+      icon: "database"
+      applications:
+        - "psql"
+        - "dbeaver"

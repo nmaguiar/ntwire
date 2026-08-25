@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -27,6 +28,8 @@ type dataPlane struct {
 	next      uint32
 	listeners map[string]*tunnelListener // keyed by tunnel name
 	dnsConn   net.PacketConn
+	portalSrv *http.Server
+	portalLn  net.Listener
 	stop      chan struct{}
 	stopASN   chan struct{}
 	ws        *wstransport.Hybrid
@@ -166,6 +169,11 @@ func (s *Server) StartDataPlane() error {
 	if s.Config.Network.DNS.IsEnabled() {
 		if err := s.startDNS(d); err != nil {
 			s.log.Warn("in-tunnel DNS server startup failed", "error", err)
+		}
+	}
+	if s.Config.Portal.Enabled && s.Config.Portal.Web.Enabled && s.Config.Portal.Web.Listen != "" {
+		if err := s.startWebPortal(d); err != nil {
+			s.log.Warn("in-tunnel web portal startup failed", "error", err)
 		}
 	}
 	go s.reapLoop(d)
@@ -672,6 +680,12 @@ func (s *Server) Close() {
 	s.data.mu.Unlock()
 	if s.data.dnsConn != nil {
 		_ = s.data.dnsConn.Close()
+	}
+	if s.data.portalSrv != nil {
+		_ = s.data.portalSrv.Close()
+	}
+	if s.data.portalLn != nil {
+		_ = s.data.portalLn.Close()
 	}
 	_ = s.data.stack.Close()
 	s.data = nil

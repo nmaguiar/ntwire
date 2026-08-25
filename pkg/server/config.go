@@ -13,6 +13,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
+	"github.com/nmaguiar/ntwire/pkg/portal"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
@@ -53,6 +54,7 @@ type Config struct {
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
 	Relay               RelayConfig                  `yaml:"relay"`
 	MASQUE              MASQUEConfig                 `yaml:"masque"`
+	Portal              portal.PortalConfig          `yaml:"portal"`
 	Tunnels             []TunnelConfig               `yaml:"tunnels"`
 	Log                 logging.Config               `yaml:"log"`
 	Audit               struct {
@@ -198,6 +200,10 @@ type TunnelConfig struct {
 	// a fixed-target forward. It is used, and required, when Target is the
 	// sentinel value "socks"; see SocksConfig.
 	Socks *SocksConfig `yaml:"socks"`
+
+	// Portal configures optional presentation metadata for this tunnel when
+	// rendered in the ntwire Portal.
+	Portal *portal.TargetPortalConfig `yaml:"portal"`
 }
 
 // NativeWireGuardConfig statically admits unmodified WireGuard clients into
@@ -466,6 +472,28 @@ func loadInstructionsFile(t *TunnelConfig) {
 	}
 }
 
+func loadPortalTemplateFile(p *portal.PortalConfig, baseDir string) {
+	if p.Template == "" || strings.Contains(p.Template, "\n") {
+		return
+	}
+	path := p.Template
+	fi, err := os.Stat(path)
+	if err != nil && baseDir != "" {
+		alt := filepath.Join(baseDir, path)
+		if fi2, err2 := os.Stat(alt); err2 == nil {
+			path = alt
+			fi = fi2
+			err = nil
+		}
+	}
+	if err != nil || fi.IsDir() || fi.Size() > maxInstructionsFileSize {
+		return
+	}
+	if b, err := os.ReadFile(path); err == nil {
+		p.Template = string(b)
+	}
+}
+
 func LoadConfig(path string) (Config, error) {
 	b, e := os.ReadFile(path)
 	if e != nil {
@@ -638,6 +666,30 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			}
 		} else if t.Socks != nil {
 			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+		}
+		if t.Portal != nil {
+			if t.Portal.URL != "" && !instructions.SafeURL(t.Portal.URL) {
+				return c, fmt.Errorf("tunnel %q: portal.url must be an absolute http(s) URL", t.Name)
+			}
+		}
+	}
+	loadPortalTemplateFile(&c.Portal, stateDir)
+	if c.Portal.Enabled {
+		if c.Portal.Template != "" {
+			errs := portal.ValidateTemplate(c.Portal.Template, nil)
+			for _, err := range errs {
+				if err.Fatal {
+					return c, fmt.Errorf("portal.template: %w", err)
+				}
+			}
+		}
+		if c.Portal.Web.Enabled {
+			if c.Portal.Web.Listen == "" {
+				return c, fmt.Errorf("portal.web.enabled requires portal.web.listen")
+			}
+			if _, _, err := net.SplitHostPort(c.Portal.Web.Listen); err != nil {
+				return c, fmt.Errorf("portal.web.listen: %w", err)
+			}
 		}
 	}
 	for name, policy := range c.DestinationPolicies {

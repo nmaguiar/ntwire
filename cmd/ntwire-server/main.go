@@ -32,6 +32,10 @@ func main() {
 		runList(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "portal" {
+		runPortal(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
+		return
+	}
 
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	listFlag := flag.Bool("list", false, "list configured server tunnels and proxy PAC endpoints and exit")
@@ -59,6 +63,10 @@ func main() {
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
 				"ntwire-server list -config ntwire.yaml",
+				"ntwire-server portal describe",
+				"ntwire-server portal prompt -config ntwire.yaml",
+				"ntwire-server portal validate -config ntwire.yaml",
+				"ntwire-server portal render -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -print-wireguard-config -config ntwire.yaml",
 				"ntwire-server -print-wireguard-conf -config ntwire.yaml > client.conf",

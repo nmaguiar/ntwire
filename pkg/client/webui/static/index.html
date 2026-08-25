@@ -14,6 +14,23 @@ details.card{padding:0}.card-head{display:flex;flex-wrap:wrap;gap:.6rem .75rem;a
 .stats-toggle-body .chart+.chart{margin-top:.65rem}
 #settings-link:empty{display:none}
 .chart-down-band{fill:color-mix(in srgb,var(--danger) 25%,transparent)}
+.tabs{display:flex;gap:.5rem;margin-bottom:1.25rem}
+.tab-btn{border:1px solid var(--border);border-radius:12px;padding:.5rem 1rem;background:var(--panel-2);color:var(--text);font-weight:700;cursor:pointer}
+.tab-btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.portal-view{display:flex;flex-direction:column;gap:1.25rem}
+.portal-card{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:24px;box-shadow:var(--shadow);padding:1.5rem}
+.portal-card h1{font-size:1.6rem;margin-bottom:.5rem}
+.portal-card h2{font-size:1.25rem;margin-top:1.5rem;margin-bottom:.75rem;color:var(--brand);border-bottom:1px solid var(--border);padding-bottom:.25rem}
+.portal-card h3{font-size:1.05rem;margin-top:1rem;margin-bottom:.35rem}
+.portal-card p{margin-bottom:.75rem}
+.portal-card .portal-link{color:var(--brand);font-weight:700;text-decoration:none}
+.portal-card .portal-link:hover{text-decoration:underline}
+.portal-table{width:100%;border-collapse:collapse;margin:1rem 0}
+.portal-table th,.portal-table td{border:1px solid var(--border);padding:.5rem .75rem;text-align:left}
+.portal-table th{background:var(--panel-2)}
+.ntwire-action-btn{display:inline-block;background:var(--brand);color:var(--bg);border:0;border-radius:10px;padding:.5rem 1rem;font-weight:700;cursor:pointer;margin:.4rem 0}
+.ntwire-action-btn:hover{background:var(--brand-strong)}
+.ntwire-action-text{display:inline-block;background:var(--panel-2);color:var(--muted);border:1px solid var(--border);padding:.4rem .8rem;border-radius:8px;font-size:.9rem}
 </style>
 <main>
   <section class="hero" aria-labelledby="title">
@@ -25,7 +42,12 @@ details.card{padding:0}.card-head{display:flex;flex-wrap:wrap;gap:.6rem .75rem;a
     <div id="settings-link"></div>
     <div id="health"></div><p id="message" role="status"></p>
   </section>
+  <div id="tabs" class="tabs" role="tablist">
+    <button id="tab-tunnels" type="button" class="tab-btn active" role="tab" aria-selected="true">Tunnels</button>
+    <button id="tab-portal" type="button" class="tab-btn" role="tab" aria-selected="false">🌐 Portal</button>
+  </div>
   <div id="app" class="empty">Loading connection status…</div>
+  <div id="portal-app" class="portal-view" style="display:none"></div>
 </main>
 <script>
 const app=document.getElementById('app'),message=document.getElementById('message'),state=document.getElementById('state'),transport=document.getElementById('transport'),title=document.getElementById('title'),token=new URLSearchParams(location.search).get('token');
@@ -128,6 +150,12 @@ title.append(h,desc);addrRow.append(addr,copyButton(t.local_address,'Copy local 
 const ins=instructions.get(t.name);if(ins)body.append(howto(ins));
 if(t.target_hint==='socks'){const bs=document.createElement('section'),bh=document.createElement('h3'),brow=document.createElement('div'),openBtn=document.createElement('button'),resetBtn=document.createElement('button');bs.className='howto';bh.className='howto-label';bh.textContent='🌐 Browser';brow.style.cssText='display:flex;gap:.5rem;flex-wrap:wrap';openBtn.type='button';openBtn.textContent='Open in browser';resetBtn.type='button';resetBtn.textContent='Reset browser profile';const browserAction=async(action,btn,busyMsg,okMsg)=>{message.textContent=busyMsg;btn.disabled=true;try{const r=await fetch('/tunnels/'+encodeURIComponent(t.name)+'/browser/'+action+'?token='+encodeURIComponent(token),{method:'POST'});if(!r.ok)throw Error(await r.text());message.textContent=okMsg}catch(e){message.textContent='Could not '+action+' browser: '+e.message}finally{btn.disabled=false}};openBtn.addEventListener('click',()=>browserAction('open',openBtn,'Opening browser…','Browser opened.'));resetBtn.addEventListener('click',()=>browserAction('reset',resetBtn,'Resetting browser profile…','Browser profile reset.'));brow.append(openBtn,resetBtn);bs.append(bh,brow);body.append(bs)}
 body.append(statsToggle,form);card.append(head,body);li.append(card);return li}
+const tabTunnels=document.getElementById('tab-tunnels'),tabPortal=document.getElementById('tab-portal'),portalApp=document.getElementById('portal-app');
+let activeTab='tunnels';
+function switchTab(t){activeTab=t;tabTunnels.classList.toggle('active',t==='tunnels');tabTunnels.setAttribute('aria-selected',t==='tunnels');tabPortal.classList.toggle('active',t==='portal');tabPortal.setAttribute('aria-selected',t==='portal');app.style.display=t==='tunnels'?'':'none';portalApp.style.display=t==='portal'?'':'none';if(t==='portal')renderPortalView()}
+tabTunnels.addEventListener('click',()=>switchTab('tunnels'));
+tabPortal.addEventListener('click',()=>switchTab('portal'));
+async function renderPortalView(){portalApp.replaceChildren();const loading=document.createElement('div');loading.className='empty';loading.textContent='Loading portal…';portalApp.append(loading);try{const q='?token='+encodeURIComponent(token),r=await fetch('/portal'+q);if(!r.ok)throw Error(await r.text());const data=await r.json();portalApp.replaceChildren();const card=document.createElement('div');card.className='portal-card';card.innerHTML=data.html||'<p>No portal content available.</p>';card.querySelectorAll('.ntwire-action-btn').forEach(btn=>{btn.addEventListener('click',async()=>{const action=btn.getAttribute('data-action')||'open',targetId=btn.getAttribute('data-target');message.textContent='Executing action on '+targetId+'…';btn.disabled=true;try{const ar=await fetch('/portal/action'+q,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:action,target_id:targetId})});if(!ar.ok)throw Error(await ar.text());message.textContent='Action executed.'}catch(err){message.textContent='Action error: '+err.message}finally{btn.disabled=false}})});card.querySelectorAll('.copy-button').forEach(btn=>{btn.addEventListener('click',()=>{const text=btn.getAttribute('data-copy');if(text){navigator.clipboard.writeText(text).then(()=>{const prev=btn.textContent;btn.textContent='Copied!';setTimeout(()=>{btn.textContent=prev},1500)})}})});portalApp.append(card)}catch(err){portalApp.replaceChildren();const errDiv=document.createElement('div');errDiv.className='empty';errDiv.textContent='Portal is not configured or unavailable for this session.';portalApp.append(errDiv)}}
 const retryDelay=5000;let retryTimer=null,retryTicker=null,nextRetryAt=0,reconnectBanner=null;
 function updateReconnectBanner(){if(!reconnectBanner)return;const seconds=Math.max(0,Math.ceil((nextRetryAt-Date.now())/1000));reconnectBanner.querySelector('[data-retry-countdown]').textContent=`Retrying in ${seconds}s.`}
 function showReconnectBanner(){if(!reconnectBanner){const text=document.createElement('span'),btn=document.createElement('button');reconnectBanner=document.createElement('div');reconnectBanner.className='reconnect-banner';reconnectBanner.setAttribute('role','alert');text.textContent='⚠️ Lost contact with the ntwire client. ';const countdown=document.createElement('span');countdown.dataset.retryCountdown='';text.append(countdown);btn.type='button';btn.textContent='Close tab';btn.addEventListener('click',()=>window.close());reconnectBanner.append(text,btn);document.body.prepend(reconnectBanner);retryTicker=setInterval(updateReconnectBanner,250)}updateReconnectBanner()}

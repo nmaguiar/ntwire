@@ -103,6 +103,8 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/punch", s.punch)
 	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	m.HandleFunc("POST /v1/masque/certificate", s.masqueCertificate)
+	m.HandleFunc("GET /v1/portal", s.portalHandler)
+	m.HandleFunc("POST /v1/portal/action", s.portalActionHandler)
 	m.HandleFunc("GET /proxy.pac", func(w http.ResponseWriter, r *http.Request) {
 		s.servePAC(w, r, "", false)
 	})

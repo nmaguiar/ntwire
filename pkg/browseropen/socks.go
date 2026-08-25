@@ -90,9 +90,10 @@ func ProfileDir(key string) (string, error) {
 
 // OpenSocks launches Chrome/Chromium against localAddr ("host:port") via
 // --proxy-server=socks5://<localAddr>, using the persistent, isolated
-// profile directory for key (see ProfileDir). It starts the process and
+// profile directory for key (see ProfileDir). If targetURL is provided, the
+// browser navigates to that URL upon launch. It starts the process and
 // returns immediately -- it does not wait for the browser to exit.
-func OpenSocks(key, localAddr string) error {
+func OpenSocks(key, localAddr string, targetURL ...string) error {
 	bin, err := FindChrome()
 	if err != nil {
 		return err
@@ -108,7 +109,18 @@ func OpenSocks(key, localAddr string) error {
 		"--no-default-browser-check",
 		"--disable-sync",
 	}
+	for _, u := range targetURL {
+		u = strings.TrimSpace(u)
+		if u != "" {
+			args = append(args, u)
+		}
+	}
 	return exec.Command(bin, args...).Start()
+}
+
+// OpenSocksURL is an explicit alias for OpenSocks with a target URL.
+func OpenSocksURL(key, localAddr, targetURL string) error {
+	return OpenSocks(key, localAddr, targetURL)
 }
 
 // CleanProfile removes the persistent profile directory for key (see

@@ -460,3 +460,32 @@ server) that already completed authenticated allocation over TLS.
   open an outbound data connection. `limits.max_pending_per_server` and
   `limits.max_conns_per_server` cap this per tenant, independent of the
   source-IP rate limit.
+
+## Portal security model
+
+The ntwire Portal (see [PORTAL.md](PORTAL.md)) follows strict least-privilege and defense-in-depth principles:
+
+### Untrusted template isolation
+Portal templates are treated as untrusted declarative content. The template engine:
+* Executes in a sandboxed, restricted AST evaluator with no runtime reflection, filesystem access, command execution, or network capabilities.
+* Limits template evaluation output size to prevent memory exhaustion (DoS).
+* Disallows script tags (`<script>`), inline JavaScript event attributes (`onclick`, `onload`, `onerror`), and dangerous URI schemes (`javascript:`, `data:`, `file:`).
+
+### Authorization-filtered context
+Portal rendering occurs **exclusively** against pre-filtered target sets. A client receives only target metadata for tunnels granted to that specific session or peer identity. Target names, descriptions, and categories for unauthorized resources are never included in the JSON payload, Markdown, or HTML sent to the client.
+
+### Action revalidation
+Client portal actions (e.g. `ntwire://open/<target_id>`) do not execute arbitrary commands or URLs. Both the server action endpoint (`POST /v1/portal/action`) and the native client action dispatcher verify that `<target_id>` belongs to the user's active, granted tunnels before launching the isolated browser profile or proxy.
+
+### WireGuard HTTP web portal defenses
+The in-tunnel WireGuard web portal:
+* Maps incoming TCP connections to authenticated identities via the client's overlay IP address (`r.RemoteAddr`).
+* Fails closed: if the client IP address does not match an active authenticated session or native peer table entry, the request is immediately rejected with `403 Forbidden`.
+* Applies strict HTTP security headers:
+  * `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'`
+  * `X-Content-Type-Options: nosniff`
+  * `X-Frame-Options: DENY`
+  * `Referrer-Policy: no-referrer`
+  * `Strict-Transport-Security: max-age=31536000; includeSubDomains`
+  * `Cache-Control: no-store, no-cache, must-revalidate`
+
