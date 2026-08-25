@@ -788,6 +788,11 @@ func TestProxy_SOCKS5_WSSRedial(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	serverConnected := make(chan struct{}, 10)
+	serverBind.OnPeerConnected = func(id string, ep conn.Endpoint) {
+		serverConnected <- struct{}{}
+	}
+
 	wsURL := "ws" + targetServer.URL[len("http"):]
 	clientBind := wstransport.NewClient(wsURL, clientHTTP, nil)
 	clientBind.SetRedialBackoff(5*time.Millisecond, 20*time.Millisecond, time.Second)
@@ -807,6 +812,11 @@ func TestProxy_SOCKS5_WSSRedial(t *testing.T) {
 	case <-reconnected:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial connection")
+	}
+	select {
+	case <-serverConnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial server peer")
 	}
 
 	if socksServer.RequestCount() != 1 {
