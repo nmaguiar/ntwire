@@ -14,7 +14,7 @@ details.card{padding:0}.card-head{display:flex;flex-wrap:wrap;gap:.6rem .75rem;a
 .stats-toggle-body .chart+.chart{margin-top:.65rem}
 #settings-link:empty{display:none}
 .chart-down-band{fill:color-mix(in srgb,var(--danger) 25%,transparent)}
-.tabs{display:flex;gap:.5rem;margin-bottom:1.25rem}
+.tabs{position:sticky;top:0;z-index:10;display:flex;gap:.5rem;margin-bottom:1.25rem;padding:.75rem 0;background:linear-gradient(to bottom,var(--bg) 78%,transparent)}
 .tab-btn{border:1px solid var(--border);border-radius:12px;padding:.5rem 1rem;background:var(--panel-2);color:var(--text);font-weight:700;cursor:pointer}
 .tab-btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
 .portal-view{display:flex;flex-direction:column;gap:1.25rem}
@@ -42,12 +42,12 @@ details.card{padding:0}.card-head{display:flex;flex-wrap:wrap;gap:.6rem .75rem;a
     <div id="settings-link"></div>
     <div id="health"></div><p id="message" role="status"></p>
   </section>
-  <div id="tabs" class="tabs" role="tablist">
-    <button id="tab-tunnels" type="button" class="tab-btn active" role="tab" aria-selected="true">Tunnels</button>
-    <button id="tab-portal" type="button" class="tab-btn" role="tab" aria-selected="false">🌐 Portal</button>
+  <div id="tabs" class="tabs" role="tablist" aria-label="Dashboard views">
+    <button id="tab-tunnels" type="button" class="tab-btn active" role="tab" aria-controls="app" aria-selected="true">Tunnels</button>
+    <button id="tab-portal" type="button" class="tab-btn" role="tab" aria-controls="portal-app" aria-selected="false">🌐 Portal</button>
   </div>
-  <div id="app" class="empty">Loading connection status…</div>
-  <div id="portal-app" class="portal-view" style="display:none"></div>
+  <div id="app" class="empty" role="tabpanel" aria-labelledby="tab-tunnels">Loading connection status…</div>
+  <div id="portal-app" class="portal-view" role="tabpanel" aria-labelledby="tab-portal" style="display:none"></div>
 </main>
 <script>
 const app=document.getElementById('app'),message=document.getElementById('message'),state=document.getElementById('state'),transport=document.getElementById('transport'),title=document.getElementById('title'),token=new URLSearchParams(location.search).get('token');

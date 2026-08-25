@@ -39,6 +39,28 @@ func TestStatusPageAttachesTargetGrid(t *testing.T) {
 	}
 }
 
+func TestStatusPageKeepsViewTabsBeforeTargetAccordion(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	tabs := strings.Index(text, `id="tabs"`)
+	targets := strings.Index(text, `id="app"`)
+	if tabs < 0 || targets < 0 || tabs > targets {
+		t.Error("status page must render the Tunnels and Portal tab bar before the target accordion")
+	}
+	for _, want := range []string{
+		`aria-controls="app"`,
+		`aria-controls="portal-app"`,
+		`.tabs{position:sticky;top:0;`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status page is missing persistent dashboard view control %q", want)
+		}
+	}
+}
+
 func mustFiles(t *testing.T) fs.FS {
 	t.Helper()
 	f, err := Files()
