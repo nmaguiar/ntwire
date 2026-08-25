@@ -25,9 +25,13 @@ h1{font-size:clamp(1.8rem,5vw,2.6rem);margin:.15rem 0}
 button{border:0;border-radius:10px;background:var(--brand);color:var(--bg);padding:.65rem 1.1rem;font-weight:800;cursor:pointer}
 button:hover,button:focus-visible{background:var(--brand-strong)}
 button:disabled{cursor:wait;opacity:.65}
-#message{min-height:1.4em;font-weight:600}
+#message{display:none;min-height:1.4em;font-weight:600;align-items:center;gap:.4rem}
+#message:not(:empty){display:inline-flex}
 #message.ok{color:var(--accent)}
 #message.err{color:var(--danger)}
+#message.info{color:var(--brand)}
+.msg-close{display:inline-flex;align-items:center;justify-content:center;width:1.2rem;height:1.2rem;padding:0;margin-left:.35rem;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;opacity:.75;font-size:.85rem;cursor:pointer;line-height:1}
+.msg-close:hover,.msg-close:focus-visible{opacity:1;background:color-mix(in srgb,currentColor 15%,transparent);border-color:color-mix(in srgb,currentColor 30%,transparent)}
 .advanced-toggle{color:var(--brand);font-weight:700;cursor:pointer;background:none;border:none;padding:0;font-size:.85rem}
 .advanced[hidden]{display:none}
 .reconnect-banner{position:sticky;top:0;z-index:100;display:flex;gap:.75rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.7rem 1rem;background:#fee2e2;color:#7f1d1d;border-bottom:1px solid #fca5a5;font-weight:700;box-shadow:0 2px 8px rgba(127,29,29,.12)}.reconnect-banner button{border:1px solid #fca5a5;border-radius:10px;background:#fff1f2;color:#9f1239;padding:.4rem .75rem;font-weight:700;cursor:pointer}.reconnect-banner button:hover,.reconnect-banner button:focus-visible{background:#ffe4e6}
@@ -46,6 +50,24 @@ button:disabled{cursor:wait;opacity:.65}
 </main>
 <script>
 const token=new URLSearchParams(location.search).get('token'),groupsEl=document.getElementById('groups'),message=document.getElementById('message'),saveBtn=document.getElementById('save');
+let messageTimer=null;
+function clearMessage(){clearTimeout(messageTimer);message.textContent='';message.className=''}
+function setMessage(text,type='info',timeout=(type==='err'?8000:(type==='info'?0:5000))){
+  clearTimeout(messageTimer);
+  if(!text){clearMessage();return}
+  message.className=type;
+  message.textContent=text;
+  const btn=document.createElement('button');
+  btn.type='button';
+  btn.className='msg-close';
+  btn.setAttribute('aria-label','Dismiss message');
+  btn.title='Dismiss message';
+  btn.textContent='✕';
+  btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();clearMessage()});
+  message.append(btn);
+  if(timeout>0)messageTimer=setTimeout(clearMessage,timeout);
+}
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&message.textContent)clearMessage()});
 let schema=[],inputs={};
 function group(name){let s=document.createElement('section');s.className='card';let h=document.createElement('h2');h.textContent=name;s.append(h);return s}
 function fieldRow(f,value){
@@ -97,14 +119,14 @@ async function load(){
   }
 }
 saveBtn.addEventListener('click',async()=>{
-  message.textContent='';message.className='';saveBtn.disabled=true;
+  clearMessage();saveBtn.disabled=true;
   try{
     const body={};
     for(const [field,{el,bool}] of Object.entries(inputs))body[field]=bool?el.checked:el.value.trim();
     const r=await fetch('/api/values?token='+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok)throw Error(await r.text());
-    message.textContent='Saved.';message.className='ok';
-  }catch(e){message.textContent='Could not save: '+e.message;message.className='err'}
+    setMessage('Saved.','ok');
+  }catch(e){setMessage('Could not save: '+e.message,'err')}
   finally{saveBtn.disabled=false}
 });
 load().catch(e=>{groupsEl.textContent='Could not load settings: '+e.message});

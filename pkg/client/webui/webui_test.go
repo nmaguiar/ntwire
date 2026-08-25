@@ -76,10 +76,33 @@ func TestStatusPageUsesFragmentsAndEmbedsProtectedSettings(t *testing.T) {
 		"setSettingsURL(s.settings_url)",
 		"frame.src=settingsURL",
 		"frame.title='Local connection settings'",
-		"switchTab('tunnels');message.textContent='Portal is not configured or unavailable for this session.'",
+		"switchTab('tunnels');setMessage('Portal is not configured or unavailable for this session.','err')",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status page is missing fragment/settings behavior %q", want)
+		}
+	}
+}
+
+func TestStatusPageMessageResetAndDismissControls(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"function clearMessage()",
+		"function setMessage(",
+		"msg-close",
+		"aria-label",
+		"Dismiss message",
+		"#message.ok{color:var(--accent)}",
+		"#message.err{color:var(--danger)}",
+		"#message.info{color:var(--brand)}",
+		"Escape",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status page is missing message reset/dismiss feature %q", want)
 		}
 	}
 }
