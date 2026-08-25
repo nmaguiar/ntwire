@@ -329,3 +329,76 @@ func TestSelectV2PromotesChallengerOnceDeliveryProven(t *testing.T) {
 		t.Fatalf("primary = %q after udp-relay proved perfect delivery, want it promoted", primary)
 	}
 }
+
+func TestSchedulerForcedSelectionAndFallback(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	s.Register("udp-relay", PathUDPRelay)
+	s.Register("direct-udp", PathDirect)
+	now := time.Now()
+
+	s.ProbeResult("wss", 100*time.Millisecond, true, now)
+	s.ProbeResult("udp-relay", 50*time.Millisecond, true, now)
+	s.ProbeResult("direct-udp", 10*time.Millisecond, true, now)
+
+	// Automatic mode should pick direct-udp (lowest score/latency)
+	primary, _, _ := s.Select()
+	if primary != "direct-udp" {
+		t.Fatalf("automatic primary = %q, want direct-udp", primary)
+	}
+
+	// Force wss manually
+	s.SetForced("wss")
+	if s.Forced() != "wss" {
+		t.Fatalf("Forced() = %q, want wss", s.Forced())
+	}
+	primary, _, _ = s.Select()
+	if primary != "wss" {
+		t.Fatalf("forced primary = %q, want wss", primary)
+	}
+
+	// Verify Status() reflects forced path
+	statuses := s.Status()
+	var wssStatus, directStatus *PathStatus
+	for i := range statuses {
+		if statuses[i].Name == "wss" {
+			wssStatus = &statuses[i]
+		}
+		if statuses[i].Name == "direct-udp" {
+			directStatus = &statuses[i]
+		}
+	}
+	if wssStatus == nil || !wssStatus.Primary || !wssStatus.Forced {
+		t.Fatalf("wssStatus = %+v, want Primary=true, Forced=true", wssStatus)
+	}
+	if directStatus == nil || directStatus.Primary || directStatus.Forced {
+		t.Fatalf("directStatus = %+v, want Primary=false, Forced=false", directStatus)
+	}
+
+	// Now make forced "wss" unhealthy (3 misses)
+	for i := 0; i < 3; i++ {
+		s.ProbeResult("wss", 0, false, now)
+	}
+	// Fallback to automatic: direct-udp should become primary!
+	primary, _, _ = s.Select()
+	if primary != "direct-udp" {
+		t.Fatalf("fallback primary = %q, want direct-udp", primary)
+	}
+
+	// Recover wss: it should regain primary because user forced it!
+	s.ProbeResult("wss", 100*time.Millisecond, true, now)
+	primary, _, _ = s.Select()
+	if primary != "wss" {
+		t.Fatalf("recovered forced primary = %q, want wss", primary)
+	}
+
+	// Clear forced mode (set to "auto" or "")
+	s.SetForced("auto")
+	if s.Forced() != "" {
+		t.Fatalf("Forced() after auto = %q, want empty", s.Forced())
+	}
+	primary, _, _ = s.Select()
+	if primary != "direct-udp" {
+		t.Fatalf("auto primary = %q, want direct-udp", primary)
+	}
+}

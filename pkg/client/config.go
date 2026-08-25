@@ -76,6 +76,9 @@ type Settings struct {
 	// IPVersion is the persisted default for client.Options.IPVersion
 	// ("", "4", or "6").
 	IPVersion string `yaml:"ip_version"`
+	// Transport is the optional persisted default for client.Options.Transport
+	// ("auto", "direct-udp", "udp-relay", "wss").
+	Transport string `yaml:"transport"`
 }
 
 func DefaultConfigFile() string {
@@ -147,6 +150,7 @@ var settingsUIFields = []struct {
 	{Field: "Provider", YAMLKey: "provider"},
 	{Field: "BindAddress", YAMLKey: "bind_address"},
 	{Field: "IPVersion", YAMLKey: "ip_version"},
+	{Field: "Transport", YAMLKey: "transport"},
 }
 
 // SaveSettings writes every settingsUIFields value from s into the

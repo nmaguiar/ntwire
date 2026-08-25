@@ -10,6 +10,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"log/slog"
 	"net"
 	"net/http"
@@ -708,7 +709,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 // NAT-mapped candidate or the relay's reflector address.
 func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if _, ok := s.sessions.Get(token); !ok {
+	sess, ok := s.sessions.Get(token)
+	if !ok {
 		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
@@ -727,6 +729,11 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 	if body.ClientAddr != "" {
 		if addr, err := netip.ParseAddrPort(body.ClientAddr); err == nil {
 			go d.primeClient(addr.String())
+			if s.data != nil && s.data.multipath != nil && sess.Multipath && s.data.ws != nil {
+				if ep, err := s.data.ws.UDP.ParseEndpoint(addr.String()); err == nil {
+					s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2)
+				}
+			}
 		}
 	}
 	candidate := protocol.DirectCandidate{ServerAddr: d.selfCandidate(), RelayReflectAddr: d.relayReflect}

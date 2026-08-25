@@ -172,6 +172,14 @@ func TestPathStatusRowRendersDeliverySentinel(t *testing.T) {
 	if got, want := withData[2], "healthy (primary)"; got != want {
 		t.Errorf("status column = %q, want %q", got, want)
 	}
+	withForced := pathStatusRow(wstransport.PathStatus{Name: "wss", Kind: wstransport.PathWSS, Healthy: true, Primary: true, Forced: true})
+	if got, want := withForced[2], "healthy (primary, forced)"; got != want {
+		t.Errorf("status column with forced = %q, want %q", got, want)
+	}
+	withFallback := pathStatusRow(wstransport.PathStatus{Name: "wss", Kind: wstransport.PathWSS, Healthy: false, Primary: false, Forced: true})
+	if got, want := withFallback[2], "unhealthy (forced, fallback active)"; got != want {
+		t.Errorf("status column with fallback = %q, want %q", got, want)
+	}
 }
 
 func TestListEntryJSONOmitsLiveFieldsWhenNotConnected(t *testing.T) {

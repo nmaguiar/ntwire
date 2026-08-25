@@ -161,6 +161,13 @@ var registry = []Option{
 		Help: `Leave empty to allow either family (default). Set to "4" or "6" to connect over only that family -- the other is never attempted, even if it would have worked. Applies to every connection ntwire makes: the control-plane/WebSocket connection to the server (or to the proxy, if one is configured) and the direct-UDP WireGuard data plane, including relay-assisted NAT punching and upgrade attempts.`,
 	},
 	{
+		Name: "transport", Kind: KindString, Usage: `preferred or forced transport mode ("auto", "direct-udp", "udp-relay", "wss")`,
+		Bind:    []Binding{{Command: "connect"}},
+		Default: strDefault(func(s client.Settings) string { return s.Transport }),
+		Label:   "Transport mode", Group: "🌐 Connection", Widget: WidgetText, Advanced: true,
+		Help: `Select a transport mode ("auto", "direct-udp", "udp-relay", "wss"). Default is "auto" (dynamic evaluation and switching across available transports). When forced to a specific transport, ntwire will use it while healthy and automatically fall back to the best available transport if unavailable.`,
+	},
+	{
 		Name: "known-servers", Kind: KindString, Usage: "known servers file",
 		Bind:  []Binding{{Command: "connect"}, {Command: "list"}},
 		Label: "Known servers file", Group: "🔒 TLS", Widget: WidgetPath, Advanced: true,
@@ -227,7 +234,7 @@ var registry = []Option{
 	},
 	{
 		Name: "status-file", Kind: KindString, Usage: "local status file",
-		Bind:      []Binding{{Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}, {Command: "browser"}},
+		Bind:      []Binding{{Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}, {Command: "browser"}, {Command: "transport"}},
 		GUIHidden: true,
 	},
 	{
@@ -260,7 +267,7 @@ var registry = []Option{
 		Name: "no-color", Kind: KindBool, Usage: "disable ANSI colors (or set NO_COLOR)",
 		Bind: []Binding{
 			{Command: "connect"}, {Command: "list"}, {Command: "status"}, {Command: "disconnect"},
-			{Command: "port"}, {Command: "browser"}, {Command: "logout"}, {Command: "keygen"},
+			{Command: "port"}, {Command: "browser"}, {Command: "logout"}, {Command: "keygen"}, {Command: "transport"},
 		},
 		Discarded: true, GUIHidden: true,
 	},

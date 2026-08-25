@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,7 +230,7 @@ func receiveNativeWGPacket(t *testing.T, bind conn.Bind, fns []conn.ReceiveFunc)
 // 4. Bidirectional data transfer over an embedded SOCKS proxy tunnel.
 // 5. Native peer destination policy / tunnel grant enforcement (unauthorized tunnel rejected).
 // 6. Unknown WireGuard key rejection.
-func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServer(t *testing.T) {
+func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServerWithPortal(t *testing.T) {
 	signer, _, err := sshkey.GenerateEd25519()
 	if err != nil {
 		t.Fatal(err)
@@ -323,6 +324,9 @@ func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServer(t *testing.T) {
 	serverCfg.Network.TunnelCIDR = "100.64.0.0/16"
 	serverCfg.Network.WireGuardPrivateKeyFile = serverWGKeyPath
 	serverCfg.Listen.WireGuard = "127.0.0.1:0"
+	serverCfg.Portal.Enabled = true
+	serverCfg.Portal.Web.Enabled = true
+	serverCfg.Portal.Web.Listen = "100.64.0.1:8080"
 	serverCfg.Relay.Enabled = true
 	serverCfg.Relay.URL = "wss://" + r.AgentsAddr().String()
 	serverCfg.Relay.Name = "home"
@@ -382,7 +386,30 @@ func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServer(t *testing.T) {
 	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dialCancel()
 
-	// 2. Reach fixed-target tunnel
+	// The in-tunnel portal shares the userspace stack with the native
+	// WireGuard relay path. Exercise it before the regular tunnel so a
+	// listener at the server tunnel address cannot leave an unchanged client
+	// able to upload packets while relay replies are lost.
+	portalConn, err := clientStack.DialContext(dialCtx, "tcp", net.JoinHostPort(serverTunnelIP, "8080"))
+	if err != nil {
+		t.Fatalf("client failed to dial in-tunnel portal through relay: %v", err)
+	}
+	_, err = fmt.Fprintf(portalConn, "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", serverTunnelIP)
+	if err != nil {
+		portalConn.Close()
+		t.Fatalf("write portal request: %v", err)
+	}
+	portalResponse, err := io.ReadAll(portalConn)
+	portalConn.Close()
+	if err != nil {
+		t.Fatalf("read portal response: %v", err)
+	}
+	if !strings.Contains(string(portalResponse), "200 OK") {
+		t.Fatalf("portal response = %q, want HTTP 200", portalResponse)
+	}
+
+	// 2. Reach fixed-target tunnel after the portal response has travelled
+	// back through the relay.
 	conn, err := clientStack.DialContext(dialCtx, "tcp", net.JoinHostPort(serverTunnelIP, "18080"))
 	if err != nil {
 		t.Fatalf("client failed to dial fixed-target tunnel through relay: %v", err)
