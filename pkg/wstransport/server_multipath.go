@@ -441,7 +441,10 @@ func (m *ServerMultipathBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	p := m.peers[s]
 	m.mu.RUnlock()
 	if p == nil {
-		return nil, errors.New("unknown multipath peer")
+		// Legacy/direct-only peers retain ordinary endpoint parsing. They are
+		// deliberately not placed in the scheduler until they negotiate and
+		// register a candidate path.
+		return m.base.ParseEndpoint(s)
 	}
 	return p.endpoint, nil
 }

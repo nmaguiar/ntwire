@@ -401,7 +401,7 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 // not just relay.enabled, so a required capability fails during authentication
 // instead of producing a session that later fails in the data plane.
 func (s *Server) transportCapabilitiesAvailable() []string {
-	if s.Config.Relay.Enabled && s.data != nil && s.data.multipath != nil {
+	if s.Config.MultipathEnabled() && s.data != nil && s.data.multipath != nil {
 		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2}
 	}
 	return nil

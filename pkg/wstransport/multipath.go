@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sort"
 	"sync"
@@ -443,6 +444,18 @@ func NormalizeTransportName(s string) string {
 	default:
 		return s
 	}
+}
+
+// ValidateTransportName validates a user-facing transport selection and
+// returns its canonical candidate name. The scheduler intentionally keeps
+// NormalizeTransportName lenient because it is also used on its hot path;
+// command, API, and connection boundaries must use this function instead.
+func ValidateTransportName(s string) (string, error) {
+	normalized := NormalizeTransportName(s)
+	if normalized == "" || normalized == string(PathDirect) || normalized == string(PathUDPRelay) || normalized == string(PathWSS) {
+		return normalized, nil
+	}
+	return "", fmt.Errorf("invalid transport %q (valid values: auto, direct-udp, udp-relay, wss)", s)
 }
 
 // PathStatus is a race-free scheduler snapshot. Loss is in [0,1].
@@ -892,13 +905,11 @@ func (c *DuplicateCache) Seen(b []byte, now time.Time) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for key, expiry := range c.entries {
-		if !expiry.After(now) {
-			delete(c.entries, key)
+	if expiry, found := c.entries[k]; found {
+		if expiry.After(now) {
+			return true
 		}
-	}
-	if _, found := c.entries[k]; found {
-		return true
+		delete(c.entries, k)
 	}
 	if len(c.entries) >= c.limit {
 		for key := range c.entries {

@@ -16,7 +16,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "local_host:", "allow:", "target:", "description:", "log_file:",
-		"instructions:", "docs_url:", "advertise_direct:",
+		"instructions:", "docs_url:", "advertise_direct:", "multipath:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -29,6 +29,18 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 	}
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatalf("LoadConfig(SampleConfig()) failed: %v", err)
+	}
+}
+
+func TestMultipathEnabledDefaultsOnAndCanBeDisabled(t *testing.T) {
+	if !((Config{}).MultipathEnabled()) {
+		t.Fatal("unset transport.multipath must default to enabled")
+	}
+	no := false
+	if (Config{Transport: struct {
+		Multipath *bool `yaml:"multipath"`
+	}{Multipath: &no}}).MultipathEnabled() {
+		t.Fatal("transport.multipath=false was ignored")
 	}
 }
 

@@ -82,6 +82,8 @@ func TestDirectUpgradeEndToEnd(t *testing.T) {
 	}
 
 	scfg := Config{}
+	multipath := false
+	scfg.Transport.Multipath = &multipath
 	scfg.Auth.AuthorizedKeysDir = keysDir
 	scfg.Auth.SessionTTL = time.Minute
 	scfg.Network.TunnelCIDR = "100.66.0.0/16"
@@ -178,6 +180,8 @@ func TestForcedWebSocketNeverUpgrades(t *testing.T) {
 	}
 
 	scfg := Config{}
+	multipath := false
+	scfg.Transport.Multipath = &multipath
 	scfg.Auth.AuthorizedKeysDir = keysDir
 	scfg.Auth.SessionTTL = time.Minute
 	scfg.Network.TunnelCIDR = "100.66.0.0/16"
