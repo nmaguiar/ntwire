@@ -27,7 +27,7 @@ Portal templates are treated as **untrusted declarative content**. Even if a por
 * If a user is not granted access to a target, that target and its containing category (if empty) are completely omitted from the context, the Markdown, and the rendered HTML.
 
 ### Action Authorization Enforcement
-Actions (such as `ntwire://open/<target_id>`) do not accept arbitrary URLs or arbitrary connect commands. The server and client re-verify target authorization upon action dispatch. If a user triggers an action for an unauthorized target ID, it is rejected with `403 Forbidden` and audited.
+Actions (such as `ntwire://open/<target_id>`) do not accept arbitrary URLs or arbitrary connect commands. The server and client re-verify target authorization upon action dispatch. For a browser launch, the URL is resolved from the authorized target's `portal.url`; the local client action endpoint rejects caller-supplied URL fields. If a user triggers an action for an unauthorized target ID, it is rejected with `403 Forbidden` and audited.
 
 ### Fail-Closed Identity Resolution
 For the WireGuard web portal:

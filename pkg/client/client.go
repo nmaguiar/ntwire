@@ -48,6 +48,13 @@ type Collector interface {
 }
 type ExecCollector struct{ Command string }
 
+// These indirections keep the browser-launch boundary testable without
+// starting a desktop browser from a unit test.
+var (
+	openSocksBrowser = browseropen.OpenSocks
+	openBrowser      = browseropen.Open
+)
+
 func BuiltinInfo() protocol.ClientInfo {
 	h, _ := os.Hostname()
 	u := os.Getenv("USER")
@@ -1828,13 +1835,14 @@ func (c *Connection) startWebUI() {
 		var in struct {
 			Action   string `json:"action"`
 			TargetID string `json:"target_id"`
-			URL      string `json:"url"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&in); err != nil {
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&in); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
-		c.executePortalAction(w, in.Action, in.TargetID, in.URL)
+		c.executePortalAction(r.Context(), w, in.Action, in.TargetID)
 	})
 	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
@@ -2230,7 +2238,7 @@ func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := browseropen.OpenSocks(browserProfileKey(name), addr); err != nil {
+	if err := openSocksBrowser(browserProfileKey(name), addr); err != nil {
 		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2290,9 +2298,55 @@ func (c *Connection) Portal(ctx context.Context) (*portal.RenderedPortal, error)
 	return &res, nil
 }
 
-func (c *Connection) executePortalAction(w http.ResponseWriter, action, targetID, targetURL string) {
+// portalAction resolves an action with the server, which is the authority for
+// the target's authorization and configured launch URL.
+func (c *Connection) portalAction(ctx context.Context, action, targetID string) (*portal.ActionResolution, error) {
+	c.mu.Lock()
+	serverURL := c.base
+	token := c.token
+	httpClient := c.http
+	c.mu.Unlock()
+
+	if serverURL == "" || token == "" || httpClient == nil {
+		return nil, fmt.Errorf("client is not connected")
+	}
+
+	body, err := json.Marshal(portal.ActionRequest{Action: action, TargetID: targetID})
+	if err != nil {
+		return nil, fmt.Errorf("encode portal action: %w", err)
+	}
+	reqURL := strings.TrimRight(serverURL, "/") + "/v1/portal/action"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("execute portal action: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("server returned %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+
+	var res portal.ActionResolution
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, fmt.Errorf("decode portal action response: %w", err)
+	}
+	return &res, nil
+}
+
+func (c *Connection) executePortalAction(ctx context.Context, w http.ResponseWriter, action, targetID string) {
 	if targetID == "" {
 		http.Error(w, "target_id is required", http.StatusBadRequest)
+		return
+	}
+	if action != portal.ActionOpen && action != portal.ActionBrowser {
+		http.Error(w, "unsupported action", http.StatusBadRequest)
 		return
 	}
 	c.mu.Lock()
@@ -2310,6 +2364,16 @@ func (c *Connection) executePortalAction(w http.ResponseWriter, action, targetID
 		http.Error(w, fmt.Sprintf("target %q is not authorized", targetID), http.StatusForbidden)
 		return
 	}
+	resolution, err := c.portalAction(ctx, action, targetID)
+	if err != nil {
+		http.Error(w, "cannot resolve portal action: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if !resolution.Authorized {
+		http.Error(w, fmt.Sprintf("target %q is not authorized", targetID), http.StatusForbidden)
+		return
+	}
+	targetURL := resolution.URL
 
 	// Determine SOCKS local proxy address
 	var socksAddr string
@@ -2320,26 +2384,21 @@ func (c *Connection) executePortalAction(w http.ResponseWriter, action, targetID
 		}
 	}
 
-	switch action {
-	case "open", "browser":
-		if socksAddr != "" {
-			if err := browseropen.OpenSocks(browserProfileKey(targetID), socksAddr, targetURL); err != nil {
-				http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else if targetURL != "" {
-			if err := browseropen.Open(targetURL); err != nil {
-				http.Error(w, "cannot open URL: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		} else {
-			http.Error(w, "no SOCKS proxy or URL available for target", http.StatusBadRequest)
+	if socksAddr != "" {
+		if err := openSocksBrowser(browserProfileKey(targetID), socksAddr, targetURL); err != nil {
+			http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
-	default:
-		http.Error(w, "unsupported action", http.StatusBadRequest)
+	} else if targetURL != "" {
+		if err := openBrowser(targetURL); err != nil {
+			http.Error(w, "cannot open URL: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	} else {
+		http.Error(w, "no SOCKS proxy or URL available for target", http.StatusBadRequest)
+		return
 	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // WebInstructions is the rendered setup guidance for one tunnel, as reported

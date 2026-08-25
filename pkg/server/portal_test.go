@@ -159,7 +159,7 @@ func TestPortal_ActionAuthorization(t *testing.T) {
 	s := New(Config{
 		Portal: portal.PortalConfig{Enabled: true},
 		Tunnels: []TunnelConfig{
-			{Name: "grafana", Target: "grafana.internal:3000", VirtualPort: 3000},
+			{Name: "grafana", Target: "grafana.internal:3000", VirtualPort: 3000, Portal: &portal.TargetPortalConfig{URL: "https://grafana.internal/dashboards"}},
 			{Name: "postgres", Target: "postgres.internal:5432", VirtualPort: 5432},
 		},
 	}, nil)
@@ -190,6 +190,21 @@ func TestPortal_ActionAuthorization(t *testing.T) {
 		t.Errorf("Alice action on postgres failed with status %d: %s", aliceRec.Code, aliceRec.Body.String())
 	}
 
+	grafanaActionReq := httptest.NewRequest(http.MethodPost, "/v1/portal/action", bytes.NewBufferString(`{"action":"open","target_id":"grafana"}`))
+	grafanaActionReq.Header.Set("Authorization", "Bearer "+aliceSession.Token)
+	grafanaRec := httptest.NewRecorder()
+	handler.ServeHTTP(grafanaRec, grafanaActionReq)
+	if grafanaRec.Code != http.StatusOK {
+		t.Fatalf("Grafana action failed with status %d: %s", grafanaRec.Code, grafanaRec.Body.String())
+	}
+	var grafanaResolution portal.ActionResolution
+	if err := json.NewDecoder(grafanaRec.Body).Decode(&grafanaResolution); err != nil {
+		t.Fatal(err)
+	}
+	if grafanaResolution.URL != "https://grafana.internal/dashboards" {
+		t.Errorf("Grafana action URL = %q", grafanaResolution.URL)
+	}
+
 	// Bob executes action on postgres -> Rejected (403)
 	bobActionReq := httptest.NewRequest(http.MethodPost, "/v1/portal/action", bytes.NewBufferString(`{"action":"open","target_id":"postgres"}`))
 	bobActionReq.Header.Set("Authorization", "Bearer "+bobSession.Token)
@@ -208,6 +223,14 @@ func TestPortal_ActionAuthorization(t *testing.T) {
 
 	if unknownRec.Code != http.StatusForbidden {
 		t.Errorf("Action on nonexistent target returned status %d, want 403 Forbidden", unknownRec.Code)
+	}
+
+	invalidActionReq := httptest.NewRequest(http.MethodPost, "/v1/portal/action", bytes.NewBufferString(`{"action":"shell","target_id":"grafana"}`))
+	invalidActionReq.Header.Set("Authorization", "Bearer "+aliceSession.Token)
+	invalidActionRec := httptest.NewRecorder()
+	handler.ServeHTTP(invalidActionRec, invalidActionReq)
+	if invalidActionRec.Code != http.StatusBadRequest {
+		t.Errorf("unsupported action returned status %d, want 400 Bad Request", invalidActionRec.Code)
 	}
 }
 
