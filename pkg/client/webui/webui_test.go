@@ -34,7 +34,7 @@ func TestStatusPageAttachesTargetGrid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(page), "list.append(item(t,trafficSeries(statusHistory.samples,t.name))));app.append(list)") {
+	if !strings.Contains(string(page), "list.append(item(t,trafficSeries(statusHistory.samples,t.name))));tunnelList.append(list)") {
 		t.Error("status page creates target cards but does not attach their grid to the app container")
 	}
 }
@@ -53,10 +53,33 @@ func TestStatusPageKeepsViewTabsBeforeTargetAccordion(t *testing.T) {
 	for _, want := range []string{
 		`aria-controls="app"`,
 		`aria-controls="portal-app"`,
+		`aria-controls="settings-app"`,
+		`id="tab-settings"`,
 		`.tabs{position:sticky;top:0;`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status page is missing persistent dashboard view control %q", want)
+		}
+	}
+}
+
+func TestStatusPageUsesFragmentsAndEmbedsProtectedSettings(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"function viewFromHash()",
+		"addEventListener('hashchange',selectHash)",
+		"location.hash!=='#'+view",
+		"setSettingsURL(s.settings_url)",
+		"frame.src=settingsURL",
+		"frame.title='Local connection settings'",
+		"switchTab('tunnels');message.textContent='Portal is not configured or unavailable for this session.'",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status page is missing fragment/settings behavior %q", want)
 		}
 	}
 }

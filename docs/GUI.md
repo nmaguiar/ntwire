@@ -31,6 +31,9 @@ settled, not assumed). It also means:
   loopback API (`internal/gui/api`), the same pattern `pkg/client`'s own
   local status dashboard already uses. A browser pointed at that API's URL
   works identically to the bundled window.
+- A connected profile's **Open dashboard** action opens the local dashboard
+  at its **Portal** view. The dashboard's **Settings** view embeds this same
+  token-authenticated settings page when the running connection provides it.
 
 ## Two build modes
 

@@ -308,10 +308,12 @@ func (m *menu) renderDashboardItem(slot *profileSlot, snap manager.Snapshot) {
 	slot.dashboard.setAction(dashboardSlotID, func() {
 		url, err := m.mgr.DashboardURL(id)
 		if err == nil && url != "" {
-			_ = browseropen.Open(url)
+			_ = browseropen.Open(portalDashboardURL(url))
 		}
 	})
 }
+
+func portalDashboardURL(url string) string { return url + "#portal" }
 
 // renderConnectDisconnectItems shows exactly one of "Connect"/"Disconnect"
 // per profile row, mirroring toggleConnect's own state reasoning: neither

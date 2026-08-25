@@ -251,7 +251,7 @@ function renderProfileRow(snap) {
   if (connected && snap.dashboard_url) {
     const dashboardLink = document.createElement('a');
     dashboardLink.className = 'button secondary';
-    dashboardLink.href = snap.dashboard_url;
+    dashboardLink.href = snap.dashboard_url + '#portal';
     dashboardLink.target = '_blank';
     dashboardLink.rel = 'noopener noreferrer';
     dashboardLink.textContent = '📊 Open dashboard';
