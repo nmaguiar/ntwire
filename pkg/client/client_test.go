@@ -193,9 +193,17 @@ func TestProxyFunc(t *testing.T) {
 }
 
 func TestProxyFuncRejectsInvalidProxyURL(t *testing.T) {
-	for _, proxy := range []string{"proxy.example:8080", "socks5://proxy.example:1080", "https:///missing-host"} {
+	for _, proxy := range []string{"proxy.example:8080", "socks4://proxy.example:1080", "ftp://proxy.example:21", "https:///missing-host", "://invalid"} {
 		if _, err := proxyFunc(Options{HTTPSProxy: proxy}); err == nil {
 			t.Errorf("proxyFunc(%q) accepted an invalid proxy URL", proxy)
+		}
+	}
+}
+
+func TestProxyFuncAcceptsSOCKSURL(t *testing.T) {
+	for _, proxy := range []string{"socks5://proxy.example:1080", "socks5h://proxy.example:1080", "socks5://user:pass@proxy.example:1080", "socks5h://user:pass@proxy.example:1080"} {
+		if _, err := proxyFunc(Options{HTTPSProxy: proxy}); err != nil {
+			t.Errorf("proxyFunc(%q) rejected a valid SOCKS proxy URL: %v", proxy, err)
 		}
 	}
 }
