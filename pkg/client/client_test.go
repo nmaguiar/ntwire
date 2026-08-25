@@ -46,7 +46,7 @@ func TestSelectTransport(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := selectTransport(tc.explicit, tc.udp, tc.ws)
+			got, err := selectTransport(tc.explicit, "", false, tc.udp, tc.ws)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatal("expected an error")
@@ -60,6 +60,36 @@ func TestSelectTransport(t *testing.T) {
 				t.Fatalf("useWS = %v, want %v", got, tc.wantWS)
 			}
 		})
+	}
+}
+
+func TestSelectTransportPreference(t *testing.T) {
+	for _, tc := range []struct {
+		name, transport, udp, ws   string
+		multipath, wantWS, wantErr bool
+	}{
+		{"wss with both", "wss", "vpn.example:51820", "wss://vpn.example/v1/wg", false, true, false},
+		{"wss without websocket", "wss", "vpn.example:51820", "", false, false, true},
+		{"direct with both", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, false},
+		{"direct without udp", "direct-udp", "", "wss://vpn.example/v1/wg", false, false, true},
+		{"relay with multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", true, true, false},
+		{"relay without multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := selectTransport(false, tc.transport, tc.multipath, tc.udp, tc.ws)
+			if (err != nil) != tc.wantErr || (!tc.wantErr && got != tc.wantWS) {
+				t.Fatalf("selectTransport() = %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestNormalizeTransportPreference(t *testing.T) {
+	if _, err := normalizeTransportPreference(false, "wsss"); err == nil {
+		t.Fatal("invalid transport accepted")
+	}
+	if _, err := normalizeTransportPreference(true, "direct-udp"); err == nil {
+		t.Fatal("conflicting websocket and transport accepted")
 	}
 }
 

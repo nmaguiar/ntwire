@@ -71,6 +71,19 @@ and pass their Docker smoke test. See [RELEASE.md](RELEASE.md).
 See [../README.md](../README.md) for a minimal working example. The
 following is the complete currently parsed configuration:
 
+## Client transport selection
+
+`ntwire connect --transport` accepts `auto` (the default), `direct-udp`,
+`udp-relay`, and `wss`; `udp`, `relay`, `ws`, and `websocket` are accepted
+aliases. A pinned mode fails clearly when the server cannot provide it instead
+of silently falling back. `--websocket` remains a compatibility alias for
+`--transport wss`; it cannot be combined with a different `--transport` mode.
+
+`auto` can switch only after the server and client negotiate multipath. On a
+server with both UDP and WebSocket endpoints, `transport.multipath: true`
+(the default) bootstraps over WSS and registers the UDP path for scheduling.
+Set `transport.multipath: false` only for a legacy single-path deployment.
+
 ```yaml
 listen:
   https: ":8443"                        # TLS control API (auth, renew, disconnect) and WebSocket fallback
@@ -103,6 +116,8 @@ network:
   dns:
     enabled: true                        # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
     domain: ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
+transport:
+  multipath: true                        # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
 authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
   exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty

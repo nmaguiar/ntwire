@@ -1151,7 +1151,14 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		mismatch = fmt.Sprintf("server's direct UDP endpoint (%s) is not IPv%s", r.UDP, options.IPVersion)
 		udpEndpoint = ""
 	}
-	useWS, err := selectTransport(options.UseWebSocket, udpEndpoint, r.WebSocket)
+	transport, err := normalizeTransportPreference(options.UseWebSocket, options.Transport)
+	if err != nil {
+		return nil, err
+	}
+	useWS, err := selectTransport(options.UseWebSocket, transport, r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1), udpEndpoint, r.WebSocket)
+	if err != nil {
+		return nil, err
+	}
 	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
 	if err != nil {
 		return nil, err
@@ -1197,8 +1204,8 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
-	if multipath != nil && options.Transport != "" {
-		multipath.SetForced(options.Transport)
+	if multipath != nil && transport != "" {
+		multipath.SetForced(transport)
 	}
 	if r.TTLSeconds > 0 {
 		c.expiresAt = time.Now().Add(time.Duration(r.TTLSeconds) * time.Second)
@@ -1211,9 +1218,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if options.Insecure {
 		c.log.Warn("TLS certificate verification is disabled", "event", "insecure_tls_enabled", "server", c.DisplayName())
 	}
-	transport := "udp"
+	dataTransport := "udp"
 	if useWS {
-		transport = "websocket"
+		dataTransport = "websocket"
 		// transportReason is left empty when the caller passed --websocket:
 		// they already know why. It's only worth surfacing (in the connect
 		// CLI's banner, and as Warn-level noise if the background
@@ -1227,7 +1234,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			}
 		}
 	}
-	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", transport, "reason", c.transportReason, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
+	c.log.Debug("control-plane session established", "server", c.DisplayName(), "transport", dataTransport, "reason", c.transportReason, "tunnel_ip", clientIP, "ttl_seconds", r.TTLSeconds)
 	explicitBind := options.BindAddress != ""
 	if bindIP, e := netip.ParseAddr(bindAddr); explicitBind && (e != nil || !bindIP.IsLoopback()) {
 		c.log.Warn("tunnel listeners are bound beyond loopback; tunneled targets are reachable from other hosts on this address", "bind_address", bindAddr)
@@ -1272,7 +1279,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	go c.renewLoop()
 	go c.historyLoop()
-	if hybrid != nil && !options.NoDirectUpgrade && !options.UseWebSocket {
+	if hybrid != nil && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
 		go c.directUpgradeLoop()
 	}
 	c.startWebUI()
@@ -1343,8 +1350,31 @@ func hasTransportCapability(caps []string, want string) bool {
 // direct server with a misconfigured empty advertised_endpoint used to
 // simply error here; it now silently works over WebSocket instead, which is
 // strictly better but is a deliberate behavior change (see PLAN-RELAY.md §F).
-func selectTransport(explicit bool, udp, websocket string) (useWS bool, err error) {
-	useWS = explicit || (udp == "" && websocket != "")
+func selectTransport(explicit bool, transport string, multipath bool, udp, websocket string) (useWS bool, err error) {
+	switch transport {
+	case string(wstransport.PathWSS):
+		if websocket == "" {
+			return false, fmt.Errorf("transport wss requested but server did not advertise a WebSocket endpoint")
+		}
+		return true, nil
+	case string(wstransport.PathDirect):
+		if udp == "" {
+			return false, fmt.Errorf("transport direct-udp requested but server did not advertise a WireGuard endpoint")
+		}
+		return false, nil
+	case string(wstransport.PathUDPRelay):
+		if websocket == "" {
+			return false, fmt.Errorf("transport udp-relay requested but server did not advertise a WebSocket endpoint")
+		}
+		if !multipath {
+			return false, fmt.Errorf("transport udp-relay requested but server did not negotiate multipath")
+		}
+		return true, nil
+	}
+	// A multipath-capable server exposes both legs through the WSS bootstrap.
+	// Starting there lets the upgrade ladder register direct UDP as a second
+	// candidate; without it auto would take UDP before a scheduler existed.
+	useWS = explicit || (udp == "" && websocket != "") || (transport == "" && multipath && udp != "" && websocket != "")
 	if useWS && websocket == "" {
 		return false, fmt.Errorf("server did not advertise a WebSocket endpoint")
 	}
@@ -1352,6 +1382,20 @@ func selectTransport(explicit bool, udp, websocket string) (useWS bool, err erro
 		return false, fmt.Errorf("server did not advertise a WireGuard endpoint")
 	}
 	return useWS, nil
+}
+
+func normalizeTransportPreference(websocket bool, transport string) (string, error) {
+	normalized, err := wstransport.ValidateTransportName(transport)
+	if err != nil {
+		return "", err
+	}
+	if websocket && normalized != "" && normalized != string(wstransport.PathWSS) {
+		return "", fmt.Errorf("-websocket conflicts with -transport %s", normalized)
+	}
+	if websocket {
+		return string(wstransport.PathWSS), nil
+	}
+	return normalized, nil
 }
 
 // matchesIPVersion reports whether hostport's host is a literal address of
@@ -2163,13 +2207,17 @@ func (c *Connection) webStatus() WebStatus {
 // primary. If it is unavailable or becomes unhealthy, ntwire automatically falls
 // back to the best available healthy transport.
 func (c *Connection) SetTransport(target string) error {
+	normalized, err := wstransport.ValidateTransportName(target)
+	if err != nil {
+		return err
+	}
 	c.mu.Lock()
 	multipath := c.multipath
 	c.mu.Unlock()
 	if multipath == nil {
 		return errors.New("multipath transport is not active for this connection")
 	}
-	multipath.SetForced(target)
+	multipath.SetForced(normalized)
 	return nil
 }
 

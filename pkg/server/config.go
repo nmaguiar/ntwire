@@ -49,6 +49,12 @@ type Config struct {
 		WireGuardPrivateKeyFile string    `yaml:"wireguard_private_key_file"`
 		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
+	Transport struct {
+		// Multipath controls the scheduler when both WebSocket and UDP legs
+		// are available. Nil is enabled for backward-compatible defaults;
+		// set false only to retain the legacy one-leg data plane.
+		Multipath *bool `yaml:"multipath"`
+	} `yaml:"transport"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
@@ -60,6 +66,11 @@ type Config struct {
 	Audit               struct {
 		LogFile string `yaml:"log_file"`
 	} `yaml:"audit"`
+}
+
+// MultipathEnabled reports the effective transport.multipath setting.
+func (c Config) MultipathEnabled() bool {
+	return c.Transport.Multipath == nil || *c.Transport.Multipath
 }
 
 // MASQUEConfig configures the opt-in Network Relay gateway. It is deliberately
@@ -335,6 +346,9 @@ network:
   # dns:
   #   enabled: true                       # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
   #   domain: ntwire                      # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
+
+transport:
+  multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
 
 # Named reusable egress policy. A tunnel and a native peer can each name one;
 # when both do, both must allow the selected destination.

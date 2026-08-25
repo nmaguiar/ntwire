@@ -119,7 +119,7 @@ func (s *Server) StartDataPlane() error {
 	}
 	var bind conn.Bind = ws
 	var multipath *wstransport.ServerMultipathBind
-	if s.Config.Relay.Enabled {
+	if s.Config.MultipathEnabled() {
 		mc := s.Config.Relay.Multipath
 		multipath = wstransport.NewServerMultipathBind(ws, wstransport.V2Options{
 			MirrorRateBytesPerSec: mc.MirrorRateBytesPerSec, MinDeliveryRatio: mc.MinDeliveryRatio,

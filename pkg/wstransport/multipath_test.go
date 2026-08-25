@@ -85,6 +85,15 @@ func TestDuplicateCacheTransportOnlyAndExpiry(t *testing.T) {
 	}
 }
 
+func TestValidateTransportName(t *testing.T) {
+	if got, err := ValidateTransportName("websocket"); err != nil || got != "wss" {
+		t.Fatalf("websocket = %q, %v", got, err)
+	}
+	if _, err := ValidateTransportName("wsss"); err == nil {
+		t.Fatal("invalid transport accepted")
+	}
+}
+
 func TestValidPathControl(t *testing.T) {
 	if !ValidPathControl(FramePathProbe, make([]byte, pathProbeSize)) || !ValidPathControl(FramePathAck, make([]byte, pathProbeSize)) {
 		t.Fatal("valid fixed control frame rejected")
