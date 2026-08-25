@@ -108,6 +108,10 @@ func (s *Server) portalActionHandler(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, protocol.ErrorInvalidRequest, "invalid request body")
 		return
 	}
+	if req.Action != portal.ActionOpen && req.Action != portal.ActionBrowser && req.Action != portal.ActionConnect {
+		fail(w, http.StatusBadRequest, protocol.ErrorInvalidRequest, "unsupported portal action")
+		return
+	}
 
 	// Revalidate target authorization
 	targetAuthorized := false

@@ -67,18 +67,45 @@ func TestClientPortal_FetchAndWebUI(t *testing.T) {
 		t.Errorf("unexpected targets: %+v", p.Context.Targets)
 	}
 
-	// 2. Test executePortalAction for authorized target
+	// 2. The server, not the browser caller, supplies the launch URL.
+	serverMux.HandleFunc("POST /v1/portal/action", func(w http.ResponseWriter, r *http.Request) {
+		var req portal.ActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.Action != portal.ActionOpen || req.TargetID != "grafana" {
+			t.Errorf("portal action request = %+v", req)
+		}
+		_ = json.NewEncoder(w).Encode(portal.ActionResolution{
+			Target:     portal.PortalTarget{ID: "grafana"},
+			URL:        "http://grafana.internal:3000",
+			Authorized: true,
+		})
+	})
+	oldOpenSocks := openSocksBrowser
+	defer func() { openSocksBrowser = oldOpenSocks }()
+	var gotKey, gotAddr, gotURL string
+	openSocksBrowser = func(key, addr string, targetURL ...string) error {
+		gotKey, gotAddr = key, addr
+		if len(targetURL) == 1 {
+			gotURL = targetURL[0]
+		}
+		return nil
+	}
 	rec := httptest.NewRecorder()
-	conn.executePortalAction(rec, "open", "grafana", "http://grafana.internal:3000")
-	// Since no SOCKS proxy is configured in this test mock, it attempts browseropen.Open on the URL
-	if rec.Code != http.StatusNoContent && rec.Code != http.StatusOK {
-		// In headless CI environments without open command, it might return 500 which is still a valid code execution path
-		t.Logf("executePortalAction returned status %d: %s", rec.Code, rec.Body.String())
+	conn.tunnels = append(conn.tunnels, &localTunnel{name: "egress", localAddr: "127.0.0.1:1080"})
+	conn.Response.Tunnels = append(conn.Response.Tunnels, protocol.Tunnel{Name: "egress", TargetHint: "socks"})
+	conn.executePortalAction(ctx, rec, "open", "grafana")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("executePortalAction status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if gotKey != "client-grafana" || gotAddr != "127.0.0.1:1080" || gotURL != "http://grafana.internal:3000" {
+		t.Errorf("browser launch = key=%q addr=%q url=%q", gotKey, gotAddr, gotURL)
 	}
 
 	// 3. Test executePortalAction for unauthorized target
 	recUnauthorized := httptest.NewRecorder()
-	conn.executePortalAction(recUnauthorized, "open", "unauthorized-db", "")
+	conn.executePortalAction(ctx, recUnauthorized, "open", "unauthorized-db")
 	if recUnauthorized.Code != http.StatusForbidden {
 		t.Errorf("executePortalAction on unauthorized target returned status %d, want 403", recUnauthorized.Code)
 	}
