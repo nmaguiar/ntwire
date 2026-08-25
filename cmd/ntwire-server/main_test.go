@@ -169,3 +169,18 @@ func TestPrintServerList_TableAndJSON(t *testing.T) {
 		t.Errorf("JSON output missing pac_urls list: %s", outJSON)
 	}
 }
+
+func TestPortalHelp(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	u := ui.New(&stdout, &stderr, true)
+	printPortalHelp(u)
+	out := stderr.String()
+	for _, cmd := range []string{"describe", "prompt", "validate", "render"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("expected portal help to mention %q, got:\n%s", cmd, out)
+		}
+	}
+	if !strings.Contains(out, "COMMANDS") {
+		t.Errorf("expected portal help to include COMMANDS section, got:\n%s", out)
+	}
+}

@@ -36,6 +36,24 @@ func main() {
 		runPortal(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "help" {
+		if len(os.Args) > 2 {
+			switch os.Args[2] {
+			case "portal":
+				runPortal([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			case "list":
+				runList([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			case "completion":
+				runCompletion([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			default:
+				flag.Usage()
+				os.Exit(2)
+			}
+			return
+		}
+		flag.Usage()
+		return
+	}
 
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
 	listFlag := flag.Bool("list", false, "list configured server tunnels and proxy PAC endpoints and exit")
@@ -59,21 +77,27 @@ func main() {
 		ui.Spec{
 			Tool:    "ntwire-server",
 			Tagline: "ntwire tunnel server",
-			Flags:   ui.FlagsOf(flag.CommandLine),
+			Commands: []ui.Command{
+				{Name: "portal", Summary: "portal template inspection, prompt generation, validation, and rendering"},
+				{Name: "list", Summary: "show configured server tunnels and proxy PAC endpoints"},
+				{Name: "completion", Summary: "generate shell completion script"},
+			},
+			Flags: ui.FlagsOf(flag.CommandLine),
 			Examples: []string{
 				"ntwire-server -config ntwire.yaml",
-				"ntwire-server list -config ntwire.yaml",
+				"ntwire-server portal -h",
 				"ntwire-server portal describe",
 				"ntwire-server portal prompt -config ntwire.yaml",
 				"ntwire-server portal validate -config ntwire.yaml",
 				"ntwire-server portal render -config ntwire.yaml",
+				"ntwire-server list -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -print-wireguard-config -config ntwire.yaml",
 				"ntwire-server -print-wireguard-conf -config ntwire.yaml > client.conf",
 				"ntwire-server -print-wireguard-qr -config ntwire.yaml",
 				"ntwire-server -generate-relay-key relay_id_ed25519",
 				"ntwire-server -generate-wireguard-key client_wg",
-				"ntwire-server -completion bash > /etc/bash_completion.d/ntwire-server",
+				"ntwire-server completion bash > /etc/bash_completion.d/ntwire-server",
 				"ntwire-server -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -434,7 +458,7 @@ func runCompletion(args []string, u *ui.UI) {
 				"source <(ntwire-server completion zsh)",
 				"ntwire-server -completion fish | source",
 			},
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 		if len(args) == 0 {
 			os.Exit(2)
 		}
@@ -478,7 +502,7 @@ func runList(args []string, u *ui.UI) {
 			Tagline:  "show configured server tunnels and proxy PAC endpoints",
 			Flags:    ui.FlagsOf(fs),
 			Examples: []string{"ntwire-server list", "ntwire-server list -config ntwire.yaml", "ntwire-server list --json"},
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 	}
 	_ = fs.Parse(args)
 	if *noColor {

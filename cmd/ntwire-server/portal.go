@@ -15,7 +15,7 @@ import (
 func runPortal(args []string, u *ui.UI) {
 	if len(args) == 0 {
 		printPortalHelp(u)
-		os.Exit(1)
+		os.Exit(2)
 	}
 
 	cmd := args[0]
@@ -30,32 +30,67 @@ func runPortal(args []string, u *ui.UI) {
 		runPortalValidate(subArgs, u)
 	case "render":
 		runPortalRender(subArgs, u)
-	case "help", "-h", "--help":
+	case "help":
+		if len(subArgs) > 0 {
+			switch subArgs[0] {
+			case "describe":
+				runPortalDescribe([]string{"-h"}, u)
+			case "prompt":
+				runPortalPrompt([]string{"-h"}, u)
+			case "validate":
+				runPortalValidate([]string{"-h"}, u)
+			case "render":
+				runPortalRender([]string{"-h"}, u)
+			default:
+				printPortalHelp(u)
+				os.Exit(2)
+			}
+			return
+		}
+		printPortalHelp(u)
+		os.Exit(0)
+	case "-h", "--help":
 		printPortalHelp(u)
 		os.Exit(0)
 	default:
 		u.Errorf("unknown portal command: %s", cmd)
 		printPortalHelp(u)
-		os.Exit(1)
+		os.Exit(2)
 	}
 }
 
 func printPortalHelp(u *ui.UI) {
-	fmt.Fprintf(u.Err, `ntwire-server portal commands:
-
-  describe    Print machine-readable schema descriptor JSON
-  prompt      Generate sanitized LLM prompt for portal authoring
-  validate    Validate template syntax, safety, and target references
-  render      Render template against configured targets
-
-Run 'ntwire-server portal <command> -h' for command-specific flags.
-`)
+	ui.Spec{
+		Tool:    "ntwire-server portal",
+		Tagline: "portal template inspection, prompt generation, validation, and rendering",
+		Commands: []ui.Command{
+			{Name: "describe", Summary: "print machine-readable schema descriptor JSON"},
+			{Name: "prompt", Summary: "generate sanitized LLM prompt for portal authoring"},
+			{Name: "validate", Summary: "validate template syntax, safety, and target references"},
+			{Name: "render", Summary: "render template against configured targets"},
+		},
+		Examples: []string{
+			"ntwire-server portal describe",
+			"ntwire-server portal prompt -config ntwire.yaml",
+			"ntwire-server portal validate -config ntwire.yaml",
+			"ntwire-server portal render -config ntwire.yaml",
+			"ntwire-server portal <command> -h",
+		},
+	}.Fprint(u.Err, u)
 }
 
 func runPortalDescribe(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("portal describe", flag.ExitOnError)
 	configPath := fs.String("config", "", "optional server configuration file")
 	indent := fs.Bool("indent", true, "pretty-print JSON output")
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire-server portal describe",
+			Tagline:  "print machine-readable schema descriptor JSON",
+			Flags:    ui.FlagsOf(fs),
+			Examples: []string{"ntwire-server portal describe", "ntwire-server portal describe -config ntwire.yaml", "ntwire-server portal describe -indent=false"},
+		}.Fprint(u.Err, u)
+	}
 	_ = fs.Parse(args)
 
 	var portalCfg portal.PortalConfig
@@ -99,6 +134,14 @@ func runPortalDescribe(args []string, u *ui.UI) {
 func runPortalPrompt(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("portal prompt", flag.ExitOnError)
 	configPath := fs.String("config", "ntwire.yaml", "server configuration file")
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire-server portal prompt",
+			Tagline:  "generate sanitized LLM prompt for portal authoring",
+			Flags:    ui.FlagsOf(fs),
+			Examples: []string{"ntwire-server portal prompt", "ntwire-server portal prompt -config ntwire.yaml"},
+		}.Fprint(u.Err, u)
+	}
 	_ = fs.Parse(args)
 
 	c, err := server.LoadConfig(*configPath)
@@ -131,6 +174,14 @@ func runPortalValidate(args []string, u *ui.UI) {
 	fs := flag.NewFlagSet("portal validate", flag.ExitOnError)
 	configPath := fs.String("config", "ntwire.yaml", "server configuration file")
 	templatePath := fs.String("template", "", "template file to validate (overrides config)")
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire-server portal validate",
+			Tagline:  "validate template syntax, safety, and target references",
+			Flags:    ui.FlagsOf(fs),
+			Examples: []string{"ntwire-server portal validate -config ntwire.yaml", "ntwire-server portal validate -template portal.md", "ntwire-server portal validate -config ntwire.yaml -template portal.md"},
+		}.Fprint(u.Err, u)
+	}
 	_ = fs.Parse(args)
 
 	var templateContent string
@@ -198,6 +249,14 @@ func runPortalRender(args []string, u *ui.UI) {
 	userName := fs.String("user", "sample-user", "username for portal context")
 	mode := fs.String("mode", "native", "portal mode: native or wireguard")
 	format := fs.String("format", "markdown", "output format: markdown, html, full-html, or json")
+	fs.Usage = func() {
+		ui.Spec{
+			Tool:     "ntwire-server portal render",
+			Tagline:  "render template against configured targets",
+			Flags:    ui.FlagsOf(fs),
+			Examples: []string{"ntwire-server portal render -config ntwire.yaml", "ntwire-server portal render -config ntwire.yaml -format html", "ntwire-server portal render -config ntwire.yaml -template custom.md"},
+		}.Fprint(u.Err, u)
+	}
 	_ = fs.Parse(args)
 
 	c, err := server.LoadConfig(*configPath)

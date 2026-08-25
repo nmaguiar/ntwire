@@ -57,6 +57,33 @@ func main() {
 		logout(os.Args[2:], u)
 	case "completion":
 		completionCmd(os.Args[2:], u)
+	case "help":
+		if len(os.Args) > 2 {
+			switch os.Args[2] {
+			case "keygen":
+				keygen([]string{"-h"}, u)
+			case "connect":
+				connect([]string{"-h"}, u)
+			case "list":
+				list([]string{"-h"}, u)
+			case "status":
+				status([]string{"-h"}, u)
+			case "disconnect":
+				disconnect([]string{"-h"}, u)
+			case "port":
+				port([]string{"-h"}, u)
+			case "browser":
+				browser([]string{"-h"}, u)
+			case "logout":
+				logout([]string{"-h"}, u)
+			case "completion":
+				completionCmd([]string{"-h"}, u)
+			default:
+				usage(u)
+			}
+			return
+		}
+		usage(u)
 	default:
 		usage(u)
 	}
@@ -96,7 +123,7 @@ func usage(u *ui.UI) {
 			"ntwire connect server.example",
 			"ntwire <command> -h",
 		},
-	}.Fprint(os.Stderr, u)
+	}.Fprint(u.Err, u)
 }
 
 // setUsage installs a shared-format -h renderer on fs. It can be called
@@ -109,7 +136,7 @@ func setUsage(fs *flag.FlagSet, u *ui.UI, tagline string, examples ...string) {
 			Tagline:  tagline,
 			Flags:    ui.FlagsOf(fs),
 			Examples: examples,
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 	}
 }
 
@@ -997,7 +1024,7 @@ func completionCmd(args []string, u *ui.UI) {
 				"ntwire completion fish | source",
 				"ntwire completion powershell | Out-String | Invoke-Expression",
 			},
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 		if len(args) == 0 {
 			os.Exit(2)
 		}

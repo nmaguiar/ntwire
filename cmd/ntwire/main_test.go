@@ -507,3 +507,18 @@ func TestBrowserListAndCleanAll(t *testing.T) {
 		t.Errorf("adminDir %q should still exist, got err: %v", adminDir, err)
 	}
 }
+
+func TestUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	u := ui.New(&stdout, &stderr, true)
+	usage(u)
+	out := stderr.String()
+	for _, cmd := range []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"} {
+		if !strings.Contains(out, cmd) {
+			t.Errorf("expected usage to mention command %q, got:\n%s", cmd, out)
+		}
+	}
+	if !strings.Contains(out, "COMMANDS") {
+		t.Errorf("expected usage to include COMMANDS section, got:\n%s", out)
+	}
+}

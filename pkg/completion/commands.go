@@ -48,6 +48,11 @@ func ClientCommand() Command {
 			Name:    "version",
 			Summary: "print the build version",
 		},
+		Command{
+			Name:       "help",
+			Summary:    "show help for a command",
+			ArgChoices: []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"},
+		},
 	)
 
 	return Command{
@@ -62,6 +67,36 @@ func ClientCommand() Command {
 
 // ServerCommand builds the completion Command specification for ntwire-server.
 func ServerCommand() Command {
+	subcmds := []Command{
+		{
+			Name:    "portal",
+			Summary: "portal template inspection, prompt generation, validation, and rendering",
+			Flags: []Flag{
+				{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+				{Name: "template", Usage: "template file path", TakesValue: true, IsFilePath: true},
+				{Name: "user", Usage: "username for portal context", TakesValue: true},
+				{Name: "mode", Usage: "portal mode: native or wireguard", TakesValue: true, Choices: []string{"native", "wireguard"}},
+				{Name: "format", Usage: "output format: markdown, html, full-html, or json", TakesValue: true, Choices: []string{"markdown", "html", "full-html", "json"}},
+				{Name: "indent", Usage: "pretty-print JSON output", TakesValue: false},
+			},
+			ArgChoices: []string{"describe", "prompt", "validate", "render"},
+		},
+		{
+			Name:    "list",
+			Summary: "show configured server tunnels and proxy PAC endpoints",
+			Flags: []Flag{
+				{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+				{Name: "json", Usage: "output in JSON format", TakesValue: false},
+				{Name: "no-color", Usage: "disable ANSI colors (or set NO_COLOR)", TakesValue: false},
+			},
+		},
+		{
+			Name:       "completion",
+			Summary:    "generate shell completion script",
+			ArgChoices: SupportedShells,
+		},
+	}
+
 	return Command{
 		Name:    "ntwire-server",
 		Summary: "ntwire tunnel server",
@@ -85,11 +120,20 @@ func ServerCommand() Command {
 			{Name: "no-color", Usage: "disable ANSI colors in text-format logs (or set NO_COLOR)", TakesValue: false},
 			{Name: "completion", Usage: "generate shell completion script (bash, zsh, fish, powershell) and exit", TakesValue: true, Choices: SupportedShells},
 		},
+		Subcommands: subcmds,
 	}
 }
 
 // RelayCommand builds the completion Command specification for ntwire-relay.
 func RelayCommand() Command {
+	subcmds := []Command{
+		{
+			Name:       "completion",
+			Summary:    "generate shell completion script",
+			ArgChoices: SupportedShells,
+		},
+	}
+
 	return Command{
 		Name:    "ntwire-relay",
 		Summary: "NAT-traversal relay for ntwire-server",
@@ -102,11 +146,20 @@ func RelayCommand() Command {
 			{Name: "no-color", Usage: "disable ANSI colors in text-format logs (or set NO_COLOR)", TakesValue: false},
 			{Name: "completion", Usage: "generate shell completion script (bash, zsh, fish, powershell) and exit", TakesValue: true, Choices: SupportedShells},
 		},
+		Subcommands: subcmds,
 	}
 }
 
 // GUICommand builds the completion Command specification for ntwire-gui.
 func GUICommand() Command {
+	subcmds := []Command{
+		{
+			Name:       "completion",
+			Summary:    "generate shell completion script",
+			ArgChoices: SupportedShells,
+		},
+	}
+
 	return Command{
 		Name:    "ntwire-gui",
 		Summary: "ntwire tray/menu-bar GUI client",
@@ -119,5 +172,6 @@ func GUICommand() Command {
 			{Name: "autostart", Usage: "the process was launched by the OS's own login-item mechanism", TakesValue: false},
 			{Name: "completion", Usage: "generate shell completion script (bash, zsh, fish, powershell) and exit", TakesValue: true, Choices: SupportedShells},
 		},
+		Subcommands: subcmds,
 	}
 }
