@@ -481,9 +481,42 @@ without exposing tunnel names or credentials. See
 [SECURITY.md](SECURITY.md#operator-visible-risk-capabilities) for the stable
 values and their meaning.
 
+## Portal
+
+Configure the optional internal services portal with the top-level `portal:` block and per-tunnel `portal:` metadata:
+
+```yaml
+portal:
+  enabled: true
+  title: "Internal Services Portal"
+  template: "portal.md"             # Candidate file path or inline markdown template
+  variables:
+    environment: "Production"
+  web:
+    enabled: true
+    listen: "100.64.0.1:8080"        # In-tunnel WireGuard web portal listener
+
+tunnels:
+  - name: grafana
+    target: grafana.internal:3000
+    virtual_port: 3000
+    local_port: 3000
+    portal:
+      name: "Grafana Dashboards"
+      description: "Metrics and observability dashboards"
+      category: "Observability"
+      icon: "chart"
+      url: "http://grafana.internal:3000"
+      applications:
+        - "grafana"
+```
+
+See [PORTAL.md](PORTAL.md) for full details on template syntax, variables, capabilities, and the `ntwire-server portal` CLI tools.
+
 ## See also
 
 - [../README.md](../README.md) — quick start and everyday client/server usage
+- [PORTAL.md](PORTAL.md) — the `portal:` block, template syntax, and WireGuard web portal
 - [SECURITY.md](SECURITY.md) — TLS trust model and OIDC threat model
 - [OIDC-SETUP.md](OIDC-SETUP.md) — per-IdP registration steps
 - [RELAY.md](RELAY.md) — the `relay:` block for servers behind NAT

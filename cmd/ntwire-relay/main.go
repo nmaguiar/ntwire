@@ -22,6 +22,14 @@ func main() {
 		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "help" {
+		if len(os.Args) > 2 && os.Args[2] == "completion" {
+			runCompletion([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			return
+		}
+		flag.Usage()
+		return
+	}
 
 	config := flag.String("config", "ntwire-relay.yaml", "relay configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
@@ -34,11 +42,14 @@ func main() {
 		ui.Spec{
 			Tool:    "ntwire-relay",
 			Tagline: "NAT-traversal relay for ntwire-server",
-			Flags:   ui.FlagsOf(flag.CommandLine),
+			Commands: []ui.Command{
+				{Name: "completion", Summary: "generate shell completion script"},
+			},
+			Flags: ui.FlagsOf(flag.CommandLine),
 			Examples: []string{
 				"ntwire-relay -config ntwire-relay.yaml",
 				"ntwire-relay -print-sample-config > ntwire-relay.yaml",
-				"ntwire-relay -completion bash > /etc/bash_completion.d/ntwire-relay",
+				"ntwire-relay completion bash > /etc/bash_completion.d/ntwire-relay",
 				"ntwire-relay -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -149,7 +160,7 @@ func runCompletion(args []string, u *ui.UI) {
 				"source <(ntwire-relay completion zsh)",
 				"ntwire-relay -completion fish | source",
 			},
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 		if len(args) == 0 {
 			os.Exit(2)
 		}

@@ -3,6 +3,7 @@ package browseropen
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -199,4 +200,24 @@ func TestCleanProfilesForProfile(t *testing.T) {
 			t.Errorf("expected %s to remain, stat err = %v", d, err)
 		}
 	}
+}
+
+func TestOpenSocksURLSignature(t *testing.T) {
+	// Verify OpenSocks accepts target URL arguments
+	targetURL := "http://grafana.internal:3000"
+	key := "test-grafana"
+	localAddr := "127.0.0.1:1080"
+
+	// Verify ProfileDir works for key
+	dir, err := ProfileDir(key)
+	if err != nil {
+		t.Fatalf("ProfileDir failed: %v", err)
+	}
+	if !strings.Contains(dir, "test-grafana") {
+		t.Errorf("expected test-grafana in profile dir, got %s", dir)
+	}
+
+	// Call OpenSocksURL (may fail to find chrome in CI/headless, which is expected)
+	_ = OpenSocks(key, localAddr, targetURL)
+	_ = OpenSocksURL(key, localAddr, targetURL)
 }

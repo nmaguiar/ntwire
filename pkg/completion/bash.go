@@ -50,6 +50,26 @@ func Bash(cmd Command, w io.Writer) error {
 
     if [[ -z "$subcmd" ]]; then
 `)
+		hasPrevCases := false
+		for _, f := range cmd.Flags {
+			if len(f.Choices) > 0 || f.IsFilePath {
+				if !hasPrevCases {
+					b.WriteString("        case \"$prev\" in\n")
+					hasPrevCases = true
+				}
+				fmt.Fprintf(&b, "            -%s|--%s)\n", f.Name, f.Name)
+				if len(f.Choices) > 0 {
+					fmt.Fprintf(&b, "                COMPREPLY=( $(compgen -W %q -- \"$cur\") )\n", strings.Join(f.Choices, " "))
+				} else if f.IsFilePath {
+					b.WriteString("                COMPREPLY=( $(compgen -f -- \"$cur\") )\n")
+				}
+				b.WriteString("                return 0\n                ;;\n")
+			}
+		}
+		if hasPrevCases {
+			b.WriteString("        esac\n\n")
+		}
+
 		var topFlags []string
 		for _, f := range cmd.Flags {
 			topFlags = append(topFlags, "-"+f.Name, "--"+f.Name)

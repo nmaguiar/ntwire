@@ -101,8 +101,28 @@ func TestBashCompletionDetails(t *testing.T) {
 	if !strings.Contains(serverOut, "complete -o default -F _ntwire_server ntwire-server") {
 		t.Errorf("expected bash registration line for ntwire-server")
 	}
+	if !strings.Contains(serverOut, "portal") || !strings.Contains(serverOut, "list") {
+		t.Errorf("expected portal and list subcommands in ntwire-server bash script")
+	}
 	if !strings.Contains(serverOut, "conf qr all") {
 		t.Errorf("expected wireguard-format choices in bash script")
+	}
+
+	// Test relay and gui bash outputs
+	relayOut, err := GenerateString(ShellBash, RelayCommand())
+	if err != nil {
+		t.Fatalf("GenerateString error: %v", err)
+	}
+	if !strings.Contains(relayOut, "completion") {
+		t.Errorf("expected completion subcommand in relay bash script")
+	}
+
+	guiOut, err := GenerateString(ShellBash, GUICommand())
+	if err != nil {
+		t.Fatalf("GenerateString error: %v", err)
+	}
+	if !strings.Contains(guiOut, "completion") {
+		t.Errorf("expected completion subcommand in gui bash script")
 	}
 }
 
@@ -132,6 +152,9 @@ func TestZshCompletionDetails(t *testing.T) {
 	if !strings.Contains(serverOut, "compdef _ntwire_server ntwire-server") {
 		t.Errorf("expected compdef _ntwire_server ntwire-server")
 	}
+	if !strings.Contains(serverOut, "portal:portal template") {
+		t.Errorf("expected portal subcommand in ntwire-server zsh script")
+	}
 }
 
 func TestFishCompletionDetails(t *testing.T) {
@@ -153,6 +176,9 @@ func TestFishCompletionDetails(t *testing.T) {
 	}
 	if !strings.Contains(serverOut, "complete -c ntwire-server -f") {
 		t.Errorf("expected complete -c ntwire-server -f")
+	}
+	if !strings.Contains(serverOut, "-a \"portal\"") {
+		t.Errorf("expected portal subcommand completion in fish")
 	}
 	if !strings.Contains(serverOut, "-l config") {
 		t.Errorf("expected -l config in fish script")
@@ -178,5 +204,8 @@ func TestPowerShellCompletionDetails(t *testing.T) {
 	}
 	if !strings.Contains(serverOut, "Register-ArgumentCompleter -Native -CommandName 'ntwire-server'") {
 		t.Errorf("expected Register-ArgumentCompleter for ntwire-server")
+	}
+	if !strings.Contains(serverOut, "Name = 'portal'") {
+		t.Errorf("expected portal subcommand in powershell script")
 	}
 }

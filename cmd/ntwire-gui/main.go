@@ -76,6 +76,14 @@ func main() {
 		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "help" {
+		if len(os.Args) > 2 && os.Args[2] == "completion" {
+			runCompletion([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			return
+		}
+		flag.Usage()
+		return
+	}
 
 	var (
 		headless        = flag.Bool("headless", false, "run the connection manager and settings API without a tray icon")
@@ -90,11 +98,14 @@ func main() {
 		ui.Spec{
 			Tool:    "ntwire-gui",
 			Tagline: "ntwire tray/menu-bar GUI client",
-			Flags:   ui.FlagsOf(flag.CommandLine),
+			Commands: []ui.Command{
+				{Name: "completion", Summary: "generate shell completion script"},
+			},
+			Flags: ui.FlagsOf(flag.CommandLine),
 			Examples: []string{
 				"ntwire-gui",
 				"ntwire-gui -headless",
-				"ntwire-gui -completion bash > /etc/bash_completion.d/ntwire-gui",
+				"ntwire-gui completion bash > /etc/bash_completion.d/ntwire-gui",
 				"ntwire-gui -version",
 			},
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
@@ -288,7 +299,7 @@ func runCompletion(args []string, u *ui.UI) {
 				"source <(ntwire-gui completion zsh)",
 				"ntwire-gui -completion fish | source",
 			},
-		}.Fprint(os.Stderr, u)
+		}.Fprint(u.Err, u)
 		if len(args) == 0 {
 			os.Exit(2)
 		}

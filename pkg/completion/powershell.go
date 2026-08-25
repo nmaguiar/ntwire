@@ -27,7 +27,32 @@ func PowerShell(cmd Command, w io.Writer) error {
 
 	if len(cmd.Subcommands) > 0 {
 		b.WriteString(`    if ($subcommand -eq '') {
-        if ($wordToComplete -like '-*') {
+`)
+		for _, f := range cmd.Flags {
+			if len(f.Choices) > 0 {
+				var psChoices []string
+				for _, c := range f.Choices {
+					psChoices = append(psChoices, fmt.Sprintf("'%s'", escapePsString(c)))
+				}
+				fmt.Fprintf(&b, `        if ($prev -eq '-%s' -or $prev -eq '--%s') {
+            @(%s) | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+                [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_)
+            }
+            return
+        }
+`, f.Name, f.Name, strings.Join(psChoices, ", "))
+			} else if f.IsFilePath {
+				fmt.Fprintf(&b, `        if ($prev -eq '-%s' -or $prev -eq '--%s') {
+            Get-ChildItem -Path "$wordToComplete*" -ErrorAction SilentlyContinue | ForEach-Object {
+                [System.Management.Automation.CompletionResult]::new($_.FullName, $_.Name, 'ProviderItem', $_.FullName)
+            }
+            return
+        }
+`, f.Name, f.Name)
+			}
+		}
+
+		b.WriteString(`        if ($wordToComplete -like '-*') {
             $flags = @(
 `)
 		for _, f := range cmd.Flags {
