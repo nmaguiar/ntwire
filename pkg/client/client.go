@@ -1155,7 +1155,14 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, err
 	}
-	useWS, err := selectTransport(options.UseWebSocket, transport, r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1), udpEndpoint, r.WebSocket)
+	multipathV1 := r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1)
+	// A v1 scheduler has only probe RTT and loss. Those are enough to fail
+	// over after a path dies, but not enough to decide that a direct UDP path
+	// can carry bulk traffic: small probes can succeed while full WireGuard
+	// packets stall behind a restrictive NAT or MTU. Only v2 supplies the
+	// passive real-traffic delivery signal needed for automatic promotion.
+	multipathV2 := multipathV1 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
+	useWS, err := selectTransport(options.UseWebSocket, transport, multipathV1, udpEndpoint, r.WebSocket)
 	if err != nil {
 		return nil, err
 	}
@@ -1172,9 +1179,8 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	var hybrid *wstransport.Hybrid
 	var multipath *wstransport.MultipathBind
 	if useWS {
-		if r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1) {
-			v2 := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, v2, resolveMultipathV2Options(options.MultipathV2), options.IPVersion)
+		if multipathV1 {
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, multipathV2, resolveMultipathV2Options(options.MultipathV2), options.IPVersion)
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion)
@@ -1227,7 +1233,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		// direct-upgrade loop then fails) for the auto-selected case, where
 		// the server simply never advertised a UDP endpoint -- the
 		// surprising, often-support-question-worthy one.
-		if !options.UseWebSocket {
+		if !options.UseWebSocket && udpEndpoint == "" {
 			c.transportReason = "server did not advertise a direct UDP WireGuard endpoint"
 			if mismatch != "" {
 				c.transportReason = mismatch
@@ -1279,11 +1285,13 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	go c.renewLoop()
 	go c.historyLoop()
-	// A direct server advertising both legs starts a real multipath session:
-	// retain WSS as a live fallback and register the direct UDP candidate in
-	// both schedulers. Relay-only sessions still use the upgrade ladder to
-	// discover their relay/direct UDP candidates.
-	if multipath != nil && udpEndpoint != "" && !options.UseWebSocket {
+	// A direct server advertising both legs starts a real multipath session
+	// only after v2 was negotiated. V1 can establish probe health but has no
+	// real-traffic delivery signal, so adding direct UDP there lets the client
+	// and server independently promote an unproven bulk-data path. Keep WSS
+	// as the safe automatic route for v1; callers can still explicitly choose
+	// direct-udp, which uses the ordinary single-path UDP setup.
+	if multipath != nil && shouldBootstrapDirectMultipath(multipathV2, udpEndpoint, options.UseWebSocket) {
 		go c.bootstrapDirectMultipath(udpEndpoint)
 	}
 	if hybrid != nil && udpEndpoint == "" && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
@@ -1368,9 +1376,9 @@ func selectTransport(explicit bool, transport string, multipath bool, udp, webso
 		if udp == "" {
 			return false, fmt.Errorf("transport direct-udp requested but server did not advertise a WireGuard endpoint")
 		}
-		if multipath && websocket != "" {
-			return true, nil
-		}
+		// An explicit direct-udp choice is a single-path request. In
+		// particular, do not bootstrap over WSS and let an independent server
+		// scheduler select a different return path.
 		return false, nil
 	case string(wstransport.PathUDPRelay):
 		if websocket == "" {
@@ -1393,6 +1401,14 @@ func selectTransport(explicit bool, transport string, multipath bool, udp, webso
 		return false, fmt.Errorf("server did not advertise a WireGuard endpoint")
 	}
 	return useWS, nil
+}
+
+// shouldBootstrapDirectMultipath gates automatic direct-UDP registration.
+// Multipath-v1 is deliberately excluded: its probes do not measure whether
+// full-size WireGuard packets are delivered, so registering the candidate can
+// make the two endpoint schedulers choose incompatible data paths.
+func shouldBootstrapDirectMultipath(multipathV2 bool, udpEndpoint string, websocketForced bool) bool {
+	return multipathV2 && udpEndpoint != "" && !websocketForced
 }
 
 func normalizeTransportPreference(websocket bool, transport string) (string, error) {

@@ -87,7 +87,10 @@ used. `GET /v1/info` can similarly require a client capability before login.
 
 The current transport identifiers are `multipath-v1` and `multipath-v2`.
 `multipath-v2` is useful only together with `multipath-v1`; a peer that knows
-only v1 ignores the optional v2 offer and continues using v1. Tests cover the
+only v1 ignores the optional v2 offer and continues using v1. Because v1 has
+only small-packet probe RTT/loss and cannot establish bulk-data delivery,
+automatic direct-UDP promotion requires v2; v1 retains WSS as its automatic
+route while explicit direct-UDP selection remains available. Tests cover the
 old/old, old/new, shared-new, unknown-optional, and required-unsupported
 matrices in `pkg/protocol/capability_test.go`.
 

@@ -354,6 +354,8 @@ network:
   #   domain: ntwire                      # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 
 transport:
+  # Automatic direct-UDP promotion requires multipath-v2; v1 keeps WSS as
+  # the safe route because its probes cannot establish bulk-data delivery.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force: auto                              # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
 

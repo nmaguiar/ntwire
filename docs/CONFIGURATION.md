@@ -81,8 +81,12 @@ of silently falling back. `--websocket` remains a compatibility alias for
 
 `auto` can switch only after the server and client negotiate multipath. On a
 server with both UDP and WebSocket endpoints, `transport.multipath: true`
-(the default) bootstraps over WSS and registers the UDP path for scheduling.
-Set `transport.multipath: false` only for a legacy single-path deployment.
+(the default) bootstraps over WSS. Direct UDP is registered for automatic
+scheduling only when `multipath-v2` is negotiated, because v1's small-packet
+probes cannot establish bulk-data delivery. A v1 session keeps WSS as its
+safe automatic route; `--transport direct-udp` remains available for an
+explicit single-path UDP connection. Set `transport.multipath: false` only
+for a legacy single-path deployment.
 
 ```yaml
 listen:
@@ -117,6 +121,8 @@ network:
     enabled: true                        # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
     domain: ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 transport:
+  # Automatic direct-UDP promotion requires multipath-v2; v1 keeps WSS as
+  # the safe route and retains direct UDP for explicit selection/failover.
   multipath: true                        # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force: auto                             # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
 authorizer:

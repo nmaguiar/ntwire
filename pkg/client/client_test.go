@@ -73,7 +73,7 @@ func TestSelectTransportPreference(t *testing.T) {
 		{"wss with both", "wss", "vpn.example:51820", "wss://vpn.example/v1/wg", false, true, false},
 		{"wss without websocket", "wss", "vpn.example:51820", "", false, false, true},
 		{"direct with both without multipath", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, false},
-		{"direct with both retains multipath fallback", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", true, true, false},
+		{"direct with both is a single-path request", "direct-udp", "vpn.example:51820", "wss://vpn.example/v1/wg", true, false, false},
 		{"direct without udp", "direct-udp", "", "wss://vpn.example/v1/wg", false, false, true},
 		{"relay with multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", true, true, false},
 		{"relay without multipath", "udp-relay", "vpn.example:51820", "wss://vpn.example/v1/wg", false, false, true},
@@ -82,6 +82,26 @@ func TestSelectTransportPreference(t *testing.T) {
 			got, err := selectTransport(false, tc.transport, tc.multipath, tc.udp, tc.ws)
 			if (err != nil) != tc.wantErr || (!tc.wantErr && got != tc.wantWS) {
 				t.Fatalf("selectTransport() = %v, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestShouldBootstrapDirectMultipath(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		multipathV2, forcedWS bool
+		udp                   string
+		want                  bool
+	}{
+		{"v2 direct endpoint", true, false, "203.0.113.10:51820", true},
+		{"v1 never promotes direct automatically", false, false, "203.0.113.10:51820", false},
+		{"missing endpoint", true, false, "", false},
+		{"explicit websocket", true, true, "203.0.113.10:51820", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldBootstrapDirectMultipath(tc.multipathV2, tc.udp, tc.forcedWS); got != tc.want {
+				t.Fatalf("shouldBootstrapDirectMultipath(%t, %q, %t) = %t, want %t", tc.multipathV2, tc.udp, tc.forcedWS, got, tc.want)
 			}
 		})
 	}
