@@ -37,7 +37,13 @@ label.toggle input{width:auto}
 fieldset{border:1px solid var(--border);border-radius:12px;padding:.9rem;margin:0 0 .9rem}
 legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
 .help{color:var(--muted);font-size:.78rem;margin:-.15rem 0 0}
-#message{min-height:1.3em;color:var(--danger);font-weight:600}
+#message{display:none;min-height:1.3em;font-weight:600;align-items:center;gap:.4rem}
+#message:not(:empty){display:inline-flex}
+#message.ok{color:var(--accent)}
+#message.err{color:var(--danger)}
+#message.info{color:var(--brand)}
+.msg-close{display:inline-flex;align-items:center;justify-content:center;width:1.2rem;height:1.2rem;padding:0;margin-left:.35rem;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;opacity:.75;font-size:.85rem;cursor:pointer;line-height:1}
+.msg-close:hover,.msg-close:focus-visible{opacity:1;background:color-mix(in srgb,currentColor 15%,transparent);border-color:color-mix(in srgb,currentColor 30%,transparent)}
 .overlay{position:fixed;inset:0;background:rgba(10,14,24,.55);display:flex;align-items:center;justify-content:center;padding:1rem;z-index:50}
 .modal{background:var(--panel);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.5rem;max-width:32rem;width:100%}
 .modal h3{margin:0 0 .5rem}
@@ -127,7 +133,31 @@ async function api(method, path, body) {
   return ct.includes('application/json') ? r.json() : null;
 }
 
-function setMessage(text) { messageEl.textContent = text || ''; }
+let messageTimer = null;
+function clearMessage() {
+  clearTimeout(messageTimer);
+  messageEl.textContent = '';
+  messageEl.className = '';
+}
+function setMessage(text, type = 'err', timeout = (type === 'err' ? 8000 : (type === 'info' ? 0 : 5000))) {
+  clearTimeout(messageTimer);
+  if (!text) {
+    clearMessage();
+    return;
+  }
+  messageEl.className = type;
+  messageEl.textContent = text;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'msg-close';
+  btn.setAttribute('aria-label', 'Dismiss message');
+  btn.title = 'Dismiss message';
+  btn.textContent = '✕';
+  btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); clearMessage(); });
+  messageEl.append(btn);
+  if (timeout > 0) messageTimer = setTimeout(clearMessage, timeout);
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && messageEl.textContent) clearMessage(); });
 
 function stateLabel(s) {
   switch (s) {
@@ -265,7 +295,7 @@ function renderProfileRow(snap) {
     logoutBtn.addEventListener('click', async () => {
       try {
         await api('POST', `/api/profiles/${p.ID}/logout`);
-        setMessage(`Cleared cached SSO tokens for "${p.Name}".`);
+        setMessage(`Cleared cached SSO tokens for "${p.Name}".`, 'ok');
       } catch (e) { setMessage(e.message); }
     });
     actions.append(logoutBtn);
@@ -325,7 +355,7 @@ function renderTunnelSection(profileID, tunnels) {
           throw new Error(`invalid port in ${JSON.stringify(raw)}`);
         }
         await api('PUT', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}`, body);
-        setMessage(`Rebound "${t.name}".`);
+        setMessage(`Rebound "${t.name}".`, 'ok');
       } catch (e) { setMessage(e.message); }
     });
     line.append(label, input, apply);
@@ -336,7 +366,7 @@ function renderTunnelSection(profileID, tunnels) {
       openBrowser.addEventListener('click', async () => {
         try {
           await api('POST', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}/open-browser`);
-          setMessage(`Opening a browser for "${t.name}".`);
+          setMessage(`Opening a browser for "${t.name}".`, 'ok');
         } catch (e) { setMessage(e.message); }
       });
       const resetProfile = document.createElement('button');
@@ -345,7 +375,7 @@ function renderTunnelSection(profileID, tunnels) {
       resetProfile.addEventListener('click', async () => {
         try {
           await api('POST', `/api/profiles/${profileID}/tunnels/${encodeURIComponent(t.name)}/reset-browser-profile`);
-          setMessage(`Reset browser profile for "${t.name}".`);
+          setMessage(`Reset browser profile for "${t.name}".`, 'ok');
           await refreshBrowserProfiles();
         } catch (e) { setMessage(e.message); }
       });
@@ -797,7 +827,7 @@ deleteBrowserProfilesBtn.addEventListener('click', async () => {
       const msgs = Object.entries(res.errors).map(([k, err]) => `${k}: ${err}`).join(', ');
       setMessage(`Failed to delete some profiles: ${msgs}`);
     } else {
-      setMessage(`Deleted ${count} browser profile${count > 1 ? 's' : ''}.`);
+      setMessage(`Deleted ${count} browser profile${count > 1 ? 's' : ''}.`, 'ok');
     }
     selectedBrowserProfiles.clear();
     await refreshBrowserProfiles();

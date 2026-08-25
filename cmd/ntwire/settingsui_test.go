@@ -127,3 +127,26 @@ func TestStartSettingsUIRejectsWrongToken(t *testing.T) {
 		t.Fatalf("status = %d, want 404 for a wrong token", resp.StatusCode)
 	}
 }
+
+func TestSettingsUIMessageResetAndDismissControls(t *testing.T) {
+	page, err := settingsUIFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"function clearMessage()",
+		"function setMessage(",
+		"msg-close",
+		"aria-label",
+		"Dismiss message",
+		"#message.ok{color:var(--accent)}",
+		"#message.err{color:var(--danger)}",
+		"#message.info{color:var(--brand)}",
+		"Escape",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("settings UI page is missing message reset/dismiss feature %q", want)
+		}
+	}
+}
