@@ -18,6 +18,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.org/x/term"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -51,6 +52,8 @@ func main() {
 		disconnect(os.Args[2:], u)
 	case "port":
 		port(os.Args[2:], u)
+	case "transport":
+		transportCmd(os.Args[2:], u)
 	case "browser":
 		browser(os.Args[2:], u)
 	case "logout":
@@ -72,6 +75,8 @@ func main() {
 				disconnect([]string{"-h"}, u)
 			case "port":
 				port([]string{"-h"}, u)
+			case "transport":
+				transportCmd([]string{"-h"}, u)
 			case "browser":
 				browser([]string{"-h"}, u)
 			case "logout":
@@ -113,6 +118,7 @@ func usage(u *ui.UI) {
 			{Name: "status", Summary: "show the running connection"},
 			{Name: "disconnect", Summary: "stop the running connection"},
 			{Name: "port", Summary: "replace a tunnel's local port"},
+			{Name: "transport", Summary: "show or switch the active transport mode"},
 			{Name: "browser", Summary: "open a browser configured for a SOCKS tunnel"},
 			{Name: "logout", Summary: "clear cached SSO tokens"},
 			{Name: "completion", Summary: "generate shell completion script"},
@@ -263,6 +269,112 @@ func port(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(parts[0]), out.LocalAddress)
+}
+
+// transportCmd displays or overrides the live transport for a running connection.
+func transportCmd(args []string, u *ui.UI) {
+	fs := clientopts.NewFlagSet("transport", clientopts.Defaults{})
+	setUsage(fs.FlagSet, u, "show or switch the active transport mode", "ntwire transport", "ntwire transport direct-udp", "ntwire transport auto")
+	fs.Parse(args)
+	path := fs.Str("status-file")
+	s, err := client.ReadStatus(path)
+	if err != nil {
+		u.Errorf("not connected: %v", err)
+		os.Exit(1)
+	}
+	uu, err := url.Parse(s.UIURL)
+	if err != nil || uu.Scheme != "http" || uu.Host == "" {
+		u.Errorf("running client does not expose a local status UI")
+		os.Exit(1)
+	}
+	uu.Path = "/transport"
+
+	if fs.NArg() == 0 {
+		req, err := http.NewRequest(http.MethodGet, uu.String(), nil)
+		if err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			u.Errorf("failed to query running connection: %v", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			u.Errorf("failed to get transport info: %s", strings.TrimSpace(string(b)))
+			os.Exit(1)
+		}
+		var info client.TransportInfo
+		if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+			u.Errorf("failed to parse response: %v", err)
+			os.Exit(1)
+		}
+		u.Info("Active transport: %s", info.Active)
+		if info.Forced != "" {
+			if info.ForcedEffective {
+				u.Info("Transport override: %s (effective)", info.Forced)
+			} else {
+				u.Warn("Transport override: %s (fallback active, using %s)", info.Forced, info.Active)
+			}
+		} else {
+			u.Info("Transport mode: automatic")
+		}
+		if len(info.Paths) > 0 {
+			fmt.Fprintln(u.Out)
+			t := ui.Table{
+				Columns: []ui.Column{
+					{Header: "PATH", Width: 12, Align: "left"},
+					{Header: "KIND", Width: 10, Align: "left"},
+					{Header: "STATUS", Width: 30, Align: "left"},
+					{Header: "RTT", Width: 8, Align: "right"},
+					{Header: "LOSS", Width: 7, Align: "right"},
+					{Header: "DELIVERY", Sep: "  "},
+				},
+			}
+			for _, p := range info.Paths {
+				t.Rows = append(t.Rows, pathStatusRow(p))
+			}
+			fmt.Fprint(u.Out, t.Render(u))
+		}
+		return
+	}
+
+	target := fs.Arg(0)
+	body, err := json.Marshal(struct {
+		Transport string `json:"transport"`
+	}{Transport: target})
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(1)
+	}
+	req, err := http.NewRequest(http.MethodPut, uu.String(), bytes.NewReader(body))
+	if err != nil {
+		u.Errorf("%v", err)
+		os.Exit(1)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		u.Errorf("failed to update transport: %v", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		u.Errorf("failed to set transport: %s", strings.TrimSpace(string(b)))
+		os.Exit(1)
+	}
+	var info client.TransportInfo
+	_ = json.NewDecoder(resp.Body).Decode(&info)
+	if info.Forced == "" {
+		u.Success("Transport set to automatic mode (active: %s)", info.Active)
+	} else if info.ForcedEffective {
+		u.Success("Transport forced to %s (active: %s)", info.Forced, info.Active)
+	} else {
+		u.Warn("Transport forced to %s (unavailable or unhealthy; fallback active: %s)", info.Forced, info.Active)
+	}
 }
 
 // browser opens a Chrome/Chromium instance configured (via --proxy-server)
@@ -437,7 +549,13 @@ func pathStatusRow(p wstransport.PathStatus) []string {
 		status = "healthy"
 	}
 	if p.Primary {
-		status += " (primary)"
+		if p.Forced {
+			status += " (primary, forced)"
+		} else {
+			status += " (primary)"
+		}
+	} else if p.Forced {
+		status += " (forced, fallback active)"
 	}
 	delivery := "-"
 	if p.DeliveryRatio >= 0 {
@@ -557,7 +675,15 @@ func status(args []string, u *ui.UI) {
 	}
 	if wsErr == nil {
 		kv.Add("connected", fmt.Sprintf("%t", ws.Connected))
-		kv.Add("connection", ws.ConnectionType)
+		connType := ws.ConnectionType
+		if ws.Forced != "" {
+			if ws.ForcedEffective {
+				connType += fmt.Sprintf(" [forced: %s]", ws.Forced)
+			} else {
+				connType += fmt.Sprintf(" [forced: %s, fallback active]", ws.Forced)
+			}
+		}
+		kv.Add("connection", connType)
 		kv.Add("ttl", fmt.Sprintf("%ds", ws.TTLSeconds))
 		kv.Add("latency", fmt.Sprintf("%dms", ws.LatencyMillis))
 		kv.Add("reconnections", fmt.Sprintf("%d", ws.Reconnections))
@@ -585,7 +711,7 @@ func status(args []string, u *ui.UI) {
 			Columns: []ui.Column{
 				{Header: "PATH", Width: 12, Align: "left"},
 				{Header: "KIND", Width: 10, Align: "left"},
-				{Header: "STATUS", Width: 18, Align: "left"},
+				{Header: "STATUS", Width: 30, Align: "left"},
 				{Header: "RTT", Width: 8, Align: "right"},
 				{Header: "LOSS", Width: 7, Align: "right"},
 				{Header: "DELIVERY", Sep: "  "},
@@ -638,6 +764,7 @@ func connect(args []string, u *ui.UI) {
 	collect := fs.Str("collect-exec")
 	bind := fs.Str("bind")
 	ipVersion := fs.Str("ip-version")
+	transport := fs.Str("transport")
 	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -672,7 +799,7 @@ func connect(args []string, u *ui.UI) {
 	o := client.Options{
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
-		BindAddress: bind, IPVersion: ipVersion, SettingsURL: settingsURL,
+		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

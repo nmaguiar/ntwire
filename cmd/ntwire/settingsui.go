@@ -38,6 +38,7 @@ var settingsField = map[string]string{
 	"collect-exec":    "CollectExec",
 	"bind":            "BindAddress",
 	"ip-version":      "IPVersion",
+	"transport":       "Transport",
 }
 
 // schemaField mirrors internal/gui/api's wire shape so the two settings

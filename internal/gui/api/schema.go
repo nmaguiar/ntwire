@@ -36,6 +36,7 @@ var profileField = map[string]string{
 	"port":            "Ports",
 	"bind":            "BindAddress",
 	"ip-version":      "IPVersion",
+	"transport":       "Transport",
 }
 
 // schemaField is one generated form field, as served by GET /api/schema.

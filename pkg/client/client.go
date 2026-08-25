@@ -143,6 +143,13 @@ type Options struct {
 	// leave nil for the production defaults.
 	MultipathV2 *MultipathV2Options
 
+	// Transport selects a preferred or forced transport mode ("auto",
+	// "direct-udp", "udp-relay", "wss"). When set to a specific transport,
+	// the client forces that transport as primary while healthy, and
+	// automatically falls back to the fastest available healthy transport
+	// if the forced transport becomes unavailable or degraded.
+	Transport string
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
@@ -1190,6 +1197,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
 	}
+	if multipath != nil && options.Transport != "" {
+		multipath.SetForced(options.Transport)
+	}
 	if r.TTLSeconds > 0 {
 		c.expiresAt = time.Now().Add(time.Duration(r.TTLSeconds) * time.Second)
 	}
@@ -1844,6 +1854,33 @@ func (c *Connection) startWebUI() {
 		}
 		c.executePortalAction(r.Context(), w, in.Action, in.TargetID)
 	})
+	mux.HandleFunc("/transport", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method == http.MethodGet {
+			_ = json.NewEncoder(w).Encode(c.TransportInfo())
+			return
+		}
+		if r.Method == http.MethodPut || r.Method == http.MethodPost {
+			var in struct {
+				Transport string `json:"transport"`
+			}
+			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
+				http.Error(w, "invalid request body", http.StatusBadRequest)
+				return
+			}
+			if err := c.SetTransport(in.Transport); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(c.TransportInfo())
+			return
+		}
+		w.Header().Set("Allow", "GET, PUT, POST")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	})
 	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
 			http.NotFound(w, r)
@@ -1943,13 +1980,15 @@ type WebStatus struct {
 	ServerName string `json:"server_name"`
 	// ConnectionType describes the live WireGuard data path, for example
 	// "UDP direct", "WSS through relay", or "UDP direct via relay reflector".
-	ConnectionType string                   `json:"connection_type"`
-	Tunnels        []WebTunnel              `json:"tunnels"`
-	TTLSeconds     int                      `json:"ttl_seconds"`
-	LatencyMillis  uint64                   `json:"latency_millis"`
-	Reconnections  uint64                   `json:"reconnections"`
-	Paths          []wstransport.PathStatus `json:"paths,omitempty"`
-	Duplication    bool                     `json:"duplication_active,omitempty"`
+	ConnectionType  string                   `json:"connection_type"`
+	Tunnels         []WebTunnel              `json:"tunnels"`
+	TTLSeconds      int                      `json:"ttl_seconds"`
+	LatencyMillis   uint64                   `json:"latency_millis"`
+	Reconnections   uint64                   `json:"reconnections"`
+	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+	Duplication     bool                     `json:"duplication_active,omitempty"`
+	Forced          string                   `json:"forced,omitempty"`
+	ForcedEffective bool                     `json:"forced_effective,omitempty"`
 	// SettingsURL mirrors Options.SettingsURL; empty when the caller (e.g.
 	// the CLI) supplied none.
 	SettingsURL string `json:"settings_url,omitempty"`
@@ -1996,11 +2035,13 @@ type ListenerState struct {
 // TransportState reports both a stable route identifier and human-readable
 // display text. Paths and Duplication are populated for multipath transport.
 type TransportState struct {
-	Mode        TransportMode            `json:"mode"`
-	Description string                   `json:"description"`
-	Reason      string                   `json:"reason,omitempty"`
-	Paths       []wstransport.PathStatus `json:"paths,omitempty"`
-	Duplication bool                     `json:"duplication_active,omitempty"`
+	Mode            TransportMode            `json:"mode"`
+	Description     string                   `json:"description"`
+	Reason          string                   `json:"reason,omitempty"`
+	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+	Duplication     bool                     `json:"duplication_active,omitempty"`
+	Forced          string                   `json:"forced,omitempty"`
+	ForcedEffective bool                     `json:"forced_effective,omitempty"`
 }
 
 // ReconnectState describes an in-progress control-plane recovery. RetryAt is
@@ -2072,7 +2113,12 @@ func (c *Connection) State() ConnectionState {
 	}
 	if c.multipath != nil {
 		state.Transport.Paths = append([]wstransport.PathStatus(nil), c.multipath.Paths()...)
-		_, _, state.Transport.Duplication = c.multipath.Scheduler().Select()
+		primary, _, dup := c.multipath.Scheduler().Select()
+		state.Transport.Duplication = dup
+		state.Transport.Forced = c.multipath.Forced()
+		if state.Transport.Forced != "" && primary == state.Transport.Forced {
+			state.Transport.ForcedEffective = true
+		}
 	}
 	return state
 }
@@ -2101,9 +2147,60 @@ func (c *Connection) webStatus() WebStatus {
 	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), SettingsURL: c.options.SettingsURL}
 	if c.multipath != nil {
 		status.Paths = c.multipath.Paths()
-		_, _, status.Duplication = c.multipath.Scheduler().Select()
+		primary, _, dup := c.multipath.Scheduler().Select()
+		status.Duplication = dup
+		status.Forced = c.multipath.Forced()
+		if status.Forced != "" && primary == status.Forced {
+			status.ForcedEffective = true
+		}
 	}
 	return status
+}
+
+// SetTransport overrides the active transport selection at runtime ("auto",
+// "direct-udp", "udp-relay", "wss", or aliases "udp", "relay", "websocket").
+// When a forced transport is set and healthy, it is immediately selected as
+// primary. If it is unavailable or becomes unhealthy, ntwire automatically falls
+// back to the best available healthy transport.
+func (c *Connection) SetTransport(target string) error {
+	c.mu.Lock()
+	multipath := c.multipath
+	c.mu.Unlock()
+	if multipath == nil {
+		return errors.New("multipath transport is not active for this connection")
+	}
+	multipath.SetForced(target)
+	return nil
+}
+
+// TransportInfo describes the live transport configuration and candidate states.
+type TransportInfo struct {
+	Active          string                   `json:"active"`
+	Forced          string                   `json:"forced,omitempty"`
+	ForcedEffective bool                     `json:"forced_effective"`
+	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+}
+
+func (c *Connection) TransportInfo() TransportInfo {
+	c.mu.Lock()
+	multipath := c.multipath
+	c.mu.Unlock()
+	if multipath == nil {
+		return TransportInfo{Active: connectionTransport(c.transport.Load()).String()}
+	}
+	paths := multipath.Paths()
+	primary, _, _ := multipath.Scheduler().Select()
+	forced := multipath.Forced()
+	effective := false
+	if forced != "" && primary == forced {
+		effective = true
+	}
+	return TransportInfo{
+		Active:          primary,
+		Forced:          forced,
+		ForcedEffective: effective,
+		Paths:           paths,
+	}
 }
 
 // historySampleInterval is how often historyLoop records a sample. The

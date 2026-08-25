@@ -122,6 +122,8 @@ func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.E
 }
 func (m *MultipathBind) Scheduler() *Scheduler { return m.scheduler }
 func (m *MultipathBind) Paths() []PathStatus   { return m.scheduler.Status() }
+func (m *MultipathBind) SetForced(name string) { m.scheduler.SetForced(name) }
+func (m *MultipathBind) Forced() string        { return m.scheduler.Forced() }
 
 func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, actual, err := m.base.Open(port)
@@ -427,6 +429,22 @@ const (
 	PathDirect   PathKind = "direct-udp"
 )
 
+// NormalizeTransportName standardizes transport aliases to canonical candidate names.
+func NormalizeTransportName(s string) string {
+	switch s {
+	case "direct", "udp", "direct-udp":
+		return string(PathDirect)
+	case "relay", "udprelay", "udp-relay":
+		return string(PathUDPRelay)
+	case "ws", "wss", "websocket":
+		return string(PathWSS)
+	case "auto", "none", "":
+		return ""
+	default:
+		return s
+	}
+}
+
 // PathStatus is a race-free scheduler snapshot. Loss is in [0,1].
 type PathStatus struct {
 	Name        string
@@ -445,6 +463,8 @@ type PathStatus struct {
 	// comparable sample yet", not "confirmed total loss" -- see
 	// Scheduler.score's doc comment.
 	DeliveryRatio float64
+	// Forced indicates whether this candidate is the user's manual selection.
+	Forced bool
 }
 
 type candidate struct {
@@ -466,6 +486,13 @@ type candidate struct {
 type Scheduler struct {
 	mu         sync.RWMutex
 	candidates map[string]*candidate
+
+	// forced holds the user-forced transport name, if any (e.g. "direct-udp",
+	// "udp-relay", "wss"). When set and the corresponding candidate is
+	// registered and Healthy, it is selected as primary. If the forced
+	// transport is unavailable or unhealthy, selectLocked falls back to
+	// automatic score-based candidate selection.
+	forced atomic.Pointer[string]
 
 	// v2 tuning knobs; defaulted at construction, overridable via
 	// SetV2Options. maxThroughputPenalty is deliberately not
@@ -695,6 +722,32 @@ func (s *Scheduler) Select() (primary, alternate string, duplicate bool) {
 // has a real signal for "can this candidate actually carry WireGuard
 // traffic," so probe-only RTT/loss is deliberately not enough to promote it
 // until that signal exists.
+// SetForced overrides automatic candidate selection with a specific transport
+// name ("wss", "udp-relay", "direct-udp", or "" / "auto" to clear). When a
+// forced candidate is set, it will be selected as primary as long as it is
+// registered and Healthy. If the forced transport is not registered or becomes
+// unhealthy, selectLocked falls back to automatic score-based candidate selection.
+func (s *Scheduler) SetForced(name string) {
+	norm := NormalizeTransportName(name)
+	if norm == "" {
+		s.forced.Store(nil)
+		return
+	}
+	s.forced.Store(&norm)
+}
+
+// Forced returns the user-forced transport name, or "" if automatic mode is active.
+func (s *Scheduler) Forced() string {
+	p := s.forced.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// selectLocked ranks healthy candidates and picks the primary, applying
+// user-forced selection when active and healthy, or falling back to
+// margin+dwell hysteresis and delivery-ratio terms in automatic mode.
 func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 	var paths []*candidate
 	for _, p := range s.candidates {
@@ -707,37 +760,48 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		s.primary.Store(nil)
 		return "", "", false
 	}
+
+	forcedName := s.Forced()
+	forcedCandidate := findCandidate(paths, forcedName)
+
+	var chosen *candidate
+	if forcedCandidate != nil {
+		// User explicitly forced this candidate, and it is currently registered and Healthy.
+		chosen = forcedCandidate
+	} else {
+		// Either no forced candidate, or the forced candidate is unavailable/unhealthy.
+		// Fall back to automatic score-based selection among healthy candidates.
+		cur := s.primary.Load()
+		var curName string
+		var curSince time.Time
+		if cur != nil {
+			curName, curSince = cur.name, cur.since
+		}
+		incumbent := findCandidate(paths, curName)
+
+		best := paths[0]
+		// v2 can actually measure a challenger's real WireGuard delivery (via
+		// mirrored-traffic sampling; see ReportDeliveryRatio). Until a
+		// challenger has at least one such sample, its score reflects only
+		// probe RTT/loss -- proof it can carry the tiny probe frames, not real
+		// traffic. A healthy incumbent must not be unseated on that alone.
+		if s.v2 && incumbent != nil && incumbent.Healthy && best != incumbent && best.DeliveryRatio < 0 {
+			best = incumbent
+		}
+		chosen = best
+		if incumbent != nil && incumbent != best &&
+			(best.DeliveryRatio >= 0 || incumbent.DeliveryRatio >= 0) {
+			now := time.Now()
+			if !(s.score(best)+s.switchMargin < s.score(incumbent) && now.Sub(curSince) >= s.minDwell) {
+				chosen = incumbent
+			}
+		}
+	}
+
 	cur := s.primary.Load()
 	var curName string
-	var curSince time.Time
 	if cur != nil {
-		curName, curSince = cur.name, cur.since
-	}
-	incumbent := findCandidate(paths, curName)
-
-	best := paths[0]
-	// v2 can actually measure a challenger's real WireGuard delivery (via
-	// mirrored-traffic sampling; see ReportDeliveryRatio). Until a
-	// challenger has at least one such sample, its score reflects only
-	// probe RTT/loss -- proof it can carry the tiny probe frames, not real
-	// traffic. A healthy incumbent must not be unseated on that alone, or a
-	// path that answers probes perfectly while silently dropping real
-	// WireGuard packets would steal primary from a working incumbent the
-	// instant it registers, exactly what a broken UDP-relay path did in
-	// production: probes stayed healthy while every real dial timed out.
-	// Once real traffic starts flowing, MirrorCandidate opportunistically
-	// samples this same challenger, so it still gets a fair, evidence-based
-	// shot at primary via the hysteresis check below.
-	if s.v2 && incumbent != nil && incumbent.Healthy && best != incumbent && best.DeliveryRatio < 0 {
-		best = incumbent
-	}
-	chosen := best
-	if incumbent != nil && incumbent != best &&
-		(best.DeliveryRatio >= 0 || incumbent.DeliveryRatio >= 0) {
-		now := time.Now()
-		if !(s.score(best)+s.switchMargin < s.score(incumbent) && now.Sub(curSince) >= s.minDwell) {
-			chosen = incumbent
-		}
+		curName = cur.name
 	}
 	if chosen.Name != curName {
 		s.primary.Store(&primaryState{name: chosen.Name, since: time.Now()})
@@ -780,10 +844,12 @@ func (s *Scheduler) Status() []PathStatus {
 	primary, alternate, dup := s.selectLocked()
 	_ = alternate
 	_ = dup
+	forced := s.Forced()
 	out := make([]PathStatus, 0, len(s.candidates))
 	for _, p := range s.candidates {
 		v := p.PathStatus
 		v.Primary = v.Name == primary
+		v.Forced = v.Name == forced
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

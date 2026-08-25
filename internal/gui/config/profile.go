@@ -43,6 +43,8 @@ type Profile struct {
 	BindAddress string `yaml:"bind_address"`
 	// IPVersion is "", "4", or "6"; see client.Options.IPVersion.
 	IPVersion string `yaml:"ip_version"`
+	// Transport is "auto", "direct-udp", "udp-relay", or "wss"; see client.Options.Transport.
+	Transport string `yaml:"transport"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

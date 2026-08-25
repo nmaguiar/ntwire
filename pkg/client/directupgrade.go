@@ -171,17 +171,6 @@ func (c *Connection) directUpgradeLoop() {
 				c.logUpgradeReason(&lastReason, relayReason, "UDP relay path not established; staying on WebSocket relay")
 				continue
 			}
-			c.mu.Lock()
-			multipath := c.multipath != nil
-			c.mu.Unlock()
-			if multipath {
-				// Direct UDP needs the server to register a client-specific
-				// direct path too. Do not replace the stable endpoint while
-				// this relay session is using multipath.
-				wait = c.upgradeTiming.retryInterval
-				c.logUpgradeReason(&lastReason, "relay offers no UDP relay tier", "UDP relay path not established; staying on WebSocket relay")
-				continue
-			}
 			// The relay offers no UDP-relay tier at all (not merely a
 			// failed attempt at this one) -- fall through to the existing
 			// full-escape attempt on this same tick. Without this, a relay
@@ -240,14 +229,6 @@ func (c *Connection) directUpgradeLoop() {
 				continue
 			}
 			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
-			c.mu.Lock()
-			multipath := c.multipath != nil
-			c.mu.Unlock()
-			if multipath {
-				wait = c.upgradeTiming.healthCheckInterval
-				lastReason = ""
-				continue
-			}
 			var directReason string
 			directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
 			if directCandidate != "" {
@@ -263,6 +244,19 @@ func (c *Connection) directUpgradeLoop() {
 			if healthy {
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
+				continue
+			}
+			c.mu.Lock()
+			multipath := c.multipath != nil
+			c.mu.Unlock()
+			if multipath {
+				nextState := nextTransportState(state, transportDirectLost, relayCandidate != "")
+				c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; multipath active", "candidate", directCandidate)
+				state = nextState
+				c.transitionTransport(state, "direct UDP path lost")
+				directCandidate = ""
+				nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+				wait = c.upgradeTiming.retryInterval
 				continue
 			}
 			// Revert exactly one rung: back to the UDP-relay path if it's
@@ -357,7 +351,10 @@ func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string)
 	multipath := c.multipath
 	c.mu.Unlock()
 	if multipath != nil {
-		if multipathPathHealthy(multipath, "udp-relay") {
+		if candidate != "" && multipathPathHealthy(multipath, candidate) {
+			return true, ""
+		}
+		if multipathPathHealthy(multipath, "direct-udp") || multipathPathHealthy(multipath, "udp-relay") {
 			return true, ""
 		}
 		return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)
@@ -447,16 +444,30 @@ func (c *Connection) tryDirectUpgrade(bind *wstransport.FilterBind, fallback str
 	}
 
 	primeAddr(bind, serverAddr)
-	if err := stack.UpdateEndpoint(serverPub, serverAddr); err != nil {
-		return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", serverAddr, err)
-	}
-	if !c.probeDirectPath() {
-		_ = stack.UpdateEndpoint(serverPub, fallback)
-		return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", serverAddr, c.upgradeTiming.probeTimeout)
-	}
-	if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != serverAddr {
-		_ = stack.UpdateEndpoint(serverPub, fallback)
-		return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", serverAddr)
+	c.mu.Lock()
+	multipath, hybrid := c.multipath, c.hybrid
+	c.mu.Unlock()
+	if multipath != nil {
+		ep, err := hybrid.UDP.ParseEndpoint(serverAddr)
+		if err != nil {
+			return "", fmt.Sprintf("failed to parse direct candidate endpoint %s: %v", serverAddr, err)
+		}
+		multipath.RegisterPath("direct-udp", wstransport.PathDirect, ep)
+		if !waitForMultipathPath(multipath, "direct-udp", c.upgradeTiming.probeTimeout, c.stop) {
+			return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", serverAddr, c.upgradeTiming.probeTimeout)
+		}
+	} else {
+		if err := stack.UpdateEndpoint(serverPub, serverAddr); err != nil {
+			return "", fmt.Sprintf("failed to seed the local WireGuard endpoint with candidate %s: %v", serverAddr, err)
+		}
+		if !c.probeDirectPath() {
+			_ = stack.UpdateEndpoint(serverPub, fallback)
+			return "", fmt.Sprintf("candidate %s did not respond within %s (likely blocked by NAT or a firewall)", serverAddr, c.upgradeTiming.probeTimeout)
+		}
+		if ep, found, err := stack.PeerEndpoint(serverPub); err != nil || !found || ep != serverAddr {
+			_ = stack.UpdateEndpoint(serverPub, fallback)
+			return "", fmt.Sprintf("candidate %s answered but a WebSocket packet already roamed the WireGuard peer back", serverAddr)
+		}
 	}
 	c.log.Info("upgraded to direct UDP", "server", c.DisplayName(), "candidate", serverAddr)
 	return serverAddr, ""
