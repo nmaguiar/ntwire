@@ -422,6 +422,32 @@ type RelayUDPRelease struct {
 	Token string `json:"token"`
 }
 
+// RelayUDPStats is one opaque UDP-relay session's cumulative forwarding
+// counters. It deliberately contains no packet payload, peer address, or
+// identity: the allocation token is already a bearer capability shared only
+// by the authenticated server and its relay. Counts are best-effort transport
+// diagnostics, not an acknowledgement protocol or a billing record.
+type RelayUDPStats struct {
+	Token                  string `json:"token"`
+	ClientPacketsReceived  uint64 `json:"client_packets_received"`
+	ClientBytesReceived    uint64 `json:"client_bytes_received"`
+	ServerPacketsForwarded uint64 `json:"server_packets_forwarded"`
+	ServerBytesForwarded   uint64 `json:"server_bytes_forwarded"`
+	ServerPacketsReceived  uint64 `json:"server_packets_received"`
+	ServerBytesReceived    uint64 `json:"server_bytes_received"`
+	ClientPacketsForwarded uint64 `json:"client_packets_forwarded"`
+	ClientBytesForwarded   uint64 `json:"client_bytes_forwarded"`
+}
+
+// RelayUDPStatsReport is pushed from a relay to the registered server over
+// their existing authenticated /v1/relay/control WebSocket. An absent report
+// is always safe to ignore: older relays do not send it and reports may be
+// dropped while the control connection is reconnecting.
+type RelayUDPStatsReport struct {
+	Type     string          `json:"type"` // "udp_stats"
+	Sessions []RelayUDPStats `json:"sessions"`
+}
+
 // RelayRegisterPayload is a byte-exact, length-prefixed encoding, structured
 // identically to SigningPayload, over [PublicKey, Name, Timestamp, Nonce].
 // It intentionally uses its own domain separator rather than reusing

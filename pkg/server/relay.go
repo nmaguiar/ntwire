@@ -122,6 +122,10 @@ type RelayAgent struct {
 	// RelayPool. They must not block; both run from the agent's Run goroutine.
 	OnRegistration func(protocol.RelayRegisterResponse)
 	OnDisconnected func()
+	// OnUDPStats receives the relay's best-effort, tenant-scoped UDP
+	// forwarding counters. It must return promptly: the control reader
+	// remains responsible for allocation responses and RelayOpen pushes.
+	OnUDPStats func(protocol.RelayUDPStatsReport)
 
 	mu           sync.Mutex
 	closed       bool
@@ -318,6 +322,13 @@ func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte) {
 		a.pendingMu.Unlock()
 		if ch != nil {
 			ch <- resp
+		}
+		return
+	}
+	if json.Unmarshal(data, &msg) == nil && msg.Type == "udp_stats" {
+		var report protocol.RelayUDPStatsReport
+		if json.Unmarshal(data, &report) == nil && len(report.Sessions) > 0 && a.OnUDPStats != nil {
+			a.OnUDPStats(report)
 		}
 		return
 	}

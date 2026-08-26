@@ -1,9 +1,33 @@
 package relay
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
+
+type fakeUDPBufferTuner struct {
+	read, write int
+	readErr     error
+	writeErr    error
+}
+
+func (f *fakeUDPBufferTuner) SetReadBuffer(n int) error  { f.read = n; return f.readErr }
+func (f *fakeUDPBufferTuner) SetWriteBuffer(n int) error { f.write = n; return f.writeErr }
+
+func TestTuneUDPBufferTuner_DefaultAndErrors(t *testing.T) {
+	tuner := &fakeUDPBufferTuner{}
+	if err := tuneUDPBufferTuner(tuner, 0); err != nil {
+		t.Fatal(err)
+	}
+	if tuner.read != defaultUDPBufferBytes || tuner.write != defaultUDPBufferBytes {
+		t.Fatalf("default buffers = read %d, write %d; want %d", tuner.read, tuner.write, defaultUDPBufferBytes)
+	}
+	tuner = &fakeUDPBufferTuner{writeErr: errors.New("clamped")}
+	if err := tuneUDPBufferTuner(tuner, 1024); err == nil || tuner.read != 1024 || tuner.write != 1024 {
+		t.Fatalf("write failure = %v, calls read=%d write=%d; want propagated failure after both requested", err, tuner.read, tuner.write)
+	}
+}
 
 // writeRelayConfig writes a minimal valid relay config with the given
 // domain and registration name substituted in, using a freshly generated

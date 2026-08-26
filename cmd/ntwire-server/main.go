@@ -257,6 +257,9 @@ func main() {
 		pool.OnUDPRelayAddr = func(agent *server.RelayAgent, addr string) {
 			s.EnableUDPRelay(agent, addr)
 		}
+		for _, agent := range pool.Agents() {
+			agent.OnUDPStats = s.RecordUDPRelayStats
+		}
 		pool.OnNativeWireGuard = s.EnableNativeWireGuardRelay
 		go pool.Run(context.Background())
 		defer pool.Close()

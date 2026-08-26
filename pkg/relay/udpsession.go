@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
 // ErrPoolExhausted is returned by udpSessionTable.Allocate when every port in
@@ -94,13 +96,41 @@ type udpRelaySession struct {
 	clientAddr  netip.AddrPort // locked once the client's bind frame arrives
 	clientBound bool
 
-	lastActivity atomic.Int64 // unix nanos; touched by any bind/keepalive/forwarded frame
+	lastActivity           atomic.Int64 // unix nanos; touched by any bind/keepalive/forwarded frame
+	clientPacketsReceived  atomic.Uint64
+	clientBytesReceived    atomic.Uint64
+	serverPacketsForwarded atomic.Uint64
+	serverBytesForwarded   atomic.Uint64
+	serverPacketsReceived  atomic.Uint64
+	serverBytesReceived    atomic.Uint64
+	clientPacketsForwarded atomic.Uint64
+	clientBytesForwarded   atomic.Uint64
 }
 
 func (s *udpRelaySession) touch() { s.lastActivity.Store(time.Now().UnixNano()) }
 
 func (s *udpRelaySession) idleFor() time.Duration {
 	return time.Since(time.Unix(0, s.lastActivity.Load()))
+}
+
+func (s *udpRelaySession) clientReceived(n int) {
+	s.clientPacketsReceived.Add(1)
+	s.clientBytesReceived.Add(uint64(n))
+}
+
+func (s *udpRelaySession) serverForwarded(n int) {
+	s.serverPacketsForwarded.Add(1)
+	s.serverBytesForwarded.Add(uint64(n))
+}
+
+func (s *udpRelaySession) serverReceived(n int) {
+	s.serverPacketsReceived.Add(1)
+	s.serverBytesReceived.Add(uint64(n))
+}
+
+func (s *udpRelaySession) clientForwarded(n int) {
+	s.clientPacketsForwarded.Add(1)
+	s.clientBytesForwarded.Add(uint64(n))
 }
 
 // legs returns the session's current bind state under its own lock, for
@@ -238,6 +268,32 @@ func (t *udpSessionTable) sessionForPort(port uint16) (*udpRelaySession, bool) {
 	defer t.mu.Unlock()
 	sess, ok := t.byPort[port]
 	return sess, ok
+}
+
+// StatsForTenant returns a bounded snapshot for sessions owned by tenant.
+// It is called only from the relay's authenticated control loop, so allocation
+// tokens never cross tenant boundaries or reach an unauthenticated listener.
+func (t *udpSessionTable) StatsForTenant(tenant string) []protocol.RelayUDPStats {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]protocol.RelayUDPStats, 0, t.tenantN[tenant])
+	for _, s := range t.byToken {
+		if s.tenant != tenant {
+			continue
+		}
+		out = append(out, protocol.RelayUDPStats{
+			Token:                  s.token,
+			ClientPacketsReceived:  s.clientPacketsReceived.Load(),
+			ClientBytesReceived:    s.clientBytesReceived.Load(),
+			ServerPacketsForwarded: s.serverPacketsForwarded.Load(),
+			ServerBytesForwarded:   s.serverBytesForwarded.Load(),
+			ServerPacketsReceived:  s.serverPacketsReceived.Load(),
+			ServerBytesReceived:    s.serverBytesReceived.Load(),
+			ClientPacketsForwarded: s.clientPacketsForwarded.Load(),
+			ClientBytesForwarded:   s.clientBytesForwarded.Load(),
+		})
+	}
+	return out
 }
 
 // Release tears down the session identified by token: both index entries are

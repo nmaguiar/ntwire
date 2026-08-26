@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+func TestUDPSessionStatsForTenant_IsolatedAndCumulative(t *testing.T) {
+	one := &udpRelaySession{token: "one", tenant: "alpha"}
+	two := &udpRelaySession{token: "two", tenant: "beta"}
+	one.clientReceived(11)
+	one.serverForwarded(11)
+	one.serverReceived(17)
+	one.clientForwarded(17)
+	two.clientReceived(23)
+	sessions := &udpSessionTable{byToken: map[string]*udpRelaySession{"one": one, "two": two}, tenantN: map[string]int{"alpha": 1, "beta": 1}}
+	got := sessions.StatsForTenant("alpha")
+	if len(got) != 1 {
+		t.Fatalf("StatsForTenant(alpha) length = %d, want 1", len(got))
+	}
+	if got[0].Token != "one" || got[0].ClientPacketsReceived != 1 || got[0].ClientBytesReceived != 11 || got[0].ServerPacketsForwarded != 1 || got[0].ServerBytesForwarded != 11 || got[0].ServerPacketsReceived != 1 || got[0].ServerBytesReceived != 17 || got[0].ClientPacketsForwarded != 1 || got[0].ClientBytesForwarded != 17 {
+		t.Fatalf("StatsForTenant(alpha) = %+v, want alpha's complete cumulative counters", got[0])
+	}
+}
+
 // newTestPortAllocator builds a portAllocator over n loopback UDP sockets,
 // mirroring how Relay.Start binds listen.udp_relay_ports eagerly at startup.
 func newTestPortAllocator(t *testing.T, n int) *portAllocator {

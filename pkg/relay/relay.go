@@ -13,6 +13,35 @@ import (
 	"time"
 )
 
+const defaultUDPBufferBytes = 4 << 20
+
+type udpBufferTuner interface {
+	SetReadBuffer(bytes int) error
+	SetWriteBuffer(bytes int) error
+}
+
+// tuneUDPBuffers asks the kernel for equal read/write capacity. It is
+// deliberately best effort: systems commonly clamp socket buffers to an
+// administrator-controlled ceiling, and losing a performance optimisation
+// must never prevent a relay from starting.
+func tuneUDPBuffers(pc net.PacketConn, requested int) error {
+	tuner, ok := pc.(udpBufferTuner)
+	if !ok {
+		return nil
+	}
+	return tuneUDPBufferTuner(tuner, requested)
+}
+
+func tuneUDPBufferTuner(tuner udpBufferTuner, requested int) error {
+	if requested <= 0 {
+		requested = defaultUDPBufferBytes
+	}
+	if err := tuner.SetReadBuffer(requested); err != nil {
+		return err
+	}
+	return tuner.SetWriteBuffer(requested)
+}
+
 // Relay wires the registry, agents control/data endpoints, and the public
 // TLS-passthrough listener into one runnable unit.
 type Relay struct {
@@ -127,6 +156,9 @@ func (r *Relay) Start() error {
 			abortAll()
 			return fmt.Errorf("listen.reflect: %w", err)
 		}
+		if err := tuneUDPBuffers(reflectLn, r.cfg.Listen.UDPBufferBytes); err != nil {
+			r.log.Warn("could not tune UDP reflector socket buffers", "error", err)
+		}
 		reflectAddr = reflectLn.LocalAddr().String()
 	}
 
@@ -142,6 +174,9 @@ func (r *Relay) Start() error {
 			abortAll()
 			return fmt.Errorf("listen.udp_relay: %w", err)
 		}
+		if err := tuneUDPBuffers(udpRelayLn, r.cfg.Listen.UDPBufferBytes); err != nil {
+			r.log.Warn("could not tune UDP relay socket buffers", "error", err)
+		}
 		udpRelayAddr = udpRelayLn.LocalAddr().String()
 		udpRelayPool = make(map[uint16]net.PacketConn, int(maxPort-minPort)+1)
 		for port := minPort; ; port++ {
@@ -154,6 +189,9 @@ func (r *Relay) Start() error {
 			if perr != nil {
 				abortAll()
 				return fmt.Errorf("listen.udp_relay_ports: binding port %d: %w", port, perr)
+			}
+			if err := tuneUDPBuffers(pc, r.cfg.Listen.UDPBufferBytes); err != nil {
+				r.log.Warn("could not tune UDP relay pool socket buffers", "port", port, "error", err)
 			}
 			udpRelayPool[port] = pc
 			if port == maxPort {
@@ -174,6 +212,9 @@ func (r *Relay) Start() error {
 		if e != nil {
 			abortAll()
 			return fmt.Errorf("registration %q native_wireguard.listen: %w", reg.Name, e)
+		}
+		if err := tuneUDPBuffers(pc, r.cfg.Listen.UDPBufferBytes); err != nil {
+			r.log.Warn("could not tune native WireGuard relay socket buffers", "tenant", reg.Name, "error", err)
 		}
 		advertise, e := nativeWGAdvertiseAddr(reg.Name, r.cfg.Domain, reg.NativeWireGuard.Listen, pc.LocalAddr())
 		if e != nil {

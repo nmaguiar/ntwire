@@ -139,12 +139,15 @@ func (d *datagramRelay) forwardFromClient(b []byte, from netip.AddrPort) {
 		// log-amplification vector, so this stays silent.
 		return
 	}
+	sess.clientReceived(len(b))
 	serverAddr, serverBound, _, _ := sess.legs()
 	if !serverBound {
 		return // half-bound session: drop rather than buffer
 	}
 	sess.touch()
-	_, _ = sess.serverConn.WriteTo(b, net.UDPAddrFromAddrPort(serverAddr))
+	if n, err := sess.serverConn.WriteTo(b, net.UDPAddrFromAddrPort(serverAddr)); err == nil && n == len(b) {
+		sess.serverForwarded(n)
+	}
 }
 
 // handleServerDatagram processes one datagram received on the pooled socket
@@ -200,6 +203,9 @@ func (d *datagramRelay) forwardFromServer(sess *udpRelaySession, b []byte, from 
 		// permission model.
 		return
 	}
+	sess.serverReceived(len(b))
 	sess.touch()
-	_, _ = d.clientConn.WriteTo(b, net.UDPAddrFromAddrPort(clientAddr))
+	if n, err := d.clientConn.WriteTo(b, net.UDPAddrFromAddrPort(clientAddr)); err == nil && n == len(b) {
+		sess.clientForwarded(n)
+	}
 }

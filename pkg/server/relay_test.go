@@ -99,6 +99,19 @@ func TestRelayPoolKeepsPreferredMemberStableWhenAnotherRegisters(t *testing.T) {
 	}
 }
 
+func TestRelayAgentHandleControlMessage_DeliversUDPStats(t *testing.T) {
+	var got protocol.RelayUDPStatsReport
+	a := &RelayAgent{OnUDPStats: func(report protocol.RelayUDPStatsReport) { got = report }}
+	b, err := json.Marshal(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: []protocol.RelayUDPStats{{Token: "token", ClientBytesReceived: 12}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.handleControlMessage(context.Background(), b)
+	if got.Type != "udp_stats" || len(got.Sessions) != 1 || got.Sessions[0].Token != "token" || got.Sessions[0].ClientBytesReceived != 12 {
+		t.Fatalf("OnUDPStats got %+v, want decoded report", got)
+	}
+}
+
 func TestRelayConn_DoesNotForwardHTTPHijackDeadline(t *testing.T) {
 	underlying := &fakeNetConn{}
 	c := &relayConn{Conn: underlying}

@@ -54,6 +54,7 @@ type udpRelaySessionState struct {
 	token      string
 	serverAddr string
 	stop       chan struct{}
+	stats      protocol.RelayUDPStats
 }
 
 // EnableUDPRelay wires the server's UDP-relay forwarding tier for
@@ -99,6 +100,33 @@ func (u *udpRelay) stopAll() {
 	u.mu.Unlock()
 	for _, st := range sessions {
 		close(st.stop)
+	}
+}
+
+// recordStats associates a relay-reported snapshot only with a token this
+// server allocated. Reports are cumulative and best effort, so retaining the
+// latest snapshot is enough for diagnostics and cannot turn a missed control
+// message into an apparent packet loss event.
+func (u *udpRelay) recordStats(report protocol.RelayUDPStatsReport) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	for _, sample := range report.Sessions {
+		for _, st := range u.sessions {
+			if st.token == sample.Token {
+				st.stats = sample
+				break
+			}
+		}
+	}
+}
+
+// RecordUDPRelayStats accepts a report from whichever relay agent is
+// currently preferred. Unknown or stale tokens are ignored deliberately:
+// a relay reconnect can race an allocation replacement, and telemetry must
+// never resurrect or alter a data-plane session.
+func (s *Server) RecordUDPRelayStats(report protocol.RelayUDPStatsReport) {
+	if u := s.udpr.Load(); u != nil {
+		u.recordStats(report)
 	}
 }
 

@@ -69,6 +69,20 @@ func newTestUDPRelay(t *testing.T, fa *fakeUDPAllocator) *udpRelay {
 	return &udpRelay{bind: bind, stack: stack, agent: fa, relayAddr: "127.0.0.1:1", log: slog.Default(), sessions: map[string]*udpRelaySessionState{}}
 }
 
+func TestUDPRelayRecordStats_IgnoresUnknownToken(t *testing.T) {
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{
+		"client": {token: "known"},
+	}}
+	u.recordStats(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: []protocol.RelayUDPStats{
+		{Token: "unknown", ClientBytesReceived: 99},
+		{Token: "known", ClientBytesReceived: 42, ServerBytesForwarded: 40},
+	}})
+	got := u.sessions["client"].stats
+	if got.Token != "known" || got.ClientBytesReceived != 42 || got.ServerBytesForwarded != 40 {
+		t.Fatalf("recorded stats = %+v, want only the known token's snapshot", got)
+	}
+}
+
 func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 	fa := &fakeUDPAllocator{token: "tok-1", serverAddr: "127.0.0.1:9999"}
 	u := newTestUDPRelay(t, fa)
