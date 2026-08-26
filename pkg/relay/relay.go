@@ -32,6 +32,39 @@ func tuneUDPBuffers(pc net.PacketConn, requested int) error {
 	return tuneUDPBufferTuner(tuner, requested)
 }
 
+// udpBufferStatus is the accepted kernel capacity of one UDP socket. The
+// requested value is deliberately separate: kernels may clamp it (and Linux
+// commonly reports its accounting value rather than the exact requested
+// value), so operators need both values to diagnose sustained drops.
+type udpBufferStatus struct {
+	Requested int
+	Read      int
+	Write     int
+}
+
+func udpBufferStatusFor(pc net.PacketConn, requested int) (udpBufferStatus, error) {
+	if requested <= 0 {
+		requested = defaultUDPBufferBytes
+	}
+	read, write, err := socketBufferBytes(pc)
+	if err != nil {
+		return udpBufferStatus{Requested: requested}, err
+	}
+	return udpBufferStatus{Requested: requested, Read: read, Write: write}, nil
+}
+
+// logUDPBufferStatus records the effective values only after a successful
+// tuning request. Failure to inspect them is intentionally non-fatal: socket
+// tuning is an optimisation, not a condition for forwarding opaque traffic.
+func (r *Relay) logUDPBufferStatus(socket string, pc net.PacketConn) {
+	status, err := udpBufferStatusFor(pc, r.cfg.Listen.UDPBufferBytes)
+	if err != nil {
+		r.log.Debug("could not inspect UDP socket buffers", "socket", socket, "error", err)
+		return
+	}
+	r.log.Info("UDP socket buffers configured", "socket", socket, "requested_bytes", status.Requested, "read_buffer_bytes", status.Read, "write_buffer_bytes", status.Write)
+}
+
 func tuneUDPBufferTuner(tuner udpBufferTuner, requested int) error {
 	if requested <= 0 {
 		requested = defaultUDPBufferBytes
@@ -159,6 +192,7 @@ func (r *Relay) Start() error {
 		if err := tuneUDPBuffers(reflectLn, r.cfg.Listen.UDPBufferBytes); err != nil {
 			r.log.Warn("could not tune UDP reflector socket buffers", "error", err)
 		}
+		r.logUDPBufferStatus("reflector", reflectLn)
 		reflectAddr = reflectLn.LocalAddr().String()
 	}
 
@@ -177,6 +211,7 @@ func (r *Relay) Start() error {
 		if err := tuneUDPBuffers(udpRelayLn, r.cfg.Listen.UDPBufferBytes); err != nil {
 			r.log.Warn("could not tune UDP relay socket buffers", "error", err)
 		}
+		r.logUDPBufferStatus("udp-relay-client", udpRelayLn)
 		udpRelayAddr = udpRelayLn.LocalAddr().String()
 		udpRelayPool = make(map[uint16]net.PacketConn, int(maxPort-minPort)+1)
 		for port := minPort; ; port++ {
@@ -193,6 +228,7 @@ func (r *Relay) Start() error {
 			if err := tuneUDPBuffers(pc, r.cfg.Listen.UDPBufferBytes); err != nil {
 				r.log.Warn("could not tune UDP relay pool socket buffers", "port", port, "error", err)
 			}
+			r.logUDPBufferStatus("udp-relay-server", pc)
 			udpRelayPool[port] = pc
 			if port == maxPort {
 				break
@@ -216,6 +252,7 @@ func (r *Relay) Start() error {
 		if err := tuneUDPBuffers(pc, r.cfg.Listen.UDPBufferBytes); err != nil {
 			r.log.Warn("could not tune native WireGuard relay socket buffers", "tenant", reg.Name, "error", err)
 		}
+		r.logUDPBufferStatus("native-wireguard", pc)
 		advertise, e := nativeWGAdvertiseAddr(reg.Name, r.cfg.Domain, reg.NativeWireGuard.Listen, pc.LocalAddr())
 		if e != nil {
 			_ = pc.Close()

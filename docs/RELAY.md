@@ -146,8 +146,9 @@ report has arrived yet.
 `listen.udp_buffer_bytes` requests the kernel read and write buffer size for
 the relay's reflector, shared client-facing UDP socket, per-session pool, and
 native-WireGuard relay sockets. It defaults to 4 MiB. The operating system may
-clamp the request; ntwire logs the failure and continues, so operators should
-inspect host UDP buffer limits when sustained high-rate traffic still drops.
+clamp the request; ntwire logs the requested and kernel-accepted read/write
+values for each relay UDP socket and continues. This makes clamping visible
+without turning a performance optimisation into a startup failure.
 
 ## Running a relay
 

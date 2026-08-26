@@ -2,6 +2,7 @@ package relay
 
 import (
 	"errors"
+	"net"
 	"os"
 	"testing"
 )
@@ -26,6 +27,24 @@ func TestTuneUDPBufferTuner_DefaultAndErrors(t *testing.T) {
 	tuner = &fakeUDPBufferTuner{writeErr: errors.New("clamped")}
 	if err := tuneUDPBufferTuner(tuner, 1024); err == nil || tuner.read != 1024 || tuner.write != 1024 {
 		t.Fatalf("write failure = %v, calls read=%d write=%d; want propagated failure after both requested", err, tuner.read, tuner.write)
+	}
+}
+
+func TestUDPBufferStatusForReportsKernelAcceptedValues(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if err := tuneUDPBuffers(pc, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	got, err := udpBufferStatusFor(pc, 64<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Requested != 64<<10 || got.Read <= 0 || got.Write <= 0 {
+		t.Fatalf("udpBufferStatusFor() = %+v, want requested and accepted read/write capacities", got)
 	}
 }
 
