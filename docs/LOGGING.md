@@ -79,7 +79,7 @@ Credentials, bearer tokens, private keys, and OAuth artifacts are never
 included in these fields.
 
 Clients emit `event=transport_transition` when their selected data route
-changes between `WSS through relay`, `UDP via relay`, and `UDP direct via
+changes between `WSS`, `UDP via relay`, and `UDP direct via
 relay reflector`. A control-plane renewal/reconnect preserves the selected route; it is not a
 transport transition. Shutdown changes the local route to `unknown` after
 stopping the data plane.

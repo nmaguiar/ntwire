@@ -26,6 +26,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 func TestSelectTransport(t *testing.T) {
@@ -155,7 +156,7 @@ func TestInitialTransport(t *testing.T) {
 	}{
 		{"direct UDP", false, "vpn.example:51820", "UDP direct"},
 		{"WebSocket fallback", true, "vpn.example:51820", "WSS fallback"},
-		{"relay WebSocket", true, "", "WSS through relay"},
+		{"WebSocket without direct UDP", true, "", "WSS"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,6 +164,12 @@ func TestInitialTransport(t *testing.T) {
 				t.Fatalf("initialTransport(%t, %q) = %q, want %q", tc.useWS, tc.udp, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestMultipathDescriptionDoesNotAssumeRelayForWSS(t *testing.T) {
+	if got := multipathDescription(string(wstransport.PathWSS)); got != "WSS" {
+		t.Fatalf("multipathDescription(WSS) = %q, want route-neutral WSS label", got)
 	}
 }
 
@@ -936,7 +943,7 @@ func TestStateReportsTypedGUIConnectionState(t *testing.T) {
 	if got.Authentication != (AuthenticationState{Method: "oidc", Issuer: "example"}) {
 		t.Fatalf("Authentication = %+v", got.Authentication)
 	}
-	if got.Transport.Mode != TransportWebSocketRelay || got.Transport.Description != "WSS through relay" || got.Transport.Reason == "" {
+	if got.Transport.Mode != TransportWebSocketRelay || got.Transport.Description != "WSS" || got.Transport.Reason == "" {
 		t.Fatalf("Transport = %+v", got.Transport)
 	}
 	if got.Reconnect.Attempts != 2 || !got.Reconnect.Reconnecting || got.Reconnect.LastError == "" || got.Reconnect.RetryAt == nil {

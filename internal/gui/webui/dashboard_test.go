@@ -46,3 +46,25 @@ func TestGUISettingsMessageResetAndDismissControls(t *testing.T) {
 		}
 	}
 }
+
+func TestProfileFailureHasClearErrorControl(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"snap.state === 'failed' && snap.error",
+		"✖️ Clear error",
+		"/clear-error",
+		"Dismiss this completed connection error",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("GUI settings page is missing clear-error control %q", want)
+		}
+	}
+}

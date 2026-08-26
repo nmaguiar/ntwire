@@ -166,6 +166,13 @@ tunnels:
     local_port: 58080                   # loopback port ntwire connect prefers for this tunnel's local listener; optional, falls back to any free port if occupied
     destination_policy: mobile          # optional; names a destination_policies entry above, ANDed with any native-peer policy; see DESTINATION-POLICIES.md
     local_host: ""                      # loopback address ntwire connect prefers for this tunnel's local listener, e.g. "127.70.0.1"; optional, must be 127.0.0.0/8 or ::1, falls back to 127.0.0.1 if it can't be bound -- see "Tunnel local address and port" below
+
+  - name: syslog-udp
+    target: "[2001:db8::53]:514"        # IPv4, bracketed IPv6, and DNS hostnames are accepted
+    protocol: udp                         # tcp is the default when omitted
+    virtual_port: 1514
+    local_port: 1514
+    udp_idle_timeout: 2m                 # optional; inactive source mappings expire after 2m
     docs_url: https://wiki/reports      # absolute http(s) link offered as "See more" in the client status UI; optional
     instructions: |                     # Markdown setup guidance shown in the client status UI; optional, see "Tunnel instructions" below
       Fetch the latest report:
@@ -191,6 +198,9 @@ tunnels:
       asn_filters: []                   # destination ASN allow-list (IPv4 only), e.g. [15169]
       reverse_filters: false            # invert the above from an allow-list into a deny-list
       dns_timeout: 10s                  # timeout for resolving SOCKS5 domain requests
+
+      udp_idle_timeout: 2m              # inactive SOCKS5 UDP ASSOCIATE flows (when enabled)
+      upstream: socks5h://proxy.example:1080 # optional TCP CONNECT pass-through via an external SOCKS5 proxy
       allow_all: false                  # required to permit every destination when no filters above are set
       allow_bind: false                 # explicitly allow SOCKS4/5 BIND (opens a temporary inbound server listener)
 log:

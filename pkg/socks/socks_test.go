@@ -214,6 +214,31 @@ func TestSocks5UnsupportedCommandRejected(t *testing.T) {
 	})
 }
 
+func TestSocks5UDPAssociateUsesHostRelay(t *testing.T) {
+	called := false
+	s, err := New(Config{Filter: FilterConfig{AllowAll: true}, UDPAssociate: func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool) {
+		called = true
+		return &UDPAssociation{Addr: netip.MustParseAddr("127.0.0.1"), Port: 9999}, true
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	go s.ServeConn(context.Background(), server)
+	_, _ = client.Write([]byte{5, 1, 0})
+	readN(t, client, 2, nil)
+	_, _ = client.Write([]byte{5, socks5CmdUDP, 0, socks5AtypIPv4, 0, 0, 0, 0, 0, 0})
+	readN(t, client, 10, func(b []byte) {
+		if b[1] != socks5RepSucceeded || b[8] != 39 || b[9] != 15 {
+			t.Fatalf("reply=%v", b)
+		}
+	})
+	if !called {
+		t.Fatal("UDP association hook was not called")
+	}
+}
+
 // readSocks5Reply reads a full VER/REP/RSV/ATYP/ADDR/PORT reply, sizing the
 // address field from ATYP (4 bytes for IPv4, 16 for IPv6) rather than
 // assuming a fixed 10-byte frame -- net.Listen("tcp", ":0") is dual-stack on

@@ -291,6 +291,12 @@ throughout this document.
    curl --socks5-hostname 100.64.0.1:11080 https://internal.example/
    ```
    See [CONFIGURATION.md#socks-proxy-tunnels](CONFIGURATION.md#socks-proxy-tunnels).
+
+3. **UDP tunnel** (`protocol: udp`) — send datagrams to the displayed local
+   `local_host:local_port`. ntwire keeps an isolated upstream mapping for each
+   local source address and port; mappings expire after `udp_idle_timeout`
+   (two minutes by default). Targets use ordinary `host:port` syntax; IPv6
+   literals must be bracketed, for example `[2001:db8::53]:514`.
 3. **Which targets a peer can actually reach** — an official client has no
    ntwire session, so the `allow:` grant list on a tunnel is never consulted
    for it. Instead, a native peer reaches only the tunnels named in its own

@@ -220,6 +220,12 @@ destination the tunnel's `socks:` filters permit, and the server itself, not
 just the client, initiates each of those outbound connections and DNS
 resolutions. Weigh that before granting one broadly:
 
+Fixed `protocol: udp` tunnels are narrower: each source IP/port receives its
+own connected upstream flow, replies are sent only to that source, and idle
+flows expire after two minutes by default. The target is resolved, authorized,
+and then dialled as that exact IP, so policy evaluation cannot be bypassed by
+DNS rebinding.
+
 - **The default denies everything, not everything.** socksd (the filter set
   this re-implements) defaults to allowing every destination when no filters
   are configured; ntwire deliberately does not, because that default would
@@ -241,6 +247,11 @@ resolutions. Weigh that before granting one broadly:
   resolver and `socks.dns_timeout`, before `socks.domain_filters` is
   matched against the requested hostname and `socks.filters`/`asn_filters`
   against the resolved IP; a client cannot force resolution elsewhere.
+- **UDP ASSOCIATE is control-session-bound.** ntwire creates one private
+  virtual UDP listener per SOCKS5 control connection, accepts packets only
+  from that connection's authenticated tunnel IP, rejects fragmented SOCKS
+  datagrams, and expires inactive destination flows. `socks.upstream` applies
+  to TCP CONNECT only; UDP is never silently sent through another proxy.
 - **BIND is independently opt-in and opens a real, temporary *inbound*
   listener on the server host.** Set `socks.allow_bind: true` only when this
   legacy behavior is required; it remains disabled even when SOCKS CONNECT or
@@ -488,4 +499,3 @@ The in-tunnel WireGuard web portal:
   * `Referrer-Policy: no-referrer`
   * `Strict-Transport-Security: max-age=31536000; includeSubDomains`
   * `Cache-Control: no-store, no-cache, must-revalidate`
-

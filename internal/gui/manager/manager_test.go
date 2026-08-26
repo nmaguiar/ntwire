@@ -213,7 +213,17 @@ func TestConnectWithEncryptedKeyCancelFails(t *testing.T) {
 	if err := m.AnswerPassphrase(p.ID, "", true); err != nil {
 		t.Fatalf("AnswerPassphrase() error = %v", err)
 	}
-	waitForState(t, m, p.ID, StateFailed, 5*time.Second)
+	snap := waitForState(t, m, p.ID, StateFailed, 5*time.Second)
+	if snap.Err != "passphrase entry canceled" {
+		t.Fatalf("Snapshot().Err = %q, want cancellation error", snap.Err)
+	}
+	if err := m.ClearError(p.ID); err != nil {
+		t.Fatalf("ClearError() error = %v", err)
+	}
+	snap = waitForState(t, m, p.ID, StateIdle, 5*time.Second)
+	if snap.Err != "" {
+		t.Errorf("Snapshot().Err = %q after ClearError(), want empty", snap.Err)
+	}
 }
 
 func TestPortCollisionRejectsSecondProfileWithoutCallingConnector(t *testing.T) {
