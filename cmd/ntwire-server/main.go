@@ -15,6 +15,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -259,6 +260,20 @@ func main() {
 		pool.OnNativeWireGuard = s.EnableNativeWireGuardRelay
 		go pool.Run(context.Background())
 		defer pool.Close()
+		if c.Relay.DirectClients {
+			directListener, listenErr := net.Listen("tcp", c.Listen.HTTPS)
+			if listenErr != nil {
+				slog.Error("direct client listener error", "https", c.Listen.HTTPS, "error", listenErr)
+				os.Exit(2)
+			}
+			defer directListener.Close()
+			go func() {
+				slog.Info("ntwire server listening for direct clients alongside relay", "https", c.Listen.HTTPS)
+				if serveErr := h.ServeTLS(directListener, "", ""); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) && !errors.Is(serveErr, net.ErrClosed) {
+					slog.Error("direct client listener stopped", "error", serveErr)
+				}
+			}()
+		}
 		slog.Info("ntwire server relaying", "relay_url", c.Relay.URL, "relay_endpoints", len(c.Relay.Endpoints), "relay_name", c.Relay.Name, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
 		if err = h.ServeTLS(pool.Listener(), "", ""); err != nil {
 			slog.Error("server stopped", "error", err)

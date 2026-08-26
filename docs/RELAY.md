@@ -165,8 +165,8 @@ level); see [LOGGING.md](LOGGING.md) for the full reference.
 ## Pointing a server at a relay
 
 On the server side, add a `relay:` block (see the full option list in
-[CONFIGURATION.md](CONFIGURATION.md)) and leave
-`listen.https` alone — it is simply never bound in relay mode:
+[CONFIGURATION.md](CONFIGURATION.md)). By default, `listen.https` is never
+bound in relay mode:
 
 ```yaml
 relay:
@@ -184,6 +184,26 @@ Clients connect exactly as before, using the wildcard hostname:
 ```sh
 ntwire connect https://home.relay.example.com
 ```
+
+### Also accepting direct ntwire clients
+
+Set `relay.direct_clients: true` to serve the same authenticated HTTPS/WebSocket
+handler on `listen.https` as well as through the relay. This is opt-in: it
+exposes an inbound listener, and the configured TLS certificate must cover the
+direct hostname.
+
+```yaml
+listen:
+  https: ":8443"
+relay:
+  enabled: true
+  direct_clients: true
+```
+
+Relay clients continue to use the relay tenant hostname; direct clients use
+the server's own reachable hostname and port. This only adds direct HTTPS/WSS
+ingress. Direct UDP promotion still requires `relay.advertise_direct: true`
+and a reachable WireGuard UDP path.
 
 ## High availability and recovery
 

@@ -340,8 +340,8 @@ with no inbound connectivity be reachable at all.
      - name: home
        public_key: "ssh-ed25519 AAAA... admin@laptop"
    ```
-3. Point the server at the relay and leave `listen.https` alone — it's never
-   bound in relay mode:
+3. Point the server at the relay. By default, `listen.https` is never bound
+   in relay mode:
    ```yaml
    # ntwire-server.yaml
    relay:
@@ -354,6 +354,11 @@ with no inbound connectivity be reachable at all.
    ```
 4. Start (or restart) both processes in either order — the server dials out
    and registers; no inbound port is needed on the server's network.
+
+To accept direct `ntwire` clients as well, set `relay.direct_clients: true`
+and configure `listen.https` plus a TLS certificate for the server's direct
+hostname. This is optional and default-off; relay clients keep using the
+tenant hostname.
 
 For an active-active relay pool, high-availability recovery behavior, and
 Kubernetes deployment of either side, see
