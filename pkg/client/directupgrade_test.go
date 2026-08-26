@@ -341,7 +341,7 @@ func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
 // can succeed over WSS while a newly added UDP relay candidate is still dead;
 // that must not be treated as a UDP upgrade.
 func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
-	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.V2Options{})
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
 	defer multipath.Close()
 
 	now := time.Now()

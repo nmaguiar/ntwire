@@ -482,6 +482,16 @@ on the same socket today, but they are the same byte in the same
 magic-prefixed control-frame format, so this is a fragile invariant to
 maintain by convention rather than by construction.
 
+Multipath peers that negotiate `path-mtu-v1` additionally use frame `9`
+(`FramePathMTUProbe`) and frame `10` (`FramePathMTUAck`) on an already
+registered candidate. A probe contains a random 12-byte nonce, its requested
+UDP payload size, and zero padding so the complete control datagram is exactly
+1200, 1400, or 1500 bytes. The receiver returns only the nonce and requested
+size, so the exchange cannot amplify traffic. Both ends probe independently
+only after the ordinary health probe succeeds and cache the largest matching
+ack as diagnostic `datagram_mtu` path status. No packet sizing is changed by
+this version of the feature: WireGuard retains the safe 1420-byte tunnel MTU.
+
 A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
 and gets back `FrameReflectResponse` with its own address as the relay
 observed it. Once both sides of a connection know each other's candidate —

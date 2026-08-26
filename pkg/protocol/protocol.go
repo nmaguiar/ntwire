@@ -26,6 +26,12 @@ const CapabilityMultipathV1 = "multipath-v1"
 // to ignore).
 const CapabilityMultipathV2 = "multipath-v2"
 
+// CapabilityPathMTUV1 opts a multipath peer into conservative, authenticated
+// path-MTU probes. It is separate from multipath-v2 because an older v2 peer
+// may safely ignore unknown control frames, but must never be made to spend
+// bandwidth on them without explicitly opting in.
+const CapabilityPathMTUV1 = "path-mtu-v1"
+
 // CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
 // forwarding tier used by unmodified official clients.
 const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"

@@ -9,18 +9,35 @@ import (
 )
 
 func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
-	b, err := json.Marshal(PathStatus{Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1, DeliveryRatio: 0.9})
+	b, err := json.Marshal(PathStatus{Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1, DeliveryRatio: 0.9, ThroughputBytesPerSec: 1234.5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(b)
-	for _, want := range []string{`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`, `"delivery_ratio":0.9`} {
+	for _, want := range []string{`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`, `"delivery_ratio":0.9`, `"throughput_bytes_per_sec":1234.5`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Marshal() = %s, missing %s", got, want)
 		}
 	}
 	if strings.Contains(got, `"Name"`) || strings.Contains(got, `"RTT"`) {
 		t.Errorf("Marshal() = %s, contains Go field names", got)
+	}
+}
+
+func TestReportThroughputSmoothsPassiveSamples(t *testing.T) {
+	s := NewScheduler()
+	s.Register("udp-relay", PathUDPRelay)
+	s.ReportThroughput("udp-relay", 1_000, 1_000)
+	if got := s.Status()[0].ThroughputBytesPerSec; got != 1_000 {
+		t.Fatalf("first throughput = %v, want 1000", got)
+	}
+	s.ReportThroughput("udp-relay", 3_000, 1_000)
+	if got, want := s.Status()[0].ThroughputBytesPerSec, 1_250.0; got != want {
+		t.Fatalf("smoothed throughput = %v, want %v", got, want)
+	}
+	s.ReportThroughput("udp-relay", 0, 1_000)
+	if got, want := s.Status()[0].ThroughputBytesPerSec, 1_250.0; got != want {
+		t.Fatalf("zero-byte sample changed throughput to %v, want %v", got, want)
 	}
 }
 
@@ -144,6 +161,36 @@ func TestPathProbeFrameClearsValidDatagramFloor(t *testing.T) {
 	frame := EncodeControlFrame(FramePathProbe, make([]byte, pathProbeSize))
 	if !ValidDatagram(frame) {
 		t.Fatalf("encoded probe frame (%d bytes) does not clear ValidDatagram's floor", len(frame))
+	}
+}
+
+func TestPathMTUProbeBoundsAndRoundTrip(t *testing.T) {
+	var nonce [pathProbeSize]byte
+	probe := EncodePathMTUProbe(nonce, 1400)
+	if len(EncodeControlFrame(FramePathMTUProbe, probe)) != 1400 {
+		t.Fatal("MTU probe did not reach requested datagram size")
+	}
+	got, ok := DecodePathMTUProbe(probe)
+	if !ok || got.Target != 1400 {
+		t.Fatalf("decoded probe = %#v, %v", got, ok)
+	}
+	if _, ok := DecodePathMTUProbe(probe[:len(probe)-1]); ok {
+		t.Fatal("truncated probe accepted")
+	}
+}
+
+func TestSchedulerCachesOnlyConfirmedConservativeMTU(t *testing.T) {
+	s := NewScheduler()
+	s.Register("udp-relay", PathUDPRelay)
+	s.ReportDatagramMTU("udp-relay", 1400)
+	s.ReportDatagramMTU("udp-relay", 1200)
+	s.ReportDatagramMTU("udp-relay", MaxRelayDatagram+1)
+	if got := s.Status()[0].DatagramMTU; got != 1420 {
+		t.Fatalf("datagram MTU = %d, want 1420", got)
+	}
+	s.ReportDatagramMTU("udp-relay", 1500)
+	if got := s.Status()[0].DatagramMTU; got != 1500 {
+		t.Fatalf("datagram MTU = %d, want 1500", got)
 	}
 }
 

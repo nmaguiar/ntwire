@@ -47,14 +47,17 @@ type serverMultipathPeer struct {
 	endpoint  serverMultipathEndpoint
 	scheduler *Scheduler
 
-	mu     sync.RWMutex
-	paths  map[string]conn.Endpoint
-	probes map[string]outstandingProbe
+	mu        sync.RWMutex
+	paths     map[string]conn.Endpoint
+	probes    map[string]outstandingProbe
+	mtuProbes map[string]outstandingMTUProbe
+	mtuDone   map[string]bool
 	// v2 is true iff this peer's session negotiated CapabilityMultipathV2,
 	// gating the passive throughput-sampling subsystem (see multipath_v2.go).
 	// Constant for a peer's whole life -- RegisterPath sets it on every call,
 	// idempotently, since a session's negotiated capability never changes.
-	v2 bool
+	v2      bool
+	pathMTU bool
 
 	// mirror/recvCounters/attempts are this peer's counterparts of
 	// MultipathBind's identically-named fields -- see its doc comments.
@@ -102,7 +105,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 	p := m.peers[id]
 	if p == nil {
 		p = &serverMultipathPeer{
-			id: id, endpoint: serverMultipathEndpoint{id: id}, scheduler: NewScheduler(), paths: map[string]conn.Endpoint{},
+			id: id, endpoint: serverMultipathEndpoint{id: id}, scheduler: NewScheduler(), paths: map[string]conn.Endpoint{}, probes: map[string]outstandingProbe{}, mtuProbes: map[string]outstandingMTUProbe{}, mtuDone: map[string]bool{},
 			mirror: newMirrorLimiter(m.opts.MirrorRateBytesPerSec), recvCounters: map[string]*recvCounter{}, attempts: newMirrorAccounting(),
 		}
 		p.scheduler.SetV2Options(m.opts)
@@ -119,7 +122,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 // CapabilityMultipathV2, gating the passive throughput-sampling subsystem;
 // pass the same value on every call for a given peerID, since it can't
 // legitimately change mid-session.
-func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2 bool) {
+func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2, pathMTU bool) {
 	m.mu.Lock()
 	p := m.peer(peerID)
 	m.bySource[ep.DstToString()] = p
@@ -129,6 +132,7 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.mu.Lock()
 	p.paths[name] = ep
 	p.v2 = v2
+	p.pathMTU = pathMTU
 	p.mu.Unlock()
 	p.scheduler.SetV2(v2)
 	p.scheduler.SetForced(forced)
@@ -262,6 +266,10 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if !p.v2 || !ValidThroughputReport(payload) {
 			return
 		}
+	case FramePathMTUProbe, FramePathMTUAck:
+		if !p.pathMTU {
+			return
+		}
 	default:
 		return
 	}
@@ -285,6 +293,41 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		p.mu.Unlock()
 		if found {
 			p.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
+			m.sendMTUProbe(p, name, minPathMTUProbe)
+		}
+	case FramePathMTUProbe:
+		probe, ok := DecodePathMTUProbe(payload)
+		if !ok {
+			return
+		}
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUAck, EncodePathMTUAck(probe.Nonce, probe.Target))}, ep)
+	case FramePathMTUAck:
+		ack, ok := DecodePathMTUAck(payload)
+		if !ok {
+			return
+		}
+		name, ok := p.nameForEndpoint(ep)
+		if !ok {
+			return
+		}
+		p.mu.Lock()
+		outstanding, found := p.mtuProbes[name]
+		if found && outstanding.target == ack.Target && bytes.Equal(outstanding.nonce[:], ack.Nonce[:]) {
+			delete(p.mtuProbes, name)
+		} else {
+			found = false
+		}
+		p.mu.Unlock()
+		if found {
+			p.scheduler.ReportDatagramMTU(name, ack.Target)
+			next := nextPathMTUProbe(ack.Target)
+			if next == 0 {
+				p.mu.Lock()
+				p.mtuDone[name] = true
+				p.mu.Unlock()
+			} else {
+				m.sendMTUProbe(p, name, next)
+			}
 		}
 	case FrameThroughputReport:
 		name, ok := p.nameForEndpoint(ep)
@@ -297,6 +340,7 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		}
 		if attempted, ok := p.attempts.attemptedLastWindow(name); ok {
 			p.scheduler.ReportDeliveryRatio(name, float64(report.BytesReceived)/float64(attempted))
+			p.scheduler.ReportThroughput(name, report.BytesReceived, report.WindowMillis)
 		}
 	}
 }
@@ -373,6 +417,34 @@ func (m *ServerMultipathBind) sendProbe(p *serverMultipathPeer, name string, now
 	p.mu.Unlock()
 	frame := EncodeControlFrame(FramePathProbe, nonce[:])
 	_ = m.base.Send([][]byte{frame}, ep)
+}
+
+func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, target uint16) {
+	if !p.pathMTU || target == 0 {
+		return
+	}
+	p.mu.RLock()
+	ep := p.paths[name]
+	p.mu.RUnlock()
+	if ep == nil {
+		return
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return
+	}
+	p.mu.Lock()
+	if p.mtuDone[name] {
+		p.mu.Unlock()
+		return
+	}
+	if _, exists := p.mtuProbes[name]; exists {
+		p.mu.Unlock()
+		return
+	}
+	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target}
+	p.mu.Unlock()
+	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
 }
 
 // countMirrored attributes n bytes of recognized-duplicate traffic to

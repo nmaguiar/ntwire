@@ -112,9 +112,9 @@ func NewHybridClient(url string, client *http.Client, header http.Header, ipVers
 // logical bind used by capable relay peers. WSS is registered first and is
 // immediately usable; UDP candidates are added only after their authenticated
 // setup succeeds. ipVersion is forwarded to NewHybridClient; see its doc.
-func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2 bool, opts V2Options, ipVersion string) (*Hybrid, *MultipathBind) {
+func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2, pathMTU bool, opts V2Options, ipVersion string) (*Hybrid, *MultipathBind) {
 	h := NewHybridClient(url, client, header, ipVersion)
-	m := NewMultipathBind(h, "relay-server", v2, opts)
+	m := NewMultipathBind(h, "relay-server", v2, pathMTU, opts)
 	h.UDP.(*FilterBind).SetProbeHandler(m.handlePathControl)
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
 	// has connected it. Register the fallback from MultipathBind.Open instead,

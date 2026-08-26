@@ -191,7 +191,7 @@ func (s *Server) udpRelayStatsFor(clientPubKey string) (relayUDPStatsSummary, bo
 // session is requested from the relay, this server's own WireGuard peer
 // endpoint for clientPubKey is pointed at the allocated address, and the
 // session's bind-and-keepalive loop is started.
-func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2 bool) protocol.UDPRelayResponse {
+func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2, pathMTU bool) protocol.UDPRelayResponse {
 	u.mu.Lock()
 	if st, ok := u.sessions[clientPubKey]; ok {
 		u.mu.Unlock()
@@ -212,7 +212,7 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 			u.agent.ReleaseUDPSession(token)
 			return protocol.UDPRelayResponse{}
 		}
-		u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2)
+		u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2, pathMTU)
 	} else if err := u.stack.UpdateEndpoint(clientPubKey, serverAddr); err != nil {
 		u.agent.ReleaseUDPSession(token)
 		return protocol.UDPRelayResponse{}

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net/netip"
 	"sort"
 	"sync"
@@ -38,14 +39,17 @@ type MultipathBind struct {
 	// lock a concurrent RegisterPath/Send might be holding.
 	probeMu   sync.Mutex
 	probes    map[string]outstandingProbe
+	mtuProbes map[string]outstandingMTUProbe
+	mtuDone   map[string]bool
 	stop      chan struct{}
 	closeOnce sync.Once
 
 	// v2 is true iff this session negotiated CapabilityMultipathV2, gating
 	// the passive throughput-sampling subsystem. Constant for the bind's
 	// whole life, set once at construction.
-	v2   bool
-	opts V2Options
+	v2      bool
+	pathMTU bool
+	opts    V2Options
 
 	// mirror bounds how much real primary traffic gets opportunistically
 	// duplicated to the standby candidate purely to sample it (see Send);
@@ -68,6 +72,11 @@ type outstandingProbe struct {
 	sentAt time.Time
 }
 
+type outstandingMTUProbe struct {
+	nonce  [pathProbeSize]byte
+	target uint16
+}
+
 // probeInterval/probeTimeout pace the health-probing every registered
 // candidate gets on both sides of a multipath session (see RegisterPath and
 // probeLoop): a probe goes out at most once every probeInterval per
@@ -88,13 +97,13 @@ func (e multipathEndpoint) DstToBytes() []byte  { return []byte(e.id) }
 func (e multipathEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
 func (e multipathEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
-func NewMultipathBind(base conn.Bind, id string, v2 bool, opts V2Options) *MultipathBind {
+func NewMultipathBind(base conn.Bind, id string, v2, pathMTU bool, opts V2Options) *MultipathBind {
 	opts = resolveV2Options(opts)
 	m := &MultipathBind{
 		base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second),
 		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
-		probes: make(map[string]outstandingProbe), stop: make(chan struct{}),
-		v2: v2, opts: opts,
+		probes: make(map[string]outstandingProbe), mtuProbes: make(map[string]outstandingMTUProbe), mtuDone: make(map[string]bool), stop: make(chan struct{}),
+		v2: v2, pathMTU: pathMTU, opts: opts,
 	}
 	if v2 {
 		m.scheduler.SetV2Options(opts)
@@ -279,6 +288,10 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		if !m.v2 || !ValidThroughputReport(payload) {
 			return
 		}
+	case FramePathMTUProbe, FramePathMTUAck:
+		if !m.pathMTU {
+			return
+		}
 	default:
 		return
 	}
@@ -302,6 +315,41 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		m.probeMu.Unlock()
 		if found {
 			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
+			m.sendMTUProbe(name, minPathMTUProbe)
+		}
+	case FramePathMTUProbe:
+		probe, ok := DecodePathMTUProbe(payload)
+		if !ok {
+			return
+		}
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUAck, EncodePathMTUAck(probe.Nonce, probe.Target))}, ep)
+	case FramePathMTUAck:
+		ack, ok := DecodePathMTUAck(payload)
+		if !ok {
+			return
+		}
+		name, ok := m.nameForEndpoint(ep)
+		if !ok {
+			return
+		}
+		m.probeMu.Lock()
+		outstanding, found := m.mtuProbes[name]
+		if found && outstanding.target == ack.Target && bytes.Equal(outstanding.nonce[:], ack.Nonce[:]) {
+			delete(m.mtuProbes, name)
+		} else {
+			found = false
+		}
+		m.probeMu.Unlock()
+		if found {
+			m.scheduler.ReportDatagramMTU(name, ack.Target)
+			next := nextPathMTUProbe(ack.Target)
+			if next == 0 {
+				m.probeMu.Lock()
+				m.mtuDone[name] = true
+				m.probeMu.Unlock()
+			} else {
+				m.sendMTUProbe(name, next)
+			}
 		}
 	case FrameThroughputReport:
 		name, ok := m.nameForEndpoint(ep)
@@ -318,6 +366,7 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		// one (see mirrorAccounting.attemptedLastWindow's doc comment).
 		if attempted, ok := m.attempts.attemptedLastWindow(name); ok {
 			m.scheduler.ReportDeliveryRatio(name, float64(report.BytesReceived)/float64(attempted))
+			m.scheduler.ReportThroughput(name, report.BytesReceived, report.WindowMillis)
 		}
 	}
 }
@@ -403,6 +452,34 @@ func (m *MultipathBind) sendProbe(name string, now time.Time) {
 	_ = m.base.Send([][]byte{frame}, ep)
 }
 
+func (m *MultipathBind) sendMTUProbe(name string, target uint16) {
+	if !m.pathMTU || target == 0 {
+		return
+	}
+	m.mu.RLock()
+	ep := m.paths[name]
+	m.mu.RUnlock()
+	if ep == nil {
+		return
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return
+	}
+	m.probeMu.Lock()
+	if m.mtuDone[name] {
+		m.probeMu.Unlock()
+		return
+	}
+	if _, exists := m.mtuProbes[name]; exists {
+		m.probeMu.Unlock()
+		return
+	}
+	m.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target}
+	m.probeMu.Unlock()
+	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
+}
+
 // FramePathProbe and FramePathAck are deliberately tiny, fixed-size control
 // frames. A probe has a twelve byte nonce; an ack echoes exactly those twelve
 // bytes. Neither carries an address, token, or arbitrary payload, so
@@ -419,6 +496,8 @@ const (
 	// FrameThroughputReport is a multipath-v2-only frame; see its own doc
 	// comment further down for the payload shape.
 	FrameThroughputReport byte = 8
+	FramePathMTUProbe     byte = 9
+	FramePathMTUAck       byte = 10
 )
 
 // PathKind is a human-readable candidate class, suitable for local status.
@@ -476,6 +555,16 @@ type PathStatus struct {
 	// comparable sample yet", not "confirmed total loss" -- see
 	// Scheduler.score's doc comment.
 	DeliveryRatio float64 `json:"delivery_ratio"`
+	// ThroughputBytesPerSec is an EWMA-smoothed estimate from the peer's
+	// mirrored-traffic report window. It describes only the deliberately
+	// rate-capped sample traffic, so it is diagnostic data rather than a
+	// bandwidth guarantee or an automatic-selection input. -1 means no report
+	// has arrived yet.
+	ThroughputBytesPerSec float64 `json:"throughput_bytes_per_sec"`
+	// DatagramMTU is the largest conservative UDP payload confirmed by the
+	// authenticated probe exchange. It is diagnostic only: WireGuard keeps
+	// its established 1420-byte tunnel MTU for this connection.
+	DatagramMTU uint16 `json:"datagram_mtu"`
 	// Forced indicates whether this candidate is the user's manual selection.
 	Forced bool `json:"forced"`
 }
@@ -586,7 +675,7 @@ func (s *Scheduler) Register(name string, kind PathKind) {
 		p.Kind = kind
 		return
 	}
-	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind, DeliveryRatio: -1}}
+	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind, DeliveryRatio: -1, ThroughputBytesPerSec: -1, DatagramMTU: 1420}}
 }
 
 // ProbeResult records one completed or timed-out probe. Three failures make a
@@ -658,6 +747,47 @@ func (s *Scheduler) ReportDeliveryRatio(name string, ratio float64) {
 		p.DeliveryRatio = ratio
 	} else {
 		p.DeliveryRatio = (p.DeliveryRatio*7 + ratio) / 8
+	}
+}
+
+// ReportThroughput records a passive mirrored-traffic goodput sample in bytes
+// per second. It is deliberately kept out of score: the mirror itself is
+// rate-capped, so this value is useful for inspection and trend comparison but
+// cannot safely establish a path's full-transfer capacity. Non-positive or
+// non-finite samples are ignored; subsequent samples use the same conservative
+// 7/8 EWMA as RTT and delivery ratio.
+func (s *Scheduler) ReportThroughput(name string, bytes uint32, windowMillis uint32) {
+	if bytes == 0 || windowMillis == 0 {
+		return
+	}
+	ratio := float64(bytes) * 1000 / float64(windowMillis)
+	if ratio <= 0 || math.IsInf(ratio, 0) || math.IsNaN(ratio) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.candidates[name]
+	if p == nil {
+		return
+	}
+	if p.ThroughputBytesPerSec < 0 {
+		p.ThroughputBytesPerSec = ratio
+	} else {
+		p.ThroughputBytesPerSec = (p.ThroughputBytesPerSec*7 + ratio) / 8
+	}
+}
+
+// ReportDatagramMTU caches one successfully acknowledged bounded probe. A
+// smaller or malformed value cannot lower the safe default or influence path
+// selection; the value is purely inspectable diagnosis.
+func (s *Scheduler) ReportDatagramMTU(name string, mtu uint16) {
+	if mtu < minPathMTUProbe || mtu > MaxRelayDatagram {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.candidates[name]; p != nil && mtu > p.DatagramMTU {
+		p.DatagramMTU = mtu
 	}
 }
 

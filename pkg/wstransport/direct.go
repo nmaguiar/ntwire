@@ -203,7 +203,7 @@ func (f *FilterBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 
 func (f *FilterBind) deliverControl(b []byte, ep conn.Endpoint) {
 	typ := b[4]
-	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport
+	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport || typ == FramePathMTUProbe || typ == FramePathMTUAck
 	if isProbeFrame {
 		// These frame types are only ever meaningful to a probeHandler, never
 		// to Control()'s existing transient readers (selfReflect,
