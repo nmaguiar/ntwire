@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="ntwire">
+  <defs>
+    <linearGradient id="background" x1="110" y1="80" x2="900" y2="970" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#102746"/>
+      <stop offset=".52" stop-color="#06152c"/>
+      <stop offset="1" stop-color="#020916"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".73" cy=".15" r=".9">
+      <stop stop-color="#147cf7" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#147cf7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="cyan" x1="150" y1="800" x2="770" y2="140" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0755ed"/>
+      <stop offset=".42" stop-color="#008bff"/>
+      <stop offset="1" stop-color="#18dcff"/>
+    </linearGradient>
+    <linearGradient id="indigo" x1="210" y1="165" x2="760" y2="825" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1650e7"/>
+      <stop offset=".53" stop-color="#8f72ff"/>
+      <stop offset="1" stop-color="#2638bf"/>
+    </linearGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="20" stdDeviation="18" flood-color="#000918" flood-opacity=".45"/>
+    </filter>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="214" fill="url(#background)"/>
+  <rect x="32" y="32" width="960" height="960" rx="214" fill="url(#glow)"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)">
+    <path d="M250 764V342c0-60 72-90 114-47l267 267c26 26 68 26 94 0l104-104" stroke="url(#cyan)" stroke-width="92"/>
+    <path d="M188 713 416 485c25-25 66-25 91 0l266 266c39 39 106 11 106-44V520" stroke="url(#indigo)" stroke-width="92"/>
+  </g>
+  <circle cx="850" cy="416" r="52" fill="#16d9ff"/>
+</svg>

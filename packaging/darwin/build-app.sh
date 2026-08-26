@@ -23,6 +23,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$BINARY" "$APP/Contents/MacOS/ntwire-gui"
 chmod +x "$APP/Contents/MacOS/ntwire-gui"
+cp "$SCRIPT_DIR/ntwire.icns" "$APP/Contents/Resources/ntwire.icns"
 
 sed "s/__VERSION__/$VERSION/g" "$SCRIPT_DIR/Info.plist.tmpl" > "$APP/Contents/Info.plist"
 
