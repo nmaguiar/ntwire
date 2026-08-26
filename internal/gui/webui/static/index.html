@@ -8,7 +8,7 @@
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text);background:var(--bg)}
 main{width:min(64rem,calc(100% - 2rem));margin:0 auto;padding:2.5rem 0}
-h1{font-size:1.9rem;margin:0 0 .25rem}
+h1{font-size:1.9rem;margin:0 0 .25rem}.brand-lockup{display:flex;align-items:center;gap:.55rem}.brand-mark{flex:none;width:1.9rem;height:1.9rem;filter:drop-shadow(0 .12rem .25rem color-mix(in srgb,var(--brand) 18%,transparent))}.brand-lockup h1{margin:0}.brand-nt{color:#008bff}
 .lede{color:var(--muted);margin:0 0 1.5rem}
 .panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.25rem;margin-bottom:1.25rem}
 .row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
@@ -61,7 +61,7 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 .ports-list{margin-top:.5rem}
 </style>
 <main>
-  <h1>⚙️ ntwire settings</h1>
+  <div class="brand-lockup"><svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="logo-cyan" x1="9" y1="37" x2="39" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#0755ed"/><stop offset="1" stop-color="#18dcff"/></linearGradient><linearGradient id="logo-indigo" x1="10" y1="11" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#1650e7"/><stop offset=".5" stop-color="#8f72ff"/><stop offset="1" stop-color="#2638bf"/></linearGradient></defs><path d="M13 36V16c0-3 3.6-4.5 5.7-2.4l12.5 12.5a3 3 0 0 0 4.2 0l4.8-4.8" fill="none" stroke="url(#logo-cyan)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m8.7 34.6 10.7-10.7a3.2 3.2 0 0 1 4.5 0l12.5 12.5c1.9 1.9 5.1.6 5.1-2.2V25" fill="none" stroke="url(#logo-indigo)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="20" r="2.7" fill="#16d9ff"/></svg><h1><span class="brand-nt">nt</span>wire settings</h1></div>
   <p class="lede">Configure server profiles for ntwire-gui. Changes here never touch the CLI's own ~/.ntwire/config.yaml.</p>
   <p id="message" role="status"></p>
 

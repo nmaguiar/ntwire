@@ -29,6 +29,19 @@ func TestStatusPageShowsLatencyTransportHistory(t *testing.T) {
 	}
 }
 
+func TestStatusPageIncludesAdaptiveBrandMark(t *testing.T) {
+	page, err := fs.ReadFile(mustFiles(t), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{"brand-lockup", "brand-mark", "brand-nt", "logo-cyan", "logo-indigo"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("status page is missing brand treatment %q", want)
+		}
+	}
+}
+
 func TestStatusPageAttachesTargetGrid(t *testing.T) {
 	page, err := fs.ReadFile(mustFiles(t), "index.html")
 	if err != nil {

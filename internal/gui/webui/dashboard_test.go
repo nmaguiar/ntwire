@@ -20,6 +20,23 @@ func TestProfileDashboardLinkStartsAtPortal(t *testing.T) {
 	}
 }
 
+func TestGUISettingsIncludesAdaptiveBrandMark(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{"brand-lockup", "brand-mark", "brand-nt", "logo-cyan", "logo-indigo"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("GUI settings page is missing brand treatment %q", want)
+		}
+	}
+}
+
 func TestGUISettingsMessageResetAndDismissControls(t *testing.T) {
 	files, err := Files()
 	if err != nil {
