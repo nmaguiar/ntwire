@@ -57,6 +57,35 @@ type udpRelaySessionState struct {
 	stats      protocol.RelayUDPStats
 }
 
+// relayUDPStatsSummary is the token-free, operator-facing form of one
+// UDP-relay allocation's cumulative hop counters. It intentionally exposes
+// neither the allocation token nor either peer address: both are routing
+// details, while the counters are only diagnostics for the protected server
+// dashboard.
+type relayUDPStatsSummary struct {
+	ClientPacketsReceived  uint64 `json:"client_packets_received"`
+	ClientBytesReceived    uint64 `json:"client_bytes_received"`
+	ServerPacketsForwarded uint64 `json:"server_packets_forwarded"`
+	ServerBytesForwarded   uint64 `json:"server_bytes_forwarded"`
+	ServerPacketsReceived  uint64 `json:"server_packets_received"`
+	ServerBytesReceived    uint64 `json:"server_bytes_received"`
+	ClientPacketsForwarded uint64 `json:"client_packets_forwarded"`
+	ClientBytesForwarded   uint64 `json:"client_bytes_forwarded"`
+}
+
+func relayUDPStatsSummaryFrom(stats protocol.RelayUDPStats) relayUDPStatsSummary {
+	return relayUDPStatsSummary{
+		ClientPacketsReceived:  stats.ClientPacketsReceived,
+		ClientBytesReceived:    stats.ClientBytesReceived,
+		ServerPacketsForwarded: stats.ServerPacketsForwarded,
+		ServerBytesForwarded:   stats.ServerBytesForwarded,
+		ServerPacketsReceived:  stats.ServerPacketsReceived,
+		ServerBytesReceived:    stats.ServerBytesReceived,
+		ClientPacketsForwarded: stats.ClientPacketsForwarded,
+		ClientBytesForwarded:   stats.ClientBytesForwarded,
+	}
+}
+
 // EnableUDPRelay wires the server's UDP-relay forwarding tier for
 // relayAddr, the relay's shared client-facing UDP-relay address from this
 // registration (RelayRegisterResponse.UDPRelayAddr). The caller --
@@ -120,6 +149,20 @@ func (u *udpRelay) recordStats(report protocol.RelayUDPStatsReport) {
 	}
 }
 
+// statsFor returns the most recently reported cumulative relay-hop counters
+// for clientPubKey. The allocation token stays internal: callers get only a
+// copied, token-free diagnostic summary suitable for an authenticated
+// operator status surface.
+func (u *udpRelay) statsFor(clientPubKey string) (relayUDPStatsSummary, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	st := u.sessions[clientPubKey]
+	if st == nil || st.stats.Token == "" {
+		return relayUDPStatsSummary{}, false
+	}
+	return relayUDPStatsSummaryFrom(st.stats), true
+}
+
 // RecordUDPRelayStats accepts a report from whichever relay agent is
 // currently preferred. Unknown or stale tokens are ignored deliberately:
 // a relay reconnect can race an allocation replacement, and telemetry must
@@ -128,6 +171,16 @@ func (s *Server) RecordUDPRelayStats(report protocol.RelayUDPStatsReport) {
 	if u := s.udpr.Load(); u != nil {
 		u.recordStats(report)
 	}
+}
+
+// udpRelayStatsFor returns a best-effort relay-hop snapshot for one live
+// WireGuard peer. Missing telemetry is normal for direct/WSS sessions, older
+// relays, and a newly allocated UDP-relay session before its first report.
+func (s *Server) udpRelayStatsFor(clientPubKey string) (relayUDPStatsSummary, bool) {
+	if u := s.udpr.Load(); u != nil {
+		return u.statsFor(clientPubKey)
+	}
+	return relayUDPStatsSummary{}, false
 }
 
 // sessionFor is the idempotent entry point the /v1/udp-relay HTTP handler

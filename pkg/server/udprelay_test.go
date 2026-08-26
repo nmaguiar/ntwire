@@ -83,6 +83,29 @@ func TestUDPRelayRecordStats_IgnoresUnknownToken(t *testing.T) {
 	}
 }
 
+func TestUDPRelayStatsForReturnsTokenFreeSnapshot(t *testing.T) {
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{
+		"client": {token: "secret-token", stats: protocol.RelayUDPStats{
+			Token: "secret-token", ClientPacketsReceived: 3, ClientBytesReceived: 300,
+			ServerPacketsForwarded: 2, ServerBytesForwarded: 200,
+			ServerPacketsReceived: 5, ServerBytesReceived: 500,
+			ClientPacketsForwarded: 4, ClientBytesForwarded: 400,
+		}},
+	}}
+
+	got, ok := u.statsFor("client")
+	if !ok {
+		t.Fatal("statsFor(client) = no snapshot, want one")
+	}
+	want := relayUDPStatsSummary{ClientPacketsReceived: 3, ClientBytesReceived: 300, ServerPacketsForwarded: 2, ServerBytesForwarded: 200, ServerPacketsReceived: 5, ServerBytesReceived: 500, ClientPacketsForwarded: 4, ClientBytesForwarded: 400}
+	if got != want {
+		t.Fatalf("statsFor(client) = %+v, want %+v", got, want)
+	}
+	if _, ok := u.statsFor("unknown"); ok {
+		t.Fatal("statsFor(unknown) unexpectedly returned a snapshot")
+	}
+}
+
 func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 	fa := &fakeUDPAllocator{token: "tok-1", serverAddr: "127.0.0.1:9999"}
 	u := newTestUDPRelay(t, fa)

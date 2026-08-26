@@ -307,8 +307,12 @@ type dashboardTunnel struct {
 	LatencyMillis uint64               `json:"latency_millis"`
 	Reconnections uint64               `json:"reconnections"`
 	Stats         dashboardTunnelStats `json:"stats"`
-	PACURL        string               `json:"pac_url,omitempty"`
-	PACURLiOS     string               `json:"pac_url_ios,omitempty"`
+	// RelayUDP is present only when this session has a live UDP-relay
+	// allocation and the relay has sent a diagnostic counter report. It is a
+	// token-free hop summary; see relayUDPStatsSummary.
+	RelayUDP  *relayUDPStatsSummary `json:"relay_udp,omitempty"`
+	PACURL    string                `json:"pac_url,omitempty"`
+	PACURLiOS string                `json:"pac_url_ios,omitempty"`
 }
 
 func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
@@ -325,6 +329,9 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			dt := dashboardTunnel{SessionID: session.ID, Name: tunnel.Name, Description: config.Description, Target: config.Target, VirtualPort: tunnel.VirtualPort, Identity: session.Identity, Method: session.Method, TunnelIP: session.TunnelIP, Expires: session.Expires, LatencyMillis: session.LatencyMillis, Reconnections: session.Reconnections, Stats: s.statsFor(session.TunnelIP, tunnel.Name).snapshot()}
+			if relayStats, ok := s.udpRelayStatsFor(session.WireGuardPublicKey); ok {
+				dt.RelayUDP = &relayStats
+			}
 			if config.IsSocks() {
 				dt.PACURL = pac.PathForPlatform(tunnel.Name, false)
 				dt.PACURLiOS = pac.PathForPlatform(tunnel.Name, true)

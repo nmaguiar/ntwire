@@ -137,6 +137,12 @@ counters only; it never contains WireGuard payloads or peer addresses. It is
 diagnostic telemetry, not a delivery acknowledgement: reconnects can skip a
 report and duplicate/reordered WireGuard packets remain possible.
 
+When `admin.web_ui_token` enables the server dashboard, its protected JSON
+endpoint exposes these counters as each tunnel's optional `relay_udp` field.
+That dashboard form deliberately omits the allocation token and all peer
+addresses; absent `relay_udp` means the session is not using UDP relay or no
+report has arrived yet.
+
 `listen.udp_buffer_bytes` requests the kernel read and write buffer size for
 the relay's reflector, shared client-facing UDP socket, per-session pool, and
 native-WireGuard relay sockets. It defaults to 4 MiB. The operating system may

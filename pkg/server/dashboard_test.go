@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,12 +19,13 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 	c.Relay.AdvertiseDirect = true
 	c.Admin.WebUIToken = "operator-secret"
 	s := New(c, nil)
-	s.sessions.Create(CreateParams{Method: "oidc", Identity: "alice@example.com", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "reports", VirtualPort: 18080}}, LatencyMillis: 18, Reconnections: 2, TTL: time.Minute})
+	session := s.sessions.Create(CreateParams{Method: "oidc", Identity: "alice@example.com", WireGuardPublicKey: "wg-alice", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "reports", VirtualPort: 18080}}, LatencyMillis: 18, Reconnections: 2, TTL: time.Minute})
 	stats := s.statsFor("100.64.0.2", "reports")
 	stats.toTarget.Add(42)
 	stats.fromTarget.Add(17)
 	stats.connections.Add(3)
 	stats.active.Add(1)
+	s.udpr.Store(&udpRelay{sessions: map[string]*udpRelaySessionState{session.WireGuardPublicKey: {token: "must-not-leak", stats: protocol.RelayUDPStats{Token: "must-not-leak", ClientBytesReceived: 42, ServerBytesForwarded: 41, ServerBytesReceived: 17, ClientBytesForwarded: 16}}}})
 
 	for _, path := range []string{"/", "/v1/dashboard"} {
 		rec := httptest.NewRecorder()
@@ -46,6 +48,12 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 	}
 	if len(out.Tunnels) != 1 || out.Tunnels[0].SessionID == "" || out.Tunnels[0].Identity != "alice@example.com" || out.Tunnels[0].Target != "reports.internal:8080" || out.Tunnels[0].LatencyMillis != 18 || out.Tunnels[0].Reconnections != 2 || out.Tunnels[0].Stats.BytesToTarget != 42 || out.Tunnels[0].Stats.BytesFromTarget != 17 || out.Tunnels[0].Stats.Connections != 3 || out.Tunnels[0].Stats.Active != 1 {
 		t.Fatalf("dashboard tunnels = %+v", out.Tunnels)
+	}
+	if got := out.Tunnels[0].RelayUDP; got == nil || got.ClientBytesReceived != 42 || got.ServerBytesForwarded != 41 || got.ServerBytesReceived != 17 || got.ClientBytesForwarded != 16 {
+		t.Fatalf("dashboard relay UDP stats = %+v", got)
+	}
+	if strings.Contains(rec.Body.String(), "must-not-leak") {
+		t.Fatalf("dashboard leaked relay allocation token: %s", rec.Body.String())
 	}
 	wantCapabilities := []string{"authorization_hook", "direct_udp_relay_bypass", "relay_mediated_udp", "socks_bind", "socks_unrestricted"}
 	if !reflect.DeepEqual(out.SecurityCapabilities, wantCapabilities) {
