@@ -69,6 +69,43 @@ func newTestUDPRelay(t *testing.T, fa *fakeUDPAllocator) *udpRelay {
 	return &udpRelay{bind: bind, stack: stack, agent: fa, relayAddr: "127.0.0.1:1", log: slog.Default(), sessions: map[string]*udpRelaySessionState{}}
 }
 
+func TestUDPRelayRecordStats_IgnoresUnknownToken(t *testing.T) {
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{
+		"client": {token: "known"},
+	}}
+	u.recordStats(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: []protocol.RelayUDPStats{
+		{Token: "unknown", ClientBytesReceived: 99},
+		{Token: "known", ClientBytesReceived: 42, ServerBytesForwarded: 40},
+	}})
+	got := u.sessions["client"].stats
+	if got.Token != "known" || got.ClientBytesReceived != 42 || got.ServerBytesForwarded != 40 {
+		t.Fatalf("recorded stats = %+v, want only the known token's snapshot", got)
+	}
+}
+
+func TestUDPRelayStatsForReturnsTokenFreeSnapshot(t *testing.T) {
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{
+		"client": {token: "secret-token", stats: protocol.RelayUDPStats{
+			Token: "secret-token", ClientPacketsReceived: 3, ClientBytesReceived: 300,
+			ServerPacketsForwarded: 2, ServerBytesForwarded: 200,
+			ServerPacketsReceived: 5, ServerBytesReceived: 500,
+			ClientPacketsForwarded: 4, ClientBytesForwarded: 400,
+		}},
+	}}
+
+	got, ok := u.statsFor("client")
+	if !ok {
+		t.Fatal("statsFor(client) = no snapshot, want one")
+	}
+	want := relayUDPStatsSummary{ClientPacketsReceived: 3, ClientBytesReceived: 300, ServerPacketsForwarded: 2, ServerBytesForwarded: 200, ServerPacketsReceived: 5, ServerBytesReceived: 500, ClientPacketsForwarded: 4, ClientBytesForwarded: 400}
+	if got != want {
+		t.Fatalf("statsFor(client) = %+v, want %+v", got, want)
+	}
+	if _, ok := u.statsFor("unknown"); ok {
+		t.Fatal("statsFor(unknown) unexpectedly returned a snapshot")
+	}
+}
+
 func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 	fa := &fakeUDPAllocator{token: "tok-1", serverAddr: "127.0.0.1:9999"}
 	u := newTestUDPRelay(t, fa)
@@ -77,11 +114,11 @@ func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp1 := u.sessionFor(context.Background(), peer.Public, false, false)
+	resp1 := u.sessionFor(context.Background(), peer.Public, false, false, false)
 	if resp1.Token != "tok-1" || resp1.RelayAddr != "127.0.0.1:1" {
 		t.Fatalf("sessionFor() first call = %+v, want token/relay_addr populated", resp1)
 	}
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false)
 	if resp2 != resp1 {
 		t.Fatalf("sessionFor() second call = %+v, want identical to first %+v", resp2, resp1)
 	}
@@ -97,7 +134,7 @@ func TestUDPRelaySessionForReturnsEmptyWhenAllocationUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := u.sessionFor(context.Background(), peer.Public, false, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false)
 	if resp != (protocol.UDPRelayResponse{}) {
 		t.Fatalf("sessionFor() = %+v, want the zero value when allocation is unavailable", resp)
 	}
@@ -111,7 +148,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := u.sessionFor(context.Background(), peer.Public, false, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false)
 	u.release(peer.Public)
 
 	fa.mu.Lock()
@@ -124,7 +161,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 	// A fresh sessionFor call after release must allocate again, not reuse
 	// stale state.
 	fa.token = "tok-2"
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false)
 	if resp2.Token != "tok-2" {
 		t.Fatalf("sessionFor() after release = %+v, want a fresh allocation", resp2)
 	}

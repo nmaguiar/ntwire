@@ -44,6 +44,11 @@ type Config struct {
 		// firewall rule for this range is complete and static from the
 		// moment the relay starts. Required whenever UDPRelay is set.
 		UDPRelayPorts string `yaml:"udp_relay_ports"`
+		// UDPBufferBytes is the requested kernel read and write buffer size
+		// for relay UDP sockets. Zero uses the conservative production
+		// default. The operating system may clamp it; a clamp is diagnostic,
+		// never a startup failure.
+		UDPBufferBytes int `yaml:"udp_buffer_bytes"`
 	} `yaml:"listen"`
 	TLS struct {
 		CertFile  string `yaml:"cert_file"`
@@ -122,6 +127,7 @@ listen:
   reflect: ""                              # optional UDP address-reflection endpoint, e.g. ":3480"; empty disables it (default). Only needed by servers using relay.advertise_direct -- see docs/RELAY.md
   udp_relay: ""                            # optional shared client-facing UDP address for the UDP-relay forwarding tier, e.g. ":3481"; empty disables it (default). No server-side opt-in needed -- see docs/RELAY.md
   udp_relay_ports: "40000-40999"           # inclusive port range the relay allocates one dedicated per-session UDP port from (server leg); required when udp_relay is set. Every port in range is bound at startup: size this to your expected concurrent UDP-relay session count, not maximally -- it is a direct tradeoff between max concurrent sessions and how large a firewall rule you must open
+  udp_buffer_bytes: 4194304                 # requested kernel UDP read/write buffer per relay socket; the OS may clamp it. Zero uses this default
 
 tls:                                        # applies to listen.agents only
   cert_file: ""                            # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate

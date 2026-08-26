@@ -139,6 +139,10 @@ func NewFilterBind(bind conn.Bind) *FilterBind {
 	return &FilterBind{Bind: bind, control: make(chan ControlPacket, 32)}
 }
 
+// Unwrap exposes the underlying UDP bind for diagnostics without changing its
+// receive or send path.
+func (f *FilterBind) Unwrap() conn.Bind { return f.Bind }
+
 // SetProbeHandler installs fn as the receiver for FramePathProbe/
 // FramePathAck/FrameThroughputReport frames arriving over this bind's UDP
 // carrier. Not safe to change concurrently with receiving; callers set it
@@ -203,7 +207,7 @@ func (f *FilterBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 
 func (f *FilterBind) deliverControl(b []byte, ep conn.Endpoint) {
 	typ := b[4]
-	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport
+	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport || typ == FramePathMTUProbe || typ == FramePathMTUAck
 	if isProbeFrame {
 		// These frame types are only ever meaningful to a probeHandler, never
 		// to Control()'s existing transient readers (selfReflect,

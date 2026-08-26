@@ -37,6 +37,9 @@ type Bind struct {
 	is6 bool
 }
 
+// Unwrap exposes the underlying bind for transport diagnostics.
+func (b *Bind) Unwrap() conn.Bind { return b.Bind }
+
 func (b *Bind) match(addr netip.Addr) bool { return addr.Unmap().Is6() == b.is6 }
 
 func (b *Bind) family() string {

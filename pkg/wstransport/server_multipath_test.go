@@ -93,7 +93,7 @@ func TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy(t *testi
 	defer m.Close()
 
 	ep := fakeEndpoint{id: "client-udp-relay"}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false)
 
 	deadline := time.Now().Add(time.Second)
 	var frame []byte
@@ -136,7 +136,7 @@ func TestServerMultipathForcedTransportAppliesToExistingAndFuturePeers(t *testin
 	defer m.Close()
 	m.SetForced("wss")
 	ep := fakeEndpoint{id: "peer-wss"}
-	m.RegisterPath("peer-1", "wss", PathWSS, ep, false)
+	m.RegisterPath("peer-1", "wss", PathWSS, ep, false, false)
 	m.mu.RLock()
 	p := m.peers["peer-1"]
 	m.mu.RUnlock()
@@ -159,7 +159,7 @@ func TestServerMultipathWrapInterceptsWSSControlFrames(t *testing.T) {
 	defer m.Close()
 
 	wssEP := fakeEndpoint{id: "wss-peer"}
-	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false)
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false)
 	base.reset() // discard the immediate probe RegisterPath just sent
 
 	probe := EncodeControlFrame(FramePathProbe, bytes.Repeat([]byte{0x09}, pathProbeSize))
@@ -226,7 +226,7 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false)
 
 	_ = pooled.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 2048)

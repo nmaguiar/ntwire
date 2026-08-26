@@ -126,6 +126,30 @@ Probe/ack controls have fixed-size payloads and invalid or oversized frames
 are ignored. There are no tuning options in v1. A server without `multipath`
 uses the original WSS → UDP-relay → direct-UDP endpoint upgrade ladder.
 
+### UDP relay diagnostics and socket capacity
+
+For every active UDP-relay allocation, the relay keeps cumulative opaque
+packet and byte counters for client ingress, server egress, server ingress,
+and client egress. Every 30 seconds it sends a best-effort, tenant-scoped
+snapshot to the registered server over the existing authenticated
+`/v1/relay/control` WebSocket. The report contains allocation tokens and
+counters only; it never contains WireGuard payloads or peer addresses. It is
+diagnostic telemetry, not a delivery acknowledgement: reconnects can skip a
+report and duplicate/reordered WireGuard packets remain possible.
+
+When `admin.web_ui_token` enables the server dashboard, its protected JSON
+endpoint exposes these counters as each tunnel's optional `relay_udp` field.
+That dashboard form deliberately omits the allocation token and all peer
+addresses; absent `relay_udp` means the session is not using UDP relay or no
+report has arrived yet.
+
+`listen.udp_buffer_bytes` requests the kernel read and write buffer size for
+the relay's reflector, shared client-facing UDP socket, per-session pool, and
+native-WireGuard relay sockets. It defaults to 4 MiB. The operating system may
+clamp the request; ntwire logs the requested and kernel-accepted read/write
+values for each relay UDP socket and continues. This makes clamping visible
+without turning a performance optimisation into a startup failure.
+
 ## Running a relay
 
 Run `ntwire-relay --config path/to/ntwire-relay.yaml`; the default path is

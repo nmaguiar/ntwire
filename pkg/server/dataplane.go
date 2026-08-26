@@ -163,7 +163,7 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	ws := wstransport.NewHybrid()
+	ws := wstransport.NewHybrid(s.log)
 	relayMode := s.Config.Relay.Enabled
 	ws.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
 		s.observe("websocket_connected", "")
@@ -195,7 +195,7 @@ func (s *Server) StartDataPlane() error {
 			s.observe("websocket_connected", "")
 			s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", true)
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
-				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2)
+				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2, sess.PathMTU)
 			}
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)

@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/ipfamily"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -47,6 +49,9 @@ type Config struct {
 	// restriction itself -- see pkg/ipfamily and pkg/wstransport's
 	// NewHybridClient/NewMultipathHybridClient.
 	IPVersion string
+	// UDPBufferLogger receives the requested and kernel-accepted socket
+	// capacities when this config uses the default direct UDP bind.
+	UDPBufferLogger *slog.Logger
 }
 
 // Stack owns both the WireGuard device and its in-memory TCP/IP stack.
@@ -55,6 +60,7 @@ type Stack struct {
 	tun    tun.Device
 	Net    *netstack.Net
 	key    Key
+	bind   conn.Bind
 }
 
 func New(c Config) (*Stack, error) {
@@ -81,7 +87,7 @@ func New(c Config) (*Stack, error) {
 	}
 	bind := c.Bind
 	if bind == nil {
-		bind = ipfamily.New(conn.NewStdNetBind(), c.IPVersion)
+		bind = ipfamily.New(wstransport.NewUDPBind(0, c.UDPBufferLogger), c.IPVersion)
 	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
 	// ntwire carries WireGuard keys as Base64, while WireGuard's IPC protocol
@@ -98,9 +104,27 @@ func New(c Config) (*Stack, error) {
 		d.Close()
 		return nil, err
 	}
-	return &Stack{device: d, tun: td, Net: ns, key: key}, nil
+	return &Stack{device: d, tun: td, Net: ns, key: key, bind: bind}, nil
 }
 func (s *Stack) PublicKey() string { return s.key.Public }
+
+// UDPBufferStatus returns accepted direct-UDP socket capacities when the
+// configured bind exposes them. A custom bind may return nil.
+func (s *Stack) UDPBufferStatus() []wstransport.UDPBufferStatus {
+	bind := s.bind
+	for {
+		if status, ok := bind.(interface {
+			BufferStatus() []wstransport.UDPBufferStatus
+		}); ok {
+			return status.BufferStatus()
+		}
+		unwrapped, ok := bind.(interface{ Unwrap() conn.Bind })
+		if !ok {
+			return nil
+		}
+		bind = unwrapped.Unwrap()
+	}
+}
 
 // ValidatePublicKey validates the base64 WireGuard public-key representation
 // used by ntwire configuration without installing a peer.

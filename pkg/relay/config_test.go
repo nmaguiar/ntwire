@@ -1,9 +1,52 @@
 package relay
 
 import (
+	"errors"
+	"net"
 	"os"
 	"testing"
 )
+
+type fakeUDPBufferTuner struct {
+	read, write int
+	readErr     error
+	writeErr    error
+}
+
+func (f *fakeUDPBufferTuner) SetReadBuffer(n int) error  { f.read = n; return f.readErr }
+func (f *fakeUDPBufferTuner) SetWriteBuffer(n int) error { f.write = n; return f.writeErr }
+
+func TestTuneUDPBufferTuner_DefaultAndErrors(t *testing.T) {
+	tuner := &fakeUDPBufferTuner{}
+	if err := tuneUDPBufferTuner(tuner, 0); err != nil {
+		t.Fatal(err)
+	}
+	if tuner.read != defaultUDPBufferBytes || tuner.write != defaultUDPBufferBytes {
+		t.Fatalf("default buffers = read %d, write %d; want %d", tuner.read, tuner.write, defaultUDPBufferBytes)
+	}
+	tuner = &fakeUDPBufferTuner{writeErr: errors.New("clamped")}
+	if err := tuneUDPBufferTuner(tuner, 1024); err == nil || tuner.read != 1024 || tuner.write != 1024 {
+		t.Fatalf("write failure = %v, calls read=%d write=%d; want propagated failure after both requested", err, tuner.read, tuner.write)
+	}
+}
+
+func TestUDPBufferStatusForReportsKernelAcceptedValues(t *testing.T) {
+	pc, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	if err := tuneUDPBuffers(pc, 64<<10); err != nil {
+		t.Fatal(err)
+	}
+	got, err := udpBufferStatusFor(pc, 64<<10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Requested != 64<<10 || got.Read <= 0 || got.Write <= 0 {
+		t.Fatalf("udpBufferStatusFor() = %+v, want requested and accepted read/write capacities", got)
+	}
+}
 
 // writeRelayConfig writes a minimal valid relay config with the given
 // domain and registration name substituted in, using a freshly generated

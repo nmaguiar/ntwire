@@ -57,8 +57,8 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.RegisterPath("peer-1", "primary", PathWSS, primaryEP, true)
-	m.RegisterPath("peer-1", "candidate", PathUDPRelay, candidateEP, true)
+	m.RegisterPath("peer-1", "primary", PathWSS, primaryEP, true, false)
+	m.RegisterPath("peer-1", "candidate", PathUDPRelay, candidateEP, true, false)
 
 	ackProbe := func(sock net.PacketConn) {
 		t.Helper()

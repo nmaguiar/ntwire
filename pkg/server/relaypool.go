@@ -69,6 +69,19 @@ func NewRelayPool(cfg RelayConfig, log *slog.Logger) (*RelayPool, error) {
 
 func (p *RelayPool) Listener() net.Listener { return p.listener }
 
+// Agents returns the pool's stable relay-agent set. It is used for optional
+// control-plane callbacks that must be attached before Run starts; callers
+// receive a new slice and cannot change pool membership.
+func (p *RelayPool) Agents() []*RelayAgent {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]*RelayAgent, len(p.members))
+	for i, member := range p.members {
+		out[i] = member.agent
+	}
+	return out
+}
+
 // SetSocksTargets propagates the server's SOCKS egress targets to every pool member.
 func (p *RelayPool) SetSocksTargets(targets []protocol.SocksTarget) {
 	p.mu.Lock()
