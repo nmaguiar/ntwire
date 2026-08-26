@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -208,6 +209,143 @@ func TestPostUDPRelayParsesSuccessResponse(t *testing.T) {
 	}
 	if gotAuth != "Bearer tok" {
 		t.Errorf("Authorization header = %q, want %q", gotAuth, "Bearer tok")
+	}
+}
+
+// TestPostUDPRelayIncludesClientObservedStatsAndStoresResponse is item 1's
+// end-to-end client-side regression: once the multipath bind has observed
+// some traffic on the udp-relay candidate, postUDPRelay must include it as
+// the request's ClientUDPRelayStats, and whatever hop-telemetry summary the
+// server sends back must be stored for local status to surface (see
+// Connection.relayHopStats).
+func TestPostUDPRelayIncludesClientObservedStatsAndStoresResponse(t *testing.T) {
+	var gotBody protocol.UDPRelayRequest
+	wantStats := &protocol.UDPRelayHopStats{ClientPacketsReceived: 5, ClientBytesReceived: 500}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(protocol.UDPRelayResponse{RelayAddr: "1.2.3.4:5", Token: "tok-1", Stats: wantStats})
+	}))
+	defer srv.Close()
+
+	base := conn.NewStdNetBind()
+	m := wstransport.NewMultipathBind(base, "relay-server", false, false, wstransport.V2Options{})
+	defer m.Close()
+	if _, _, err := m.Open(0); err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	ep, err := base.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RegisterPath("udp-relay", wstransport.PathUDPRelay, ep)
+	m.Scheduler().ProbeResult("udp-relay", 10*time.Millisecond, true, time.Now())
+
+	sendEP, err := m.ParseEndpoint(wstransport.MultipathSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, 32)
+	binary.LittleEndian.PutUint32(packet, 4)
+	if err := m.Send([][]byte{packet}, sendEP); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &Connection{http: srv.Client(), base: srv.URL, token: "tok", multipath: m}
+	resp, err := c.postUDPRelay()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.RelayAddr != "1.2.3.4:5" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if gotBody.Stats == nil || gotBody.Stats.BytesSent != 32 || gotBody.Stats.PacketsSent != 1 {
+		t.Fatalf("request body Stats = %+v, want BytesSent=32 PacketsSent=1", gotBody.Stats)
+	}
+	if got := c.relayHopStats.Load(); got == nil || *got != *wantStats {
+		t.Fatalf("relayHopStats = %+v, want %+v", got, wantStats)
+	}
+}
+
+// TestTryUDPRelayUpgradeResetsLegStatsOnTokenChange is the regression test
+// for the epoch mismatch item 1's design review caught: the relay's own hop
+// counters (protocol.RelayUDPStats) start over at zero for every fresh
+// allocation token, so if this side's udp-relay leg counters kept
+// accumulating across a re-allocation (the rung lost and re-climbed, or a
+// relay failover -- see item 5), the next report would compare two
+// different epochs and read as a burst of client<->relay loss that never
+// happened. tryUDPRelayUpgrade must reset MultipathBind's leg counters
+// whenever the server hands back a different token than last time, and
+// leave them alone when the token is unchanged (an idempotent reminder
+// call for the same live session).
+func TestTryUDPRelayUpgradeResetsLegStatsOnTokenChange(t *testing.T) {
+	token := "tok-1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(protocol.UDPRelayResponse{RelayAddr: "127.0.0.1:1", Token: token})
+	}))
+	defer srv.Close()
+
+	clientBind := wstransport.NewFilterBind(conn.NewStdNetBind())
+	if _, _, err := clientBind.Open(0); err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	defer clientBind.Close()
+
+	base := conn.NewStdNetBind()
+	m := wstransport.NewMultipathBind(base, "relay-server", false, false, wstransport.V2Options{})
+	defer m.Close()
+	if _, _, err := m.Open(0); err != nil {
+		t.Skipf("loopback UDP unavailable: %v", err)
+	}
+	ep, err := base.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.RegisterPath("udp-relay", wstransport.PathUDPRelay, ep)
+	m.Scheduler().ProbeResult("udp-relay", 10*time.Millisecond, true, time.Now())
+	sendEP, err := m.ParseEndpoint(wstransport.MultipathSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packet := make([]byte, 32)
+	binary.LittleEndian.PutUint32(packet, 4)
+	if err := m.Send([][]byte{packet}, sendEP); err != nil {
+		t.Fatal(err)
+	}
+	if sent, _, _, _ := m.RelayLegStats(); sent == 0 {
+		t.Fatal("setup: expected non-zero relay leg stats before the first attempt")
+	}
+
+	c := &Connection{
+		http: srv.Client(), base: srv.URL, token: "tok", multipath: m,
+		upgradeTiming: directUpgradeTiming{reflectTimeout: 20 * time.Millisecond},
+	}
+
+	// Same token as c.lastRelayUDPToken's zero value is "different" (a
+	// first-ever attempt), so this first call resets what setup just sent --
+	// matching the real flow, where a fresh candidate has nothing sent on it
+	// yet at this point.
+	c.tryUDPRelayUpgrade(clientBind)
+	if sent, _, _, _ := m.RelayLegStats(); sent != 0 {
+		t.Fatalf("RelayLegStats sent = %d after first (new-token) attempt, want 0 (reset)", sent)
+	}
+
+	// Simulate real traffic accumulating on the now-established candidate,
+	// then call again with the SAME token: an idempotent reminder call must
+	// not reset counters out from under a live session.
+	if err := m.Send([][]byte{packet}, sendEP); err != nil {
+		t.Fatal(err)
+	}
+	c.tryUDPRelayUpgrade(clientBind)
+	if sent, _, _, _ := m.RelayLegStats(); sent != 32 {
+		t.Fatalf("RelayLegStats sent = %d after same-token attempt, want 32 (must not reset)", sent)
+	}
+
+	// The relay hands back a new token (re-allocation) -- the next attempt
+	// must reset again.
+	token = "tok-2"
+	c.tryUDPRelayUpgrade(clientBind)
+	if sent, _, _, _ := m.RelayLegStats(); sent != 0 {
+		t.Fatalf("RelayLegStats sent = %d after new-token attempt, want 0 (reset)", sent)
 	}
 }
 

@@ -12,9 +12,14 @@ import (
 
 // RelayPool keeps a server registered with every configured relay. All
 // members share one listener, so an inbound connection arriving through any
-// healthy member reaches the same TLS handler. The first healthy configured
-// member is the preferred source for optional UDP/direct-upgrade facilities;
-// losing it selects the next member without taking the server offline.
+// healthy member reaches the same TLS handler. Exactly one registered member
+// is preferred at a time -- the source for optional UDP-relay/direct-upgrade
+// facilities -- chosen by availability score (see relayPoolMember.score)
+// only when there is no current preferred member or it has stopped being
+// registered; see update/choosePreferred. Every other registered member
+// keeps its own live control connection regardless (Run starts all of them
+// unconditionally), so it is already a warm standby, not a cold one that
+// needs separately keeping alive.
 type RelayPool struct {
 	listener  *relayListener
 	members   []*relayPoolMember
@@ -35,6 +40,35 @@ type relayPoolMember struct {
 	agent      *RelayAgent
 	registered bool
 	response   protocol.RelayRegisterResponse
+}
+
+// score ranks a registered member for preferred selection: lower is better.
+// A member currently offering no UDP-relay address is deprioritized (it can
+// still carry the TLS/WSS control-plane traffic, but not the UDP-relay
+// tier), then members are ranked by observed AllocateUDPSession failure
+// rate. A member with no allocation attempts yet scores as neutral, never as
+// if it had already failed -- the same "no data yet is not confirmed
+// failure" convention wstransport.Scheduler's DeliveryRatio sentinel uses.
+//
+// Deliberately lifetime-cumulative, not EWMA/rolling-window like every other
+// scoring input in this codebase (RTT, loss, DeliveryRatio): score only ever
+// runs in choosePreferred, when there is no current preferred member at all
+// (a rare, coarse-grained event), not on a packet hot path, so there is no
+// windowing concern to smooth away transient noise for. The tradeoff is that
+// a member with one bad past hour carries that failure rate indefinitely; if
+// that turns out to matter in practice, moving to a rolling window here is
+// the fix, not changing what feeds Scheduler.score -- this stays out of the
+// per-packet path entirely.
+func (m *relayPoolMember) score() float64 {
+	sc := 0.0
+	if m.response.UDPRelayAddr == "" {
+		sc += 1.0
+	}
+	success, failure := m.agent.AllocationStats()
+	if total := success + failure; total > 0 {
+		sc += float64(failure) / float64(total)
+	}
+	return sc
 }
 
 // NewRelayPool creates either the legacy one-member pool or an active-active
@@ -113,13 +147,7 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	oldResponse := member.response
 	oldPreferred := p.preferred
 	member.registered, member.response = registered, response
-	var preferred *relayPoolMember
-	for _, candidate := range p.members {
-		if candidate.registered {
-			preferred = candidate
-			break
-		}
-	}
+	preferred := p.choosePreferred(oldPreferred)
 	p.preferred = preferred
 	changed := oldPreferred != preferred
 	if preferred == member && registered && (oldResponse.ReflectAddr != response.ReflectAddr || oldResponse.UDPRelayAddr != response.UDPRelayAddr || oldResponse.NativeWireGuardAddr != response.NativeWireGuardAddr || oldResponse.NativeWireGuardToken != response.NativeWireGuardToken) {
@@ -149,6 +177,31 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 			onNative(preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken)
 		}
 	}
+}
+
+// choosePreferred implements sticky preferred-member selection, called with
+// p.mu already held. current is kept as long as it is still registered: a
+// higher-scoring member reconnecting or re-registering must not itself
+// force the current preferred's established UDP-relay sessions to tear down
+// (see EnableUDPRelay/udpRelay.stopAll) -- "move only new allocations unless
+// an established path has genuinely failed." Only when there is no current
+// preferred, or it has stopped being registered, is a new one chosen, by
+// lowest score (see relayPoolMember.score) among currently registered
+// members.
+func (p *RelayPool) choosePreferred(current *relayPoolMember) *relayPoolMember {
+	if current != nil && current.registered {
+		return current
+	}
+	var best *relayPoolMember
+	for _, candidate := range p.members {
+		if !candidate.registered {
+			continue
+		}
+		if best == nil || candidate.score() < best.score() {
+			best = candidate
+		}
+	}
+	return best
 }
 
 // Healthy reports whether at least one relay control connection is live.

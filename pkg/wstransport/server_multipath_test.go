@@ -263,3 +263,130 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 		t.Fatalf("primary after real-socket ack round trip = %q, want udp-relay -- bySource lookup did not match a real StdNetBind endpoint", primary)
 	}
 }
+
+// TestServerMultipathDuplicationBudgetLimitsAndCounts is item 6's end-to-end
+// check: once Select's reactive duplication triggers, Send must still cap
+// how much of it actually goes out to a small configured budget, and must
+// record what happened (allowed vs. suppressed) per candidate so the budget's
+// effect is inspectable rather than only silently bounding traffic.
+func TestServerMultipathDuplicationBudgetLimitsAndCounts(t *testing.T) {
+	base := &fakeBind{}
+	m := NewServerMultipathBind(base, V2Options{DuplicateRateBytesPerSec: 100})
+	defer m.Close()
+
+	wssEP := fakeEndpoint{id: "wss-ep"}
+	relayEP := fakeEndpoint{id: "relay-ep"}
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false)
+	m.RegisterPath("peer-1", "relay", PathUDPRelay, relayEP, false, false)
+
+	m.mu.RLock()
+	p := m.peers["peer-1"]
+	m.mu.RUnlock()
+
+	// Mirrors TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded: relay
+	// starts fast and healthy, then accumulates enough loss that wss (slow
+	// but lossless) becomes primary and Select asks to duplicate onto relay.
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		p.scheduler.ProbeResult("wss", 300*time.Millisecond, true, now)
+		p.scheduler.ProbeResult("relay", 20*time.Millisecond, true, now)
+	}
+	for i := 0; i < 16; i++ {
+		p.scheduler.ProbeResult("relay", 20*time.Millisecond, true, now)
+	}
+	p.scheduler.ProbeResult("relay", 0, false, now)
+	primary, alternate, dup := p.scheduler.Select()
+	if primary != "wss" || alternate != "relay" || !dup {
+		t.Fatalf("setup did not reach a duplicating state: primary=%q alternate=%q dup=%v", primary, alternate, dup)
+	}
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	base.reset()
+
+	// wireguard-go calls Send with its whole outbound batch (see
+	// device.Peer.SendBuffers), not one packet at a time -- exercise that
+	// shape here so the budget/counters are charged for the full 80-byte
+	// batch, not just bufs[0]'s 40.
+	batch := [][]byte{packet, packet}
+	if err := m.Send(batch, p.endpoint); err != nil {
+		t.Fatalf("first Send: %v", err)
+	}
+	if err := m.Send(batch, p.endpoint); err != nil {
+		t.Fatalf("second Send: %v", err)
+	}
+
+	base.mu.Lock()
+	relaySends := 0
+	for _, d := range base.dests {
+		if d.DstToString() == "relay-ep" {
+			relaySends++
+		}
+	}
+	base.mu.Unlock()
+	// Budget is 100 bytes/sec and starts full; the first 80-byte batch
+	// (both packets in it, so 2 sends to relay-ep) exhausts most of it, so
+	// the second batch (sent immediately after, with negligible refill)
+	// must be withheld entirely -- 0 further sends, not 2.
+	if relaySends != 2 {
+		t.Fatalf("duplicated packets sent to relay = %d, want exactly 2 (one batch allowed, the next denied)", relaySends)
+	}
+
+	var relayStatus PathStatus
+	for _, s := range p.scheduler.Status() {
+		if s.Name == "relay" {
+			relayStatus = s
+		}
+	}
+	if relayStatus.DuplicatedBytes != 80 {
+		t.Fatalf("DuplicatedBytes = %d, want 80 (both packets in the allowed batch)", relayStatus.DuplicatedBytes)
+	}
+	if relayStatus.DuplicationSuppressedBytes != 80 {
+		t.Fatalf("DuplicationSuppressedBytes = %d, want 80 (both packets in the denied batch)", relayStatus.DuplicationSuppressedBytes)
+	}
+}
+
+// TestMultipathBindTracksRelayLegTraffic is item 1's client-side
+// hop-telemetry regression: MultipathBind must count its own sent/received
+// bytes on the udp-relay candidate specifically, both directions, so
+// pkg/client can report protocol.ClientUDPRelayStats to the server and
+// close the client<->relay-leg loss-localization loop.
+func TestMultipathBindTracksRelayLegTraffic(t *testing.T) {
+	base := &fakeBind{}
+	m := NewMultipathBind(base, "relay-server", false, false, V2Options{})
+	defer m.Close()
+
+	relayEP := fakeEndpoint{id: "relay-ep"}
+	m.RegisterPath("udp-relay", PathUDPRelay, relayEP)
+	// Mark the candidate healthy directly -- fakeBind never actually answers
+	// the immediate probe RegisterPath just fired.
+	m.scheduler.ProbeResult("udp-relay", 10*time.Millisecond, true, time.Now())
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet}, m.endpoint); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	sentBytes, sentPackets, _, _ := m.RelayLegStats()
+	if sentBytes != 40 || sentPackets != 1 {
+		t.Fatalf("RelayLegStats after one send = (%d, %d), want (40, 1)", sentBytes, sentPackets)
+	}
+
+	fakeFn := func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		sizes[0] = copy(bufs[0], packet)
+		eps[0] = relayEP
+		return 1, nil
+	}
+	wrapped := m.wrapReceive(fakeFn)
+	bufs := [][]byte{make([]byte, 128)}
+	sizes := make([]int, 1)
+	eps := make([]conn.Endpoint, 1)
+	if _, err := wrapped(bufs, sizes, eps); err != nil {
+		t.Fatalf("wrapReceive: %v", err)
+	}
+	_, _, receivedBytes, receivedPackets := m.RelayLegStats()
+	if receivedBytes != 40 || receivedPackets != 1 {
+		t.Fatalf("RelayLegStats after one receive = (%d, %d), want (40, 1)", receivedBytes, receivedPackets)
+	}
+}

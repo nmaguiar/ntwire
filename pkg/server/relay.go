@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -141,6 +143,23 @@ type RelayAgent struct {
 
 	pendingMu     sync.Mutex
 	pendingAllocs map[string]chan protocol.RelayUDPAllocateResponse
+
+	// allocSuccess/allocFailure count AllocateUDPSession outcomes across
+	// this agent's whole lifetime (including across control-connection
+	// reconnects). Best-effort, diagnostic-only availability signal for
+	// RelayPool's preferred-member scoring (see relaypool.go's
+	// relayPoolMember.score) -- never used for billing or security
+	// decisions, matching every other counter in this codebase.
+	allocSuccess atomic.Uint64
+	allocFailure atomic.Uint64
+}
+
+// AllocationStats returns this agent's cumulative UDP-relay allocation
+// outcome counts. A member with zero total attempts has no availability
+// history yet and must be treated as neutral by a caller scoring it, never
+// as if it had already failed -- see relayPoolMember.score.
+func (a *RelayAgent) AllocationStats() (success, failure uint64) {
+	return a.allocSuccess.Load(), a.allocFailure.Load()
 }
 
 func NewRelayAgent(cfg RelayConfig, log *slog.Logger) (*RelayAgent, error) {
@@ -365,6 +384,19 @@ func (a *RelayAgent) failPendingAllocs() {
 // /v1/udp-relay HTTP handler, via udpRelay.sessionFor) treats that exactly
 // like PunchResponse's empty case, not a hard failure.
 func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr string, err error) {
+	defer func() {
+		switch {
+		case token != "" && serverAddr != "":
+			a.allocSuccess.Add(1)
+		case errors.Is(err, context.Canceled):
+			// The caller's own context ended the request (e.g. an HTTP
+			// client that disconnected mid-/v1/udp-relay call) -- not
+			// something the relay or its control connection did, so it
+			// must not count against this member's observed availability.
+		default:
+			a.allocFailure.Add(1)
+		}
+	}()
 	a.wsMu.Lock()
 	ws := a.ws
 	a.wsMu.Unlock()

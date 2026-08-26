@@ -147,11 +147,12 @@ type RelayConfig struct {
 // MultipathConfig is RelayConfig.Multipath's field set -- see its doc
 // comment and wstransport.V2Options for what each knob does.
 type MultipathConfig struct {
-	MirrorRateBytesPerSec int           `yaml:"mirror_rate_bytes_per_sec"`
-	MinDeliveryRatio      float64       `yaml:"min_delivery_ratio"`
-	SwitchMargin          time.Duration `yaml:"switch_margin"`
-	MinDwell              time.Duration `yaml:"min_dwell"`
-	ReportInterval        time.Duration `yaml:"report_interval"`
+	MirrorRateBytesPerSec    int           `yaml:"mirror_rate_bytes_per_sec"`
+	MinDeliveryRatio         float64       `yaml:"min_delivery_ratio"`
+	SwitchMargin             time.Duration `yaml:"switch_margin"`
+	MinDwell                 time.Duration `yaml:"min_dwell"`
+	ReportInterval           time.Duration `yaml:"report_interval"`
+	DuplicateRateBytesPerSec int           `yaml:"duplicate_rate_bytes_per_sec"`
 }
 
 // RelayEndpoint is one independently reachable relay agents endpoint. Its

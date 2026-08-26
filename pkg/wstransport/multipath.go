@@ -62,6 +62,58 @@ type MultipathBind struct {
 	recvMu       sync.Mutex
 	recvCounters map[string]*recvCounter
 	attempts     *mirrorAccounting
+
+	// dupLimiter bounds Select's reactive WireGuard-only duplication (see
+	// Send), regardless of v1/v2: unlike mirror, duplication is a v1
+	// behavior too, so this is always allocated.
+	dupLimiter *mirrorLimiter
+
+	// relayEndpointID is the "udp-relay" candidate's endpoint identity
+	// string, cached at RegisterPath time so Send/wrapReceive can recognize
+	// its traffic with a cheap string compare instead of a locked map
+	// lookup on every packet -- see relaySentBytes/relayReceivedBytes.
+	// nil until (if ever) a session negotiates the UDP-relay tier.
+	relayEndpointID atomic.Pointer[string]
+	// relaySent*/relayReceived* count this client's own observed traffic on
+	// the udp-relay candidate specifically -- comparing them against the
+	// relay's own client-facing-leg counters (reported relay->server over
+	// /v1/relay/control) localizes a loss to specifically the client<->relay
+	// leg. Always allocated (zero-value atomics), reported to the server as
+	// protocol.ClientUDPRelayStats via POST /v1/udp-relay (see
+	// pkg/client/directupgrade.go's postUDPRelay) -- best-effort and
+	// approximate, since control frames sent directly via m.base.Send
+	// (sendProbe, sendMTUProbe, the relay-bind keepalive) are not counted
+	// here, only ordinary WireGuard dispatch through Send/wrapReceive.
+	relaySentBytes, relaySentPackets         atomic.Uint64
+	relayReceivedBytes, relayReceivedPackets atomic.Uint64
+}
+
+// RelayLegStats returns this client's cumulative observed traffic on the
+// udp-relay candidate, for reporting to the server (see
+// protocol.ClientUDPRelayStats). All-zero means either udp-relay was never
+// registered as a candidate for this session, or nothing has been sent or
+// received over it yet -- a caller should simply omit the report rather
+// than treat that as a meaningful zero.
+func (m *MultipathBind) RelayLegStats() (sentBytes, sentPackets, receivedBytes, receivedPackets uint64) {
+	return m.relaySentBytes.Load(), m.relaySentPackets.Load(), m.relayReceivedBytes.Load(), m.relayReceivedPackets.Load()
+}
+
+// ResetRelayLegStats zeroes the udp-relay leg counters RelayLegStats
+// reports. The relay's own per-allocation hop counters
+// (protocol.RelayUDPStats) start over at zero on every fresh token (see
+// pkg/server/udprelay.go's udpRelaySessionState) -- if this side's
+// cumulative-since-connection-start counters were compared against that,
+// any re-allocation (the rung lost and re-climbed, or a relay failover)
+// would read as a burst of client<->relay loss that never happened.
+// Callers must call this on a token change, not on every RegisterPath
+// refresh: RegisterPath runs idempotently on every reminder call for an
+// unchanged, still-live session, and zeroing there would erase real
+// mid-session counters for no reason.
+func (m *MultipathBind) ResetRelayLegStats() {
+	m.relaySentBytes.Store(0)
+	m.relaySentPackets.Store(0)
+	m.relayReceivedBytes.Store(0)
+	m.relayReceivedPackets.Store(0)
 }
 
 // outstandingProbe is one in-flight FramePathProbe this side is waiting on an
@@ -104,6 +156,7 @@ func NewMultipathBind(base conn.Bind, id string, v2, pathMTU bool, opts V2Option
 		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
 		probes: make(map[string]outstandingProbe), mtuProbes: make(map[string]outstandingMTUProbe), mtuDone: make(map[string]bool), stop: make(chan struct{}),
 		v2: v2, pathMTU: pathMTU, opts: opts,
+		dupLimiter: newMirrorLimiter(opts.DuplicateRateBytesPerSec),
 	}
 	if v2 {
 		m.scheduler.SetV2Options(opts)
@@ -127,6 +180,10 @@ func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.E
 	m.mu.Lock()
 	m.paths[name] = endpoint
 	m.mu.Unlock()
+	if name == string(PathUDPRelay) {
+		id := endpoint.DstToString()
+		m.relayEndpointID.Store(&id)
+	}
 	m.scheduler.Register(name, kind)
 	m.sendProbe(name, time.Now())
 }
@@ -174,6 +231,12 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					continue
 				}
 				seen := m.cache.Seen(b, time.Now())
+				if !seen {
+					if id := m.relayEndpointID.Load(); id != nil && eps[i].DstToString() == *id {
+						m.relayReceivedBytes.Add(uint64(len(b)))
+						m.relayReceivedPackets.Add(1)
+					}
+				}
 				if seen && m.v2 {
 					// A packet DuplicateCache recognizes as a repeat is
 					// exactly what mirroring produces: the same encrypted
@@ -223,6 +286,14 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if err := m.base.Send(bufs, first); err != nil {
 		return err
 	}
+	if primary == string(PathUDPRelay) {
+		n := 0
+		for _, b := range bufs {
+			n += len(b)
+		}
+		m.relaySentBytes.Add(uint64(n))
+		m.relaySentPackets.Add(uint64(len(bufs)))
+	}
 	// Type 4 is WireGuard transport. All handshake/control types remain
 	// single-path even when the scheduler asks for duplication or mirroring.
 	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
@@ -230,6 +301,22 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	if duplicate {
 		if second != nil {
+			// bufs is wireguard-go's whole outbound batch (up to
+			// device.maxBatchSize packets), not just bufs[0] -- the type-4
+			// check above only inspects the first buffer to classify the
+			// batch, but every buffer in it is duplicated below, so the
+			// budget and counters must charge for the batch's total size or
+			// they undercount by up to that batch size under load, exactly
+			// when the budget matters most.
+			n := 0
+			for _, b := range bufs {
+				n += len(b)
+			}
+			if !m.dupLimiter.Allow(n) {
+				m.scheduler.RecordDuplication(alternate, n, false)
+				return nil
+			}
+			m.scheduler.RecordDuplication(alternate, n, true)
 			return m.base.Send(bufs, second)
 		}
 		return nil
@@ -567,6 +654,15 @@ type PathStatus struct {
 	DatagramMTU uint16 `json:"datagram_mtu"`
 	// Forced indicates whether this candidate is the user's manual selection.
 	Forced bool `json:"forced"`
+	// DuplicatedBytes is the cumulative count of primary WireGuard bytes
+	// reactively duplicated to this candidate (see Scheduler.selectLocked's
+	// duplicate return and MultipathBind.Send). DuplicationSuppressedBytes
+	// is how many further bytes duplication would have sent here but were
+	// withheld by the bounded duplication budget -- together they make that
+	// budget's effect on this path directly inspectable instead of only
+	// bounding it blindly.
+	DuplicatedBytes            uint64 `json:"duplicated_bytes"`
+	DuplicationSuppressedBytes uint64 `json:"duplication_suppressed_bytes"`
 }
 
 type candidate struct {
@@ -578,6 +674,14 @@ type candidate struct {
 	// without retaining unbounded telemetry.
 	rtts    [20]time.Duration
 	rttNext int
+	// duplicatedBytes/duplicationSuppressedBytes back PathStatus's
+	// identically-named fields. Updated via RecordDuplication from the
+	// packet-send hot path, which only ever holds Scheduler.mu's read lock
+	// (see Select's doc comment on why), so -- unlike the rest of
+	// candidate's fields -- these must be atomics rather than mu-guarded
+	// plain fields.
+	duplicatedBytes            atomic.Uint64
+	duplicationSuppressedBytes atomic.Uint64
 }
 
 // Scheduler implements the v1 (RTT/loss) selection policy, extended in v2
@@ -774,6 +878,28 @@ func (s *Scheduler) ReportThroughput(name string, bytes uint32, windowMillis uin
 		p.ThroughputBytesPerSec = ratio
 	} else {
 		p.ThroughputBytesPerSec = (p.ThroughputBytesPerSec*7 + ratio) / 8
+	}
+}
+
+// RecordDuplication accounts one reactive-duplication decision for name:
+// allowed bytes actually sent, or withheld bytes if the duplication budget
+// denied them (see MultipathBind.Send). It only ever takes a read lock to
+// look up the candidate, then updates its counters via atomic add -- Select
+// is called on every packet send and deliberately never takes an exclusive
+// lock (see its doc comment), so recording a decision from the same hot path
+// must not either, especially since duplication is only active while a
+// candidate is degraded, i.e. exactly when this would be called most.
+func (s *Scheduler) RecordDuplication(name string, n int, allowed bool) {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	if p == nil {
+		return
+	}
+	if allowed {
+		p.duplicatedBytes.Add(uint64(n))
+	} else {
+		p.duplicationSuppressedBytes.Add(uint64(n))
 	}
 }
 
@@ -993,6 +1119,8 @@ func (s *Scheduler) Status() []PathStatus {
 		v := p.PathStatus
 		v.Primary = v.Name == primary
 		v.Forced = v.Name == forced
+		v.DuplicatedBytes = p.duplicatedBytes.Load()
+		v.DuplicationSuppressedBytes = p.duplicationSuppressedBytes.Load()
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

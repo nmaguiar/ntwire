@@ -99,6 +99,93 @@ func TestRelayPoolKeepsPreferredMemberStableWhenAnotherRegisters(t *testing.T) {
 	}
 }
 
+// TestRelayPoolStickyPreferredDoesNotFailBackWhenOriginalRecovers is item 5's
+// core regression: A is preferred, A fails over to B, and A later
+// reconnects. The pool must keep B preferred rather than snapping back to A
+// just because A is first in list order -- reclaiming preferred on every
+// recovery would tear down every session on the current (working) preferred
+// member for no operational reason (see EnableUDPRelay/udpRelay.stopAll).
+func TestRelayPoolStickyPreferredDoesNotFailBackWhenOriginalRecovers(t *testing.T) {
+	pool, err := NewRelayPool(RelayConfig{
+		Enabled: true, Name: "home", IdentityFile: "unused-in-construction",
+		Endpoints: []RelayEndpoint{{URL: "wss://relay-a.example.test:8444"}, {URL: "wss://relay-b.example.test:8444"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var udpCalls []string
+	pool.OnUDPRelayAddr = func(_ *RelayAgent, addr string) { udpCalls = append(udpCalls, addr) }
+	a, b := pool.members[0], pool.members[1]
+
+	pool.update(a, true, protocol.RelayRegisterResponse{Domain: "relay.example.test", UDPRelayAddr: "a-udp:1"})
+	pool.update(b, true, protocol.RelayRegisterResponse{Domain: "relay.example.test", UDPRelayAddr: "b-udp:1"})
+	if pool.preferred != a {
+		t.Fatalf("preferred = %v, want a", pool.preferred)
+	}
+
+	// A fails: B takes over.
+	pool.update(a, false, protocol.RelayRegisterResponse{})
+	if pool.preferred != b {
+		t.Fatalf("preferred after A fails = %v, want b", pool.preferred)
+	}
+
+	// A reconnects and re-registers. Preferred must stay B (sticky) --
+	// A recovering is not "an established path genuinely failing".
+	pool.update(a, true, protocol.RelayRegisterResponse{Domain: "relay.example.test", UDPRelayAddr: "a-udp:1"})
+	if pool.preferred != b {
+		t.Fatalf("preferred after A recovers = %v, want b (sticky)", pool.preferred)
+	}
+	if len(udpCalls) != 2 || udpCalls[0] != "a-udp:1" || udpCalls[1] != "b-udp:1" {
+		t.Fatalf("OnUDPRelayAddr calls = %v, want exactly [a-udp:1 b-udp:1] (A's recovery must not fire a third call)", udpCalls)
+	}
+
+	// Only when B itself now fails does preferred move again.
+	pool.update(b, false, protocol.RelayRegisterResponse{})
+	if pool.preferred != a {
+		t.Fatalf("preferred after B fails = %v, want a", pool.preferred)
+	}
+}
+
+// TestRelayPoolMemberScorePrefersUDPRelayAndLowerFailureRate covers
+// relayPoolMember.score's two inputs directly: a member with no UDP-relay
+// address loses to one that has it, and among two members that both offer
+// it, the one with a worse observed AllocateUDPSession failure rate scores
+// worse. A member with zero allocation attempts must score as neutral, not
+// as if it had already failed.
+func TestRelayPoolMemberScorePrefersUDPRelayAndLowerFailureRate(t *testing.T) {
+	noUDP := &relayPoolMember{agent: &RelayAgent{}, response: protocol.RelayRegisterResponse{}}
+	withUDP := &relayPoolMember{agent: &RelayAgent{}, response: protocol.RelayRegisterResponse{UDPRelayAddr: "x:1"}}
+	if withUDP.score() >= noUDP.score() {
+		t.Fatalf("member offering UDP relay scored %v, want lower than %v (no UDP relay)", withUDP.score(), noUDP.score())
+	}
+
+	fresh := &relayPoolMember{agent: &RelayAgent{}, response: protocol.RelayRegisterResponse{UDPRelayAddr: "x:1"}}
+	flaky := &relayPoolMember{agent: &RelayAgent{}, response: protocol.RelayRegisterResponse{UDPRelayAddr: "y:1"}}
+	flaky.agent.allocSuccess.Store(1)
+	flaky.agent.allocFailure.Store(9)
+	if flaky.score() <= fresh.score() {
+		t.Fatalf("flaky member scored %v, want worse (higher) than a fresh member's %v", flaky.score(), fresh.score())
+	}
+}
+
+// TestRelayAgent_AllocateUDPSessionRecordsOutcomes checks that
+// AllocateUDPSession's defer records a failure (not a success, and not a
+// panic on a nil-ws agent) when there is no live control connection --
+// AllocationStats' only reachable failure path that doesn't need a live
+// relay control connection to exercise.
+func TestRelayAgent_AllocateUDPSessionRecordsOutcomes(t *testing.T) {
+	a := &RelayAgent{}
+	token, addr, err := a.AllocateUDPSession(context.Background())
+	if token != "" || addr != "" || err != nil {
+		t.Fatalf("AllocateUDPSession with no control connection = (%q, %q, %v), want empty/nil", token, addr, err)
+	}
+	success, failure := a.AllocationStats()
+	if success != 0 || failure != 1 {
+		t.Fatalf("AllocationStats = (%d, %d), want (0, 1)", success, failure)
+	}
+}
+
 func TestRelayAgentHandleControlMessage_DeliversUDPStats(t *testing.T) {
 	var got protocol.RelayUDPStatsReport
 	a := &RelayAgent{OnUDPStats: func(report protocol.RelayUDPStatsReport) { got = report }}

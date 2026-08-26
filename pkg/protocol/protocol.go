@@ -372,9 +372,40 @@ type DirectCandidate struct {
 // reveals the server's real address to the client: the relay stays in the
 // data path for the session's whole life, forwarding between two UDP legs
 // it allocated, so it carries the same trust exposure as the default
-// WSS-through-relay path -- see docs/SECURITY.md. Empty: there is nothing
-// for the client to supply, unlike PunchRequest's ClientAddr exchange.
-type UDPRelayRequest struct{}
+// WSS-through-relay path -- see docs/SECURITY.md. Stats is the only optional
+// field: there is nothing else for the client to supply, unlike
+// PunchRequest's ClientAddr exchange.
+type UDPRelayRequest struct {
+	// Stats, when present, is this client's own cumulative observation of
+	// its client<->relay UDP-relay leg -- see ClientUDPRelayStats' doc
+	// comment for why this closes the hop-telemetry loop. Riding this
+	// request rather than a new endpoint or wire frame keeps the report
+	// authenticated (this endpoint is already session-token-protected) and
+	// needs no new capability negotiation: the client's existing upgrade
+	// ladder already calls this endpoint on every retry, revert, and
+	// renewal (see pkg/server/udprelay.go's sessionFor), so this simply
+	// rides along.
+	Stats *ClientUDPRelayStats `json:"stats,omitempty"`
+}
+
+// ClientUDPRelayStats is the client's own cumulative byte/packet counters
+// for its client<->relay UDP-relay leg, counted independently of anything
+// the relay or server observe. Comparing this against the relay's own
+// client-facing-leg counters (UDPRelayHopStats' ClientPacketsReceived etc,
+// already reported relay->server over /v1/relay/control) is what lets a
+// loss localize to specifically the client<->relay leg rather than
+// relay<->server. Cumulative since the client's current UDP-relay session
+// (token) began, not a rolling window -- the same cumulative-snapshot
+// convention the relay's own RelayUDPStats already uses, so no window
+// alignment is needed between client, relay, and server. Best-effort
+// diagnostics only, like every other counter in this codebase: never used
+// for billing or a security decision.
+type ClientUDPRelayStats struct {
+	BytesSent       uint64 `json:"bytes_sent"`
+	PacketsSent     uint64 `json:"packets_sent"`
+	BytesReceived   uint64 `json:"bytes_received"`
+	PacketsReceived uint64 `json:"packets_received"`
+}
 
 // UDPRelayResponse answers UDPRelayRequest. All fields empty means "this
 // rung isn't available right now" (no live relay connection, the relay
@@ -385,6 +416,35 @@ type UDPRelayResponse struct {
 	Token     string `json:"token,omitempty"`
 	Error     string `json:"error,omitempty"`
 	Code      string `json:"code,omitempty"`
+	// Stats is the server's best-known hop-telemetry summary for this
+	// session -- the relay's own client-facing/server-facing leg counters,
+	// plus (once received) this same client's own most recently reported
+	// ClientUDPRelayStats -- so the client's local diagnostics can see the
+	// same localized-loss picture the server's dashboard does, not just
+	// contribute to it. Omitted until at least one relay stats report has
+	// arrived for this session.
+	Stats *UDPRelayHopStats `json:"stats,omitempty"`
+}
+
+// UDPRelayHopStats is UDPRelayResponse.Stats' payload: the token-free,
+// client-facing form of one UDP-relay allocation's cumulative hop counters
+// as observed by the relay itself (both legs), plus this client's own most
+// recently reported leg counters. It deliberately carries neither the
+// allocation token nor either peer address, the same restriction
+// RelayUDPStats documents.
+type UDPRelayHopStats struct {
+	ClientPacketsReceived  uint64 `json:"client_packets_received"`
+	ClientBytesReceived    uint64 `json:"client_bytes_received"`
+	ServerPacketsForwarded uint64 `json:"server_packets_forwarded"`
+	ServerBytesForwarded   uint64 `json:"server_bytes_forwarded"`
+	ServerPacketsReceived  uint64 `json:"server_packets_received"`
+	ServerBytesReceived    uint64 `json:"server_bytes_received"`
+	ClientPacketsForwarded uint64 `json:"client_packets_forwarded"`
+	ClientBytesForwarded   uint64 `json:"client_bytes_forwarded"`
+	// ClientObserved echoes back this same client's own most recently
+	// reported UDP-relay leg counters (see UDPRelayRequest.Stats), so
+	// client-side diagnostics don't need to remember what they last sent.
+	ClientObserved *ClientUDPRelayStats `json:"client_observed,omitempty"`
 }
 
 // RelayOpen is pushed by the relay to an ntwire-server's control connection

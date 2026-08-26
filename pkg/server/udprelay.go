@@ -55,23 +55,20 @@ type udpRelaySessionState struct {
 	serverAddr string
 	stop       chan struct{}
 	stats      protocol.RelayUDPStats
+	// clientStats is this session's most recently reported
+	// UDPRelayRequest.Stats, echoed back to the client (see statsFor) as
+	// UDPRelayHopStats.ClientObserved -- see protocol.ClientUDPRelayStats'
+	// doc comment for why this closes the hop-telemetry loop.
+	clientStats *protocol.ClientUDPRelayStats
 }
 
-// relayUDPStatsSummary is the token-free, operator-facing form of one
-// UDP-relay allocation's cumulative hop counters. It intentionally exposes
-// neither the allocation token nor either peer address: both are routing
-// details, while the counters are only diagnostics for the protected server
-// dashboard.
-type relayUDPStatsSummary struct {
-	ClientPacketsReceived  uint64 `json:"client_packets_received"`
-	ClientBytesReceived    uint64 `json:"client_bytes_received"`
-	ServerPacketsForwarded uint64 `json:"server_packets_forwarded"`
-	ServerBytesForwarded   uint64 `json:"server_bytes_forwarded"`
-	ServerPacketsReceived  uint64 `json:"server_packets_received"`
-	ServerBytesReceived    uint64 `json:"server_bytes_received"`
-	ClientPacketsForwarded uint64 `json:"client_packets_forwarded"`
-	ClientBytesForwarded   uint64 `json:"client_bytes_forwarded"`
-}
+// relayUDPStatsSummary is an alias for the wire-level
+// protocol.UDPRelayHopStats: the token-free, operator-facing form of one
+// UDP-relay allocation's cumulative hop counters, used both by the protected
+// server dashboard and (as UDPRelayResponse.Stats) echoed back to the client
+// itself -- the same shape either way, so this is a name, not a second
+// struct to keep in sync.
+type relayUDPStatsSummary = protocol.UDPRelayHopStats
 
 func relayUDPStatsSummaryFrom(stats protocol.RelayUDPStats) relayUDPStatsSummary {
 	return relayUDPStatsSummary{
@@ -150,9 +147,11 @@ func (u *udpRelay) recordStats(report protocol.RelayUDPStatsReport) {
 }
 
 // statsFor returns the most recently reported cumulative relay-hop counters
-// for clientPubKey. The allocation token stays internal: callers get only a
-// copied, token-free diagnostic summary suitable for an authenticated
-// operator status surface.
+// for clientPubKey, plus that same client's own most recently reported leg
+// counters if any (see udpRelaySessionState.clientStats). The allocation
+// token stays internal: callers get only a copied, token-free diagnostic
+// summary suitable for an authenticated operator status surface or for
+// echoing straight back to the client itself.
 func (u *udpRelay) statsFor(clientPubKey string) (relayUDPStatsSummary, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
@@ -160,7 +159,25 @@ func (u *udpRelay) statsFor(clientPubKey string) (relayUDPStatsSummary, bool) {
 	if st == nil || st.stats.Token == "" {
 		return relayUDPStatsSummary{}, false
 	}
-	return relayUDPStatsSummaryFrom(st.stats), true
+	summary := relayUDPStatsSummaryFrom(st.stats)
+	summary.ClientObserved = st.clientStats
+	return summary, true
+}
+
+// recordClientStats attaches the client's own reported UDP-relay leg
+// counters to its live session, if one exists. A brand-new session (no
+// entry yet, e.g. the very first /v1/udp-relay call that establishes it)
+// silently has nothing to attach to -- expected, since the client cannot
+// have observed any traffic on a candidate it has not registered yet.
+func (u *udpRelay) recordClientStats(clientPubKey string, stats *protocol.ClientUDPRelayStats) {
+	if stats == nil {
+		return
+	}
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if st, ok := u.sessions[clientPubKey]; ok {
+		st.clientStats = stats
+	}
 }
 
 // RecordUDPRelayStats accepts a report from whichever relay agent is
@@ -190,12 +207,20 @@ func (s *Server) udpRelayStatsFor(clientPubKey string) (relayUDPStatsSummary, bo
 // pooled relay ports relay-wide on any flapping client -- otherwise a new
 // session is requested from the relay, this server's own WireGuard peer
 // endpoint for clientPubKey is pointed at the allocated address, and the
-// session's bind-and-keepalive loop is started.
-func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2, pathMTU bool) protocol.UDPRelayResponse {
+// session's bind-and-keepalive loop is started. clientStats, if present, is
+// recorded against the existing session (if any) and the response always
+// carries back whatever hop-telemetry summary this server currently has --
+// see statsFor and protocol.UDPRelayResponse.Stats.
+func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2, pathMTU bool, clientStats *protocol.ClientUDPRelayStats) protocol.UDPRelayResponse {
+	u.recordClientStats(clientPubKey, clientStats)
 	u.mu.Lock()
 	if st, ok := u.sessions[clientPubKey]; ok {
 		u.mu.Unlock()
-		return protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: st.token}
+		resp := protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: st.token}
+		if hop, ok := u.statsFor(clientPubKey); ok {
+			resp.Stats = &hop
+		}
+		return resp
 	}
 	u.mu.Unlock()
 

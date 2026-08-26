@@ -9,12 +9,20 @@ import (
 )
 
 func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
-	b, err := json.Marshal(PathStatus{Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1, DeliveryRatio: 0.9, ThroughputBytesPerSec: 1234.5})
+	b, err := json.Marshal(PathStatus{
+		Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1,
+		DeliveryRatio: 0.9, ThroughputBytesPerSec: 1234.5,
+		DuplicatedBytes: 100, DuplicationSuppressedBytes: 25,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(b)
-	for _, want := range []string{`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`, `"delivery_ratio":0.9`, `"throughput_bytes_per_sec":1234.5`} {
+	for _, want := range []string{
+		`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`,
+		`"delivery_ratio":0.9`, `"throughput_bytes_per_sec":1234.5`,
+		`"duplicated_bytes":100`, `"duplication_suppressed_bytes":25`,
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Marshal() = %s, missing %s", got, want)
 		}
@@ -63,6 +71,32 @@ func TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded(t *testing.T) {
 	if primary != "wss" || alternate != "relay" || !dup {
 		t.Fatalf("loss trigger = %q %q %v", primary, alternate, dup)
 	}
+}
+
+// TestRecordDuplicationTracksAllowedAndSuppressedSeparately checks
+// RecordDuplication's contract: allowed bytes accumulate into
+// DuplicatedBytes, budget-denied bytes accumulate into
+// DuplicationSuppressedBytes, and the two counters never mix -- the
+// inspectable signal MultipathBind.Send's duplication budget relies on (see
+// item 6, "add per-path counters").
+func TestRecordDuplicationTracksAllowedAndSuppressedSeparately(t *testing.T) {
+	s := NewScheduler()
+	s.Register("relay", PathUDPRelay)
+	s.RecordDuplication("relay", 100, true)
+	s.RecordDuplication("relay", 40, true)
+	s.RecordDuplication("relay", 25, false)
+	status := s.Status()
+	if len(status) != 1 {
+		t.Fatalf("status len = %d, want 1", len(status))
+	}
+	if status[0].DuplicatedBytes != 140 {
+		t.Fatalf("DuplicatedBytes = %d, want 140", status[0].DuplicatedBytes)
+	}
+	if status[0].DuplicationSuppressedBytes != 25 {
+		t.Fatalf("DuplicationSuppressedBytes = %d, want 25", status[0].DuplicationSuppressedBytes)
+	}
+	// An unregistered candidate must be a silent no-op, not a panic.
+	s.RecordDuplication("no-such-candidate", 10, true)
 }
 
 func TestSchedulerSelectsWSSWhenItOutperformsDirectUDP(t *testing.T) {

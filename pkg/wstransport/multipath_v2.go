@@ -98,6 +98,15 @@ type V2Options struct {
 	// so this is the one v2 setting that only makes sense set identically
 	// on both client and server.
 	ReportInterval time.Duration
+	// DuplicateRateBytesPerSec bounds how much primary WireGuard traffic per
+	// second may be reactively duplicated to the alternate candidate (see
+	// Scheduler.selectLocked's duplicate return and MultipathBind.Send).
+	// Unlike MirrorRateBytesPerSec this budget applies regardless of
+	// whether the session negotiated v2, since duplication is a v1
+	// behavior too. It exists so duplication -- triggered by the very loss
+	// congestion causes -- cannot itself become an unbounded second stream
+	// competing for the same congested bandwidth.
+	DuplicateRateBytesPerSec int
 }
 
 const (
@@ -107,6 +116,12 @@ const (
 	defaultSwitchMargin          = 30 * time.Millisecond
 	defaultMinDwell              = 5 * time.Second
 	defaultReportInterval        = time.Second
+	// defaultDuplicateRateBytesPerSec is deliberately far above
+	// defaultMirrorRateBytesPerSec: duplication is reactive (only while a
+	// candidate is actually degraded) rather than continuous background
+	// sampling, so it can afford a budget close to what a real primary
+	// stream needs while still bounding worst case.
+	defaultDuplicateRateBytesPerSec = 262144 // 256 KB/s
 )
 
 // resolveV2Options fills every zero field of o with its production default.
@@ -125,6 +140,9 @@ func resolveV2Options(o V2Options) V2Options {
 	}
 	if o.ReportInterval <= 0 {
 		o.ReportInterval = defaultReportInterval
+	}
+	if o.DuplicateRateBytesPerSec <= 0 {
+		o.DuplicateRateBytesPerSec = defaultDuplicateRateBytesPerSec
 	}
 	return o
 }
