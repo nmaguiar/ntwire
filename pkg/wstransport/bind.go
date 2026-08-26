@@ -75,8 +75,8 @@ type Hybrid struct {
 // h.UDP can send/receive the magic-prefixed control frames used by the
 // opportunistic direct-connection upgrade (see pkg/server's directudp.go),
 // without disturbing normal WireGuard traffic on the same socket.
-func NewHybrid() *Hybrid {
-	return &Hybrid{UDP: NewFilterBind(conn.NewStdNetBind()), WebSocket: NewServer()}
+func NewHybrid(loggers ...*slog.Logger) *Hybrid {
+	return &Hybrid{UDP: NewFilterBind(NewUDPBind(0, firstLogger(loggers))), WebSocket: NewServer()}
 }
 
 // WSSentinel is the placeholder endpoint address a client-side Hybrid (see
@@ -104,16 +104,16 @@ const WSSentinel = "ws:relay"
 // the WebSocket carrier itself, which is a single TCP connection to a host
 // already resolved (and, if set, family-filtered) by the caller's HTTP
 // client -- see pkg/ipfamily.
-func NewHybridClient(url string, client *http.Client, header http.Header, ipVersion string) *Hybrid {
-	return &Hybrid{UDP: NewFilterBind(ipfamily.New(conn.NewStdNetBind(), ipVersion)), WebSocket: NewClient(url, client, header)}
+func NewHybridClient(url string, client *http.Client, header http.Header, ipVersion string, loggers ...*slog.Logger) *Hybrid {
+	return &Hybrid{UDP: NewFilterBind(ipfamily.New(NewUDPBind(0, firstLogger(loggers)), ipVersion)), WebSocket: NewClient(url, client, header)}
 }
 
 // NewMultipathHybridClient returns the existing carrier pair plus the stable
 // logical bind used by capable relay peers. WSS is registered first and is
 // immediately usable; UDP candidates are added only after their authenticated
 // setup succeeds. ipVersion is forwarded to NewHybridClient; see its doc.
-func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2, pathMTU bool, opts V2Options, ipVersion string) (*Hybrid, *MultipathBind) {
-	h := NewHybridClient(url, client, header, ipVersion)
+func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2, pathMTU bool, opts V2Options, ipVersion string, loggers ...*slog.Logger) (*Hybrid, *MultipathBind) {
+	h := NewHybridClient(url, client, header, ipVersion, loggers...)
 	m := NewMultipathBind(h, "relay-server", v2, pathMTU, opts)
 	h.UDP.(*FilterBind).SetProbeHandler(m.handlePathControl)
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
@@ -132,6 +132,13 @@ func NewMultipathHybridClient(url string, client *http.Client, header http.Heade
 		return nil
 	}
 	return h, m
+}
+
+func firstLogger(loggers []*slog.Logger) *slog.Logger {
+	if len(loggers) > 0 {
+		return loggers[0]
+	}
+	return nil
 }
 func (h *Hybrid) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, actual, err := h.UDP.Open(port)

@@ -163,7 +163,7 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	ws := wstransport.NewHybrid()
+	ws := wstransport.NewHybrid(s.log)
 	relayMode := s.Config.Relay.Enabled
 	ws.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
 		s.observe("websocket_connected", "")

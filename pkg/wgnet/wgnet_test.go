@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 func TestDecodeKeyConvertsProtocolBase64ToWireGuardIPCBytes(t *testing.T) {
@@ -86,6 +88,15 @@ func TestNewDerivesPublicKeyFromProvidedPrivateKey(t *testing.T) {
 	defer s.Close()
 	if s.PublicKey() != key.Public {
 		t.Errorf("PublicKey() = %q, want %q (derived from the supplied private key)", s.PublicKey(), key.Public)
+	}
+	statuses := s.UDPBufferStatus()
+	if len(statuses) == 0 {
+		t.Fatal("UDPBufferStatus() returned no direct UDP sockets")
+	}
+	for _, status := range statuses {
+		if status.Requested != wstransport.DefaultUDPBufferBytes {
+			t.Errorf("%s requested buffer = %d, want %d", status.Socket, status.Requested, wstransport.DefaultUDPBufferBytes)
+		}
 	}
 }
 

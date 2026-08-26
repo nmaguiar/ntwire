@@ -117,6 +117,10 @@ network:
   tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward); host may be a hostname, resolved fresh on every client connect/renew
   wireguard_private_key_file: ""         # optional persistent server WireGuard key; needed for stable official-client profiles
+
+  # Userspace WireGuard UDP sockets request 4 MiB read/write buffers. The
+  # operating system may cap them; ntwire continues safely and reports the
+  # accepted capacities through its transport bind diagnostics.
   dns:
     enabled: true                        # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
     domain: ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
