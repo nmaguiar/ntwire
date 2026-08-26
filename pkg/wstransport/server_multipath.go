@@ -67,6 +67,11 @@ type serverMultipathPeer struct {
 	recvMu       sync.Mutex
 	recvCounters map[string]*recvCounter
 	attempts     *mirrorAccounting
+
+	// dupLimiter is this peer's counterpart of MultipathBind.dupLimiter --
+	// always allocated (like mirror above), since duplication applies
+	// regardless of v1/v2.
+	dupLimiter *mirrorLimiter
 }
 
 // nameForEndpoint reverse-looks-up which of this peer's registered
@@ -107,6 +112,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 		p = &serverMultipathPeer{
 			id: id, endpoint: serverMultipathEndpoint{id: id}, scheduler: NewScheduler(), paths: map[string]conn.Endpoint{}, probes: map[string]outstandingProbe{}, mtuProbes: map[string]outstandingMTUProbe{}, mtuDone: map[string]bool{},
 			mirror: newMirrorLimiter(m.opts.MirrorRateBytesPerSec), recvCounters: map[string]*recvCounter{}, attempts: newMirrorAccounting(),
+			dupLimiter: newMirrorLimiter(m.opts.DuplicateRateBytesPerSec),
 		}
 		p.scheduler.SetV2Options(m.opts)
 		m.peers[id] = p
@@ -566,6 +572,18 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	if duplicate {
 		if second != nil {
+			// See MultipathBind.Send's identical comment: bufs is the whole
+			// outbound batch, not just bufs[0], so the budget/counters must
+			// charge for its total size.
+			n := 0
+			for _, b := range bufs {
+				n += len(b)
+			}
+			if !p.dupLimiter.Allow(n) {
+				p.scheduler.RecordDuplication(alternate, n, false)
+				return nil
+			}
+			p.scheduler.RecordDuplication(alternate, n, true)
 			return m.base.Send(bufs, second)
 		}
 		return nil

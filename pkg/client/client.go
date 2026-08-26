@@ -944,6 +944,21 @@ type Connection struct {
 	multipath      *wstransport.MultipathBind
 	serverTunnelIP netip.Addr
 	upgradeTiming  directUpgradeTiming
+	// lastRelayUDPToken is the most recent UDP-relay allocation token seen
+	// by tryUDPRelayUpgrade, used to detect a re-allocation (see
+	// wstransport.MultipathBind.ResetRelayLegStats' doc comment for why
+	// that must reset the leg counters). Owned exclusively by
+	// directUpgradeLoop's single background goroutine, like upgradeTiming,
+	// relayCandidate, and directCandidate -- never read or written under
+	// c.mu.
+	lastRelayUDPToken string
+
+	// relayHopStats is the most recently received UDP-relay hop-telemetry
+	// summary from the server (see postUDPRelay/protocol.UDPRelayResponse.Stats),
+	// surfaced locally via State/Status so the same localized-loss picture
+	// the server's dashboard shows is visible here too, not server-side
+	// only. nil until the server has sent at least one.
+	relayHopStats atomic.Pointer[protocol.UDPRelayHopStats]
 }
 
 // closeDisconnectTimeout bounds the best-effort remote cleanup request.
@@ -1356,6 +1371,10 @@ type MultipathV2Options struct {
 	// ReportInterval paces how often a receiver summarizes mirrored-traffic
 	// counters back to the sender.
 	ReportInterval time.Duration
+	// DuplicateRateBytesPerSec bounds reactive WireGuard-only duplication --
+	// see wstransport.V2Options.DuplicateRateBytesPerSec's doc for why it
+	// applies regardless of whether v2 negotiated.
+	DuplicateRateBytesPerSec int
 }
 
 func resolveMultipathV2Options(o *MultipathV2Options) wstransport.V2Options {
@@ -1363,11 +1382,12 @@ func resolveMultipathV2Options(o *MultipathV2Options) wstransport.V2Options {
 		return wstransport.V2Options{}
 	}
 	return wstransport.V2Options{
-		MirrorRateBytesPerSec: o.MirrorRateBytesPerSec,
-		MinDeliveryRatio:      o.MinDeliveryRatio,
-		SwitchMargin:          o.SwitchMargin,
-		MinDwell:              o.MinDwell,
-		ReportInterval:        o.ReportInterval,
+		MirrorRateBytesPerSec:    o.MirrorRateBytesPerSec,
+		MinDeliveryRatio:         o.MinDeliveryRatio,
+		SwitchMargin:             o.SwitchMargin,
+		MinDwell:                 o.MinDwell,
+		ReportInterval:           o.ReportInterval,
+		DuplicateRateBytesPerSec: o.DuplicateRateBytesPerSec,
 	}
 }
 
@@ -2144,7 +2164,11 @@ type WebStatus struct {
 	Duplication     bool                     `json:"duplication_active,omitempty"`
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective,omitempty"`
-	PortalEnabled   bool                     `json:"portal_enabled"`
+	// RelayUDP is the most recently received UDP-relay hop-telemetry
+	// summary from the server, when this session used that tier -- see
+	// Connection.relayHopStats.
+	RelayUDP      *protocol.UDPRelayHopStats `json:"relay_udp,omitempty"`
+	PortalEnabled bool                       `json:"portal_enabled"`
 	// SettingsURL mirrors Options.SettingsURL; empty when the caller (e.g.
 	// the CLI) supplied none.
 	SettingsURL string `json:"settings_url,omitempty"`
@@ -2198,6 +2222,8 @@ type TransportState struct {
 	Duplication     bool                     `json:"duplication_active,omitempty"`
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective,omitempty"`
+	// RelayUDP mirrors WebStatus.RelayUDP -- see Connection.relayHopStats.
+	RelayUDP *protocol.UDPRelayHopStats `json:"relay_udp,omitempty"`
 }
 
 // ReconnectState describes an in-progress control-plane recovery. RetryAt is
@@ -2279,6 +2305,7 @@ func (c *Connection) State() ConnectionState {
 			state.Transport.ForcedEffective = true
 		}
 	}
+	state.Transport.RelayUDP = c.relayHopStats.Load()
 	return state
 }
 
@@ -2316,6 +2343,7 @@ func (c *Connection) webStatus() WebStatus {
 			status.ForcedEffective = true
 		}
 	}
+	status.RelayUDP = c.relayHopStats.Load()
 	return status
 }
 
@@ -2934,6 +2962,9 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 		return
 	}
 	defer out.Close()
+	tunnel.connections.Add(1)
+	tunnel.active.Add(1)
+	defer tunnel.active.Add(-1)
 	br := bufio.NewReader(in)
 	first, err := br.ReadByte()
 	if err != nil {
@@ -2941,8 +2972,8 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 	}
 	if first != 5 {
 		_, _ = out.Write([]byte{first})
-		go io.Copy(out, br)
-		io.Copy(in, out)
+		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
+		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
 		return
 	}
 	n, err := br.ReadByte()
@@ -3010,8 +3041,8 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 	serverReply := append(rh, rr...)
 	if h[1] != 3 || rh[1] != 0 {
 		_, _ = in.Write(serverReply)
-		go io.Copy(out, br)
-		io.Copy(in, out)
+		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
+		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
 		return
 	}
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -3047,6 +3078,7 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 			if _, e = uc.Write(b[:n]); e != nil {
 				return
 			}
+			tunnel.toTunnel.Add(uint64(n))
 			sourceMu.Lock()
 			source = src
 			sourceMu.Unlock()
@@ -3063,7 +3095,9 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 			dst := source
 			sourceMu.RUnlock()
 			if dst != nil {
-				_, _ = pc.WriteTo(b[:n], dst)
+				if _, e := pc.WriteTo(b[:n], dst); e == nil {
+					tunnel.fromTunnel.Add(uint64(n))
+				}
 			}
 		}
 	}()

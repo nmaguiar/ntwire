@@ -180,6 +180,7 @@ func (s *Server) StartDataPlane() error {
 		multipath = wstransport.NewServerMultipathBind(ws, wstransport.V2Options{
 			MirrorRateBytesPerSec: mc.MirrorRateBytesPerSec, MinDeliveryRatio: mc.MinDeliveryRatio,
 			SwitchMargin: mc.SwitchMargin, MinDwell: mc.MinDwell, ReportInterval: mc.ReportInterval,
+			DuplicateRateBytesPerSec: mc.DuplicateRateBytesPerSec,
 		})
 		multipath.SetForced(s.Config.Transport.Force)
 		bind = multipath

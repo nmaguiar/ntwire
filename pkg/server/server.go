@@ -813,7 +813,12 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "udp relay tier not available", http.StatusNotFound)
 		return
 	}
-	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.MultipathV2, sess.PathMTU))
+	// A malformed or empty body just means no client-observed stats this
+	// call -- the same "missing telemetry is normal" tolerance every other
+	// best-effort counter in this codebase gets, not a request error.
+	var body protocol.UDPRelayRequest
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.MultipathV2, sess.PathMTU, body.Stats))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {

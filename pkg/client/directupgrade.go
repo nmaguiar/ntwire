@@ -709,6 +709,20 @@ func (c *Connection) tryUDPRelayUpgrade(bind *wstransport.FilterBind) (candidate
 	if resp.RelayAddr == "" || resp.Token == "" {
 		return "", "", udpRelayUnavailableReason
 	}
+	if resp.Token != c.lastRelayUDPToken {
+		// A fresh allocation: the relay's own hop counters for this token
+		// start over at zero, so this side's udp-relay leg counters must
+		// too, or the next report compares this session's traffic against
+		// the wrong epoch and reads as a burst of loss that never happened
+		// -- see wstransport.MultipathBind.ResetRelayLegStats' doc comment.
+		c.mu.Lock()
+		multipath := c.multipath
+		c.mu.Unlock()
+		if multipath != nil {
+			multipath.ResetRelayLegStats()
+		}
+		c.lastRelayUDPToken = resp.Token
+	}
 
 	// Control is shared with priming pings, reflection replies, and any
 	// earlier, already timed-out bind attempt -- see selfReflect's identical
@@ -836,9 +850,15 @@ func waitForBindAck(bind *wstransport.FilterBind, timeout time.Duration) {
 // of its own 404.
 func (c *Connection) postUDPRelay() (protocol.UDPRelayResponse, error) {
 	c.mu.Lock()
-	base, token := c.base, c.token
+	base, token, multipath := c.base, c.token, c.multipath
 	c.mu.Unlock()
-	b, _ := json.Marshal(protocol.UDPRelayRequest{})
+	body := protocol.UDPRelayRequest{}
+	if multipath != nil {
+		if sent, sentPackets, recv, recvPackets := multipath.RelayLegStats(); sent+recv > 0 {
+			body.Stats = &protocol.ClientUDPRelayStats{BytesSent: sent, PacketsSent: sentPackets, BytesReceived: recv, PacketsReceived: recvPackets}
+		}
+	}
+	b, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/udp-relay", bytes.NewReader(b))
 	if err != nil {
 		return protocol.UDPRelayResponse{}, err
@@ -859,6 +879,9 @@ func (c *Connection) postUDPRelay() (protocol.UDPRelayResponse, error) {
 	var out protocol.UDPRelayResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.UDPRelayResponse{}, err
+	}
+	if out.Stats != nil {
+		c.relayHopStats.Store(out.Stats)
 	}
 	return out, nil
 }

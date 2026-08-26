@@ -106,6 +106,52 @@ func TestUDPRelayStatsForReturnsTokenFreeSnapshot(t *testing.T) {
 	}
 }
 
+// TestUDPRelaySessionForEchoesClientObservedStats is item 1's client-side
+// hop-telemetry regression: a client's reported ClientUDPRelayStats must be
+// recorded against its live session and echoed back in the next response's
+// Stats.ClientObserved, alongside the relay's own hop counters -- the round
+// trip that lets the client's local diagnostics see the same localized-loss
+// picture as the server's dashboard.
+func TestUDPRelaySessionForEchoesClientObservedStats(t *testing.T) {
+	fa := &fakeUDPAllocator{token: "tok-1", serverAddr: "127.0.0.1:9999"}
+	u := newTestUDPRelay(t, fa)
+	peer, err := wgnet.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// First call establishes the session; no clientStats yet since the
+	// client hasn't registered the candidate at that point.
+	first := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	if first.Stats != nil {
+		t.Fatalf("first sessionFor() Stats = %+v, want nil (no relay report yet)", first.Stats)
+	}
+
+	// The relay reports its own hop counters for this token.
+	u.recordStats(protocol.RelayUDPStatsReport{Sessions: []protocol.RelayUDPStats{
+		{Token: "tok-1", ClientPacketsReceived: 10, ClientBytesReceived: 1000},
+	}})
+
+	clientStats := &protocol.ClientUDPRelayStats{BytesSent: 900, PacketsSent: 9, BytesReceived: 800, PacketsReceived: 8}
+	second := u.sessionFor(context.Background(), peer.Public, false, false, false, clientStats)
+	if second.Stats == nil {
+		t.Fatal("second sessionFor() Stats = nil, want the relay's hop summary")
+	}
+	if second.Stats.ClientPacketsReceived != 10 || second.Stats.ClientBytesReceived != 1000 {
+		t.Fatalf("second sessionFor() relay-observed stats = %+v, want the relay's reported counters", second.Stats)
+	}
+	if second.Stats.ClientObserved == nil || *second.Stats.ClientObserved != *clientStats {
+		t.Fatalf("second sessionFor() ClientObserved = %+v, want %+v", second.Stats.ClientObserved, clientStats)
+	}
+
+	// A third call with no new clientStats must still echo back the last
+	// one recorded, not clear it.
+	third := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	if third.Stats == nil || third.Stats.ClientObserved == nil || *third.Stats.ClientObserved != *clientStats {
+		t.Fatalf("third sessionFor() ClientObserved = %+v, want the previously reported %+v to persist", third.Stats, clientStats)
+	}
+}
+
 func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 	fa := &fakeUDPAllocator{token: "tok-1", serverAddr: "127.0.0.1:9999"}
 	u := newTestUDPRelay(t, fa)
@@ -114,11 +160,11 @@ func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp1 := u.sessionFor(context.Background(), peer.Public, false, false, false)
+	resp1 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
 	if resp1.Token != "tok-1" || resp1.RelayAddr != "127.0.0.1:1" {
 		t.Fatalf("sessionFor() first call = %+v, want token/relay_addr populated", resp1)
 	}
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
 	if resp2 != resp1 {
 		t.Fatalf("sessionFor() second call = %+v, want identical to first %+v", resp2, resp1)
 	}
@@ -134,7 +180,7 @@ func TestUDPRelaySessionForReturnsEmptyWhenAllocationUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := u.sessionFor(context.Background(), peer.Public, false, false, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
 	if resp != (protocol.UDPRelayResponse{}) {
 		t.Fatalf("sessionFor() = %+v, want the zero value when allocation is unavailable", resp)
 	}
@@ -148,7 +194,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := u.sessionFor(context.Background(), peer.Public, false, false, false)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
 	u.release(peer.Public)
 
 	fa.mu.Lock()
@@ -161,7 +207,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 	// A fresh sessionFor call after release must allocate again, not reuse
 	// stale state.
 	fa.token = "tok-2"
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
 	if resp2.Token != "tok-2" {
 		t.Fatalf("sessionFor() after release = %+v, want a fresh allocation", resp2)
 	}

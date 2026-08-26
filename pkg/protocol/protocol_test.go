@@ -62,6 +62,60 @@ func TestAuthResponseServerTunnelIPRoundTrip(t *testing.T) {
 	}
 }
 
+// TestUDPRelayHopTelemetryJSONFieldNamesAndOmitempty covers item 1's new
+// wire shapes: UDPRelayRequest.Stats and UDPRelayResponse.Stats (including
+// its nested ClientObserved echo) must use the documented snake_case field
+// names and be omitted entirely when nil/unset, so an old client posting a
+// bare "{}" and an old server never sending "stats" both stay compatible
+// with a peer that now understands these fields.
+func TestUDPRelayHopTelemetryJSONFieldNamesAndOmitempty(t *testing.T) {
+	reqBytes, err := json.Marshal(UDPRelayRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(reqBytes), "stats") {
+		t.Fatalf("UDPRelayRequest{} = %s, want no stats field when nil", reqBytes)
+	}
+
+	stats := &ClientUDPRelayStats{BytesSent: 1, PacketsSent: 2, BytesReceived: 3, PacketsReceived: 4}
+	reqBytes, err = json.Marshal(UDPRelayRequest{Stats: stats})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"bytes_sent":1`, `"packets_sent":2`, `"bytes_received":3`, `"packets_received":4`} {
+		if !strings.Contains(string(reqBytes), field) {
+			t.Fatalf("UDPRelayRequest with Stats = %s, missing %s", reqBytes, field)
+		}
+	}
+
+	respBytes, err := json.Marshal(UDPRelayResponse{RelayAddr: "a", Token: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(respBytes), "stats") {
+		t.Fatalf("UDPRelayResponse with no Stats = %s, want no stats field", respBytes)
+	}
+
+	hop := UDPRelayHopStats{ClientPacketsReceived: 5, ClientBytesReceived: 500, ClientObserved: stats}
+	respBytes, err = json.Marshal(UDPRelayResponse{RelayAddr: "a", Token: "b", Stats: &hop})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"client_packets_received":5`, `"client_bytes_received":500`, `"client_observed"`, `"bytes_sent":1`} {
+		if !strings.Contains(string(respBytes), field) {
+			t.Fatalf("UDPRelayResponse with Stats = %s, missing %s", respBytes, field)
+		}
+	}
+
+	var out UDPRelayResponse
+	if err := json.Unmarshal(respBytes, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Stats == nil || out.Stats.ClientObserved == nil || *out.Stats.ClientObserved != *stats {
+		t.Fatalf("round-tripped Stats = %+v, want ClientObserved = %+v", out.Stats, stats)
+	}
+}
+
 func FuzzSigningPayload(f *testing.F) {
 	f.Add("a")
 	f.Fuzz(func(t *testing.T, s string) { _, _ = SigningPayload(AuthRequest{Version: Version, PublicKey: s}) })
