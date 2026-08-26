@@ -17,7 +17,7 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"scopes:", "groups_claim:", "require_verified_email:", "webhook_url:", "exec:",
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "local_host:", "allow:", "target:", "description:", "log_file:",
-		"instructions:", "docs_url:", "advertise_direct:", "multipath:",
+		"instructions:", "docs_url:", "advertise_direct:", "direct_clients:", "multipath:",
 	} {
 		if !strings.Contains(sample, option) {
 			t.Errorf("sample configuration is missing %q", option)
@@ -304,6 +304,46 @@ relay:
 	}
 	if !got.Relay.AdvertiseDirect {
 		t.Fatal("Relay.AdvertiseDirect = false, want true")
+	}
+}
+
+func TestLoadConfigDirectClientsRequiresRelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+relay:
+  direct_clients: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "direct_clients") {
+		t.Fatalf("LoadConfig() error = %v, want a direct_clients validation error", err)
+	}
+}
+
+func TestLoadConfigAcceptsDirectClientsWithRelay(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ntwire.yaml")
+	config := `
+auth:
+  authorized_keys_dir: keys
+relay:
+  enabled: true
+  url: wss://relay.example.com:8444
+  name: home
+  identity_file: relay_id_ed25519
+  direct_clients: true
+`
+	if err := os.WriteFile(path, []byte(config), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() = %v", err)
+	}
+	if !got.Relay.DirectClients {
+		t.Fatal("Relay.DirectClients = false, want true")
 	}
 }
 

@@ -142,13 +142,14 @@ destination_policies:                    # named CIDR/ASN/domain/protocol/port r
 native_wireguard:                        # admits unmodified official WireGuard clients into the same tunnel device; see NATIVE-WIREGUARD.md
   enabled: false
   peers: []
-relay:                                   # dial out to an ntwire-relay instead of listening directly, for a server with no inbound connectivity; see RELAY.md
+relay:                                   # dial out to an ntwire-relay for a server with no inbound connectivity; see RELAY.md
   enabled: false
   url: ""
   name: ""
   identity_file: ""
   fingerprint: ""
   advertise_direct: false
+  direct_clients: false                  # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
 masque:                                  # optional HTTP/2 CONNECT gateway for the (currently archived) iOS/iPadOS Network Relay client; see IOS.md and SECURITY.md
   enabled: false
   listen: ""

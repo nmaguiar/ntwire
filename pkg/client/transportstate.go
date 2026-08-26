@@ -112,10 +112,33 @@ func (c *Connection) preserveTransportOnReconnect() {
 }
 
 func (c *Connection) transitionTransport(next transportState, reason string) {
+	c.transitionTransportWithKind(next, reason, false)
+}
+
+// transitionTransportCandidate records a change in the upgrade ladder. In a
+// multipath session that only means a candidate was established or lost: the
+// scheduler may still deliberately keep a different healthy path primary.
+// Keeping that distinction in the log prevents a successful relay probe from
+// being mistaken for an immediate data-plane switch.
+func (c *Connection) transitionTransportCandidate(next transportState, reason string) {
+	c.transitionTransportWithKind(next, reason, true)
+}
+
+func (c *Connection) transitionTransportWithKind(next transportState, reason string, candidate bool) {
 	nextTransport := next.connectionTransport()
 	previous := connectionTransport(c.transport.Swap(uint32(nextTransport)))
 	if previous == nextTransport || c.log == nil {
 		return
+	}
+	if candidate {
+		c.mu.Lock()
+		multipath := c.multipath
+		c.mu.Unlock()
+		if multipath != nil {
+			primary, _, _ := multipath.Scheduler().Select()
+			c.log.Info("transport candidate state changed", "event", "transport_candidate_transition", "server", c.DisplayName(), "candidate_from", previous.String(), "candidate_to", nextTransport.String(), "primary", multipathDescription(primary), "reason", reason)
+			return
+		}
 	}
 	c.log.Info("transport state changed", "event", "transport_transition", "server", c.DisplayName(), "from", previous.String(), "to", nextTransport.String(), "reason", reason)
 }

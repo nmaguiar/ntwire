@@ -97,16 +97,21 @@ type MASQUEConfig struct {
 }
 
 // RelayConfig configures ntwire-server to dial out to an ntwire-relay
-// instead of listening for inbound connections directly (see PLAN-RELAY.md).
-// When Enabled, listen.https is never bound; the server instead maintains an
-// outbound control connection and serves its unchanged Handler() over
-// dial-back data connections.
+// (see PLAN-RELAY.md). By default, relay mode does not bind listen.https:
+// the server serves its unchanged Handler() over dial-back data connections.
+// DirectClients is the explicit opt-in for also serving that handler on
+// listen.https.
 type RelayConfig struct {
 	Enabled      bool   `yaml:"enabled"`
 	URL          string `yaml:"url"`
 	Name         string `yaml:"name"`
 	IdentityFile string `yaml:"identity_file"`
 	Fingerprint  string `yaml:"fingerprint"`
+	// DirectClients also binds listen.https while relay mode is active. It is
+	// default-off so enabling relay never unexpectedly exposes a previously
+	// unused local HTTPS listener. The certificate must cover the hostname
+	// direct clients use.
+	DirectClients bool `yaml:"direct_clients"`
 	// Endpoints enables active-active relay operation. Every endpoint is an
 	// agents listener for the same relay tenant/domain; ntwire-server keeps a
 	// control connection to each one. URL/Fingerprint remain supported for a
@@ -392,6 +397,7 @@ relay:
   reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
   reconnect_max: 1m                        # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
+  direct_clients: false                    # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
   # multipath: overrides multipath-v2's passive throughput-sampling tuning;
   # only takes effect for a session that negotiates multipath-v2 in the
   # first place. Every field defaults sensibly when left unset -- these are
@@ -623,6 +629,8 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 		}
 	} else if c.Relay.AdvertiseDirect {
 		return c, fmt.Errorf("relay.advertise_direct requires relay.enabled: it has nothing to do for a server that isn't relaying in the first place")
+	} else if c.Relay.DirectClients {
+		return c, fmt.Errorf("relay.direct_clients requires relay.enabled: direct clients are already served by listen.https without relay mode")
 	}
 	if c.Relay.ReconnectMin == 0 {
 		c.Relay.ReconnectMin = time.Second
