@@ -1,5 +1,9 @@
 # ntwire
 
+<p align="center">
+  <img src="packaging/darwin/ntwire-icon.svg" width="132" alt="ntwire logo">
+</p>
+
 ntwire is a userspace WireGuard multi-tunnel service. Authenticate with an
 SSH key or OIDC, then use only the TCP targets granted in the server YAML.
 It needs neither a host network interface nor elevated privileges. See
