@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1215,5 +1216,118 @@ func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("profile dir still exists after reset: err=%v", err)
+	}
+}
+
+// echoingSOCKS5Stub is a minimal SOCKS5 server: it completes the no-auth
+// greeting and a CONNECT handshake with a synthetic success reply, then
+// echoes exactly payloadLen bytes back before closing the connection. It
+// stands in for the real SOCKS5 server a "socks" tunnel's target normally
+// points at, letting the CONNECT passthrough branch of
+// forwardSocksUDPAssociate be exercised end-to-end over a real peered wgnet
+// stack. Closing after the echo (rather than copying forever) is what lets
+// out.Read on the client side observe EOF and unblock forwardSocksUDPAssociate's
+// passthrough copy -- exactly as a real remote server closing its end would.
+func echoingSOCKS5Stub(t *testing.T, ln net.Listener, payloadLen int) {
+	t.Helper()
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		if ver, err := br.ReadByte(); err != nil || ver != 5 {
+			return
+		}
+		n, err := br.ReadByte()
+		if err != nil {
+			return
+		}
+		methods := make([]byte, n)
+		if _, err := io.ReadFull(br, methods); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte{5, 0}); err != nil {
+			return
+		}
+		h := make([]byte, 4)
+		if _, err := io.ReadFull(br, h); err != nil {
+			return
+		}
+		rest := make([]byte, 4+2) // IPv4 address + port
+		if _, err := io.ReadFull(br, rest); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+			return
+		}
+		payload := make([]byte, payloadLen)
+		if _, err := io.ReadFull(br, payload); err != nil {
+			return
+		}
+		_, _ = conn.Write(payload)
+	}()
+}
+
+// TestForwardSocksUDPAssociateCountsCONNECTTraffic guards against a
+// regression where forward() started routing every connection on a "socks"
+// tunnel through forwardSocksUDPAssociate, but that function never fed bytes
+// to tunnel.toTunnel/fromTunnel: the web UI's traffic-rate chart and stats
+// read zero for such a tunnel even while data actively flowed through it.
+// Most traffic through a SOCKS tunnel is an ordinary CONNECT rather than a
+// UDP ASSOCIATE, so this exercises that passthrough branch specifically.
+func TestForwardSocksUDPAssociateCountsCONNECTTraffic(t *testing.T) {
+	serverStack, clientStack, serverIP := peeredClientServerStacks(t)
+	target := serverIP.String() + ":9100"
+	ln, err := serverStack.Listen("tcp", target)
+	if err != nil {
+		t.Fatalf("server Listen() = %v", err)
+	}
+	defer ln.Close()
+	payload := []byte("hello through the tunnel")
+	echoingSOCKS5Stub(t, ln, len(payload))
+
+	c := &Connection{Stack: clientStack}
+	tunnel := &localTunnel{name: "egress", socks: true}
+	app, in := net.Pipe()
+	defer app.Close()
+
+	done := make(chan struct{})
+	go func() {
+		c.forwardSocksUDPAssociate(tunnel, in, target)
+		close(done)
+	}()
+
+	if _, err := app.Write([]byte{5, 1, 0}); err != nil {
+		t.Fatalf("write greeting: %v", err)
+	}
+	greetReply := make([]byte, 2)
+	if _, err := io.ReadFull(app, greetReply); err != nil || greetReply[1] != 0 {
+		t.Fatalf("greeting reply = %v, err = %v", greetReply, err)
+	}
+	// CONNECT to an arbitrary IPv4 address; the stub ignores the value.
+	if _, err := app.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 80}); err != nil {
+		t.Fatalf("write CONNECT request: %v", err)
+	}
+	connectReply := make([]byte, 10)
+	if _, err := io.ReadFull(app, connectReply); err != nil || connectReply[1] != 0 {
+		t.Fatalf("CONNECT reply = %v, err = %v", connectReply, err)
+	}
+
+	if _, err := app.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	echoed := make([]byte, len(payload))
+	if _, err := io.ReadFull(app, echoed); err != nil || !bytes.Equal(echoed, payload) {
+		t.Fatalf("echoed payload = %q, err = %v", echoed, err)
+	}
+
+	app.Close()
+	<-done
+
+	stats := tunnel.stats()
+	if stats.BytesToTunnel == 0 || stats.BytesFromTunnel == 0 {
+		t.Fatalf("stats = %#v, want nonzero bytes in both directions", stats)
 	}
 }

@@ -2934,6 +2934,9 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 		return
 	}
 	defer out.Close()
+	tunnel.connections.Add(1)
+	tunnel.active.Add(1)
+	defer tunnel.active.Add(-1)
 	br := bufio.NewReader(in)
 	first, err := br.ReadByte()
 	if err != nil {
@@ -2941,8 +2944,8 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 	}
 	if first != 5 {
 		_, _ = out.Write([]byte{first})
-		go io.Copy(out, br)
-		io.Copy(in, out)
+		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
+		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
 		return
 	}
 	n, err := br.ReadByte()
@@ -3010,8 +3013,8 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 	serverReply := append(rh, rr...)
 	if h[1] != 3 || rh[1] != 0 {
 		_, _ = in.Write(serverReply)
-		go io.Copy(out, br)
-		io.Copy(in, out)
+		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
+		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
 		return
 	}
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -3047,6 +3050,7 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 			if _, e = uc.Write(b[:n]); e != nil {
 				return
 			}
+			tunnel.toTunnel.Add(uint64(n))
 			sourceMu.Lock()
 			source = src
 			sourceMu.Unlock()
@@ -3063,7 +3067,9 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 			dst := source
 			sourceMu.RUnlock()
 			if dst != nil {
-				_, _ = pc.WriteTo(b[:n], dst)
+				if _, e := pc.WriteTo(b[:n], dst); e == nil {
+					tunnel.fromTunnel.Add(uint64(n))
+				}
 			}
 		}
 	}()
