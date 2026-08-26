@@ -2,6 +2,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -974,7 +975,7 @@ func (t connectionTransport) String() string {
 	case transportWSSFallback:
 		return "WSS fallback"
 	case transportWSSRelay:
-		return "WSS through relay"
+		return "WSS"
 	case transportUDPRelay:
 		return "UDP via relay"
 	case transportUDPRelayReflector:
@@ -1026,7 +1027,7 @@ func initialTransport(useWS bool, udp string) connectionTransport {
 }
 
 // ConnectionType reports the current WireGuard data-plane transport in
-// human-readable form (e.g. "UDP direct", "WSS through relay"), including any
+// human-readable form (e.g. "UDP direct", "WSS"), including any
 // opportunistic direct-UDP upgrade directupgrade.go has since completed.
 func (c *Connection) ConnectionType() string {
 	return connectionTransport(c.transport.Load()).String()
@@ -1078,6 +1079,9 @@ type localTunnel struct {
 	name         string
 	virtualPort  int
 	listener     net.Listener
+	packetConn   net.PacketConn
+	protocol     string
+	socks        bool
 	localAddr    string
 	target       string
 	toTunnel     atomic.Uint64
@@ -1262,6 +1266,24 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			// loopback on its behalf.
 			c.log.Warn("server suggested a non-loopback local_host for a tunnel; ignoring it", "tunnel", t.Name, "local_host", rejectedServerHost)
 		}
+		if t.Protocol == "udp" {
+			pc, firstErr, e := listenLocalUDP(host, p, softHost, !explicitPort)
+			if e != nil {
+				c.Close()
+				return nil, e
+			}
+			bound := pc.LocalAddr().String()
+			if firstErr != nil {
+				c.log.Warn("UDP tunnel listener fell back from its requested local address", "tunnel", t.Name, "requested", net.JoinHostPort(host, fmt.Sprint(p)), "bound", bound, "error", firstErr)
+			}
+			target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
+			lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, packetConn: pc, protocol: "udp", localAddr: bound, target: target}
+			c.tunnels = append(c.tunnels, lt)
+			c.LocalAddresses = append(c.LocalAddresses, bound)
+			c.log.Debug("UDP tunnel listener bound", "tunnel", t.Name, "local_address", bound, "target", target)
+			go c.forwardUDP(lt, pc, target, t.UDPIdleTimeout)
+			continue
+		}
 		l, firstErr, e := listenLocal(host, p, softHost, !explicitPort, nil)
 		if e != nil {
 			c.Close()
@@ -1277,7 +1299,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			c.log.Warn("tunnel listener fell back from its requested local address", fields...)
 		}
 		target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
-		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, localAddr: bound, target: target}
+		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, protocol: "tcp", socks: t.TargetHint == "socks", localAddr: bound, target: target}
 		c.tunnels = append(c.tunnels, lt)
 		c.LocalAddresses = append(c.LocalAddresses, bound)
 		c.log.Debug("tunnel listener bound", "tunnel", t.Name, "local_address", bound, "target", target)
@@ -1571,6 +1593,32 @@ func listenLocal(host string, port int, softHost, softPort bool, listen listenFu
 	return nil, firstErr, firstErr
 }
 
+func listenLocalUDP(host string, port int, softHost, softPort bool) (net.PacketConn, error, error) {
+	listen := func(h string, p int) (net.PacketConn, error) {
+		return net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(h), Port: p})
+	}
+	pc, firstErr := listen(host, port)
+	if firstErr == nil {
+		return pc, nil, nil
+	}
+	if softPort && port != 0 {
+		if pc, e := listen(host, 0); e == nil {
+			return pc, firstErr, nil
+		}
+	}
+	if softHost && host != "127.0.0.1" {
+		if pc, e := listen("127.0.0.1", port); e == nil {
+			return pc, firstErr, nil
+		}
+		if softPort && port != 0 {
+			if pc, e := listen("127.0.0.1", 0); e == nil {
+				return pc, firstErr, nil
+			}
+		}
+	}
+	return nil, firstErr, firstErr
+}
+
 // loopbackAliasHint returns an actionable command for a loopback address
 // that is not the universally-present 127.0.0.1, on the one platform where
 // it typically needs one: macOS assigns only 127.0.0.1 to lo0 by default,
@@ -1641,6 +1689,41 @@ func (c *Connection) ReplaceListener(name, host string, port int) (string, error
 		return addr, nil
 	}
 	c.mu.Unlock()
+	if tunnel.protocol == "udp" {
+		pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(host), Port: port})
+		if err != nil {
+			return "", err
+		}
+		c.mu.Lock()
+		if c.Stack == nil {
+			c.mu.Unlock()
+			_ = pc.Close()
+			return "", fmt.Errorf("connection is closed")
+		}
+		index := -1
+		for i, t := range c.tunnels {
+			if t == tunnel {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			c.mu.Unlock()
+			_ = pc.Close()
+			return "", fmt.Errorf("unknown tunnel %q", name)
+		}
+		old := tunnel.packetConn
+		tunnel.packetConn, tunnel.localAddr = pc, pc.LocalAddr().String()
+		c.LocalAddresses[index] = tunnel.localAddr
+		addr := tunnel.localAddr
+		c.mu.Unlock()
+		if old != nil {
+			_ = old.Close()
+		}
+		go c.forwardUDP(tunnel, pc, tunnel.target, 0)
+		_ = c.writeCurrentStatus()
+		return addr, nil
+	}
 
 	l, err := net.Listen("tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
@@ -2050,7 +2133,7 @@ type WebStatus struct {
 	// It is what the status UI shows to tell several running clients apart.
 	ServerName string `json:"server_name"`
 	// ConnectionType describes the live WireGuard data path, for example
-	// "UDP direct", "WSS through relay", or "UDP direct via relay reflector".
+	// "UDP direct", "WSS", or "UDP direct via relay reflector".
 	ConnectionType  string                   `json:"connection_type"`
 	Tunnels         []WebTunnel              `json:"tunnels"`
 	TTLSeconds      int                      `json:"ttl_seconds"`
@@ -2242,7 +2325,10 @@ func multipathDescription(primary string) string {
 	case string(wstransport.PathUDPRelay):
 		return "UDP via relay"
 	case string(wstransport.PathWSS):
-		return "WSS through relay"
+		// A WebSocket candidate can terminate at the server itself or at a
+		// relay. Path selection alone does not establish which, so keep this
+		// label route-neutral.
+		return "WSS"
 	default:
 		return "Transport unavailable"
 	}
@@ -2717,6 +2803,10 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 		}
 		go func() {
 			defer in.Close()
+			if tunnel.socks {
+				c.forwardSocksUDPAssociate(tunnel, in, target)
+				return
+			}
 			c.mu.Lock()
 			stack := c.Stack
 			c.mu.Unlock()
@@ -2758,6 +2848,243 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			}
 		}()
 	}
+}
+
+// forwardUDP mirrors forward for a datagram tunnel. A connected netstack UDP
+// socket per local source tuple preserves reply isolation and lets applications
+// use independent ephemeral UDP ports concurrently.
+func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target string, idle time.Duration) {
+	if idle <= 0 {
+		idle = 2 * time.Minute
+	}
+	type flow struct{ conn net.Conn }
+	flows := map[string]flow{}
+	var mu sync.Mutex
+	defer func() {
+		mu.Lock()
+		for _, f := range flows {
+			_ = f.conn.Close()
+		}
+		mu.Unlock()
+	}()
+	for {
+		buf := make([]byte, 65535)
+		n, src, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		key := src.String()
+		mu.Lock()
+		f, ok := flows[key]
+		mu.Unlock()
+		if !ok {
+			c.mu.Lock()
+			stack := c.Stack
+			c.mu.Unlock()
+			if stack == nil {
+				continue
+			}
+			out, e := stack.DialContext(context.Background(), "udp", target)
+			if e != nil {
+				continue
+			}
+			f = flow{conn: out}
+			mu.Lock()
+			flows[key] = f
+			mu.Unlock()
+			tunnel.connections.Add(1)
+			tunnel.active.Add(1)
+			go func(key string, src net.Addr, out net.Conn) {
+				defer tunnel.active.Add(-1)
+				defer out.Close()
+				defer func() { mu.Lock(); delete(flows, key); mu.Unlock() }()
+				b := make([]byte, 65535)
+				for {
+					_ = out.SetReadDeadline(time.Now().Add(idle))
+					n, e := out.Read(b)
+					if e != nil {
+						return
+					}
+					if _, e = pc.WriteTo(b[:n], src); e != nil {
+						return
+					}
+					tunnel.fromTunnel.Add(uint64(n))
+				}
+			}(key, src, out)
+		}
+		if n, e := f.conn.Write(buf[:n]); e == nil {
+			tunnel.toTunnel.Add(uint64(n))
+		}
+	}
+}
+
+// forwardSocksUDPAssociate passes normal SOCKS sessions through unchanged,
+// but rewrites a UDP ASSOCIATE reply to a loopback relay owned by this client.
+// Applications must never be told the server's virtual-only UDP address.
+func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, target string) {
+	c.mu.Lock()
+	stack := c.Stack
+	c.mu.Unlock()
+	if stack == nil {
+		return
+	}
+	out, err := stack.DialContext(context.Background(), "tcp", target)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+	br := bufio.NewReader(in)
+	first, err := br.ReadByte()
+	if err != nil {
+		return
+	}
+	if first != 5 {
+		_, _ = out.Write([]byte{first})
+		go io.Copy(out, br)
+		io.Copy(in, out)
+		return
+	}
+	n, err := br.ReadByte()
+	if err != nil {
+		return
+	}
+	methods := make([]byte, n)
+	if _, err = io.ReadFull(br, methods); err != nil {
+		return
+	}
+	greeting := append([]byte{5, n}, methods...)
+	if _, err = out.Write(greeting); err != nil {
+		return
+	}
+	reply := make([]byte, 2)
+	if _, err = io.ReadFull(out, reply); err != nil {
+		return
+	}
+	if _, err = in.Write(reply); err != nil || reply[1] != 0 {
+		return
+	}
+	h := make([]byte, 4)
+	if _, err = io.ReadFull(br, h); err != nil {
+		return
+	}
+	req := append([]byte(nil), h...)
+	addrLen := 0
+	switch h[3] {
+	case 1:
+		addrLen = 4
+	case 4:
+		addrLen = 16
+	case 3:
+		l, e := br.ReadByte()
+		if e != nil {
+			return
+		}
+		req = append(req, l)
+		addrLen = int(l)
+	default:
+		return
+	}
+	rest := make([]byte, addrLen+2)
+	if _, err = io.ReadFull(br, rest); err != nil {
+		return
+	}
+	req = append(req, rest...)
+	if _, err = out.Write(req); err != nil {
+		return
+	}
+	// Replies are 10 bytes for IPv4 or 22 bytes for IPv6. The association
+	// handler always returns a numeric virtual address.
+	rh := make([]byte, 4)
+	if _, err = io.ReadFull(out, rh); err != nil {
+		return
+	}
+	rl := 4
+	if rh[3] == 4 {
+		rl = 16
+	}
+	rr := make([]byte, rl+2)
+	if _, err = io.ReadFull(out, rr); err != nil {
+		return
+	}
+	serverReply := append(rh, rr...)
+	if h[1] != 3 || rh[1] != 0 {
+		_, _ = in.Write(serverReply)
+		go io.Copy(out, br)
+		io.Copy(in, out)
+		return
+	}
+	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		return
+	}
+	defer pc.Close()
+	// The remote endpoint is the address supplied by the server reply.
+	remote, ok := socksReplyAddr(serverReply)
+	if !ok {
+		return
+	}
+	uc, err := stack.DialContext(context.Background(), "udp", remote)
+	if err != nil {
+		return
+	}
+	defer uc.Close()
+	local := pc.LocalAddr().(*net.UDPAddr)
+	a := local.AddrPort()
+	outReply := socksUDPReply(a)
+	if _, err = in.Write(outReply); err != nil {
+		return
+	}
+	var sourceMu sync.RWMutex
+	var source net.Addr
+	go func() {
+		b := make([]byte, 65535)
+		for {
+			n, src, e := pc.ReadFrom(b)
+			if e != nil {
+				return
+			}
+			if _, e = uc.Write(b[:n]); e != nil {
+				return
+			}
+			sourceMu.Lock()
+			source = src
+			sourceMu.Unlock()
+		}
+	}()
+	go func() {
+		b := make([]byte, 65535)
+		for {
+			n, e := uc.Read(b)
+			if e != nil {
+				return
+			}
+			sourceMu.RLock()
+			dst := source
+			sourceMu.RUnlock()
+			if dst != nil {
+				_, _ = pc.WriteTo(b[:n], dst)
+			}
+		}
+	}()
+	_, _ = io.Copy(io.Discard, br)
+}
+
+func socksReplyAddr(b []byte) (string, bool) {
+	if len(b) < 10 {
+		return "", false
+	}
+	if b[3] == 1 {
+		return net.JoinHostPort(net.IP(b[4:8]).String(), fmt.Sprint(uint16(b[8])<<8|uint16(b[9]))), true
+	}
+	if b[3] == 4 && len(b) >= 22 {
+		return net.JoinHostPort(net.IP(b[4:20]).String(), fmt.Sprint(uint16(b[20])<<8|uint16(b[21]))), true
+	}
+	return "", false
+}
+func socksUDPReply(ap netip.AddrPort) []byte {
+	ip := ap.Addr().Unmap()
+	a := ip.As4()
+	return []byte{5, 0, 0, 1, a[0], a[1], a[2], a[3], byte(ap.Port() >> 8), byte(ap.Port())}
 }
 func (c *Connection) Close() {
 	c.mu.Lock()
@@ -2801,7 +3128,12 @@ func (c *Connection) Close() {
 		}
 	}
 	for _, t := range tunnels {
-		_ = t.listener.Close()
+		if t.listener != nil {
+			_ = t.listener.Close()
+		}
+		if t.packetConn != nil {
+			_ = t.packetConn.Close()
+		}
 	}
 	if ui != nil {
 		_ = ui.Close()

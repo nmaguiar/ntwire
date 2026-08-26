@@ -106,6 +106,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("DELETE /api/profiles/{id}", s.requireToken(s.handleDeleteProfile))
 	s.mux.HandleFunc("POST /api/profiles/{id}/connect", s.requireToken(s.handleConnect))
 	s.mux.HandleFunc("POST /api/profiles/{id}/disconnect", s.requireToken(s.handleDisconnect))
+	s.mux.HandleFunc("POST /api/profiles/{id}/clear-error", s.requireToken(s.handleClearError))
 	s.mux.HandleFunc("POST /api/profiles/{id}/probe", s.requireToken(s.handleProbe))
 	s.mux.HandleFunc("POST /api/profiles/{id}/logout", s.requireToken(s.handleLogout))
 	s.mux.HandleFunc("PUT /api/profiles/{id}/tunnels/{name}", s.requireToken(s.handleReplacePort))
@@ -219,6 +220,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDisconnect(w http.ResponseWriter, r *http.Request) {
 	if err := s.mgr.Disconnect(r.PathValue("id")); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleClearError(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.ClearError(r.PathValue("id")); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

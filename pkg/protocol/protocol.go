@@ -181,7 +181,10 @@ type Tunnel struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	VirtualPort int    `json:"virtual_port"`
-	LocalPort   int    `json:"local_port,omitempty"`
+	// Protocol is tcp (the backwards-compatible default) or udp.
+	Protocol       string        `json:"protocol,omitempty"`
+	UDPIdleTimeout time.Duration `json:"udp_idle_timeout,omitempty"`
+	LocalPort      int           `json:"local_port,omitempty"`
 	// LocalHost is an optional preferred loopback address for the client's
 	// local listener (e.g. "127.70.0.1"), letting distinct tunnels share a
 	// memorable port without colliding. The client may override it, and

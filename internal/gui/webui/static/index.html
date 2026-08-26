@@ -278,6 +278,20 @@ function renderProfileRow(snap) {
 
   actions.append(connectBtn, editBtn, deleteBtn);
 
+  if (snap.state === 'failed' && snap.error) {
+    const clearErrorBtn = document.createElement('button');
+    clearErrorBtn.className = 'secondary';
+    clearErrorBtn.textContent = '✖️ Clear error';
+    clearErrorBtn.title = 'Dismiss this completed connection error';
+    clearErrorBtn.addEventListener('click', async () => {
+      try {
+        await api('POST', `/api/profiles/${p.ID}/clear-error`);
+        setMessage(`Cleared connection error for "${p.Name}".`, 'ok');
+      } catch (e) { setMessage(e.message); }
+    });
+    actions.append(clearErrorBtn);
+  }
+
   if (connected && snap.dashboard_url) {
     const dashboardLink = document.createElement('a');
     dashboardLink.className = 'button secondary';

@@ -349,6 +349,30 @@ func (m *Manager) Disconnect(id string) error {
 	return nil
 }
 
+// ClearError dismisses a completed connection failure and returns the profile
+// to its idle state. It intentionally does not cancel an in-progress connect
+// or reconnect: those errors describe work that is still active and may be
+// replaced by a subsequent lifecycle update.
+func (m *Manager) ClearError(id string) error {
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("gui: no such profile %q", id)
+	}
+	if s.state != StateFailed {
+		state := s.state
+		m.mu.Unlock()
+		return fmt.Errorf("gui: profile %q has no completed connection error to clear (currently %s)", id, state)
+	}
+	s.state = StateIdle
+	s.err = nil
+	s.prompt = nil
+	m.mu.Unlock()
+	m.publish(id)
+	return nil
+}
+
 // AnswerTrust answers a pending PromptTrust for id, raised when the
 // server's certificate is unpinned or its pin changed. trust=true trusts
 // and pins it (client.TrustServer) and retries the connection; trust=false

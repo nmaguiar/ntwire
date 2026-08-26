@@ -185,7 +185,10 @@ type TunnelConfig struct {
 	Target      string `yaml:"target"`
 	Description string `yaml:"description"`
 	VirtualPort int    `yaml:"virtual_port"`
-	LocalPort   int    `yaml:"local_port"`
+	// Protocol selects the fixed-target transport. Empty retains TCP.
+	Protocol       string        `yaml:"protocol"`
+	UDPIdleTimeout time.Duration `yaml:"udp_idle_timeout"`
+	LocalPort      int           `yaml:"local_port"`
 	// LocalHost is an optional preferred loopback address for the client's
 	// local listener for this tunnel (e.g. "127.70.0.1"), so distinct
 	// tunnels can share a memorable port without colliding. Must be a
@@ -287,6 +290,11 @@ type SocksConfig struct {
 	// listener on the server host. It is independent of allow_all and false
 	// by default.
 	AllowBind bool `yaml:"allow_bind"`
+	// Upstream optionally sends SOCKS CONNECT/BIND TCP traffic through an
+	// existing socks5:// or socks5h:// proxy. UDP ASSOCIATE remains local.
+	Upstream string `yaml:"upstream"`
+	// UDPIdleTimeout bounds inactive SOCKS5 UDP ASSOCIATE flows.
+	UDPIdleTimeout time.Duration `yaml:"udp_idle_timeout"`
 }
 
 // WantsASNUpdates reports whether the background ASN index refresh should
@@ -695,8 +703,34 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			if t.Socks.DNSTimeout < 0 {
 				return c, fmt.Errorf("tunnel %q: socks.dns_timeout must not be negative", t.Name)
 			}
+			if t.Socks.UDPIdleTimeout < 0 {
+				return c, fmt.Errorf("tunnel %q: socks.udp_idle_timeout must not be negative", t.Name)
+			}
+			if t.Socks.Upstream != "" {
+				u, e := url.Parse(t.Socks.Upstream)
+				if e != nil || (u.Scheme != "socks5" && u.Scheme != "socks5h") || u.Host == "" {
+					return c, fmt.Errorf("tunnel %q: socks.upstream must be a socks5:// or socks5h:// URL", t.Name)
+				}
+			}
 		} else if t.Socks != nil {
 			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+		} else {
+			if t.Protocol == "" {
+				t.Protocol = "tcp"
+			}
+			if t.Protocol != "tcp" && t.Protocol != "udp" {
+				return c, fmt.Errorf("tunnel %q: protocol must be tcp or udp", t.Name)
+			}
+			host, port, e := net.SplitHostPort(t.Target)
+			if e != nil || host == "" || port == "" {
+				return c, fmt.Errorf("tunnel %q: target must be host:port: %w", t.Name, e)
+			}
+			if _, e := net.LookupPort(t.Protocol, port); e != nil {
+				return c, fmt.Errorf("tunnel %q: target port: %w", t.Name, e)
+			}
+			if t.Protocol == "udp" && t.UDPIdleTimeout < 0 {
+				return c, fmt.Errorf("tunnel %q: udp_idle_timeout must not be negative", t.Name)
+			}
 		}
 		if t.Portal != nil {
 			if t.Portal.URL != "" && !instructions.SafeURL(t.Portal.URL) {

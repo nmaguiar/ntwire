@@ -125,6 +125,26 @@ func (s *Server) serveSocks5(ctx context.Context, conn net.Conn, br *bufio.Reade
 			return
 		}
 		s.doSocks5Bind(ctx, conn, br, hostname, ip, port)
+	case socks5CmdUDP:
+		if s.udpAssociate == nil {
+			writeSocks5Reply(conn, socks5RepCmdNotSupported, netip.IPv4Unspecified(), 0)
+			return
+		}
+		a, ok := s.udpAssociate(ctx, hostname, ip, port)
+		if !ok || a == nil {
+			writeSocks5Reply(conn, socks5RepNotAllowed, netip.IPv4Unspecified(), 0)
+			return
+		}
+		defer func() {
+			if a.Close != nil {
+				a.Close()
+			}
+		}()
+		writeSocks5Reply(conn, socks5RepSucceeded, a.Addr, a.Port)
+		// RFC 1928 keeps the association alive exactly while its TCP control
+		// connection remains open. Discard any control bytes rather than
+		// treating them as a second SOCKS request.
+		_, _ = io.Copy(io.Discard, br)
 	default:
 		s.log.Debug("socks5: unsupported command", "command", cmd)
 		writeSocks5Reply(conn, socks5RepCmdNotSupported, netip.IPv4Unspecified(), 0)

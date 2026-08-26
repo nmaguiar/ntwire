@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
@@ -75,6 +76,45 @@ tunnels:
 	}
 	if len(got.Tunnels) != 1 || got.Tunnels[0].LocalPort != 58080 {
 		t.Fatalf("tunnels = %+v", got.Tunnels)
+	}
+}
+
+func TestLoadConfigTunnelProtocolAndUDPTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	if err := os.WriteFile(path, []byte(`listen:
+  https: ":8443"
+  wireguard: ":51820"
+network:
+  tunnel_cidr: "100.64.0.0/24"
+native_wireguard:
+  enabled: true
+tunnels:
+  - name: dns
+    target: "[2001:db8::53]:53"
+    protocol: udp
+    udp_idle_timeout: 3m
+    virtual_port: 1053
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() = %v", err)
+	}
+	if got.Tunnels[0].Protocol != "udp" || got.Tunnels[0].UDPIdleTimeout != 3*time.Minute {
+		t.Fatalf("UDP tunnel = %+v", got.Tunnels[0])
+	}
+}
+
+func TestLoadConfigRejectsInvalidTunnelProtocolAndTarget(t *testing.T) {
+	for _, body := range []string{"protocol: sctp", "target: not-a-target"} {
+		path := filepath.Join(t.TempDir(), "server.yaml")
+		if err := os.WriteFile(path, []byte("listen:\n  https: \":8443\"\n  wireguard: \":51820\"\nnetwork:\n  tunnel_cidr: \"100.64.0.0/24\"\nnative_wireguard:\n  enabled: true\ntunnels:\n  - name: bad\n    target: x:1\n    virtual_port: 1\n    "+body+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil {
+			t.Fatalf("LoadConfig accepted %q", body)
+		}
 	}
 }
 
