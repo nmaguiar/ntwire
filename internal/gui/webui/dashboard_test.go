@@ -85,3 +85,27 @@ func TestProfileFailureHasClearErrorControl(t *testing.T) {
 		}
 	}
 }
+
+func TestPassphrasePromptKeyboardControls(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"input.addEventListener('keydown'",
+		"event.key === 'Enter'",
+		"connect.click()",
+		"event.key === 'Escape'",
+		"cancel.click()",
+		"queueMicrotask(() => input.focus())",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("GUI passphrase prompt is missing keyboard behavior %q", want)
+		}
+	}
+}

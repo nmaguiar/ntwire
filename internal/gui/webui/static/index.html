@@ -728,10 +728,22 @@ function passphraseModal(snap) {
   cancel.className = 'secondary';
   cancel.textContent = 'Cancel';
   cancel.addEventListener('click', () => answerPassphrase(snap.profile.ID, '', true));
+  input.addEventListener('keydown', event => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      connect.click();
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      cancel.click();
+    }
+  });
   actions.append(connect, cancel);
 
   modal.append(h, desc, label, actions);
-  return overlay(modal);
+  const prompt = overlay(modal);
+  queueMicrotask(() => input.focus());
+  return prompt;
 }
 
 async function answerPassphrase(id, passphrase, cancel) {
