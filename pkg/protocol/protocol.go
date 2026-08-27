@@ -26,6 +26,13 @@ const CapabilityMultipathV1 = "multipath-v1"
 // to ignore).
 const CapabilityMultipathV2 = "multipath-v2"
 
+// CapabilityMultipathV3 opts a multipath-v2 peer into authenticated payload
+// progress acknowledgements.  Unlike a path probe, an acknowledgement is only
+// emitted after a real WireGuard transport packet was received on that path,
+// allowing a scheduler to fail over when tiny control frames survive but the
+// data plane is wedged.
+const CapabilityMultipathV3 = "multipath-v3"
+
 // CapabilityPathMTUV1 opts a multipath peer into conservative, authenticated
 // path-MTU probes. It is separate from multipath-v2 because an older v2 peer
 // may safely ignore unknown control frames, but must never be made to spend

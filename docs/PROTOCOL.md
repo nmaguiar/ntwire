@@ -85,9 +85,14 @@ the relay returns the shared subset, and either side may use
 `required_capabilities` to fail registration before the data/control path is
 used. `GET /v1/info` can similarly require a client capability before login.
 
-The current transport identifiers are `multipath-v1` and `multipath-v2`.
-`multipath-v2` is useful only together with `multipath-v1`; a peer that knows
-only v1 ignores the optional v2 offer and continues using v1. Because v1 has
+The current transport identifiers are `multipath-v1`, `multipath-v2`, and
+`multipath-v3`. `multipath-v2` is useful only together with `multipath-v1`;
+a peer that knows only v1 ignores the optional v2 offer and continues using
+v1. `multipath-v3` additionally requires v2 and acknowledges rate-limited,
+real WireGuard transport packets on their receiving candidate. This lets a
+busy path fail over when its tiny probe/ack frames still work but its payload
+stream is wedged; idle paths are never failed solely for lack of traffic.
+Because v1 has
 only small-packet probe RTT/loss and cannot establish bulk-data delivery,
 automatic direct-UDP promotion requires v2; v1 retains WSS as its automatic
 route while explicit direct-UDP selection remains available. Tests cover the
@@ -491,6 +496,16 @@ size, so the exchange cannot amplify traffic. Both ends probe independently
 only after the ordinary health probe succeeds and cache the largest matching
 ack as diagnostic `datagram_mtu` path status. No packet sizing is changed by
 this version of the feature: WireGuard retains the safe 1420-byte tunnel MTU.
+
+Multipath peers that negotiate `multipath-v3` additionally use frame `11`
+(`FramePathDataAck`). It is a fixed 12-byte payload and is rate-limited to
+one acknowledgement per candidate every 250 ms. It is emitted only after a
+real WireGuard transport packet has arrived on that candidate, then returned
+over the same candidate. After three seconds of continuing payload sends
+without such an acknowledgement, the sender marks that candidate
+`payload_stalled`, fails over to a healthy alternate, and sends bounded
+duplicate recovery traffic there until a real-payload acknowledgement restores
+it. Ordinary probe acknowledgements never clear `payload_stalled`.
 
 A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
 and gets back `FrameReflectResponse` with its own address as the relay

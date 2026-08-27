@@ -122,7 +122,7 @@ func TestUDPRelaySessionForEchoesClientObservedStats(t *testing.T) {
 
 	// First call establishes the session; no clientStats yet since the
 	// client hasn't registered the candidate at that point.
-	first := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	first := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if first.Stats != nil {
 		t.Fatalf("first sessionFor() Stats = %+v, want nil (no relay report yet)", first.Stats)
 	}
@@ -133,7 +133,7 @@ func TestUDPRelaySessionForEchoesClientObservedStats(t *testing.T) {
 	}})
 
 	clientStats := &protocol.ClientUDPRelayStats{BytesSent: 900, PacketsSent: 9, BytesReceived: 800, PacketsReceived: 8}
-	second := u.sessionFor(context.Background(), peer.Public, false, false, false, clientStats)
+	second := u.sessionFor(context.Background(), peer.Public, false, false, false, false, clientStats)
 	if second.Stats == nil {
 		t.Fatal("second sessionFor() Stats = nil, want the relay's hop summary")
 	}
@@ -146,7 +146,7 @@ func TestUDPRelaySessionForEchoesClientObservedStats(t *testing.T) {
 
 	// A third call with no new clientStats must still echo back the last
 	// one recorded, not clear it.
-	third := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	third := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if third.Stats == nil || third.Stats.ClientObserved == nil || *third.Stats.ClientObserved != *clientStats {
 		t.Fatalf("third sessionFor() ClientObserved = %+v, want the previously reported %+v to persist", third.Stats, clientStats)
 	}
@@ -160,11 +160,11 @@ func TestUDPRelaySessionForIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp1 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	resp1 := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if resp1.Token != "tok-1" || resp1.RelayAddr != "127.0.0.1:1" {
 		t.Fatalf("sessionFor() first call = %+v, want token/relay_addr populated", resp1)
 	}
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if resp2 != resp1 {
 		t.Fatalf("sessionFor() second call = %+v, want identical to first %+v", resp2, resp1)
 	}
@@ -180,7 +180,7 @@ func TestUDPRelaySessionForReturnsEmptyWhenAllocationUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if resp != (protocol.UDPRelayResponse{}) {
 		t.Fatalf("sessionFor() = %+v, want the zero value when allocation is unavailable", resp)
 	}
@@ -194,7 +194,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	resp := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	u.release(peer.Public)
 
 	fa.mu.Lock()
@@ -207,7 +207,7 @@ func TestUDPRelayReleaseStopsSessionAndReleasesOnAgent(t *testing.T) {
 	// A fresh sessionFor call after release must allocate again, not reuse
 	// stale state.
 	fa.token = "tok-2"
-	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, nil)
+	resp2 := u.sessionFor(context.Background(), peer.Public, false, false, false, false, nil)
 	if resp2.Token != "tok-2" {
 		t.Fatalf("sessionFor() after release = %+v, want a fresh allocation", resp2)
 	}

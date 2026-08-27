@@ -204,7 +204,7 @@ func (s *Server) StartDataPlane() error {
 			s.observe("websocket_connected", "")
 			s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", true)
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
-				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2, sess.PathMTU)
+				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU)
 			}
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)

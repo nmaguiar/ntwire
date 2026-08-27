@@ -83,10 +83,13 @@ of silently falling back. `--websocket` remains a compatibility alias for
 server with both UDP and WebSocket endpoints, `transport.multipath: true`
 (the default) bootstraps over WSS. Direct UDP is registered for automatic
 scheduling only when `multipath-v2` is negotiated, because v1's small-packet
-probes cannot establish bulk-data delivery. A v1 session keeps WSS as its
-safe automatic route; `--transport direct-udp` remains available for an
-explicit single-path UDP connection. Set `transport.multipath: false` only
-for a legacy single-path deployment.
+probes cannot establish bulk-data delivery. When both peers also negotiate
+`multipath-v3`, ongoing real WireGuard payload is acknowledged per candidate,
+so a path whose probes still work but whose payload stream stalls fails over
+automatically. A v1 session keeps WSS as its safe automatic route;
+`--transport direct-udp` remains available for an explicit single-path UDP
+connection. Set `transport.multipath: false` only for a legacy single-path
+deployment.
 
 ```yaml
 listen:

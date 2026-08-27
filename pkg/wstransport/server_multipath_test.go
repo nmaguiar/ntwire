@@ -93,7 +93,7 @@ func TestServerMultipathRegisterPathProbesImmediatelyAndAckMarksHealthy(t *testi
 	defer m.Close()
 
 	ep := fakeEndpoint{id: "client-udp-relay"}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false, false)
 
 	deadline := time.Now().Add(time.Second)
 	var frame []byte
@@ -136,7 +136,7 @@ func TestServerMultipathForcedTransportAppliesToExistingAndFuturePeers(t *testin
 	defer m.Close()
 	m.SetForced("wss")
 	ep := fakeEndpoint{id: "peer-wss"}
-	m.RegisterPath("peer-1", "wss", PathWSS, ep, false, false)
+	m.RegisterPath("peer-1", "wss", PathWSS, ep, false, false, false)
 	m.mu.RLock()
 	p := m.peers["peer-1"]
 	m.mu.RUnlock()
@@ -159,7 +159,7 @@ func TestServerMultipathWrapInterceptsWSSControlFrames(t *testing.T) {
 	defer m.Close()
 
 	wssEP := fakeEndpoint{id: "wss-peer"}
-	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false)
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false, false)
 	base.reset() // discard the immediate probe RegisterPath just sent
 
 	probe := EncodeControlFrame(FramePathProbe, bytes.Repeat([]byte{0x09}, pathProbeSize))
@@ -195,6 +195,32 @@ func TestServerMultipathWrapInterceptsWSSControlFrames(t *testing.T) {
 	}
 }
 
+func TestServerMultipathPayloadAcknowledgementIsCapabilityGated(t *testing.T) {
+	base := &fakeBind{}
+	m := NewServerMultipathBind(base, V2Options{})
+	defer m.Close()
+	ep := fakeEndpoint{id: "wss-peer"}
+	m.RegisterPath("peer-1", "wss", PathWSS, ep, true, true, false)
+	base.reset() // discard RegisterPath's immediate health probe
+
+	p := m.peers["peer-1"]
+	m.sendPayloadAck(p, ep)
+	frame, dest, ok := base.lastSent()
+	if !ok {
+		t.Fatal("payload acknowledgement was not sent")
+	}
+	typ, payload, ok := DecodeControlFrame(frame)
+	if !ok || typ != FramePathDataAck || !ValidPathDataAck(payload) || dest.DstToString() != ep.DstToString() {
+		t.Fatalf("payload acknowledgement = type=%d payload=%x dest=%v", typ, payload, dest)
+	}
+
+	p.scheduler.RecordPayloadSent("wss", time.Now())
+	m.dispatchControl(p, FramePathDataAck, make([]byte, pathProbeSize), ep)
+	if p.scheduler.candidates["wss"].payloadAck.Load() == 0 {
+		t.Fatal("payload acknowledgement did not record candidate progress")
+	}
+}
+
 // TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets uses a
 // real conn.NewStdNetBind() and a real UDP socket standing in for the
 // relay's per-session pooled port, mirroring udprelay.go's sessionFor
@@ -226,7 +252,7 @@ func TestServerMultipathUDPRelayCandidateBecomesHealthyOverRealSockets(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, ep, false, false, false)
 
 	_ = pooled.SetReadDeadline(time.Now().Add(2 * time.Second))
 	buf := make([]byte, 2048)
@@ -276,8 +302,8 @@ func TestServerMultipathDuplicationBudgetLimitsAndCounts(t *testing.T) {
 
 	wssEP := fakeEndpoint{id: "wss-ep"}
 	relayEP := fakeEndpoint{id: "relay-ep"}
-	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false)
-	m.RegisterPath("peer-1", "relay", PathUDPRelay, relayEP, false, false)
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false, false)
+	m.RegisterPath("peer-1", "relay", PathUDPRelay, relayEP, false, false, false)
 
 	m.mu.RLock()
 	p := m.peers["peer-1"]
