@@ -68,6 +68,7 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 	sc := t.Socks
 	log := s.log.With("tunnel", t.Name)
 	dial := (&net.Dialer{}).DialContext
+	dialRemoteHostname := false
 	if sc.Upstream != "" {
 		u, err := urlpkg.Parse(sc.Upstream)
 		if err != nil {
@@ -82,7 +83,13 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 		if err != nil {
 			return nil
 		}
-		dial = func(_ context.Context, network, address string) (net.Conn, error) { return up.Dial(network, address) }
+		dialRemoteHostname = u.Scheme == "socks5h"
+		dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+			if contextDialer, ok := up.(proxy.ContextDialer); ok {
+				return contextDialer.DialContext(ctx, network, address)
+			}
+			return up.Dial(network, address)
+		}
 	}
 	if sc.deniesAllByDefault() {
 		log.Warn("socks tunnel has no destination filters and no allow_all; it will deny every connection")
@@ -103,8 +110,9 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 			principal, ok := principalFromContext(ctx)
 			return ok && s.destinationAllowed(ctx, principal, t, hostname, ip, port, protocol)
 		},
-		DNSTimeout: sc.DNSTimeout,
-		AllowBind:  sc.AllowBind,
+		DNSTimeout:         sc.DNSTimeout,
+		AllowBind:          sc.AllowBind,
+		DialRemoteHostname: dialRemoteHostname,
 		UDPAssociate: func(ctx context.Context, _ string, _ netip.Addr, _ uint16) (*socks.UDPAssociation, bool) {
 			if d == nil {
 				return nil, false

@@ -460,6 +460,84 @@ func TestProxySocksConnectAllowedRelays(t *testing.T) {
 	}
 }
 
+func TestProxySocksUpstreamSocks5hPreservesHostname(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	destination := make(chan string, 1)
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		greeting := make([]byte, 3)
+		if _, err := io.ReadFull(conn, greeting); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte{0x05, 0x00}); err != nil {
+			return
+		}
+		header := make([]byte, 4)
+		if _, err := io.ReadFull(conn, header); err != nil || header[3] != 0x03 {
+			return
+		}
+		length := make([]byte, 1)
+		if _, err := io.ReadFull(conn, length); err != nil {
+			return
+		}
+		hostAndPort := make([]byte, int(length[0])+2)
+		if _, err := io.ReadFull(conn, hostAndPort); err != nil {
+			return
+		}
+		destination <- net.JoinHostPort(string(hostAndPort[:length[0]]), fmt.Sprint(binary.BigEndian.Uint16(hostAndPort[length[0]:])))
+		_, _ = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+		_, _ = io.Copy(io.Discard, conn)
+	}()
+
+	s, _, _ := newTestServer(t, nil)
+	tunnel := TunnelConfig{
+		Name: "egress", Target: "socks", VirtualPort: 11083, Allow: []string{"*"},
+		Socks: &SocksConfig{AllowAll: true, Upstream: "socks5h://" + upstream.Addr().String()},
+	}
+	runtime := s.newSocksRuntime(tunnel)
+	if runtime == nil {
+		t.Fatal("newSocksRuntime returned nil")
+	}
+	client, serverConn := net.Pipe()
+	defer client.Close()
+	principal := DataPlanePrincipal{TunnelIP: netip.MustParseAddr("100.64.0.5")}
+	go runtime.server.ServeConn(context.WithValue(context.Background(), principalContextKey{}, principal), serverConn)
+
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(client, methodReply); err != nil || methodReply[1] != 0x00 {
+		t.Fatalf("SOCKS method reply = %v, err = %v", methodReply, err)
+	}
+	request := []byte{0x05, 0x01, 0x00, 0x03, byte(len("localhost"))}
+	request = append(request, "localhost"...)
+	request = binary.BigEndian.AppendUint16(request, 443)
+	if _, err := client.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(client, reply); err != nil || reply[1] != 0x00 {
+		t.Fatalf("SOCKS CONNECT reply = %v, err = %v", reply, err)
+	}
+	select {
+	case got := <-destination:
+		if want := "localhost:443"; got != want {
+			t.Fatalf("upstream SOCKS destination = %q, want %q", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream SOCKS server did not receive CONNECT request")
+	}
+}
+
 func TestProxySocksConnectDeniedByDefault(t *testing.T) {
 	upstream := echoUpstream(t)
 	s, _, _ := newTestServer(t, nil)

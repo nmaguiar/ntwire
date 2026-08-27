@@ -8,6 +8,7 @@ package socks
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -48,6 +49,12 @@ type Config struct {
 	// AllowBind explicitly enables SOCKS4/5 BIND. BIND creates a temporary
 	// host-network listener that an external peer can reach, unlike CONNECT.
 	AllowBind bool
+	// DialRemoteHostname keeps a SOCKS5 domain name in the outbound dial
+	// address after it has been locally resolved and authorized. It is for a
+	// trusted socks5h upstream, which must perform the final DNS resolution.
+	// The local resolution is still required to apply this server's filters and
+	// destination policy before proxying the request.
+	DialRemoteHostname bool
 	// UDPAssociate creates a tunnel-owned UDP relay for SOCKS5 UDP ASSOCIATE.
 	// It is deliberately supplied by the host: UDP needs the authenticated
 	// netstack that accepted the TCP control connection.
@@ -65,21 +72,20 @@ type UDPAssociation struct {
 }
 
 // Server serves SOCKS4/SOCKS5 CONNECT and BIND on accepted connections,
-// gating each destination through a Filter. UDP ASSOCIATE is recognized but
-// refused (SOCKS4 has no UDP support upstream either); see the plan's Stage
-// 3 for why it needs cross-cutting client/wgnet changes this package alone
-// can't provide.
+// gating each destination through a Filter. When the host provides an
+// UDPAssociate handler, it also supports SOCKS5 UDP ASSOCIATE.
 type Server struct {
-	filter       *Filter
-	dnsTimeout   time.Duration
-	dialTimeout  time.Duration
-	bindTimeout  time.Duration
-	allowBind    bool
-	udpAssociate func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool)
-	resolver     *net.Resolver
-	dial         func(ctx context.Context, network, addr string) (net.Conn, error)
-	log          *slog.Logger
-	authorize    func(context.Context, string, netip.Addr, uint16, string) bool
+	filter             *Filter
+	dnsTimeout         time.Duration
+	dialTimeout        time.Duration
+	bindTimeout        time.Duration
+	allowBind          bool
+	dialRemoteHostname bool
+	udpAssociate       func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool)
+	resolver           *net.Resolver
+	dial               func(ctx context.Context, network, addr string) (net.Conn, error)
+	log                *slog.Logger
+	authorize          func(context.Context, string, netip.Addr, uint16, string) bool
 }
 
 // New builds a Server from cfg.
@@ -89,16 +95,17 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		filter:       f,
-		dnsTimeout:   cfg.DNSTimeout,
-		dialTimeout:  cfg.DialTimeout,
-		bindTimeout:  cfg.BindTimeout,
-		allowBind:    cfg.AllowBind,
-		udpAssociate: cfg.UDPAssociate,
-		resolver:     cfg.Resolver,
-		dial:         cfg.Dial,
-		log:          cfg.Logger,
-		authorize:    cfg.Authorize,
+		filter:             f,
+		dnsTimeout:         cfg.DNSTimeout,
+		dialTimeout:        cfg.DialTimeout,
+		bindTimeout:        cfg.BindTimeout,
+		allowBind:          cfg.AllowBind,
+		dialRemoteHostname: cfg.DialRemoteHostname,
+		udpAssociate:       cfg.UDPAssociate,
+		resolver:           cfg.Resolver,
+		dial:               cfg.Dial,
+		log:                cfg.Logger,
+		authorize:          cfg.Authorize,
 	}
 	if s.dnsTimeout <= 0 {
 		s.dnsTimeout = 10 * time.Second
@@ -206,6 +213,9 @@ func (s *Server) connect(ctx context.Context, hostname string, ip netip.Addr, po
 	}
 
 	target := netip.AddrPortFrom(resolved.Unmap(), port).String()
+	if s.dialRemoteHostname && hostname != "" {
+		target = net.JoinHostPort(hostname, fmt.Sprint(port))
+	}
 	dctx, cancel := context.WithTimeout(ctx, s.dialTimeout)
 	defer cancel()
 	out, err := s.dial(dctx, "tcp", target)
