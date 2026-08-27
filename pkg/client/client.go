@@ -708,7 +708,7 @@ func fetchInfo(h *http.Client, base string) (protocol.InfoResponse, error) {
 // understand. They are kept separate from what a particular connection
 // requests so an InfoResponse can fail a required capability before auth.
 func clientCapabilities() []string {
-	return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityPathMTUV1}
+	return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
 }
 
 func clientTransportCapabilities() []string { return clientCapabilities() }
@@ -1181,6 +1181,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	// packets stall behind a restrictive NAT or MTU. Only v2 supplies the
 	// passive real-traffic delivery signal needed for automatic promotion.
 	multipathV2 := multipathV1 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
+	multipathV3 := multipathV2 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3)
 	pathMTU := multipathV1 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
 	useWS, err := selectTransport(options.UseWebSocket, transport, multipathV1, udpEndpoint, r.WebSocket)
 	if err != nil {
@@ -1201,6 +1202,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if useWS {
 		if multipathV1 {
 			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, multipathV2, pathMTU, resolveMultipathV2Options(options.MultipathV2), options.IPVersion, options.Logger)
+			multipath.SetPayloadLiveness(multipathV3)
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)

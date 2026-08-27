@@ -246,7 +246,11 @@ DNS rebinding.
 - **SOCKS5 domain requests resolve on the server**, using the server's DNS
   resolver and `socks.dns_timeout`, before `socks.domain_filters` is
   matched against the requested hostname and `socks.filters`/`asn_filters`
-  against the resolved IP; a client cannot force resolution elsewhere.
+  against the resolved IP. This is also the final address for direct and
+  `socks5://` upstream connections. With an explicitly configured,
+  trusted `socks5h://` upstream, ntwire sends the authorized original hostname
+  to that upstream for final DNS resolution; use this only when that upstream
+  is within the destination-policy trust boundary.
 - **UDP ASSOCIATE is control-session-bound.** ntwire creates one private
   virtual UDP listener per SOCKS5 control connection, accepts packets only
   from that connection's authenticated tunnel IP, rejects fragmented SOCKS

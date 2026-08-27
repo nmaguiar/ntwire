@@ -107,6 +107,47 @@ func TestSocks5ConnectAllowed(t *testing.T) {
 	}
 }
 
+func TestSocks5ConnectRemoteHostnamePreservesDomainForDial(t *testing.T) {
+	upstream, closeUpstream := stubUpstream(t)
+	defer closeUpstream()
+
+	var dialed string
+	s, err := New(Config{
+		Filter:             FilterConfig{AllowAll: true},
+		DialRemoteHostname: true,
+		Logger:             slog.New(slog.DiscardHandler),
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			dialed = address
+			return (&net.Dialer{}).DialContext(ctx, network, upstream.String())
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, server := net.Pipe()
+	defer client.Close()
+	go s.ServeConn(context.Background(), server)
+
+	if _, err := client.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatal(err)
+	}
+	readN(t, client, 2, nil)
+	request := []byte{0x05, socks5CmdConnect, 0x00, socks5AtypDomain, byte(len("localhost"))}
+	request = append(request, "localhost"...)
+	request = binary.BigEndian.AppendUint16(request, upstream.Port())
+	if _, err := client.Write(request); err != nil {
+		t.Fatal(err)
+	}
+	readN(t, client, 10, func(b []byte) {
+		if b[1] != socks5RepSucceeded {
+			t.Fatalf("expected success reply, got rep=%d", b[1])
+		}
+	})
+	if want := net.JoinHostPort("localhost", strconv.Itoa(int(upstream.Port()))); dialed != want {
+		t.Fatalf("dial address = %q, want remote hostname %q", dialed, want)
+	}
+}
+
 func TestSocks5ConnectDenied(t *testing.T) {
 	upstream, closeUpstream := stubUpstream(t)
 	defer closeUpstream()

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -58,6 +59,7 @@ type serverMultipathPeer struct {
 	// Constant for a peer's whole life -- RegisterPath sets it on every call,
 	// idempotently, since a session's negotiated capability never changes.
 	v2      bool
+	v3      bool
 	pathMTU bool
 
 	// mirror/recvCounters/attempts are this peer's counterparts of
@@ -129,7 +131,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 // CapabilityMultipathV2, gating the passive throughput-sampling subsystem;
 // pass the same value on every call for a given peerID, since it can't
 // legitimately change mid-session.
-func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2, pathMTU bool) {
+func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2, v3, pathMTU bool) {
 	m.mu.Lock()
 	p := m.peer(peerID)
 	m.bySource[ep.DstToString()] = p
@@ -139,6 +141,7 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.mu.Lock()
 	p.paths[name] = ep
 	p.v2 = v2
+	p.v3 = v3
 	p.pathMTU = pathMTU
 	p.mu.Unlock()
 	p.scheduler.SetV2(v2)
@@ -215,6 +218,20 @@ func (m *ServerMultipathBind) wrap(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					continue
 				}
 				p := m.bySource[eps[i].DstToString()]
+				if p != nil && isWireGuardTransport(b) {
+					// A WebSocket carrier is already authenticated as this session.
+					// Consequently, an inbound WireGuard transport packet proves the
+					// candidate can carry return traffic even if its probe ACK is still
+					// queued behind the initial handshake. Without this confirmation,
+					// WireGuard can receive the first request but drop its response with
+					// "no healthy multipath path".
+					if name, ok := p.nameForEndpoint(eps[i]); ok {
+						p.scheduler.ProbeResult(name, 0, true, time.Now())
+					}
+					if p.v3 {
+						m.sendPayloadAck(p, eps[i])
+					}
+				}
 				seen := m.cache.Seen(b, time.Now())
 				if seen && p != nil && p.v2 {
 					m.countMirrored(p, eps[i], len(b))
@@ -266,6 +283,10 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if !ValidPathControl(typ, payload) {
 			return
 		}
+	case FramePathDataAck:
+		if !p.v3 || !ValidPathDataAck(payload) {
+			return
+		}
 	case FrameThroughputReport:
 		// mirror/recvCounters/attempts are always allocated (see peer()), so
 		// unlike the client side this never risks a nil dereference -- but a
@@ -302,6 +323,10 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if found {
 			p.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
 			m.sendMTUProbe(p, name, minPathMTUProbe)
+		}
+	case FramePathDataAck:
+		if name, ok := p.nameForEndpoint(ep); ok {
+			p.scheduler.RecordPayloadAck(name, time.Now())
 		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
@@ -378,6 +403,9 @@ func (m *ServerMultipathBind) probeAll() {
 	}
 	m.mu.RUnlock()
 	for _, p := range peers {
+		if p.v3 {
+			p.scheduler.FailStalledPrimary(now)
+		}
 		p.mu.RLock()
 		names := make([]string, 0, len(p.paths))
 		for name := range p.paths {
@@ -575,6 +603,7 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	p := m.peers[e.id]
 	m.mu.RUnlock()
 	if p == nil {
+		slog.Debug("multipath server send has unknown peer", "peer", e.id)
 		return errors.New("unknown multipath peer")
 	}
 	primary, alternate, duplicate := p.scheduler.Select()
@@ -582,10 +611,15 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	first, second := p.paths[primary], p.paths[alternate]
 	p.mu.RUnlock()
 	if first == nil {
+		slog.Debug("multipath server send has no healthy path", "peer", e.id, "selected", primary, "paths", p.scheduler.Status())
 		return errors.New("no healthy multipath path")
 	}
 	if err := m.base.Send(bufs, first); err != nil {
+		slog.Debug("multipath server primary send failed", "peer", e.id, "candidate", primary, "error", err)
 		return err
+	}
+	if p.v3 && isWireGuardTransportBatch(bufs) {
+		p.scheduler.RecordPayloadSent(primary, time.Now())
 	}
 	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
 		return nil
@@ -619,5 +653,38 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 			}
 		}
 	}
+	if p.v3 {
+		m.sendPayloadRecovery(p, bufs)
+	}
 	return nil
+}
+
+func (m *ServerMultipathBind) sendPayloadAck(p *serverMultipathPeer, ep conn.Endpoint) {
+	name, ok := p.nameForEndpoint(ep)
+	if !ok || !p.scheduler.ShouldSendPayloadAck(name, time.Now()) {
+		return
+	}
+	// Do not let a backpressured WebSocket control write block WireGuard's
+	// receive worker before it delivers the triggering packet. The scheduler
+	// keeps at most one acknowledgement write pending per path.
+	go func() {
+		defer p.scheduler.FinishPayloadAck(name)
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	}()
+}
+
+func (m *ServerMultipathBind) sendPayloadRecovery(p *serverMultipathPeer, bufs [][]byte) {
+	if !isWireGuardTransportBatch(bufs) {
+		return
+	}
+	name, ok := p.scheduler.PayloadRecoveryCandidate()
+	if !ok || !p.mirror.Allow(len(bufs[0])) {
+		return
+	}
+	p.mu.RLock()
+	ep := p.paths[name]
+	p.mu.RUnlock()
+	if ep != nil {
+		_ = m.base.Send(bufs, ep)
+	}
 }

@@ -83,10 +83,13 @@ of silently falling back. `--websocket` remains a compatibility alias for
 server with both UDP and WebSocket endpoints, `transport.multipath: true`
 (the default) bootstraps over WSS. Direct UDP is registered for automatic
 scheduling only when `multipath-v2` is negotiated, because v1's small-packet
-probes cannot establish bulk-data delivery. A v1 session keeps WSS as its
-safe automatic route; `--transport direct-udp` remains available for an
-explicit single-path UDP connection. Set `transport.multipath: false` only
-for a legacy single-path deployment.
+probes cannot establish bulk-data delivery. When both peers also negotiate
+`multipath-v3`, ongoing real WireGuard payload is acknowledged per candidate,
+so a path whose probes still work but whose payload stream stalls fails over
+automatically. A v1 session keeps WSS as its safe automatic route;
+`--transport direct-udp` remains available for an explicit single-path UDP
+connection. Set `transport.multipath: false` only for a legacy single-path
+deployment.
 
 ```yaml
 listen:
@@ -281,8 +284,14 @@ a BIND request's target address as to a CONNECT one. BIND opens a real,
 unfiltered-by-NAT listener on the server host and is a best-effort
 implementation with no NAT traversal, matching upstream: it exists for
 legacy protocols like active-mode FTP and is rarely needed otherwise. UDP
-ASSOCIATE is recognized by the handshake but refused — it needs UDP to
-traverse the ntwire tunnel, which the client and `wgnet` don't yet support.
+ASSOCIATE is supported for SOCKS5 tunnels. ntwire creates a private virtual
+UDP relay for the control connection and the client exposes it on loopback to
+the application. Inactive mappings expire after `socks.udp_idle_timeout`.
+
+For external TCP upstreams, `socks5://` sends the locally resolved destination
+IP to the upstream proxy. `socks5h://` still resolves locally for ntwire's
+filters and destination policy, but sends the original hostname to the trusted
+upstream proxy for its final DNS resolution.
 
 SOCKS BIND is separately disabled by default even when CONNECT and
 `allow_all` are enabled. Set `socks.allow_bind: true` only for a tunnel that

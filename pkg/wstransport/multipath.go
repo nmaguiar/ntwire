@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/netip"
 	"sort"
@@ -49,6 +50,7 @@ type MultipathBind struct {
 	// the passive throughput-sampling subsystem. Constant for the bind's
 	// whole life, set once at construction.
 	v2      bool
+	v3      bool
 	pathMTU bool
 	opts    V2Options
 
@@ -193,6 +195,10 @@ func (m *MultipathBind) Paths() []PathStatus   { return m.scheduler.Status() }
 func (m *MultipathBind) SetForced(name string) { m.scheduler.SetForced(name) }
 func (m *MultipathBind) Forced() string        { return m.scheduler.Forced() }
 
+// SetPayloadLiveness enables multipath-v3's real-payload acknowledgement
+// checks. It is only enabled after explicit capability negotiation.
+func (m *MultipathBind) SetPayloadLiveness(enabled bool) { m.v3 = enabled }
+
 func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	m.restartProbeLoop()
 	fns, actual, err := m.base.Open(port)
@@ -231,6 +237,9 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 				if typ, payload, ok := DecodeControlFrame(b); ok {
 					m.handlePathControl(typ, payload, eps[i])
 					continue
+				}
+				if m.v3 && isWireGuardTransport(b) {
+					m.sendPayloadAck(eps[i])
 				}
 				seen := m.cache.Seen(b, time.Now())
 				if !seen {
@@ -277,16 +286,22 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	primary, alternate, duplicate := m.scheduler.Select()
 	if primary == "" {
+		slog.Debug("multipath client send has no healthy candidate", "paths", m.scheduler.Status())
 		return errors.New("no healthy multipath candidate")
 	}
 	m.mu.RLock()
 	first, second := m.paths[primary], m.paths[alternate]
 	m.mu.RUnlock()
 	if first == nil {
+		slog.Debug("multipath client selected an unregistered candidate", "candidate", primary, "paths", m.scheduler.Status())
 		return errors.New("selected multipath candidate is not registered")
 	}
 	if err := m.base.Send(bufs, first); err != nil {
+		slog.Debug("multipath client primary send failed", "candidate", primary, "error", err)
 		return err
+	}
+	if m.v3 && isWireGuardTransportBatch(bufs) {
+		m.scheduler.RecordPayloadSent(primary, time.Now())
 	}
 	if primary == string(PathUDPRelay) {
 		n := 0
@@ -339,6 +354,9 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 			}
 		}
 	}
+	if m.v3 {
+		m.sendPayloadRecovery(bufs)
+	}
 	return nil
 }
 func (m *MultipathBind) Close() error {
@@ -390,6 +408,10 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		if !ValidPathControl(typ, payload) {
 			return
 		}
+	case FramePathDataAck:
+		if !m.v3 || !ValidPathDataAck(payload) {
+			return
+		}
 	case FrameThroughputReport:
 		// m.attempts/m.mirror/m.recvCounters are only ever initialized when
 		// v2 is set (see NewMultipathBind); a peer sending this frame to a
@@ -427,6 +449,10 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		if found {
 			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
 			m.sendMTUProbe(name, minPathMTUProbe)
+		}
+	case FramePathDataAck:
+		if name, ok := m.nameForEndpoint(ep); ok {
+			m.scheduler.RecordPayloadAck(name, time.Now())
 		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
@@ -512,6 +538,9 @@ func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 
 func (m *MultipathBind) probeAll() {
 	now := time.Now()
+	if m.v3 {
+		m.scheduler.FailStalledPrimary(now)
+	}
 	m.mu.RLock()
 	names := make([]string, 0, len(m.paths))
 	for name := range m.paths {
@@ -520,6 +549,45 @@ func (m *MultipathBind) probeAll() {
 	m.mu.RUnlock()
 	for _, name := range names {
 		m.probeOne(name, now)
+	}
+}
+
+func isWireGuardTransport(b []byte) bool {
+	return len(b) >= 4 && binary.LittleEndian.Uint32(b[:4]) == 4
+}
+
+func isWireGuardTransportBatch(bufs [][]byte) bool {
+	return len(bufs) > 0 && isWireGuardTransport(bufs[0])
+}
+
+func (m *MultipathBind) sendPayloadAck(ep conn.Endpoint) {
+	name, ok := m.nameForEndpoint(ep)
+	if !ok || !m.scheduler.ShouldSendPayloadAck(name, time.Now()) {
+		return
+	}
+	// This runs on WireGuard's receive path. A WebSocket write can block
+	// behind relay or peer backpressure, so never make delivery of the
+	// triggering packet wait for this control acknowledgement. The scheduler
+	// bounds this to one pending write per path.
+	go func() {
+		defer m.scheduler.FinishPayloadAck(name)
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	}()
+}
+
+func (m *MultipathBind) sendPayloadRecovery(bufs [][]byte) {
+	if !isWireGuardTransportBatch(bufs) {
+		return
+	}
+	name, ok := m.scheduler.PayloadRecoveryCandidate()
+	if !ok || m.mirror == nil || !m.mirror.Allow(len(bufs[0])) {
+		return
+	}
+	m.mu.RLock()
+	ep := m.paths[name]
+	m.mu.RUnlock()
+	if ep != nil {
+		_ = m.base.Send(bufs, ep)
 	}
 }
 
@@ -609,6 +677,9 @@ const (
 	FrameThroughputReport byte = 8
 	FramePathMTUProbe     byte = 9
 	FramePathMTUAck       byte = 10
+	// FramePathDataAck is a v3-only fixed-size acknowledgement emitted only
+	// after a real WireGuard type-4 packet is received on a candidate.
+	FramePathDataAck byte = 11
 )
 
 // PathKind is a human-readable candidate class, suitable for local status.
@@ -687,6 +758,10 @@ type PathStatus struct {
 	// bounding it blindly.
 	DuplicatedBytes            uint64 `json:"duplicated_bytes"`
 	DuplicationSuppressedBytes uint64 `json:"duplication_suppressed_bytes"`
+	// PayloadStalled means probes still succeed but recently sent real
+	// WireGuard traffic was not acknowledged by the peer. The path is kept
+	// registered for bounded recovery mirroring but is not selectable.
+	PayloadStalled bool `json:"payload_stalled"`
 }
 
 type candidate struct {
@@ -706,6 +781,12 @@ type candidate struct {
 	// plain fields.
 	duplicatedBytes            atomic.Uint64
 	duplicationSuppressedBytes atomic.Uint64
+	payloadPendingFirst        atomic.Int64
+	payloadLastSent            atomic.Int64
+	payloadAck                 atomic.Int64
+	payloadAckSent             atomic.Int64
+	payloadAckSending          atomic.Bool
+	payloadStalled             atomic.Bool
 }
 
 // Scheduler implements the v1 (RTT/loss) selection policy, extended in v2
@@ -830,7 +911,10 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		return
 	}
 	p.misses = 0
-	p.Healthy, p.LastSuccess = true, now
+	// Probe health cannot revive a v3 payload-stalled path: the entire point
+	// of v3 is that a small control frame may survive while the data plane is
+	// broken. A real-payload acknowledgement clears that state instead.
+	p.Healthy, p.LastSuccess = !p.payloadStalled.Load(), now
 	if rtt > 0 {
 		if p.RTT == 0 {
 			p.RTT = rtt
@@ -841,6 +925,122 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		p.rttNext = (p.rttNext + 1) % len(p.rtts)
 	}
 	p.Loss = p.loss()
+}
+
+const payloadAckInterval = 250 * time.Millisecond
+const payloadStallTimeout = 3 * time.Second
+
+func (s *Scheduler) RecordPayloadSent(name string, now time.Time) {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	if p != nil {
+		n := now.UnixNano()
+		p.payloadLastSent.Store(n)
+		// Keep the first packet sent after the last acknowledged payload. It
+		// is the start of an outstanding-progress interval; replacing it on
+		// every packet would postpone failure forever during a busy stall.
+		first := p.payloadPendingFirst.Load()
+		if first == 0 || p.payloadAck.Load() >= first {
+			p.payloadPendingFirst.CompareAndSwap(first, n)
+		}
+	}
+}
+
+func (s *Scheduler) ShouldSendPayloadAck(name string, now time.Time) bool {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	if p == nil {
+		return false
+	}
+	if !p.payloadAckSending.CompareAndSwap(false, true) {
+		return false
+	}
+	last := time.Unix(0, p.payloadAckSent.Load())
+	if !last.IsZero() && now.Sub(last) < payloadAckInterval {
+		p.payloadAckSending.Store(false)
+		return false
+	}
+	p.payloadAckSent.Store(now.UnixNano())
+	return true
+}
+
+// FinishPayloadAck releases the single-flight reservation made by
+// ShouldSendPayloadAck. Call it when the asynchronous control write returns.
+func (s *Scheduler) FinishPayloadAck(name string) {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	if p != nil {
+		p.payloadAckSending.Store(false)
+	}
+}
+
+func (s *Scheduler) RecordPayloadAck(name string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.candidates[name]
+	if p == nil {
+		return
+	}
+	p.payloadAck.Store(now.UnixNano())
+	if p.payloadStalled.Swap(false) {
+		p.Healthy = true
+	}
+}
+
+// FailStalledPrimary removes a busy primary only when its peer has not
+// acknowledged any real WireGuard payload for payloadStallTimeout. Idle paths
+// never meet the "sent recently" condition and remain untouched.
+func (s *Scheduler) FailStalledPrimary(now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur := s.primary.Load()
+	if cur == nil {
+		return
+	}
+	p := s.candidates[cur.name]
+	if p == nil || !p.Healthy {
+		return
+	}
+	first := time.Unix(0, p.payloadPendingFirst.Load())
+	last := time.Unix(0, p.payloadLastSent.Load())
+	// Only a continuing real-data flow may fail a path. A lone packet from an
+	// otherwise idle tunnel never makes the path unhealthy.
+	if first.IsZero() || now.Sub(first) < payloadStallTimeout || last.IsZero() || now.Sub(last) > payloadAckInterval*4 {
+		return
+	}
+	ack := time.Unix(0, p.payloadAck.Load())
+	if !ack.IsZero() && !ack.Before(first) {
+		return
+	}
+	// Liveness can only justify a failover when an alternate is actually
+	// usable. Demoting a sole WSS candidate turns an observable partial
+	// failure into a guaranteed outage: Send has no route left on which to
+	// carry the next real packet or recover. Keep the lone route selectable
+	// and let its ordinary probe/reconnect lifecycle handle recovery instead.
+	for name, candidate := range s.candidates {
+		if name != p.Name && candidate.Healthy {
+			p.payloadStalled.Store(true)
+			p.Healthy = false
+			return
+		}
+	}
+}
+
+// PayloadRecoveryCandidate returns a v3-stalled candidate for bounded
+// duplicate delivery testing. A successful payload ACK restores it; without
+// traffic this sends nothing and the failed-over primary remains stable.
+func (s *Scheduler) PayloadRecoveryCandidate() (string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for name, p := range s.candidates {
+		if p.payloadStalled.Load() {
+			return name, true
+		}
+	}
+	return "", false
 }
 
 // ReportDeliveryRatio records one comparable sample of how much mirrored
@@ -1145,6 +1345,7 @@ func (s *Scheduler) Status() []PathStatus {
 		v.Forced = v.Name == forced
 		v.DuplicatedBytes = p.duplicatedBytes.Load()
 		v.DuplicationSuppressedBytes = p.duplicationSuppressedBytes.Load()
+		v.PayloadStalled = p.payloadStalled.Load()
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -1207,3 +1408,5 @@ func (c *DuplicateCache) Seen(b []byte, now time.Time) bool {
 func ValidPathControl(typ byte, payload []byte) bool {
 	return (typ == FramePathProbe || typ == FramePathAck) && len(payload) == pathProbeSize
 }
+
+func ValidPathDataAck(payload []byte) bool { return len(payload) == pathProbeSize }

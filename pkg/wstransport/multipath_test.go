@@ -21,7 +21,7 @@ func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
 	for _, want := range []string{
 		`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`,
 		`"delivery_ratio":0.9`, `"throughput_bytes_per_sec":1234.5`,
-		`"duplicated_bytes":100`, `"duplication_suppressed_bytes":25`,
+		`"duplicated_bytes":100`, `"duplication_suppressed_bytes":25`, `"payload_stalled":false`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Marshal() = %s, missing %s", got, want)
@@ -523,4 +523,86 @@ func TestSchedulerForcedSelectionAndFallback(t *testing.T) {
 	if primary != "direct-udp" {
 		t.Fatalf("auto primary = %q, want direct-udp", primary)
 	}
+}
+
+func TestSchedulerPayloadLivenessFailsBusyPrimaryAndRecovers(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	s.Register("wss", PathWSS)
+	s.Register("udp-relay", PathUDPRelay)
+	s.ProbeResult("wss", time.Millisecond, true, now)
+	s.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("initial primary = %q, want wss", primary)
+	}
+
+	// A continuing data flow with no data acknowledgement must outweigh the
+	// still-successful tiny path probes and immediately select the alternate.
+	p := s.candidates["wss"]
+	p.payloadPendingFirst.Store(now.Add(-payloadStallTimeout - time.Millisecond).UnixNano())
+	p.payloadLastSent.Store(now.UnixNano())
+	s.FailStalledPrimary(now)
+	paths := s.Status()
+	var stalled PathStatus
+	for _, p := range paths {
+		if p.Name == "wss" {
+			stalled = p
+		}
+	}
+	if !stalled.PayloadStalled || stalled.Healthy {
+		t.Fatalf("stalled WSS = %+v, want payload_stalled and unhealthy", stalled)
+	}
+	if primary, _, _ := s.Select(); primary != "udp-relay" {
+		t.Fatalf("primary after payload stall = %q, want udp-relay", primary)
+	}
+
+	// A real data acknowledgement, not a probe ACK, is the only recovery.
+	s.RecordPayloadAck("wss", now)
+	for _, p := range s.Status() {
+		if p.Name == "wss" && (!p.Healthy || p.PayloadStalled) {
+			t.Fatalf("payload acknowledgement did not recover WSS: %+v", p)
+		}
+	}
+}
+
+func TestSchedulerPayloadLivenessKeepsOnlyHealthyPathSelectable(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	s.Register("wss", PathWSS)
+	s.ProbeResult("wss", time.Millisecond, true, now)
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("initial primary = %q, want wss", primary)
+	}
+	p := s.candidates["wss"]
+	p.payloadPendingFirst.Store(now.Add(-payloadStallTimeout - time.Millisecond).UnixNano())
+	p.payloadLastSent.Store(now.UnixNano())
+
+	s.FailStalledPrimary(now)
+	path := s.Status()[0]
+	if !path.Healthy || path.PayloadStalled {
+		t.Fatalf("sole path = %+v, want healthy and selectable", path)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("primary after stalled sole path = %q, want wss", primary)
+	}
+}
+
+func TestSchedulerPayloadAcknowledgementsAreSingleFlight(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	if !s.ShouldSendPayloadAck("wss", now) {
+		t.Fatal("first payload acknowledgement was not reserved")
+	}
+	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval)) {
+		t.Fatal("second acknowledgement was reserved while the first write was pending")
+	}
+	s.FinishPayloadAck("wss")
+	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval/2)) {
+		t.Fatal("rate-limited acknowledgement was reserved too soon")
+	}
+	if !s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval+time.Millisecond)) {
+		t.Fatal("acknowledgement was not reserved after the rate limit elapsed")
+	}
+	s.FinishPayloadAck("wss")
 }

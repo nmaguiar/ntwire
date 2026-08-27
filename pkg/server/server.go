@@ -410,6 +410,10 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 // instead of producing a session that later fails in the data plane.
 func (s *Server) transportCapabilitiesAvailable() []string {
 	if s.Config.MultipathEnabled() && s.data != nil && s.data.multipath != nil {
+		// Payload-progress acknowledgements (multipath-v3) are not advertised
+		// until they are safe on the WebSocket fallback data plane. Negotiation
+		// is fail-closed: clients retain v1/v2 and path-MTU support, but cannot
+		// enable v3 merely because they implement it.
 		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityPathMTUV1}
 	}
 	return nil
@@ -605,22 +609,24 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	negotiatedTransport := protocol.IntersectCapabilities(req.TransportCapabilities, s.transportCapabilitiesAvailable())
 	multipathV1 := protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV1)
 	multipathV2 := protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV2)
+	multipathV3 := multipathV2 && protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV3)
 	pathMTU := protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathMTUV1)
 	multipath := multipathV1
 	multipathV2 = multipath && multipathV2
+	multipathV3 = multipathV2 && multipathV3
 	pathMTU = multipath && pathMTU
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
-		Multipath: multipath, MultipathV2: multipathV2, PathMTU: pathMTU,
+		Multipath: multipath, MultipathV2: multipathV2, MultipathV3: multipathV3, PathMTU: pathMTU,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("authentication_success", session.Method)
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2, pathMTU)})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, multipathV2, multipathV3, pathMTU)})
 	return true
 }
 
@@ -628,9 +634,15 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 // actually negotiated -- multipathV2 is only ever true alongside multipath
 // (see establishSession), so it's always sent together with
 // CapabilityMultipathV1, never alone.
-func transportCapabilities(multipath, multipathV2, pathMTU bool) []string {
+func transportCapabilities(multipath, multipathV2, multipathV3, pathMTU bool) []string {
 	if !multipath {
 		return nil
+	}
+	if multipathV3 && pathMTU {
+		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+	}
+	if multipathV3 {
+		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityMultipathV3}
 	}
 	if multipathV2 && pathMTU {
 		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityPathMTUV1}
@@ -747,7 +759,7 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 			go d.primeClient(addr.String())
 			if s.data != nil && s.data.multipath != nil && sess.Multipath && s.data.ws != nil {
 				if ep, err := s.data.ws.UDP.ParseEndpoint(addr.String()); err == nil {
-					s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.PathMTU)
+					s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU)
 				}
 			}
 		}
@@ -788,7 +800,7 @@ func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request)
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
 		return
 	}
-	s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.PathMTU)
+	s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -818,7 +830,7 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 	// best-effort counter in this codebase gets, not a request error.
 	var body protocol.UDPRelayRequest
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
-	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.MultipathV2, sess.PathMTU, body.Stats))
+	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.MultipathV2, sess.MultipathV3, sess.PathMTU, body.Stats))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
@@ -869,7 +881,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
-		Multipath: old.Multipath, MultipathV2: old.MultipathV2, PathMTU: old.PathMTU,
+		Multipath: old.Multipath, MultipathV2: old.MultipathV2, MultipathV3: old.MultipathV3, PathMTU: old.PathMTU,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
@@ -877,7 +889,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2, n.PathMTU)})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.MultipathV2, n.MultipathV3, n.PathMTU)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()

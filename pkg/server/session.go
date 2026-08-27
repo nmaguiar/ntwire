@@ -24,6 +24,9 @@ type Session struct {
 	// MultipathV2 is true only when this session additionally negotiated
 	// CapabilityMultipathV2; always false when Multipath is false.
 	MultipathV2 bool
+	// MultipathV3 is true only when the peer negotiated payload-progress
+	// acknowledgements in addition to multipath-v2.
+	MultipathV3 bool
 	// PathMTU is true only when this session negotiated CapabilityPathMTUV1.
 	PathMTU bool
 	Expires time.Time
@@ -55,6 +58,7 @@ type CreateParams struct {
 	LatencyMillis, Reconnections uint64
 	Multipath                    bool
 	MultipathV2                  bool
+	MultipathV3                  bool
 	PathMTU                      bool
 	TTL                          time.Duration
 }
@@ -67,7 +71,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, MultipathV2: p.MultipathV2, PathMTU: p.PathMTU, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, MultipathV2: p.MultipathV2, MultipathV3: p.MultipathV3, PathMTU: p.PathMTU, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
 	return v

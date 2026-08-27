@@ -211,7 +211,7 @@ func (s *Server) udpRelayStatsFor(clientPubKey string) (relayUDPStatsSummary, bo
 // recorded against the existing session (if any) and the response always
 // carries back whatever hop-telemetry summary this server currently has --
 // see statsFor and protocol.UDPRelayResponse.Stats.
-func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2, pathMTU bool, clientStats *protocol.ClientUDPRelayStats) protocol.UDPRelayResponse {
+func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, multipathV2, multipathV3, pathMTU bool, clientStats *protocol.ClientUDPRelayStats) protocol.UDPRelayResponse {
 	u.recordClientStats(clientPubKey, clientStats)
 	u.mu.Lock()
 	if st, ok := u.sessions[clientPubKey]; ok {
@@ -237,7 +237,7 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 			u.agent.ReleaseUDPSession(token)
 			return protocol.UDPRelayResponse{}
 		}
-		u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2, pathMTU)
+		u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2, multipathV3, pathMTU)
 	} else if err := u.stack.UpdateEndpoint(clientPubKey, serverAddr); err != nil {
 		u.agent.ReleaseUDPSession(token)
 		return protocol.UDPRelayResponse{}
