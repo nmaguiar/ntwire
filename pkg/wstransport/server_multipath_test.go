@@ -195,6 +195,47 @@ func TestServerMultipathWrapInterceptsWSSControlFrames(t *testing.T) {
 	}
 }
 
+// TestServerMultipathPayloadIngressMakesWSSImmediatelyReplyCapable covers
+// relay startup ordering. The client can send its first authenticated
+// WireGuard transport packet before the server's independent path probe has
+// made a round trip. That packet itself proves the authenticated WSS carrier
+// is usable, so the server must be able to route the corresponding reply.
+func TestServerMultipathPayloadIngressMakesWSSImmediatelyReplyCapable(t *testing.T) {
+	base := &fakeBind{}
+	m := NewServerMultipathBind(base, V2Options{})
+	defer m.Close()
+
+	wssEP := fakeEndpoint{id: "wss-peer"}
+	m.RegisterPath("peer-1", "wss", PathWSS, wssEP, false, false, false)
+	base.reset() // discard the registration probe; no probe ACK is delivered.
+
+	wgPacket := make([]byte, 32)
+	binary.LittleEndian.PutUint32(wgPacket, 4)
+	fakeFn := func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		sizes[0] = copy(bufs[0], wgPacket)
+		eps[0] = wssEP
+		return 1, nil
+	}
+	bufs := [][]byte{make([]byte, len(wgPacket))}
+	sizes := make([]int, 1)
+	eps := make([]conn.Endpoint, 1)
+	if n, err := m.wrap(fakeFn)(bufs, sizes, eps); err != nil || n != 1 {
+		t.Fatalf("wrap returned n=%d err=%v, want one payload", n, err)
+	}
+
+	replyEP, err := m.ParseEndpoint("peer-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Send([][]byte{wgPacket}, replyEP); err != nil {
+		t.Fatalf("Send reply after inbound WSS payload = %v", err)
+	}
+	_, dest, ok := base.lastSent()
+	if !ok || dest.DstToString() != wssEP.DstToString() {
+		t.Fatalf("reply destination = %v, want %v", dest, wssEP)
+	}
+}
+
 func TestServerMultipathPayloadAcknowledgementIsCapabilityGated(t *testing.T) {
 	base := &fakeBind{}
 	m := NewServerMultipathBind(base, V2Options{})

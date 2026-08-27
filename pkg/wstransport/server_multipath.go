@@ -217,8 +217,19 @@ func (m *ServerMultipathBind) wrap(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					continue
 				}
 				p := m.bySource[eps[i].DstToString()]
-				if p != nil && p.v3 && isWireGuardTransport(b) {
-					m.sendPayloadAck(p, eps[i])
+				if p != nil && isWireGuardTransport(b) {
+					// A WebSocket carrier is already authenticated as this session.
+					// Consequently, an inbound WireGuard transport packet proves the
+					// candidate can carry return traffic even if its probe ACK is still
+					// queued behind the initial handshake. Without this confirmation,
+					// WireGuard can receive the first request but drop its response with
+					// "no healthy multipath path".
+					if name, ok := p.nameForEndpoint(eps[i]); ok {
+						p.scheduler.ProbeResult(name, 0, true, time.Now())
+					}
+					if p.v3 {
+						m.sendPayloadAck(p, eps[i])
+					}
 				}
 				seen := m.cache.Seen(b, time.Now())
 				if seen && p != nil && p.v2 {
