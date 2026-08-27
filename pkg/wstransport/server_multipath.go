@@ -33,8 +33,9 @@ type ServerMultipathBind struct {
 	opts   V2Options
 	forced string
 
-	stop      chan struct{}
-	closeOnce sync.Once
+	stop        chan struct{}
+	lifecycleMu sync.Mutex
+	stopped     bool
 }
 
 // serverMultipathPeer holds one authenticated client's per-candidate state.
@@ -102,8 +103,8 @@ func NewServerMultipathBind(base conn.Bind, opts V2Options) *ServerMultipathBind
 		base: base, peers: map[string]*serverMultipathPeer{}, bySource: map[string]*serverMultipathPeer{},
 		cache: NewDuplicateCache(4096, 10*time.Second), opts: resolveV2Options(opts), stop: make(chan struct{}),
 	}
-	go m.probeLoop()
-	go m.reportLoop()
+	go m.probeLoop(m.stop)
+	go m.reportLoop(m.stop)
 	return m
 }
 func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
@@ -174,6 +175,7 @@ func (m *ServerMultipathBind) RemovePeer(id string) {
 	}
 }
 func (m *ServerMultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	m.restartProbeLoop()
 	f, p, err := m.base.Open(port)
 	if err != nil {
 		return nil, 0, err
@@ -354,14 +356,14 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 // probeLoop probes every registered candidate of every peer roughly once a
 // second. It is a single goroutine for the whole ServerMultipathBind, not one
 // per peer -- a busy relay server can have hundreds of authenticated peers.
-func (m *ServerMultipathBind) probeLoop() {
+func (m *ServerMultipathBind) probeLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			m.probeAll()
-		case <-m.stop:
+		case <-stop:
 			return
 		}
 	}
@@ -477,7 +479,7 @@ func (m *ServerMultipathBind) countMirrored(p *serverMultipathPeer, ep conn.Endp
 // accounting window, the send-side counterpart an incoming report is
 // compared against. One goroutine for the whole bind, matching probeLoop's
 // reasoning.
-func (m *ServerMultipathBind) reportLoop() {
+func (m *ServerMultipathBind) reportLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(m.opts.ReportInterval)
 	defer ticker.Stop()
 	last := time.Now()
@@ -499,7 +501,7 @@ func (m *ServerMultipathBind) reportLoop() {
 				m.sendReports(p, windowMillis)
 				p.attempts.rollWindow()
 			}
-		case <-m.stop:
+		case <-stop:
 			return
 		}
 	}
@@ -529,8 +531,26 @@ func (m *ServerMultipathBind) sendReports(p *serverMultipathPeer, windowMillis u
 }
 
 func (m *ServerMultipathBind) Close() error {
-	m.closeOnce.Do(func() { close(m.stop) })
+	m.lifecycleMu.Lock()
+	if !m.stopped {
+		close(m.stop)
+		m.stopped = true
+	}
+	m.lifecycleMu.Unlock()
 	return m.base.Close()
+}
+
+// restartProbeLoop restores candidate health probing when wireguard-go closes
+// a bind for reconfiguration and then opens that same bind again.
+func (m *ServerMultipathBind) restartProbeLoop() {
+	m.lifecycleMu.Lock()
+	if m.stopped {
+		m.stop = make(chan struct{})
+		m.stopped = false
+		go m.probeLoop(m.stop)
+		go m.reportLoop(m.stop)
+	}
+	m.lifecycleMu.Unlock()
 }
 func (m *ServerMultipathBind) SetMark(mark uint32) error { return m.base.SetMark(mark) }
 func (m *ServerMultipathBind) BatchSize() int            { return m.base.BatchSize() }
