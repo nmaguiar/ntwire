@@ -988,8 +988,18 @@ func (s *Scheduler) FailStalledPrimary(now time.Time) {
 	if !ack.IsZero() && !ack.Before(first) {
 		return
 	}
-	p.payloadStalled.Store(true)
-	p.Healthy = false
+	// Liveness can only justify a failover when an alternate is actually
+	// usable. Demoting a sole WSS candidate turns an observable partial
+	// failure into a guaranteed outage: Send has no route left on which to
+	// carry the next real packet or recover. Keep the lone route selectable
+	// and let its ordinary probe/reconnect lifecycle handle recovery instead.
+	for name, candidate := range s.candidates {
+		if name != p.Name && candidate.Healthy {
+			p.payloadStalled.Store(true)
+			p.Healthy = false
+			return
+		}
+	}
 }
 
 // PayloadRecoveryCandidate returns a v3-stalled candidate for bounded

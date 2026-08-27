@@ -564,3 +564,25 @@ func TestSchedulerPayloadLivenessFailsBusyPrimaryAndRecovers(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerPayloadLivenessKeepsOnlyHealthyPathSelectable(t *testing.T) {
+	s := NewScheduler()
+	now := time.Now()
+	s.Register("wss", PathWSS)
+	s.ProbeResult("wss", time.Millisecond, true, now)
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("initial primary = %q, want wss", primary)
+	}
+	p := s.candidates["wss"]
+	p.payloadPendingFirst.Store(now.Add(-payloadStallTimeout - time.Millisecond).UnixNano())
+	p.payloadLastSent.Store(now.UnixNano())
+
+	s.FailStalledPrimary(now)
+	path := s.Status()[0]
+	if !path.Healthy || path.PayloadStalled {
+		t.Fatalf("sole path = %+v, want healthy and selectable", path)
+	}
+	if primary, _, _ := s.Select(); primary != "wss" {
+		t.Fatalf("primary after stalled sole path = %q, want wss", primary)
+	}
+}
