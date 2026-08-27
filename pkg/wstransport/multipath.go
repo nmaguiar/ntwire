@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/netip"
 	"sort"
@@ -285,15 +286,18 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	primary, alternate, duplicate := m.scheduler.Select()
 	if primary == "" {
+		slog.Debug("multipath client send has no healthy candidate", "paths", m.scheduler.Status())
 		return errors.New("no healthy multipath candidate")
 	}
 	m.mu.RLock()
 	first, second := m.paths[primary], m.paths[alternate]
 	m.mu.RUnlock()
 	if first == nil {
+		slog.Debug("multipath client selected an unregistered candidate", "candidate", primary, "paths", m.scheduler.Status())
 		return errors.New("selected multipath candidate is not registered")
 	}
 	if err := m.base.Send(bufs, first); err != nil {
+		slog.Debug("multipath client primary send failed", "candidate", primary, "error", err)
 		return err
 	}
 	if m.v3 && isWireGuardTransportBatch(bufs) {

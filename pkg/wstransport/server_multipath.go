@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"errors"
+	"log/slog"
 	"net/netip"
 	"sync"
 	"time"
@@ -602,6 +603,7 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	p := m.peers[e.id]
 	m.mu.RUnlock()
 	if p == nil {
+		slog.Debug("multipath server send has unknown peer", "peer", e.id)
 		return errors.New("unknown multipath peer")
 	}
 	primary, alternate, duplicate := p.scheduler.Select()
@@ -609,9 +611,11 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	first, second := p.paths[primary], p.paths[alternate]
 	p.mu.RUnlock()
 	if first == nil {
+		slog.Debug("multipath server send has no healthy path", "peer", e.id, "selected", primary, "paths", p.scheduler.Status())
 		return errors.New("no healthy multipath path")
 	}
 	if err := m.base.Send(bufs, first); err != nil {
+		slog.Debug("multipath server primary send failed", "peer", e.id, "candidate", primary, "error", err)
 		return err
 	}
 	if p.v3 && isWireGuardTransportBatch(bufs) {

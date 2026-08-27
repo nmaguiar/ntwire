@@ -1,6 +1,7 @@
 package wstransport
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"net"
@@ -210,6 +212,125 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
 		t.Fatalf("server receive: n=%d err=%v size=%d", n, err, serverSizes[0])
+	}
+}
+
+// TestMultipathWSSDeliversBidirectionalPayloads exercises the relay's actual
+// multipath topology: client and server both use stable logical endpoints,
+// while the only concrete carrier is an authenticated WebSocket. In
+// particular, it protects the server-to-client response direction that a
+// one-way path probe cannot prove.
+func TestMultipathWSSDeliversBidirectionalPayloads(t *testing.T) {
+	wsServer := NewServer()
+	server := NewServerMultipathBind(wsServer, V2Options{})
+	serverFns, _, err := server.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	wsServer.OnPeerConnected = func(id string, ep conn.Endpoint) {
+		server.RegisterPath(id, "wss", PathWSS, ep, true, true, false)
+	}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := wsServer.ServeHTTP(w, r, "session"); err != nil {
+			t.Error(err)
+		}
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, true, false, V2Options{}, "")
+	client.SetPayloadLiveness(true)
+	clientFns, _, err := client.Open(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	serverPayloads := make(chan []byte, 1)
+	clientPayloads := make(chan []byte, 1)
+	drain := func(fns []conn.ReceiveFunc, dst chan<- []byte) {
+		for _, fn := range fns {
+			go func(fn conn.ReceiveFunc) {
+				bufs := make([][]byte, 1)
+				bufs[0] = make([]byte, 128)
+				sizes := make([]int, 1)
+				eps := make([]conn.Endpoint, 1)
+				for {
+					n, err := fn(bufs, sizes, eps)
+					if err != nil {
+						return
+					}
+					for i := 0; i < n; i++ {
+						select {
+						case dst <- append([]byte(nil), bufs[i][:sizes[i]]...):
+						case <-time.After(time.Second):
+							return
+						}
+					}
+				}
+			}(fn)
+		}
+	}
+	drain(serverFns, serverPayloads)
+	drain(clientFns, clientPayloads)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		clientPrimary, _, _ := client.Scheduler().Select()
+		server.mu.RLock()
+		peer := server.peers["session"]
+		server.mu.RUnlock()
+		if peer != nil {
+			serverPrimary, _, _ := peer.scheduler.Select()
+			if clientPrimary == "wss" && serverPrimary == "wss" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("WebSocket multipath path never became healthy on both peers")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	request := make([]byte, 32)
+	binary.LittleEndian.PutUint32(request, 4)
+	if ep, err := client.ParseEndpoint(MultipathSentinel); err != nil {
+		t.Fatal(err)
+	} else if err := client.Send([][]byte{request}, ep); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-serverPayloads:
+		if !bytes.Equal(got, request) {
+			t.Fatalf("server payload = %x, want %x", got, request)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive the client payload")
+	}
+
+	response := append([]byte(nil), request...)
+	response[len(response)-1] = 1
+	ep, err := server.ParseEndpoint("session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Send([][]byte{response}, ep); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-clientPayloads:
+		if !bytes.Equal(got, response) {
+			t.Fatalf("client payload = %x, want %x", got, response)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("client did not receive the server response")
 	}
 }
 
