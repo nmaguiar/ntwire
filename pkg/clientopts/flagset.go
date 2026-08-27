@@ -58,6 +58,19 @@ func (f *FlagSet) KeyValues(name string) []string {
 	return []string(*f.vals[name].(*MultiValue))
 }
 
+// WasSet reports whether name appeared explicitly on the command line. It is
+// useful when a persisted default must yield to an explicit, incompatible
+// choice such as -i and --sso.
+func (f *FlagSet) WasSet(name string) bool {
+	set := false
+	f.Visit(func(flag *flag.Flag) {
+		if flag.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 // Has reports whether name was registered on this FlagSet, without
 // panicking. cmd/ntwire never needs this -- its option names are compile-time
 // constants, so a mismatch there is a programmer error best caught by Str/

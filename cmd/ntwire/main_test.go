@@ -279,6 +279,26 @@ func TestResolveIdentityKey(t *testing.T) {
 	}
 }
 
+func TestResolveSSO(t *testing.T) {
+	cases := []struct {
+		name                          string
+		sso, ssoExplicit, keyExplicit bool
+		want                          bool
+	}{
+		{"config sso stays enabled without an explicit key", true, false, false, true},
+		{"explicit key overrides persisted sso", true, false, true, false},
+		{"explicit sso overrides explicit key", true, true, true, true},
+		{"explicitly disabled sso stays disabled", false, true, true, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := resolveSSO(c.sso, c.ssoExplicit, c.keyExplicit); got != c.want {
+				t.Errorf("resolveSSO(%v, %v, %v) = %v, want %v", c.sso, c.ssoExplicit, c.keyExplicit, got, c.want)
+			}
+		})
+	}
+}
+
 func TestMergePorts(t *testing.T) {
 	cases := []struct {
 		name          string
