@@ -58,6 +58,11 @@ type peer struct {
 	ws       *websocket.Conn
 	endpoint endpoint
 	done     chan struct{}
+	// coder/websocket permits one reader and one writer, but not concurrent
+	// writes. WireGuard data-plane responses and multipath control frames can
+	// be produced by different goroutines, so serialize a complete batch per
+	// peer to preserve frame order and connection health.
+	writeMu sync.Mutex
 }
 type endpoint struct {
 	id      string
@@ -483,6 +488,8 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if p == nil {
 		return fmt.Errorf("WebSocket peer is not connected")
 	}
+	p.writeMu.Lock()
+	defer p.writeMu.Unlock()
 	for _, buf := range bufs {
 		if !ValidDatagram(buf) {
 			continue

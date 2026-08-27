@@ -410,7 +410,11 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 // instead of producing a session that later fails in the data plane.
 func (s *Server) transportCapabilitiesAvailable() []string {
 	if s.Config.MultipathEnabled() && s.data != nil && s.data.multipath != nil {
-		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+		// Payload-progress acknowledgements (multipath-v3) are not advertised
+		// until they are safe on the WebSocket fallback data plane. Negotiation
+		// is fail-closed: clients retain v1/v2 and path-MTU support, but cannot
+		// enable v3 merely because they implement it.
+		return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityPathMTUV1}
 	}
 	return nil
 }
