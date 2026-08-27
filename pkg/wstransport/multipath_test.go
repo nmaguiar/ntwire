@@ -586,3 +586,23 @@ func TestSchedulerPayloadLivenessKeepsOnlyHealthyPathSelectable(t *testing.T) {
 		t.Fatalf("primary after stalled sole path = %q, want wss", primary)
 	}
 }
+
+func TestSchedulerPayloadAcknowledgementsAreSingleFlight(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	now := time.Now()
+	if !s.ShouldSendPayloadAck("wss", now) {
+		t.Fatal("first payload acknowledgement was not reserved")
+	}
+	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval)) {
+		t.Fatal("second acknowledgement was reserved while the first write was pending")
+	}
+	s.FinishPayloadAck("wss")
+	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval/2)) {
+		t.Fatal("rate-limited acknowledgement was reserved too soon")
+	}
+	if !s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval+time.Millisecond)) {
+		t.Fatal("acknowledgement was not reserved after the rate limit elapsed")
+	}
+	s.FinishPayloadAck("wss")
+}

@@ -561,7 +561,14 @@ func (m *MultipathBind) sendPayloadAck(ep conn.Endpoint) {
 	if !ok || !m.scheduler.ShouldSendPayloadAck(name, time.Now()) {
 		return
 	}
-	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	// This runs on WireGuard's receive path. A WebSocket write can block
+	// behind relay or peer backpressure, so never make delivery of the
+	// triggering packet wait for this control acknowledgement. The scheduler
+	// bounds this to one pending write per path.
+	go func() {
+		defer m.scheduler.FinishPayloadAck(name)
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	}()
 }
 
 func (m *MultipathBind) sendPayloadRecovery(bufs [][]byte) {
@@ -774,6 +781,7 @@ type candidate struct {
 	payloadLastSent            atomic.Int64
 	payloadAck                 atomic.Int64
 	payloadAckSent             atomic.Int64
+	payloadAckSending          atomic.Bool
 	payloadStalled             atomic.Bool
 }
 
@@ -942,12 +950,27 @@ func (s *Scheduler) ShouldSendPayloadAck(name string, now time.Time) bool {
 	if p == nil {
 		return false
 	}
+	if !p.payloadAckSending.CompareAndSwap(false, true) {
+		return false
+	}
 	last := time.Unix(0, p.payloadAckSent.Load())
 	if !last.IsZero() && now.Sub(last) < payloadAckInterval {
+		p.payloadAckSending.Store(false)
 		return false
 	}
 	p.payloadAckSent.Store(now.UnixNano())
 	return true
+}
+
+// FinishPayloadAck releases the single-flight reservation made by
+// ShouldSendPayloadAck. Call it when the asynchronous control write returns.
+func (s *Scheduler) FinishPayloadAck(name string) {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	if p != nil {
+		p.payloadAckSending.Store(false)
+	}
 }
 
 func (s *Scheduler) RecordPayloadAck(name string, now time.Time) {

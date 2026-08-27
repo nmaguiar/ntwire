@@ -649,7 +649,13 @@ func (m *ServerMultipathBind) sendPayloadAck(p *serverMultipathPeer, ep conn.End
 	if !ok || !p.scheduler.ShouldSendPayloadAck(name, time.Now()) {
 		return
 	}
-	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	// Do not let a backpressured WebSocket control write block WireGuard's
+	// receive worker before it delivers the triggering packet. The scheduler
+	// keeps at most one acknowledgement write pending per path.
+	go func() {
+		defer p.scheduler.FinishPayloadAck(name)
+		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
+	}()
 }
 
 func (m *ServerMultipathBind) sendPayloadRecovery(p *serverMultipathPeer, bufs [][]byte) {

@@ -205,7 +205,16 @@ func TestServerMultipathPayloadAcknowledgementIsCapabilityGated(t *testing.T) {
 
 	p := m.peers["peer-1"]
 	m.sendPayloadAck(p, ep)
-	frame, dest, ok := base.lastSent()
+	deadline := time.Now().Add(time.Second)
+	var frame []byte
+	var dest conn.Endpoint
+	var ok bool
+	for time.Now().Before(deadline) {
+		if frame, dest, ok = base.lastSent(); ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if !ok {
 		t.Fatal("payload acknowledgement was not sent")
 	}
