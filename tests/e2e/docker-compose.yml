@@ -74,8 +74,13 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
+        # The client announces its authenticated control connection before
+        # the WireGuard data plane has completed its initial handshake. In
+        # particular, the relayed WSS path can need several seconds more on
+        # a cold CI runner. Keep each individual request tightly bounded,
+        # but allow a bounded readiness window for the tunnel itself.
         i=0
-        while [ "$$i" -lt 3 ]; do
+        while [ "$$i" -lt 12 ]; do
           (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
@@ -97,8 +102,10 @@ services:
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
+        # See verify-direct: this is a tunnel-readiness retry window, not a
+        # relaxation of the per-request two-second timeout.
         i=0
-        while [ "$$i" -lt 3 ]; do
+        while [ "$$i" -lt 12 ]; do
           (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
