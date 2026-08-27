@@ -487,13 +487,31 @@ func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
 	multipath.Scheduler().ProbeResult("wss", time.Millisecond, true, now)
 	multipath.Scheduler().Register("udp-relay", wstransport.PathUDPRelay)
 	c := &Connection{multipath: multipath, upgradeTiming: defaultDirectUpgradeTiming()}
-	if healthy, _ := c.pathHealthy("198.51.100.10:5000"); healthy {
+	if healthy, _ := c.pathHealthy("198.51.100.10:5000", string(wstransport.PathUDPRelay)); healthy {
 		t.Fatal("pathHealthy() = true with only WSS healthy, want false for an unprobed UDP relay candidate")
 	}
 
 	multipath.Scheduler().ProbeResult("udp-relay", time.Millisecond, true, now)
-	if healthy, reason := c.pathHealthy("198.51.100.10:5000"); !healthy {
+	if healthy, reason := c.pathHealthy("198.51.100.10:5000", string(wstransport.PathUDPRelay)); !healthy {
 		t.Fatalf("pathHealthy() = false (%s) after UDP relay probe acknowledgement, want true", reason)
+	}
+}
+
+func TestMultipathHealthDoesNotLetRelayMaskFailedDirectPath(t *testing.T) {
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
+	defer multipath.Close()
+
+	now := time.Now()
+	multipath.Scheduler().Register("udp-relay", wstransport.PathUDPRelay)
+	multipath.Scheduler().ProbeResult("udp-relay", time.Millisecond, true, now)
+	multipath.Scheduler().Register("direct-udp", wstransport.PathDirect)
+
+	c := &Connection{multipath: multipath, upgradeTiming: defaultDirectUpgradeTiming()}
+	if healthy, _ := c.pathHealthy("198.51.100.20:6000", string(wstransport.PathDirect)); healthy {
+		t.Fatal("direct path reported healthy because UDP relay was healthy")
+	}
+	if healthy, reason := c.pathHealthy("198.51.100.10:5000", string(wstransport.PathUDPRelay)); !healthy {
+		t.Fatalf("UDP relay path = unhealthy (%s), want healthy", reason)
 	}
 }
 

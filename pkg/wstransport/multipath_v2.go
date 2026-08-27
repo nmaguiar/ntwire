@@ -5,12 +5,10 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"golang.zx2c4.com/wireguard/conn"
 )
 
 // recvCounter accumulates one candidate's mirrored-traffic byte/packet
-// counts between report ticks (see MultipathBind.countMirrored/reportLoop
+// counts between report ticks (see MultipathBind.countMirroredName/reportLoop
 // and ServerMultipathBind's equivalents).
 type recvCounter struct {
 	bytes   uint32
@@ -215,13 +213,9 @@ func (s *Scheduler) MirrorCandidate() (name string, ok bool) {
 	return "", false
 }
 
-// countMirrored attributes n bytes of recognized-duplicate traffic to
-// whichever candidate ep identifies, for reportLoop to summarize.
-func (m *MultipathBind) countMirrored(ep conn.Endpoint, n int) {
-	name, ok := m.nameForEndpoint(ep)
-	if !ok {
-		return
-	}
+// countMirroredName attributes n bytes of recognized mirrored traffic to a
+// candidate for reportLoop to summarize.
+func (m *MultipathBind) countMirroredName(name string, n int) {
 	m.recvMu.Lock()
 	c := m.recvCounters[name]
 	if c == nil {
@@ -234,7 +228,7 @@ func (m *MultipathBind) countMirrored(ep conn.Endpoint, n int) {
 }
 
 // reportLoop periodically summarizes each candidate's accumulated
-// countMirrored totals into an outgoing FrameThroughputReport, then resets
+// countMirroredName totals into an outgoing FrameThroughputReport, then resets
 // them for the next window. Only ever started when v2 is set (see
 // NewMultipathBind).
 func (m *MultipathBind) reportLoop(stop <-chan struct{}) {

@@ -85,7 +85,7 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 	if p == nil {
 		t.Fatal("peer not registered")
 	}
-	if !p.v2 {
+	if !p.v2.Load() {
 		t.Fatal("peer.v2 is false after RegisterPath(..., true) -- server-side v2 gating never activated")
 	}
 	deadline := time.Now().Add(2 * time.Second)
@@ -104,17 +104,16 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 
 	// Simulate the client mirroring a real WireGuard transport packet: the
 	// exact same bytes sent from both sockets, exactly as MultipathBind.Send
-	// does for its primary send plus mirror send. Send primary first and
-	// let it settle so the candidate's copy is reliably the one
-	// DuplicateCache recognizes as a repeat -- otherwise send order between
-	// two independent loopback sockets isn't guaranteed.
+	// does for its primary send plus mirror send. Deliberately send the faster
+	// candidate first: v2 must retain that first-arrival path and credit it
+	// when the incumbent's later copy triggers deduplication.
 	wgPacket := make([]byte, 128)
 	binary.LittleEndian.PutUint32(wgPacket, 4) // type 4: WireGuard transport
-	if _, err := primary.WriteTo(wgPacket, serverAddr); err != nil {
+	if _, err := candidate.WriteTo(wgPacket, serverAddr); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
-	if _, err := candidate.WriteTo(wgPacket, serverAddr); err != nil {
+	if _, err := primary.WriteTo(wgPacket, serverAddr); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -151,6 +150,48 @@ func TestServerMultipathCountsAndReportsMirroredTraffic(t *testing.T) {
 	status := s.Status()
 	if len(status) != 1 || status[0].DeliveryRatio != 1.0 {
 		t.Fatalf("delivery ratio = %+v, want 1.0 (all mirrored bytes reported back)", status)
+	}
+}
+
+func TestMultipathClientCreditsFasterFirstArrivingMirror(t *testing.T) {
+	m := NewMultipathBind(&fakeBind{}, "server", true, false, V2Options{ReportInterval: time.Hour})
+	defer m.Close()
+	m.RegisterPath("wss", PathWSS, fakeEndpoint{id: "wss-ep"})
+	m.RegisterPath("direct-udp", PathDirect, fakeEndpoint{id: "direct-ep"})
+
+	packet := make([]byte, 128)
+	binary.LittleEndian.PutUint32(packet, 4)
+	called := false
+	wrapped := m.wrapReceive(func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		if called {
+			return 0, conn.ErrBindAlreadyOpen
+		}
+		called = true
+		copy(bufs[0], packet)
+		copy(bufs[1], packet)
+		sizes[0], sizes[1] = len(packet), len(packet)
+		// The mirrored direct candidate wins the race; WSS is the later
+		// duplicate. Both paths must still receive one accounting credit.
+		eps[0] = fakeEndpoint{id: "direct-ep"}
+		eps[1] = fakeEndpoint{id: "wss-ep"}
+		return 2, nil
+	})
+	bufs := [][]byte{make([]byte, 256), make([]byte, 256)}
+	sizes := make([]int, 2)
+	eps := make([]conn.Endpoint, 2)
+	if n, err := wrapped(bufs, sizes, eps); err != nil || n != 1 {
+		t.Fatalf("wrapped receive = (%d, %v), want one deduplicated packet", n, err)
+	}
+
+	m.recvMu.Lock()
+	direct := m.recvCounters["direct-udp"]
+	wss := m.recvCounters["wss"]
+	m.recvMu.Unlock()
+	if direct == nil || direct.bytes != uint32(len(packet)) {
+		t.Fatalf("direct mirror counter = %#v, want %d bytes", direct, len(packet))
+	}
+	if wss == nil || wss.bytes != uint32(len(packet)) {
+		t.Fatalf("WSS counter = %#v, want %d bytes", wss, len(packet))
 	}
 }
 

@@ -3,6 +3,7 @@ package wstransport
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -28,6 +29,7 @@ type fakeBind struct {
 	mu    sync.Mutex
 	sent  [][]byte
 	dests []conn.Endpoint
+	fail  map[string]error
 }
 
 func (f *fakeBind) Open(uint16) ([]conn.ReceiveFunc, uint16, error) { return nil, 0, nil }
@@ -38,6 +40,9 @@ func (f *fakeBind) ParseEndpoint(s string) (conn.Endpoint, error)   { return fak
 func (f *fakeBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.fail[ep.DstToString()]; err != nil {
+		return err
+	}
 	for _, b := range bufs {
 		f.sent = append(f.sent, append([]byte(nil), b...))
 		f.dests = append(f.dests, ep)
@@ -419,6 +424,214 @@ func TestServerMultipathDuplicationBudgetLimitsAndCounts(t *testing.T) {
 	}
 	if relayStatus.DuplicationSuppressedBytes != 80 {
 		t.Fatalf("DuplicationSuppressedBytes = %d, want 80 (both packets in the denied batch)", relayStatus.DuplicationSuppressedBytes)
+	}
+}
+
+func TestMultipathClientPrimarySendFailureFallsBackImmediately(t *testing.T) {
+	base := &fakeBind{fail: map[string]error{"wss-ep": errors.New("websocket closed")}}
+	m := NewMultipathBind(base, "relay-server", false, false, V2Options{})
+	defer m.Close()
+
+	m.RegisterPath("wss", PathWSS, fakeEndpoint{id: "wss-ep"})
+	m.RegisterPath("udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"})
+	now := time.Now()
+	m.scheduler.ProbeResult("wss", 10*time.Millisecond, true, now)
+	m.scheduler.ProbeResult("udp-relay", 80*time.Millisecond, true, now)
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet}, m.endpoint); err != nil {
+		t.Fatalf("Send did not recover over alternate: %v", err)
+	}
+	if primary, _, _ := m.scheduler.Select(); primary != "udp-relay" {
+		t.Fatalf("primary after WSS send failure = %q, want udp-relay", primary)
+	}
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if len(base.dests) != 1 || base.dests[0].DstToString() != "relay-ep" {
+		t.Fatalf("successful destinations = %v, want one relay send", base.dests)
+	}
+}
+
+func TestServerMultipathPrimarySendFailureFallsBackImmediately(t *testing.T) {
+	base := &fakeBind{fail: map[string]error{"wss-ep": errors.New("websocket closed")}}
+	m := NewServerMultipathBind(base, V2Options{})
+	defer m.Close()
+
+	m.RegisterPath("peer-1", "wss", PathWSS, fakeEndpoint{id: "wss-ep"}, false, false, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"}, false, false, false)
+	m.mu.RLock()
+	p := m.peers["peer-1"]
+	m.mu.RUnlock()
+	now := time.Now()
+	p.scheduler.ProbeResult("wss", 10*time.Millisecond, true, now)
+	p.scheduler.ProbeResult("udp-relay", 80*time.Millisecond, true, now)
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet}, p.endpoint); err != nil {
+		t.Fatalf("Send did not recover over alternate: %v", err)
+	}
+	if primary, _, _ := p.scheduler.Select(); primary != "udp-relay" {
+		t.Fatalf("primary after WSS send failure = %q, want udp-relay", primary)
+	}
+}
+
+func makeSchedulerDuplicateToRelay(s *Scheduler) {
+	now := time.Now()
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("wss", 300*time.Millisecond, true, now)
+		s.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
+	}
+	for i := 0; i < 16; i++ {
+		s.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
+	}
+	s.ProbeResult("udp-relay", 0, false, now)
+}
+
+func TestMultipathClientAlternateSendFailureDoesNotFailPrimary(t *testing.T) {
+	base := &fakeBind{fail: map[string]error{"relay-ep": errors.New("relay write failed")}}
+	m := NewMultipathBind(base, "relay-server", false, false, V2Options{})
+	defer m.Close()
+	m.RegisterPath("wss", PathWSS, fakeEndpoint{id: "wss-ep"})
+	m.RegisterPath("udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"})
+	makeSchedulerDuplicateToRelay(m.scheduler)
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet}, m.endpoint); err != nil {
+		t.Fatalf("successful primary send was failed by alternate: %v", err)
+	}
+	if primary, _, _ := m.scheduler.Select(); primary != "wss" {
+		t.Fatalf("primary after alternate failure = %q, want wss", primary)
+	}
+	for _, status := range m.scheduler.Status() {
+		if status.Name == "udp-relay" && status.DuplicatedBytes != 0 {
+			t.Fatalf("failed alternate write counted as %d duplicated bytes", status.DuplicatedBytes)
+		}
+	}
+}
+
+func TestServerMultipathAlternateSendFailureDoesNotFailPrimary(t *testing.T) {
+	base := &fakeBind{fail: map[string]error{"relay-ep": errors.New("relay write failed")}}
+	m := NewServerMultipathBind(base, V2Options{})
+	defer m.Close()
+	m.RegisterPath("peer-1", "wss", PathWSS, fakeEndpoint{id: "wss-ep"}, false, false, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"}, false, false, false)
+	m.mu.RLock()
+	p := m.peers["peer-1"]
+	m.mu.RUnlock()
+	makeSchedulerDuplicateToRelay(p.scheduler)
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet}, p.endpoint); err != nil {
+		t.Fatalf("successful primary send was failed by alternate: %v", err)
+	}
+	if primary, _, _ := p.scheduler.Select(); primary != "wss" {
+		t.Fatalf("primary after alternate failure = %q, want wss", primary)
+	}
+}
+
+func TestMultipathMirroringChargesWholeBatch(t *testing.T) {
+	base := &fakeBind{}
+	m := NewMultipathBind(base, "relay-server", true, false, V2Options{MirrorRateBytesPerSec: 60})
+	defer m.Close()
+
+	m.RegisterPath("wss", PathWSS, fakeEndpoint{id: "wss-ep"})
+	m.RegisterPath("udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"})
+	now := time.Now()
+	m.scheduler.ProbeResult("wss", 10*time.Millisecond, true, now)
+	m.scheduler.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
+	m.SetForced("wss")
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet, packet}, m.endpoint); err != nil {
+		t.Fatal(err)
+	}
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if len(base.dests) != 2 {
+		t.Fatalf("sent datagrams = %d, want only the two primary batch packets", len(base.dests))
+	}
+	for _, ep := range base.dests {
+		if ep.DstToString() != "wss-ep" {
+			t.Fatalf("batch was mirrored despite 80 bytes exceeding 60-byte budget: %v", base.dests)
+		}
+	}
+}
+
+func TestServerMultipathMirroringChargesWholeBatch(t *testing.T) {
+	base := &fakeBind{}
+	m := NewServerMultipathBind(base, V2Options{MirrorRateBytesPerSec: 60})
+	defer m.Close()
+
+	m.RegisterPath("peer-1", "wss", PathWSS, fakeEndpoint{id: "wss-ep"}, true, false, false)
+	m.RegisterPath("peer-1", "udp-relay", PathUDPRelay, fakeEndpoint{id: "relay-ep"}, true, false, false)
+	m.mu.RLock()
+	p := m.peers["peer-1"]
+	m.mu.RUnlock()
+	now := time.Now()
+	p.scheduler.ProbeResult("wss", 10*time.Millisecond, true, now)
+	p.scheduler.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
+	p.scheduler.SetForced("wss")
+	base.reset()
+
+	packet := make([]byte, 40)
+	binary.LittleEndian.PutUint32(packet[:4], 4)
+	if err := m.Send([][]byte{packet, packet}, p.endpoint); err != nil {
+		t.Fatal(err)
+	}
+	base.mu.Lock()
+	defer base.mu.Unlock()
+	if len(base.dests) != 2 {
+		t.Fatalf("sent datagrams = %d, want only the two primary batch packets", len(base.dests))
+	}
+}
+
+func TestServerMultipathRegisterPathRemovesReplacedSource(t *testing.T) {
+	m := NewServerMultipathBind(&fakeBind{}, V2Options{})
+	defer m.Close()
+
+	m.RegisterPath("peer-1", "direct-udp", PathDirect, fakeEndpoint{id: "old-source"}, true, false, false)
+	m.RegisterPath("peer-1", "direct-udp", PathDirect, fakeEndpoint{id: "new-source"}, true, false, false)
+	m.mu.RLock()
+	oldPeer, oldExists := m.bySource["old-source"]
+	newPeer := m.bySource["new-source"]
+	m.mu.RUnlock()
+	if oldExists || oldPeer != nil {
+		t.Fatal("replaced endpoint remains accepted in bySource")
+	}
+	if newPeer == nil || newPeer.id != "peer-1" {
+		t.Fatalf("new endpoint mapped to %#v, want peer-1", newPeer)
+	}
+}
+
+func TestServerMultipathRegisterPathRejectsCrossPeerSourceCollision(t *testing.T) {
+	m := NewServerMultipathBind(&fakeBind{}, V2Options{})
+	defer m.Close()
+	ep := fakeEndpoint{id: "shared-source"}
+	if !m.RegisterPath("peer-1", "direct-udp", PathDirect, ep, true, false, false) {
+		t.Fatal("first source registration was rejected")
+	}
+	if m.RegisterPath("peer-2", "direct-udp", PathDirect, ep, true, false, false) {
+		t.Fatal("second peer stole an existing source registration")
+	}
+	m.mu.RLock()
+	owner := m.bySource["shared-source"]
+	_, peer2Created := m.peers["peer-2"]
+	m.mu.RUnlock()
+	if owner == nil || owner.id != "peer-1" {
+		t.Fatalf("source owner = %#v, want peer-1", owner)
+	}
+	if peer2Created {
+		t.Fatal("rejected collision left an empty peer registry entry")
 	}
 }
 
