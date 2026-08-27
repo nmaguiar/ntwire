@@ -237,7 +237,7 @@ func (m *MultipathBind) countMirrored(ep conn.Endpoint, n int) {
 // countMirrored totals into an outgoing FrameThroughputReport, then resets
 // them for the next window. Only ever started when v2 is set (see
 // NewMultipathBind).
-func (m *MultipathBind) reportLoop() {
+func (m *MultipathBind) reportLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(m.opts.ReportInterval)
 	defer ticker.Stop()
 	last := time.Now()
@@ -248,7 +248,7 @@ func (m *MultipathBind) reportLoop() {
 			m.sendReports(uint32(now.Sub(last).Milliseconds()))
 			m.attempts.rollWindow()
 			last = now
-		case <-m.stop:
+		case <-stop:
 			return
 		}
 	}

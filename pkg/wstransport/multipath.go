@@ -37,12 +37,13 @@ type MultipathBind struct {
 	// probeMu guards probes, kept separate from mu (which guards paths) so
 	// the receive-path handling a FramePathAck never has to take the same
 	// lock a concurrent RegisterPath/Send might be holding.
-	probeMu   sync.Mutex
-	probes    map[string]outstandingProbe
-	mtuProbes map[string]outstandingMTUProbe
-	mtuDone   map[string]bool
-	stop      chan struct{}
-	closeOnce sync.Once
+	probeMu     sync.Mutex
+	probes      map[string]outstandingProbe
+	mtuProbes   map[string]outstandingMTUProbe
+	mtuDone     map[string]bool
+	stop        chan struct{}
+	lifecycleMu sync.Mutex
+	stopped     bool
 
 	// v2 is true iff this session negotiated CapabilityMultipathV2, gating
 	// the passive throughput-sampling subsystem. Constant for the bind's
@@ -164,9 +165,9 @@ func NewMultipathBind(base conn.Bind, id string, v2, pathMTU bool, opts V2Option
 		m.mirror = newMirrorLimiter(opts.MirrorRateBytesPerSec)
 		m.recvCounters = make(map[string]*recvCounter)
 		m.attempts = newMirrorAccounting()
-		go m.reportLoop()
+		go m.reportLoop(m.stop)
 	}
-	go m.probeLoop()
+	go m.probeLoop(m.stop)
 	return m
 }
 
@@ -193,6 +194,7 @@ func (m *MultipathBind) SetForced(name string) { m.scheduler.SetForced(name) }
 func (m *MultipathBind) Forced() string        { return m.scheduler.Forced() }
 
 func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+	m.restartProbeLoop()
 	fns, actual, err := m.base.Open(port)
 	if err != nil {
 		return nil, 0, err
@@ -340,8 +342,30 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	return nil
 }
 func (m *MultipathBind) Close() error {
-	m.closeOnce.Do(func() { close(m.stop) })
+	m.lifecycleMu.Lock()
+	if !m.stopped {
+		close(m.stop)
+		m.stopped = true
+	}
+	m.lifecycleMu.Unlock()
 	return m.base.Close()
+}
+
+// restartProbeLoop restores background health probing after wireguard-go
+// closes a bind for a port or route reconfiguration and opens the same bind
+// again. conn.Bind.Close is therefore a rebind boundary, not necessarily the
+// final lifetime of this MultipathBind.
+func (m *MultipathBind) restartProbeLoop() {
+	m.lifecycleMu.Lock()
+	if m.stopped {
+		m.stop = make(chan struct{})
+		m.stopped = false
+		go m.probeLoop(m.stop)
+		if m.v2 {
+			go m.reportLoop(m.stop)
+		}
+	}
+	m.lifecycleMu.Unlock()
 }
 func (m *MultipathBind) SetMark(mark uint32) error { return m.base.SetMark(mark) }
 func (m *MultipathBind) ParseEndpoint(s string) (conn.Endpoint, error) {
@@ -473,14 +497,14 @@ func (m *MultipathBind) nameForEndpoint(ep conn.Endpoint) (string, bool) {
 	return "", false
 }
 
-func (m *MultipathBind) probeLoop() {
+func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 	ticker := time.NewTicker(probeInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			m.probeAll()
-		case <-m.stop:
+		case <-stop:
 			return
 		}
 	}

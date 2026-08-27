@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -224,6 +225,44 @@ func TestForcedWebSocketNeverUpgrades(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// TestDirectServerMultipathLoopbackPromotesDirectUDP covers the ordinary
+// direct-server setup where the WebSocket control endpoint and advertised
+// WireGuard endpoint are both loopback addresses. Unlike the relay upgrade
+// tests above, this is the automatic multipath bootstrap used when a server
+// advertises both WSS and UDP directly.
+func TestDirectServerMultipathLoopbackPromotesDirectUDP(t *testing.T) {
+	s, keyPath, _ := newTestServer(t, nil)
+	port := freeUDPPort(t)
+	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+		Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"),
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, path := range conn.Status().Paths {
+			if path.Name == "direct-udp" && path.Healthy {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("direct-udp never became healthy: %+v", conn.Status().Paths)
 }
 
 // pollPeerEndpoint polls Stack.PeerEndpoint until ok reports satisfied or
