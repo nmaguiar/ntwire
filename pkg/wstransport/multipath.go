@@ -50,7 +50,7 @@ type MultipathBind struct {
 	// the passive throughput-sampling subsystem. Constant for the bind's
 	// whole life, set once at construction.
 	v2      bool
-	v3      bool
+	v3      atomic.Bool
 	pathMTU bool
 	opts    V2Options
 
@@ -197,7 +197,7 @@ func (m *MultipathBind) Forced() string        { return m.scheduler.Forced() }
 
 // SetPayloadLiveness enables multipath-v3's real-payload acknowledgement
 // checks. It is only enabled after explicit capability negotiation.
-func (m *MultipathBind) SetPayloadLiveness(enabled bool) { m.v3 = enabled }
+func (m *MultipathBind) SetPayloadLiveness(enabled bool) { m.v3.Store(enabled) }
 
 func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	m.restartProbeLoop()
@@ -238,31 +238,30 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					m.handlePathControl(typ, payload, eps[i])
 					continue
 				}
-				if m.v3 && isWireGuardTransport(b) {
+				if m.v3.Load() && isWireGuardTransport(b) {
 					m.sendPayloadAck(eps[i])
 				}
-				seen := m.cache.Seen(b, time.Now())
-				if !seen {
-					if id := m.relayEndpointID.Load(); id != nil && eps[i].DstToString() == *id {
-						m.relayReceivedBytes.Add(uint64(len(b)))
-						m.relayReceivedPackets.Add(1)
-					}
+				arrivalPath := ""
+				if m.v2 {
+					arrivalPath, _ = m.nameForEndpoint(eps[i])
 				}
-				if seen && m.v2 {
+				seen, firstPath := m.cache.SeenOnPath(b, arrivalPath, time.Now())
+				if id := m.relayEndpointID.Load(); id != nil && eps[i].DstToString() == *id {
+					m.relayReceivedBytes.Add(uint64(len(b)))
+					m.relayReceivedPackets.Add(1)
+				}
+				if seen && m.v2 && arrivalPath != "" && firstPath != "" && arrivalPath != firstPath {
 					// A packet DuplicateCache recognizes as a repeat is
 					// exactly what mirroring produces: the same encrypted
 					// packet arriving twice, once via primary and once via
-					// the mirrored copy. Count it here (attributed to
-					// whichever candidate this specific copy arrived on)
-					// before it's dropped below, so reportLoop can summarize
-					// what each candidate is actually delivering. This is a
-					// heuristic signal, not an exact measurement: dedup
-					// doesn't track which copy is "the" mirror, so on the
-					// rare packet where the primary's own copy happens to
-					// arrive second, it gets counted as if it were mirrored
-					// traffic -- EWMA smoothing in ReportDeliveryRatio absorbs
-					// that noise rather than needing it prevented here.
-					m.countMirrored(eps[i], len(b))
+					// the mirrored copy. Count both physical arrivals before
+					// dropping the repeat. If the challenger is faster it arrives
+					// first; counting only the later copy attributes the sample to
+					// the incumbent and leaves the challenger permanently
+					// unsampled. The sender ignores the report for whichever path
+					// has no matching mirror attempt.
+					m.countMirroredName(firstPath, len(b))
+					m.countMirroredName(arrivalPath, len(b))
 				}
 				if seen {
 					continue
@@ -298,19 +297,22 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	if err := m.base.Send(bufs, first); err != nil {
 		slog.Debug("multipath client primary send failed", "candidate", primary, "error", err)
-		return err
-	}
-	if m.v3 && isWireGuardTransportBatch(bufs) {
-		m.scheduler.RecordPayloadSent(primary, time.Now())
-	}
-	if primary == string(PathUDPRelay) {
-		n := 0
-		for _, b := range bufs {
-			n += len(b)
+		m.scheduler.RecordSendFailure(primary)
+		fallback, _, _ := m.scheduler.Select()
+		m.mu.RLock()
+		fallbackEP := m.paths[fallback]
+		m.mu.RUnlock()
+		if fallback == "" || fallback == primary || fallbackEP == nil {
+			return err
 		}
-		m.relaySentBytes.Add(uint64(n))
-		m.relaySentPackets.Add(uint64(len(bufs)))
+		if fallbackErr := m.base.Send(bufs, fallbackEP); fallbackErr != nil {
+			m.scheduler.RecordSendFailure(fallback)
+			return errors.Join(err, fallbackErr)
+		}
+		m.recordSuccessfulSend(fallback, bufs)
+		return nil
 	}
+	m.recordSuccessfulSend(primary, bufs)
 	// Type 4 is WireGuard transport. All handshake/control types remain
 	// single-path even when the scheduler asks for duplication or mirroring.
 	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
@@ -325,16 +327,18 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 			// budget and counters must charge for the batch's total size or
 			// they undercount by up to that batch size under load, exactly
 			// when the budget matters most.
-			n := 0
-			for _, b := range bufs {
-				n += len(b)
-			}
+			n := bufferBytes(bufs)
 			if !m.dupLimiter.Allow(n) {
 				m.scheduler.RecordDuplication(alternate, n, false)
 				return nil
 			}
-			m.scheduler.RecordDuplication(alternate, n, true)
-			return m.base.Send(bufs, second)
+			if err := m.base.Send(bufs, second); err != nil {
+				m.scheduler.RecordSendFailure(alternate)
+			} else {
+				m.scheduler.RecordDuplication(alternate, n, true)
+				m.recordRelaySend(alternate, bufs)
+			}
+			return nil
 		}
 		return nil
 	}
@@ -348,16 +352,35 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 			m.mu.RLock()
 			mirrorEP := m.paths[name]
 			m.mu.RUnlock()
-			if mirrorEP != nil && m.mirror.Allow(len(bufs[0])) {
-				_ = m.base.Send(bufs, mirrorEP)
-				m.attempts.recordAttempt(name, len(bufs[0]))
+			n := bufferBytes(bufs)
+			if mirrorEP != nil && m.mirror.Allow(n) {
+				if err := m.base.Send(bufs, mirrorEP); err == nil {
+					m.attempts.recordAttempt(name, n)
+					m.recordRelaySend(name, bufs)
+				} else {
+					m.scheduler.RecordSendFailure(name)
+				}
 			}
 		}
 	}
-	if m.v3 {
+	if m.v3.Load() {
 		m.sendPayloadRecovery(bufs)
 	}
 	return nil
+}
+
+func (m *MultipathBind) recordSuccessfulSend(name string, bufs [][]byte) {
+	if m.v3.Load() && isWireGuardTransportBatch(bufs) {
+		m.scheduler.RecordPayloadSent(name, time.Now())
+	}
+	m.recordRelaySend(name, bufs)
+}
+
+func (m *MultipathBind) recordRelaySend(name string, bufs [][]byte) {
+	if name == string(PathUDPRelay) {
+		m.relaySentBytes.Add(uint64(bufferBytes(bufs)))
+		m.relaySentPackets.Add(uint64(len(bufs)))
+	}
 }
 func (m *MultipathBind) Close() error {
 	m.lifecycleMu.Lock()
@@ -409,7 +432,7 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 			return
 		}
 	case FramePathDataAck:
-		if !m.v3 || !ValidPathDataAck(payload) {
+		if !m.v3.Load() || !ValidPathDataAck(payload) {
 			return
 		}
 	case FrameThroughputReport:
@@ -538,7 +561,7 @@ func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 
 func (m *MultipathBind) probeAll() {
 	now := time.Now()
-	if m.v3 {
+	if m.v3.Load() {
 		m.scheduler.FailStalledPrimary(now)
 	}
 	m.mu.RLock()
@@ -558,6 +581,14 @@ func isWireGuardTransport(b []byte) bool {
 
 func isWireGuardTransportBatch(bufs [][]byte) bool {
 	return len(bufs) > 0 && isWireGuardTransport(bufs[0])
+}
+
+func bufferBytes(bufs [][]byte) int {
+	n := 0
+	for _, b := range bufs {
+		n += len(b)
+	}
+	return n
 }
 
 func (m *MultipathBind) sendPayloadAck(ep conn.Endpoint) {
@@ -580,14 +611,16 @@ func (m *MultipathBind) sendPayloadRecovery(bufs [][]byte) {
 		return
 	}
 	name, ok := m.scheduler.PayloadRecoveryCandidate()
-	if !ok || m.mirror == nil || !m.mirror.Allow(len(bufs[0])) {
+	if !ok || m.mirror == nil || !m.mirror.Allow(bufferBytes(bufs)) {
 		return
 	}
 	m.mu.RLock()
 	ep := m.paths[name]
 	m.mu.RUnlock()
 	if ep != nil {
-		_ = m.base.Send(bufs, ep)
+		if err := m.base.Send(bufs, ep); err == nil {
+			m.recordRelaySend(name, bufs)
+		}
 	}
 }
 
@@ -925,6 +958,36 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		p.rttNext = (p.rttNext + 1) % len(p.rtts)
 	}
 	p.Loss = p.loss()
+}
+
+// RecordSendFailure immediately removes a candidate from selection when an
+// actual carrier write fails and another healthy route is available. Waiting
+// for three later probe timeouts would otherwise keep every packet pinned to
+// a transport that has already reported a local failure for several seconds.
+// One failed sample is retained in the rolling loss window so a single probe
+// acknowledgement can restore reachability without instantly making the
+// failed path look pristine again. With no alternate, keep the only route
+// selectable and let its carrier reconnect/probe lifecycle recover it.
+func (s *Scheduler) RecordSendFailure(name string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p := s.candidates[name]
+	if p == nil || !p.Healthy {
+		return
+	}
+	for otherName, other := range s.candidates {
+		if otherName != name && other.Healthy {
+			p.probes[p.probeNext] = false
+			p.probeNext = (p.probeNext + 1) % len(p.probes)
+			if p.used < len(p.probes) {
+				p.used++
+			}
+			p.misses = 3
+			p.Healthy = false
+			p.Loss = p.loss()
+			return
+		}
+	}
 }
 
 const payloadAckInterval = 250 * time.Millisecond
@@ -1357,9 +1420,14 @@ func (s *Scheduler) Status() []PathStatus {
 // and uniquely identify a retransmitted encrypted packet for this short cache.
 type DuplicateCache struct {
 	mu      sync.Mutex
-	entries map[[12]byte]time.Time
+	entries map[[12]byte]duplicateEntry
 	ttl     time.Duration
 	limit   int
+}
+
+type duplicateEntry struct {
+	expires time.Time
+	path    string
 }
 
 func NewDuplicateCache(limit int, ttl time.Duration) *DuplicateCache {
@@ -1369,7 +1437,7 @@ func NewDuplicateCache(limit int, ttl time.Duration) *DuplicateCache {
 	if ttl <= 0 {
 		ttl = 10 * time.Second
 	}
-	return &DuplicateCache{entries: make(map[[12]byte]time.Time), limit: limit, ttl: ttl}
+	return &DuplicateCache{entries: make(map[[12]byte]duplicateEntry), limit: limit, ttl: ttl}
 }
 
 func transportKey(b []byte) (k [12]byte, ok bool) {
@@ -1382,15 +1450,24 @@ func transportKey(b []byte) (k [12]byte, ok bool) {
 
 // Seen returns true only for a repeated type-4 packet in the cache window.
 func (c *DuplicateCache) Seen(b []byte, now time.Time) bool {
+	seen, _ := c.SeenOnPath(b, "", now)
+	return seen
+}
+
+// SeenOnPath is Seen with arrival-path metadata. On a duplicate it returns
+// the path that delivered the first copy, allowing v2 accounting to credit a
+// faster mirrored candidate even when that candidate arrived before the
+// incumbent and therefore was not itself the copy dropped by deduplication.
+func (c *DuplicateCache) SeenOnPath(b []byte, path string, now time.Time) (seen bool, firstPath string) {
 	k, ok := transportKey(b)
 	if !ok {
-		return false
+		return false, ""
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if expiry, found := c.entries[k]; found {
-		if expiry.After(now) {
-			return true
+	if entry, found := c.entries[k]; found {
+		if entry.expires.After(now) {
+			return true, entry.path
 		}
 		delete(c.entries, k)
 	}
@@ -1400,8 +1477,8 @@ func (c *DuplicateCache) Seen(b []byte, now time.Time) bool {
 			break
 		}
 	}
-	c.entries[k] = now.Add(c.ttl)
-	return false
+	c.entries[k] = duplicateEntry{expires: now.Add(c.ttl), path: path}
+	return false, ""
 }
 
 // ValidPathControl strictly validates the fixed probe/ack payload shape.

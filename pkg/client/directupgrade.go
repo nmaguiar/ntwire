@@ -191,7 +191,7 @@ func (c *Connection) directUpgradeLoop() {
 			c.logUpgradeReason(&lastReason, directReason, "direct UDP upgrade not established; staying on WebSocket relay")
 
 		case transportStateUDPRelay:
-			healthy, reason := c.pathHealthy(relayCandidate)
+			healthy, reason := c.pathHealthy(relayCandidate, string(wstransport.PathUDPRelay))
 			if !healthy {
 				c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
 				c.mu.Lock()
@@ -240,23 +240,24 @@ func (c *Connection) directUpgradeLoop() {
 			lastReason = ""
 
 		case transportStateDirect, transportStateDirectViaRelayReflector:
-			healthy, reason := c.pathHealthy(directCandidate)
+			healthy, reason := c.pathHealthy(directCandidate, string(wstransport.PathDirect))
 			if healthy {
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
 				continue
 			}
 			c.mu.Lock()
-			multipath := c.multipath != nil
+			multipathBind := c.multipath
 			c.mu.Unlock()
-			if multipath {
-				nextState := nextTransportState(state, transportDirectLost, relayCandidate != "")
+			if multipathBind != nil {
+				relayHealthy := relayCandidate != "" && multipathPathHealthy(multipathBind, string(wstransport.PathUDPRelay))
+				nextState := nextTransportState(state, transportDirectLost, relayHealthy)
 				c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; multipath active", "candidate", directCandidate)
 				state = nextState
 				c.transitionTransportCandidate(state, "direct UDP path lost")
 				directCandidate = ""
 				nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
-				wait = c.upgradeTiming.retryInterval
+				wait = c.upgradeTiming.healthCheckInterval
 				continue
 			}
 			// Revert exactly one rung: back to the UDP-relay path if it's
@@ -285,7 +286,10 @@ func (c *Connection) directUpgradeLoop() {
 			c.transitionTransportCandidate(state, "direct UDP path lost")
 			directCandidate = ""
 			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
-			wait = c.upgradeTiming.retryInterval
+			// The relay was only known to be warm before the direct path took
+			// over. Check it again promptly after stepping down; direct upgrade
+			// retries remain independently paced by nextDirectAttempt.
+			wait = c.upgradeTiming.healthCheckInterval
 		}
 	}
 }
@@ -333,28 +337,25 @@ func (c *Connection) stackAndServerKey() (stack *wgnet.Stack, serverPub string, 
 }
 
 // pathHealthy reports whether candidate -- either rung's confirmed address --
-// is both (a) the peer's actual current endpoint and (b) reachable right
-// now. It is reused unmodified for both the UDP-relay rung and the full
-// direct-escape rung: checking only probeDirectPath is not enough for
-// either, since WireGuard's own peer roaming is symmetric, so a single
-// authenticated packet arriving over the WebSocket fallback -- entirely
-// possible while every transport stays live on the same device -- silently
-// moves the peer's endpoint back to WebSocket, after which probeDirectPath
-// would keep reporting success (just routed over WS instead) with nothing
-// else noticing the quiet fallback. The active probe additionally catches a
-// failure mode unique to the relay rung -- the relay's own session for
-// candidate silently expiring (idle timeout, relay restart) -- since the
-// shared relay address itself never changes even when the session behind it
-// is gone, so PeerEndpoint alone can't detect that.
-func (c *Connection) pathHealthy(candidate string) (healthy bool, reason string) {
+// remains usable. In multipath mode, multipathName identifies that exact
+// scheduler candidate; the stable WireGuard endpoint deliberately cannot say
+// which physical path carried a probe. Legacy endpoint-roaming mode instead
+// requires candidate to be both the peer's actual current endpoint and
+// reachable right now. Checking only probeDirectPath is not enough there,
+// since an authenticated WebSocket packet can silently roam the peer back to
+// WSS and make the probe succeed over the fallback.
+func (c *Connection) pathHealthy(candidate, multipathName string) (healthy bool, reason string) {
 	c.mu.Lock()
 	multipath := c.multipath
 	c.mu.Unlock()
 	if multipath != nil {
-		if candidate != "" && multipathPathHealthy(multipath, candidate) {
-			return true, ""
-		}
-		if multipathPathHealthy(multipath, "direct-udp") || multipathPathHealthy(multipath, "udp-relay") {
+		// candidate is the concrete UDP address retained for legacy endpoint
+		// roaming and diagnostics. Multipath health is keyed by the canonical
+		// scheduler candidate name instead. Do not accept some other healthy
+		// UDP path here: doing so lets a healthy relay path mask a failed direct
+		// path (or vice versa), leaving the upgrade state on the wrong rung and
+		// preventing the failed candidate from being retried.
+		if multipathPathHealthy(multipath, multipathName) {
 			return true, ""
 		}
 		return false, fmt.Sprintf("candidate %s stopped responding within %s", candidate, c.upgradeTiming.probeTimeout)

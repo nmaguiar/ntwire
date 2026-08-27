@@ -800,7 +800,10 @@ func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request)
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
 		return
 	}
-	s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU)
+	if !s.data.multipath.RegisterPath(sess.WireGuardPublicKey, "direct-udp", wstransport.PathDirect, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU) {
+		http.Error(w, "UDP address is already registered to another session", http.StatusConflict)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

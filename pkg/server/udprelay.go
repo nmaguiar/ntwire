@@ -237,7 +237,10 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 			u.agent.ReleaseUDPSession(token)
 			return protocol.UDPRelayResponse{}
 		}
-		u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2, multipathV3, pathMTU)
+		if !u.multipath.RegisterPath(clientPubKey, "udp-relay", wstransport.PathUDPRelay, ep, multipathV2, multipathV3, pathMTU) {
+			u.agent.ReleaseUDPSession(token)
+			return protocol.UDPRelayResponse{}
+		}
 	} else if err := u.stack.UpdateEndpoint(clientPubKey, serverAddr); err != nil {
 		u.agent.ReleaseUDPSession(token)
 		return protocol.UDPRelayResponse{}

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -58,9 +59,9 @@ type serverMultipathPeer struct {
 	// gating the passive throughput-sampling subsystem (see multipath_v2.go).
 	// Constant for a peer's whole life -- RegisterPath sets it on every call,
 	// idempotently, since a session's negotiated capability never changes.
-	v2      bool
-	v3      bool
-	pathMTU bool
+	v2      atomic.Bool
+	v3      atomic.Bool
+	pathMTU atomic.Bool
 
 	// mirror/recvCounters/attempts are this peer's counterparts of
 	// MultipathBind's identically-named fields -- see its doc comments.
@@ -130,25 +131,45 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 // a full probeInterval. v2 records whether this peer's session negotiated
 // CapabilityMultipathV2, gating the passive throughput-sampling subsystem;
 // pass the same value on every call for a given peerID, since it can't
-// legitimately change mid-session.
-func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2, v3, pathMTU bool) {
+// legitimately change mid-session. It returns false rather than replacing
+// another authenticated peer's source mapping when an address collision is
+// requested.
+func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, v2, v3, pathMTU bool) bool {
 	m.mu.Lock()
+	source := ep.DstToString()
+	if owner := m.bySource[source]; owner != nil && owner.id != peerID {
+		m.mu.Unlock()
+		slog.Warn("multipath source is already registered to another peer", "peer", peerID, "owner", owner.id, "candidate", name)
+		return false
+	}
 	p := m.peer(peerID)
-	m.bySource[ep.DstToString()] = p
-	forced := m.forced
-	m.mu.Unlock()
-
 	p.mu.Lock()
+	if previous := p.paths[name]; previous != nil && previous.DstToString() != ep.DstToString() {
+		oldSource := previous.DstToString()
+		stillUsed := false
+		for otherName, other := range p.paths {
+			if otherName != name && other.DstToString() == oldSource {
+				stillUsed = true
+				break
+			}
+		}
+		if !stillUsed && m.bySource[oldSource] == p {
+			delete(m.bySource, oldSource)
+		}
+	}
 	p.paths[name] = ep
-	p.v2 = v2
-	p.v3 = v3
-	p.pathMTU = pathMTU
-	p.mu.Unlock()
+	p.v2.Store(v2)
+	p.v3.Store(v3)
+	p.pathMTU.Store(pathMTU)
+	forced := m.forced
 	p.scheduler.SetV2(v2)
 	p.scheduler.SetForced(forced)
-
 	p.scheduler.Register(name, kind)
+	m.bySource[source] = p
+	p.mu.Unlock()
+	m.mu.Unlock()
 	m.sendProbe(p, name, time.Now())
+	return true
 }
 
 // SetForced applies a server operator's default transport selection to every
@@ -228,13 +249,18 @@ func (m *ServerMultipathBind) wrap(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					if name, ok := p.nameForEndpoint(eps[i]); ok {
 						p.scheduler.ProbeResult(name, 0, true, time.Now())
 					}
-					if p.v3 {
+					if p.v3.Load() {
 						m.sendPayloadAck(p, eps[i])
 					}
 				}
-				seen := m.cache.Seen(b, time.Now())
-				if seen && p != nil && p.v2 {
-					m.countMirrored(p, eps[i], len(b))
+				arrivalPath := ""
+				if p != nil && p.v2.Load() {
+					arrivalPath, _ = p.nameForEndpoint(eps[i])
+				}
+				seen, firstPath := m.cache.SeenOnPath(b, arrivalPath, time.Now())
+				if seen && p != nil && p.v2.Load() && arrivalPath != "" && firstPath != "" && arrivalPath != firstPath {
+					m.countMirroredName(p, firstPath, len(b))
+					m.countMirroredName(p, arrivalPath, len(b))
 				}
 				if seen {
 					continue
@@ -284,7 +310,7 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 			return
 		}
 	case FramePathDataAck:
-		if !p.v3 || !ValidPathDataAck(payload) {
+		if !p.v3.Load() || !ValidPathDataAck(payload) {
 			return
 		}
 	case FrameThroughputReport:
@@ -292,11 +318,11 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		// unlike the client side this never risks a nil dereference -- but a
 		// non-v2 peer sending this frame is still unexpected and rejected,
 		// same as MultipathBind.handlePathControl.
-		if !p.v2 || !ValidThroughputReport(payload) {
+		if !p.v2.Load() || !ValidThroughputReport(payload) {
 			return
 		}
 	case FramePathMTUProbe, FramePathMTUAck:
-		if !p.pathMTU {
+		if !p.pathMTU.Load() {
 			return
 		}
 	default:
@@ -403,7 +429,7 @@ func (m *ServerMultipathBind) probeAll() {
 	}
 	m.mu.RUnlock()
 	for _, p := range peers {
-		if p.v3 {
+		if p.v3.Load() {
 			p.scheduler.FailStalledPrimary(now)
 		}
 		p.mu.RLock()
@@ -456,7 +482,7 @@ func (m *ServerMultipathBind) sendProbe(p *serverMultipathPeer, name string, now
 }
 
 func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, target uint16) {
-	if !p.pathMTU || target == 0 {
+	if !p.pathMTU.Load() || target == 0 {
 		return
 	}
 	p.mu.RLock()
@@ -483,13 +509,9 @@ func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, 
 	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
 }
 
-// countMirrored attributes n bytes of recognized-duplicate traffic to
-// whichever candidate ep identifies on peer p, for reportLoop to summarize.
-func (m *ServerMultipathBind) countMirrored(p *serverMultipathPeer, ep conn.Endpoint, n int) {
-	name, ok := p.nameForEndpoint(ep)
-	if !ok {
-		return
-	}
+// countMirroredName attributes n bytes of recognized mirrored traffic to a
+// candidate on peer p, for reportLoop to summarize.
+func (m *ServerMultipathBind) countMirroredName(p *serverMultipathPeer, name string, n int) {
 	p.recvMu.Lock()
 	c := p.recvCounters[name]
 	if c == nil {
@@ -502,7 +524,7 @@ func (m *ServerMultipathBind) countMirrored(p *serverMultipathPeer, ep conn.Endp
 }
 
 // reportLoop periodically summarizes every v2 peer's accumulated
-// countMirrored totals into an outgoing FrameThroughputReport (resetting
+// countMirroredName totals into an outgoing FrameThroughputReport (resetting
 // them for the next window) and rolls every v2 peer's mirror-send
 // accounting window, the send-side counterpart an incoming report is
 // compared against. One goroutine for the whole bind, matching probeLoop's
@@ -520,7 +542,7 @@ func (m *ServerMultipathBind) reportLoop(stop <-chan struct{}) {
 			m.mu.RLock()
 			peers := make([]*serverMultipathPeer, 0, len(m.peers))
 			for _, p := range m.peers {
-				if p.v2 {
+				if p.v2.Load() {
 					peers = append(peers, p)
 				}
 			}
@@ -616,9 +638,24 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	if err := m.base.Send(bufs, first); err != nil {
 		slog.Debug("multipath server primary send failed", "peer", e.id, "candidate", primary, "error", err)
-		return err
+		p.scheduler.RecordSendFailure(primary)
+		fallback, _, _ := p.scheduler.Select()
+		p.mu.RLock()
+		fallbackEP := p.paths[fallback]
+		p.mu.RUnlock()
+		if fallback == "" || fallback == primary || fallbackEP == nil {
+			return err
+		}
+		if fallbackErr := m.base.Send(bufs, fallbackEP); fallbackErr != nil {
+			p.scheduler.RecordSendFailure(fallback)
+			return errors.Join(err, fallbackErr)
+		}
+		if p.v3.Load() && isWireGuardTransportBatch(bufs) {
+			p.scheduler.RecordPayloadSent(fallback, time.Now())
+		}
+		return nil
 	}
-	if p.v3 && isWireGuardTransportBatch(bufs) {
+	if p.v3.Load() && isWireGuardTransportBatch(bufs) {
 		p.scheduler.RecordPayloadSent(primary, time.Now())
 	}
 	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
@@ -637,23 +674,31 @@ func (m *ServerMultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 				p.scheduler.RecordDuplication(alternate, n, false)
 				return nil
 			}
-			p.scheduler.RecordDuplication(alternate, n, true)
-			return m.base.Send(bufs, second)
+			if err := m.base.Send(bufs, second); err != nil {
+				p.scheduler.RecordSendFailure(alternate)
+			} else {
+				p.scheduler.RecordDuplication(alternate, n, true)
+			}
+			return nil
 		}
 		return nil
 	}
-	if p.v2 {
+	if p.v2.Load() {
 		if name, ok := p.scheduler.MirrorCandidate(); ok {
 			p.mu.RLock()
 			mirrorEP := p.paths[name]
 			p.mu.RUnlock()
-			if mirrorEP != nil && p.mirror.Allow(len(bufs[0])) {
-				_ = m.base.Send(bufs, mirrorEP)
-				p.attempts.recordAttempt(name, len(bufs[0]))
+			n := bufferBytes(bufs)
+			if mirrorEP != nil && p.mirror.Allow(n) {
+				if err := m.base.Send(bufs, mirrorEP); err == nil {
+					p.attempts.recordAttempt(name, n)
+				} else {
+					p.scheduler.RecordSendFailure(name)
+				}
 			}
 		}
 	}
-	if p.v3 {
+	if p.v3.Load() {
 		m.sendPayloadRecovery(p, bufs)
 	}
 	return nil
@@ -678,7 +723,7 @@ func (m *ServerMultipathBind) sendPayloadRecovery(p *serverMultipathPeer, bufs [
 		return
 	}
 	name, ok := p.scheduler.PayloadRecoveryCandidate()
-	if !ok || !p.mirror.Allow(len(bufs[0])) {
+	if !ok || !p.mirror.Allow(bufferBytes(bufs)) {
 		return
 	}
 	p.mu.RLock()
