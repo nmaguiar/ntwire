@@ -139,6 +139,19 @@ func TestWebsocketHasNoConfigDefault(t *testing.T) {
 	}
 }
 
+func TestFlagSetWasSet(t *testing.T) {
+	fs := NewFlagSet("connect", Defaults{Settings: client.Settings{SSO: true}})
+	if err := fs.Parse([]string{"-i", "/tmp/id_ed25519"}); err != nil {
+		t.Fatal(err)
+	}
+	if !fs.WasSet("i") {
+		t.Error("-i should be reported as explicitly set")
+	}
+	if fs.WasSet("sso") {
+		t.Error("defaulted --sso should not be reported as explicitly set")
+	}
+}
+
 func TestZeroSettingsDefaultsToEmpty(t *testing.T) {
 	d := Defaults{}
 	for _, o := range All() {

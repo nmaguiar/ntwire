@@ -758,6 +758,7 @@ func connect(args []string, u *ui.UI) {
 	known := fs.Str("known-servers")
 	noBrowser := fs.BoolVal("no-browser")
 	sso := fs.BoolVal("sso")
+	sso = resolveSSO(sso, fs.WasSet("sso"), fs.WasSet("i"))
 	provider := fs.Str("provider")
 	tokenCache := fs.Str("token-cache")
 	websocket := fs.BoolVal("websocket")
@@ -855,6 +856,7 @@ func list(args []string, u *ui.UI) {
 	known := fs.Str("known-servers")
 	noBrowser := fs.BoolVal("no-browser")
 	sso := fs.BoolVal("sso")
+	sso = resolveSSO(sso, fs.WasSet("sso"), fs.WasSet("i"))
 	provider := fs.Str("provider")
 	tokenCache := fs.Str("token-cache")
 	collect := fs.Str("collect-exec")
@@ -1000,6 +1002,13 @@ func resolveIdentityKey(key string, sso bool, defaultIdentityFile func() string)
 		return defaultIdentityFile()
 	}
 	return key
+}
+
+// resolveSSO makes an explicit identity file select SSH even when an older
+// persisted config defaults to SSO. An explicit --sso remains authoritative,
+// including when it is supplied alongside -i.
+func resolveSSO(sso, ssoExplicit, identityExplicit bool) bool {
+	return sso && (ssoExplicit || !identityExplicit)
 }
 
 // mergePorts merges settingsPorts/settingsHosts (the persisted config's
