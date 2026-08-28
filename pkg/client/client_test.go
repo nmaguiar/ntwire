@@ -1203,7 +1203,8 @@ func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	dir, err := browseropen.ProfileDir(browserProfileKey("egress"))
+	c := newSocksTestConnection()
+	dir, err := browseropen.ProfileDir(c.browserProfileKey("egress"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1211,7 +1212,6 @@ func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c := newSocksTestConnection()
 	w := httptest.NewRecorder()
 	c.resetTunnelBrowserProfile(w, "egress")
 	if w.Code != http.StatusNoContent {
@@ -1219,6 +1219,23 @@ func TestResetTunnelBrowserProfileRemovesProfileDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("profile dir still exists after reset: err=%v", err)
+	}
+}
+
+func TestBrowserProfileKey(t *testing.T) {
+	var nilConn *Connection
+	if got, want := nilConn.browserProfileKey("socks"), "client-socks"; got != want {
+		t.Errorf("nilConn.browserProfileKey() = %q, want %q", got, want)
+	}
+
+	cDefault := &Connection{}
+	if got, want := cDefault.browserProfileKey("socks"), "client-socks"; got != want {
+		t.Errorf("cDefault.browserProfileKey() = %q, want %q", got, want)
+	}
+
+	cProfile := &Connection{options: Options{Profile: "profile-123"}}
+	if got, want := cProfile.browserProfileKey("socks"), "profile-123-socks"; got != want {
+		t.Errorf("cProfile.browserProfileKey() = %q, want %q", got, want)
 	}
 }
 

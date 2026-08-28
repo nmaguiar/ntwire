@@ -67,6 +67,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		hosts[k] = v
 	}
 	return client.Options{
+		Profile:          p.ID,
 		Ports:            ports,
 		Hosts:            hosts,
 		CAFile:           ExpandHome(p.CAFile),

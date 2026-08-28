@@ -79,6 +79,17 @@ func TestToClientOptionsIncludesSettingsURL(t *testing.T) {
 	}
 }
 
+func TestToClientOptionsIncludesProfileID(t *testing.T) {
+	p := Profile{ID: "prof-12345", Name: "home-lab"}
+	o, err := p.ToClientOptions("/tmp/status.json", "", "")
+	if err != nil {
+		t.Fatalf("ToClientOptions() error = %v", err)
+	}
+	if o.Profile != "prof-12345" {
+		t.Errorf("Profile = %q, want %q", o.Profile, "prof-12345")
+	}
+}
+
 func TestExpandHomeExpandsLeadingTilde(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

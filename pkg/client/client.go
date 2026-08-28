@@ -211,6 +211,13 @@ type Options struct {
 	// ~/.ntwire/config.yaml a plain `ntwire connect` reads. It is surfaced
 	// to the local status UI (WebStatus.SettingsURL) as a "Settings" link.
 	SettingsURL string
+
+	// Profile is an optional identifier for the connection profile (such as
+	// a GUI profile ID). When non-empty, browser profile directories and keys
+	// are namespaced under this profile (e.g. "<profile>-<tunnel>"), aligning
+	// the web UI's "Open in browser" behavior with the tray menu's per-profile
+	// browser instances. When empty, defaults to "client-<tunnel>".
+	Profile string
 }
 
 // EventKind identifies which control-plane lifecycle transition an Event
@@ -2494,10 +2501,13 @@ func (c *Connection) socksTunnelLocalAddr(name string) (string, error) {
 
 // browserProfileKey returns the browseropen profile key used by the "Open
 // in browser" / "Reset browser profile" buttons for the named SOCKS
-// tunnel, namespaced under "client-" so it never collides with the
-// profiles cmd/ntwire's CLI ("cli-<tunnel>") or ntwire-gui
-// ("<connection>-<tunnel>") keep for the same tunnel name.
-func browserProfileKey(name string) string {
+// tunnel. When Options.Profile is set (e.g. from a GUI profile), it is
+// namespaced as "<profile>-<tunnel>" matching the tray menu; otherwise it
+// falls back to "client-<tunnel>".
+func (c *Connection) browserProfileKey(name string) string {
+	if c != nil && c.options.Profile != "" {
+		return c.options.Profile + "-" + name
+	}
 	return "client-" + name
 }
 
@@ -2510,7 +2520,7 @@ func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := openSocksBrowser(browserProfileKey(name), addr); err != nil {
+	if err := openSocksBrowser(c.browserProfileKey(name), addr); err != nil {
 		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2526,7 +2536,7 @@ func (c *Connection) resetTunnelBrowserProfile(w http.ResponseWriter, name strin
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := browseropen.CleanProfile(browserProfileKey(name)); err != nil {
+	if err := browseropen.CleanProfile(c.browserProfileKey(name)); err != nil {
 		http.Error(w, "cannot reset browser profile: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2657,7 +2667,7 @@ func (c *Connection) executePortalAction(ctx context.Context, w http.ResponseWri
 	}
 
 	if socksAddr != "" {
-		if err := openSocksBrowser(browserProfileKey(targetID), socksAddr, targetURL); err != nil {
+		if err := openSocksBrowser(c.browserProfileKey(targetID), socksAddr, targetURL); err != nil {
 			http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
