@@ -204,12 +204,10 @@ type Tunnel struct {
 	DocsURL string `json:"docs_url,omitempty"`
 }
 
-// IsBrowserSocksTarget reports whether targetHint names a tunnel whose local
-// TCP listener can be used as a SOCKS5 proxy by a browser. Embedded SOCKS
-// tunnels are governed by ntwire; external_socks tunnels transparently relay
-// the browser's SOCKS5 stream to a configured external endpoint.
+// IsBrowserSocksTarget reports whether targetHint names an embedded SOCKS
+// tunnel whose local TCP listener can be used as a SOCKS5 proxy by a browser.
 func IsBrowserSocksTarget(targetHint string) bool {
-	return targetHint == "socks" || targetHint == "external_socks"
+	return targetHint == "socks"
 }
 
 type AuthResponse struct {

@@ -66,6 +66,9 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 		d = planes[0]
 	}
 	sc := t.Socks
+	if sc.Transparent {
+		return nil
+	}
 	log := s.log.With("tunnel", t.Name)
 	dial := (&net.Dialer{}).DialContext
 	dialRemoteHostname := false
@@ -460,7 +463,7 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	for name, tl := range d.listeners {
 		nt, ok := wanted[name]
 		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target || nt.Protocol != tl.config.Protocol || nt.UDPIdleTimeout != tl.config.UDPIdleTimeout ||
-			socksConfigChanged(nt.Socks, tl.config.Socks) || !reflect.DeepEqual(nt.ExternalSocks, tl.config.ExternalSocks) {
+			socksConfigChanged(nt.Socks, tl.config.Socks) {
 			toClose = append(toClose, tl)
 			delete(d.listeners, name)
 		}
@@ -798,6 +801,10 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 // toTarget, everything written back to the client counts as fromTarget.
 func (s *Server) proxySocks(tl *tunnelListener, principal DataPlanePrincipal, host string, in net.Conn) {
 	t := tl.config
+	if t.Socks.Transparent {
+		s.proxyTransparentSocks(t, principal, host, in)
+		return
+	}
 	if tl.socks == nil {
 		s.log.Warn("socks tunnel has no server instance", "tunnel", t.Name)
 		return
@@ -811,6 +818,32 @@ func (s *Server) proxySocks(tl *tunnelListener, principal DataPlanePrincipal, ho
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
 	tl.socks.server.ServeConn(context.WithValue(context.Background(), principalContextKey{}, principal), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
 	s.log.Debug("socks tunnel connection closed", "tunnel", t.Name, "client", host,
+		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
+}
+
+// proxyTransparentSocks carries the client's SOCKS protocol unchanged to the
+// configured upstream. The upstream, rather than ntwire, resolves requested
+// hostnames and applies destination authorization.
+func (s *Server) proxyTransparentSocks(t TunnelConfig, principal DataPlanePrincipal, host string, in net.Conn) {
+	u, err := urlpkg.Parse(t.Socks.Upstream)
+	if err != nil {
+		return
+	}
+	out, err := s.dialTarget(principal, t, u.Host)
+	if err != nil {
+		s.log.Debug("transparent SOCKS upstream dial failed", "tunnel", t.Name, "target", u.Host, "error", err)
+		return
+	}
+	defer out.Close()
+	started := time.Now()
+	stats := s.statsFor(host, t.Name)
+	stats.connections.Add(1)
+	stats.active.Add(1)
+	defer stats.active.Add(-1)
+	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
+	go io.Copy(countingWriter{w: out, counter: &stats.toTarget}, in)
+	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
+	s.log.Debug("transparent SOCKS tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
 
@@ -911,14 +944,13 @@ func (s *Server) allowedIP(ip, tunnel string) bool {
 // that exact address. This prevents DNS rebinding between policy evaluation
 // and the actual outbound connection.
 func (s *Server) dialFixedTarget(principal DataPlanePrincipal, t TunnelConfig) (net.Conn, error) {
-	target := t.Target
-	if t.IsExternalSocks() {
-		var err error
-		target, err = externalSocksAddress(t.ExternalSocks.URL)
-		if err != nil {
-			return nil, err
-		}
-	}
+	return s.dialTarget(principal, t, t.Target)
+}
+
+// dialTarget resolves once, evaluates the selected address, then dials that
+// exact TCP target. Transparent SOCKS uses it to protect the configured
+// upstream endpoint while leaving destinations inside SOCKS opaque.
+func (s *Server) dialTarget(principal DataPlanePrincipal, t TunnelConfig, target string) (net.Conn, error) {
 	host, portText, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err
