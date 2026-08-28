@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,9 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"masque:", "http2_url:", "match_domains:", "certificate_ttl:", "transparent:",
 		"upstream:", "udp_idle_timeout:", "portal:", "applications:", "variables:",
 	} {
-		if !strings.Contains(sample, option) {
+		key := strings.TrimSuffix(option, ":")
+		pattern := `(?m)^\s*(?:#\s*)?` + regexp.QuoteMeta(key) + `\s*:`
+		if !regexp.MustCompile(pattern).MatchString(sample) {
 			t.Errorf("sample configuration is missing %q", option)
 		}
 	}
