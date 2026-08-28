@@ -8,10 +8,9 @@ import (
 
 func TestIsBrowserSocksTarget(t *testing.T) {
 	for hint, want := range map[string]bool{
-		"socks":          true,
-		"external_socks": true,
-		"postgres:5432":  false,
-		"":               false,
+		"socks":         true,
+		"postgres:5432": false,
+		"":              false,
 	} {
 		if got := IsBrowserSocksTarget(hint); got != want {
 			t.Errorf("IsBrowserSocksTarget(%q) = %v, want %v", hint, got, want)

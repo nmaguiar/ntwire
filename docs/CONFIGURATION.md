@@ -264,28 +264,29 @@ the `authorizer:` webhook/exec hook, per-source rate limiting, and
 `audit.log_file` all still apply exactly as they do to a fixed-target tunnel;
 `socks:` only adds a second, per-destination filtering layer inside it.
 
-### External SOCKS5 tunnels
+### Transparent upstream SOCKS5 tunnels
 
-Use `target: external_socks` when the SOCKS5 server already exists elsewhere
-and ntwire should only carry its TCP stream. The client or browser performs
-the SOCKS5 handshake directly with that endpoint:
+Use `target: socks` with `socks.transparent: true` when the SOCKS5 server
+already exists elsewhere and ntwire should only carry the client's SOCKS
+stream. The client or browser performs the SOCKS5 handshake directly with
+that endpoint:
 
 ```yaml
 - name: corporate-egress
-  target: external_socks
+  target: socks
   virtual_port: 11080
-  external_socks:
-    url: socks5://proxy.example:1080
+  socks:
+    transparent: true
+    upstream: socks5h://proxy.example:1080
 ```
 
-`external_socks.url` must be a credential-free `socks5://host:port` URL (no
-`socks:`, `socks5h:`, user info, path, query, or fragment). This target is
-TCP-only: it has no embedded filtering, BIND, UDP ASSOCIATE, PAC endpoint, or
-SOCKS runtime. ntwire still applies tunnel grants and destination policy when
-it connects to the configured proxy endpoint, but it cannot inspect or filter
-destinations requested inside the encrypted transparent SOCKS stream. Native
-client browser controls remain available for both SOCKS target types; PAC is
-embedded-SOCKS-only.
+`socks.upstream` accepts `socks5://` and `socks5h://` URLs. Transparent mode
+is TCP-only and cannot be combined with ntwire SOCKS filters, DNS, BIND, or
+UDP ASSOCIATE options. ntwire applies tunnel grants and destination policy
+when it connects to the configured upstream endpoint, but it cannot inspect
+or filter destinations in the transparent SOCKS stream. The upstream is
+therefore responsible for destination and authentication policy. `socks5h://`
+is supported so clients can ask that upstream to resolve destination names.
 
 A SOCKS tunnel is a general-purpose egress proxy: whatever it's allowed to
 reach, every session holding its grant can reach. **Unlike socksd, which
@@ -320,10 +321,11 @@ ASSOCIATE is supported for SOCKS5 tunnels. ntwire creates a private virtual
 UDP relay for the control connection and the client exposes it on loopback to
 the application. Inactive mappings expire after `socks.udp_idle_timeout`.
 
-For external TCP upstreams, `socks5://` sends the locally resolved destination
-IP to the upstream proxy. `socks5h://` still resolves locally for ntwire's
-filters and destination policy, but sends the original hostname to the trusted
-upstream proxy for its final DNS resolution.
+For governed SOCKS TCP upstreams, `socks5://` sends the locally resolved
+destination IP to the upstream proxy. `socks5h://` still resolves locally for
+ntwire's filters and destination policy, but sends the original hostname to
+the trusted upstream proxy for its final DNS resolution. In transparent mode,
+the client and upstream negotiate destination resolution directly.
 
 SOCKS BIND is separately disabled by default even when CONNECT and
 `allow_all` are enabled. Set `socks.allow_bind: true` only for a tunnel that

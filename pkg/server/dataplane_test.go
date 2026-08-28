@@ -461,7 +461,7 @@ func TestProxySocksConnectAllowedRelays(t *testing.T) {
 	}
 }
 
-func TestProxyExternalSocksRelaysBytesWithoutEmbeddedRuntime(t *testing.T) {
+func TestProxyTransparentSocksRelaysClientStreamToSocks5hUpstream(t *testing.T) {
 	upstream, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -484,10 +484,10 @@ func TestProxyExternalSocksRelaysBytesWithoutEmbeddedRuntime(t *testing.T) {
 	}()
 
 	s, _, _ := newTestServer(t, nil)
-	tunnel := TunnelConfig{Name: "corporate", Target: "external_socks", VirtualPort: 11080, Allow: []string{"*"}, ExternalSocks: &ExternalSocksConfig{URL: "socks5://" + upstream.Addr().String()}}
+	tunnel := TunnelConfig{Name: "corporate", Target: "socks", VirtualPort: 11080, Allow: []string{"*"}, Socks: &SocksConfig{Transparent: true, Upstream: "socks5h://" + upstream.Addr().String()}}
 	tl := &tunnelListener{config: tunnel}
-	if tl.socks != nil {
-		t.Fatal("external SOCKS tunnel initialized embedded SOCKS runtime")
+	if runtime := s.newSocksRuntime(tunnel); runtime != nil {
+		t.Fatal("transparent SOCKS tunnel initialized embedded SOCKS runtime")
 	}
 	s.sessions.Create(CreateParams{Method: "ssh", Identity: "id", TunnelIP: "100.64.0.8", Tunnels: []protocol.Tunnel{{Name: tunnel.Name}}, TTL: time.Minute})
 	client, server := net.Pipe()
@@ -506,10 +506,10 @@ func TestProxyExternalSocksRelaysBytesWithoutEmbeddedRuntime(t *testing.T) {
 	select {
 	case got := <-received:
 		if !bytes.Equal(got, want) {
-			t.Fatalf("external SOCKS bytes = %x, want %x", got, want)
+			t.Fatalf("transparent SOCKS bytes = %x, want %x", got, want)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("external SOCKS endpoint did not receive bytes")
+		t.Fatal("transparent SOCKS upstream did not receive bytes")
 	}
 }
 

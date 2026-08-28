@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -217,11 +216,6 @@ type TunnelConfig struct {
 	// a fixed-target forward. It is used, and required, when Target is the
 	// sentinel value "socks"; see SocksConfig.
 	Socks *SocksConfig `yaml:"socks"`
-	// ExternalSocks configures a transparent TCP relay to an existing SOCKS5
-	// endpoint. Unlike Socks, ntwire does not parse SOCKS requests or provide
-	// destination filtering, UDP ASSOCIATE, BIND, or PAC endpoints.
-	ExternalSocks *ExternalSocksConfig `yaml:"external_socks"`
-
 	// Portal configures optional presentation metadata for this tunnel when
 	// rendered in the ntwire Portal.
 	Portal *portal.TargetPortalConfig `yaml:"portal"`
@@ -263,24 +257,16 @@ func (d DNSConfig) EffectiveDomain() string {
 // socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
 // embedded SOCKS proxy rather than a fixed host:port forward.
 const socksTarget = "socks"
-const externalSocksTarget = "external_socks"
 
 // IsSocks reports whether t is an embedded-SOCKS-server tunnel.
 func (t TunnelConfig) IsSocks() bool {
 	return t.Target == socksTarget
 }
 
-// IsExternalSocks reports whether t transparently forwards to an external
-// SOCKS5 endpoint.
-func (t TunnelConfig) IsExternalSocks() bool {
-	return t.Target == externalSocksTarget
-}
-
 // IsBrowserSocks reports whether a local tunnel listener can proxy browser
-// SOCKS5 traffic. It intentionally includes external SOCKS but not PAC-only
-// embedded SOCKS behavior.
+// SOCKS5 traffic.
 func (t TunnelConfig) IsBrowserSocks() bool {
-	return t.IsSocks() || t.IsExternalSocks()
+	return t.IsSocks()
 }
 
 // SocksConfig configures an embedded SOCKS tunnel's destination filtering,
@@ -292,6 +278,10 @@ func (t TunnelConfig) IsBrowserSocks() bool {
 // would silently turn an authenticated ntwire session into an open egress
 // proxy. Set AllowAll to opt into socksd's original behavior.
 type SocksConfig struct {
+	// Transparent relays the client's SOCKS stream unchanged to Upstream.
+	// It deliberately bypasses ntwire's destination filters; the upstream
+	// SOCKS service is responsible for authorization and destination policy.
+	Transparent    bool          `yaml:"transparent"`
 	OnlyLocal      bool          `yaml:"only_local"`
 	Filters        []string      `yaml:"filters"`
 	DomainFilters  []string      `yaml:"domain_filters"`
@@ -310,29 +300,6 @@ type SocksConfig struct {
 	Upstream string `yaml:"upstream"`
 	// UDPIdleTimeout bounds inactive SOCKS5 UDP ASSOCIATE flows.
 	UDPIdleTimeout time.Duration `yaml:"udp_idle_timeout"`
-}
-
-// ExternalSocksConfig identifies an existing SOCKS5 endpoint. URL is
-// intentionally credential-free: authentication belongs to a future explicit
-// protocol revision, not to server configuration URLs.
-type ExternalSocksConfig struct {
-	URL string `yaml:"url"`
-}
-
-func externalSocksAddress(raw string) (string, error) {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "socks5" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("must be a credential-free socks5://host:port URL")
-	}
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil || host == "" || port == "" {
-		return "", fmt.Errorf("must be a credential-free socks5://host:port URL")
-	}
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 {
-		return "", fmt.Errorf("invalid port")
-	}
-	return u.Host, nil
 }
 
 // WantsASNUpdates reports whether the background ASN index refresh should
@@ -365,73 +332,115 @@ func SampleConfig() string {
 # enable single sign-on alongside SSH public-key authentication.
 
 listen:
-  https: ":8443"                         # TLS control API and WebSocket fallback listener; default: :8443
+  https    : ":8443"                     # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
-  metrics: ""                             # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
-  name: ""                                # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
+  metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
+  name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
-  key_file: ""                           # PEM private key paired with cert_file; required whenever cert_file is set
+  key_file : ""                          # PEM private key paired with cert_file; required whenever cert_file is set
   state_dir: ""                          # directory for a generated self-signed certificate and key; empty uses this YAML file's directory
-  ephemeral: false                        # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
+  ephemeral: false                       # generate a new in-memory self-signed certificate on every start instead of persisting it in state_dir
 
 auth:
-  authorized_keys_dir: /etc/ntwire/keys  # directory of SSH public-key files; optional only when oidc.issuers is configured
-  session_ttl: 15m                        # bearer-token lifetime before renewal is required; default: 15m
+  authorized_keys_dir : /etc/ntwire/keys  # directory of SSH public-key files; optional only when oidc.issuers is configured
+  session_ttl         : 15m               # bearer-token lifetime before renewal is required; default: 15m
   max_sessions_per_key: 5                 # concurrent-session cap per SSH fingerprint or OIDC email; 0 means unlimited
   oidc:
-    issuers: []                           # OIDC providers; leave empty to use SSH keys only
-    # - name: google                      # stable provider ID shown to clients and selected with --provider
-    #   issuer: https://accounts.google.com # issuer URL; its discovery document and JWKS are fetched
+    issuers:                                   # OIDC providers; leave empty to use SSH keys only
+    # - name     : google                      # stable provider ID shown to clients and selected with --provider
+    #   issuer   : https://accounts.google.com # issuer URL; its discovery document and JWKS are fetched
     #   client_id: 1234-abc.apps.googleusercontent.com # public OAuth client ID (PKCE; most IdPs need no client secret)
     # Do not add client_secret here. It is rejected to prevent disclosure via
     # unauthenticated server metadata; see docs/OIDC-SETUP.md for Google.
-    #   scopes: [openid, email, profile]  # requested OAuth scopes; defaults to these three when omitted
-    #   groups_claim: groups               # ID-token claim with group membership; empty disables group: grants
+    #   scopes:                                # requested OAuth scopes; defaults to openid, email, profile when omitted
+    #   - openid
+    #   - email
+    #   - profile
+    #   groups_claim          : groups     # ID-token claim with group membership; empty disables group: grants
     #   require_verified_email: true       # reject tokens lacking email_verified=true; default: true
 
 network:
-  tunnel_cidr: 100.64.0.0/16              # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
-  advertised_endpoint: ""                 # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
-  wireguard_private_key_file: ""          # optional persistent server WireGuard private key; use for native official WireGuard clients
-  # dns:
-  #   enabled: true                       # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
-  #   domain: ntwire                      # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
+  tunnel_cidr               : 100.64.0.0/16 # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
+  advertised_endpoint       : ""            # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
+  wireguard_private_key_file: ""            # optional persistent server WireGuard private key; use for native official WireGuard clients
+  # dns                       :
+  #   enabled: true                         # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
+  #   domain : ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 
 transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
-  force: auto                              # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
 
-# Named reusable egress policy. A tunnel and a native peer can each name one;
-# when both do, both must allow the selected destination.
-destination_policies: {}
+# Named reusable egress policies. A tunnel and a native peer can each name
+# one; when both do, both must allow the selected destination.
+destination_policies:
+  # internal-only:
+  #   filters       :                      # destination CIDR allow-list
+  #   - 10.0.0.0/8
+  #   - fc00::/7
+  #   domain_filters:                      # destination hostname-suffix allow-list
+  #   - .svc.cluster.local
+  #   asn_filters   :                      # destination ASN allow-list (IPv4 only)
+  #   - 64512
+  #   only_local     : false               # restrict to private ranges only
+  #   reverse_filters: false               # invert the destination filters into a deny-list
+  #   allow_all      : false               # allow every destination when no other filter is configured
+  #   protocols      :                     # allowed transports; empty allows TCP and UDP
+  #   - tcp
+  #   - udp
+  #   ports          :                     # allowed destination ports; empty allows every port
+  #   - 443
 
 native_wireguard:
-  enabled: false
-  peers: []                              # name, public_key, tunnel_ip, tunnels, optional destination_policy
+  enabled: false                          # accept unmodified official WireGuard clients
+  peers  :                                # requires enabled: true
+  # - name      : laptop
+  #   public_key: BASE64_WIREGUARD_PUBLIC_KEY
+  #   tunnel_ip : 100.64.0.10
+  #   tunnels   :
+  #   - reports
+  #   destination_policy: internal-only   # optional named destination policy
+
+# Opt-in MASQUE Network Relay gateway. Keep disabled unless all TLS and
+# client-certificate settings below are configured; HTTP/3 is reserved for a
+# future implementation and must remain empty today.
+masque:
+  enabled      : false
+  listen       : ""                       # HTTPS listener for MASQUE CONNECT, e.g. :4433
+  http2_url    : ""                       # public absolute https URL clients use for HTTP/2 CONNECT
+  http3_url    : ""                       # reserved; must remain empty
+  match_domains:                          # certificate names allowed for synthetic relay hosts
+  # - private.example.test
+  client_ca_file  : ""                    # PEM CA that verifies client certificates
+  issuer_cert_file: ""                    # PEM certificate used to issue short-lived client certificates
+  issuer_key_file : ""                    # PEM private key matching issuer_cert_file
+  certificate_ttl : 15m                   # 1m through 24h; default 15m when enabled
+  tunnels         :                       # synthetic FQDN to fixed ntwire tunnel-name mapping
+  # reports.private.example.test: reports
 
 relay:
-  enabled: false                          # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)
-  url: ""                                 # wss://relay.example.com:8444, the relay's listen.agents endpoint
-  name: home                              # tenant label; must match this key's registrations[] entry on the relay
+  enabled      : false                        # when true, listen.https is never bound; the server dials out to an ntwire-relay instead (see PLAN-RELAY.md)
+  url          : ""                           # wss://relay.example.com:8444, the relay's listen.agents endpoint
+  name         : home                         # tenant label; must match this key's registration entry on the relay
   identity_file: /etc/ntwire/relay_id_ed25519 # private key used to sign relay registration, separate from auth.authorized_keys_dir; generate with: ntwire-server -generate-relay-key /etc/ntwire/relay_id_ed25519
-  fingerprint: ""                         # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
+  fingerprint  : ""                           # SHA256:... pin of the relay's listen.agents TLS certificate; empty verifies against normal PKI instead
   # For active-active relay HA, replace url/fingerprint above with endpoints.
   # Every endpoint must register the same tenant name and serve the same
   # wildcard client domain; clients race that shared DNS name on failure.
   # endpoints:
-  #   - url: "wss://relay-a.example.com:8444"
-  #     fingerprint: "SHA256:..."
-  #   - url: "wss://relay-b.example.com:8444"
-  #     fingerprint: "SHA256:..."
-  reconnect_min: 1s                        # initial backoff after a dropped control connection; default: 1s
-  reconnect_max: 1m                        # backoff ceiling; default: 1m
+  # - url        : "wss://relay-a.example.com:8444"
+  #   fingerprint: "SHA256:..."
+  # - url        : "wss://relay-b.example.com:8444"
+  #   fingerprint: "SHA256:..."
+  reconnect_min  : 1s                      # initial backoff after a dropped control connection; default: 1s
+  reconnect_max  : 1m                      # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
-  direct_clients: false                    # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
-  # multipath: overrides v3's bounded reactive-duplication budget.
-  # multipath:
+  direct_clients : false                   # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
+  # multipath      : overrides v3's bounded reactive-duplication budget.
+  # multipath      :
   #   duplicate_rate_bytes_per_sec: 262144    # cap reactive duplication toward a healthy alternate while the incumbent degrades
   # When relay.enabled is true and advertise_direct is false, consider
   # setting listen.wireguard to "127.0.0.1:0": WireGuard rides the /v1/wg
@@ -442,8 +451,8 @@ relay:
 
 authorizer:
   webhook_url: ""                         # URL that receives a JSON POST for each connection and returns an allow/deny decision; takes precedence when both hook options are set
-  exec: ""                                # executable that receives the same JSON on stdin and returns an allow/deny decision when webhook_url is empty
-  timeout: 5s                              # deadline for the webhook or executable; errors and timeouts deny the request; default: 5s
+  exec       : ""                         # executable that receives the same JSON on stdin and returns an allow/deny decision when webhook_url is empty
+  timeout    : 5s                         # deadline for the webhook or executable; errors and timeouts deny the request; default: 5s
 
 admin:
   web_ui_token: ""                         # optional secret that enables the server dashboard at /?token=...; leave empty to disable it
@@ -455,48 +464,83 @@ admin:
 # from a file" in docs/CONFIGURATION.md and examples/instructions/ for
 # ready-to-adapt files (SSH, kubectl, and SOCKS-proxy clients).
 tunnels:
-  - name: reports                          # unique identifier shown to clients
-    target: reports.internal:8080          # host:port the server proxies to after traffic reaches its virtual port
-    description: Reporting service         # optional free-text description shown to clients
-    virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
-    local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
-    local_host: ""                           # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
-    docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
-    instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
-      Fetch a report through the tunnel:
+- name              : reports               # unique identifier shown to clients
+  target            : reports.internal:8080 # host:port the server proxies to after traffic reaches its virtual port
+  description       : Reporting service     # optional free-text description shown to clients
+  virtual_port      : 18080                 # required port exposed inside the WireGuard tunnel; 1 through 65535
+  protocol          : tcp                   # tcp (default) or udp; UDP targets use per-source mappings
+  udp_idle_timeout  : 2m                    # UDP mapping idle timeout; only meaningful when protocol is udp; 0 uses the default
+  local_port        : 58080                 # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+  local_host        : ""                    # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
+  docs_url          : ""                    # optional absolute http(s) link offered as "See more" beside the instructions below
+  destination_policy: ""                    # optional named policy from destination_policies, combined with any peer policy
+  instructions      : |                     # optional Markdown shown in the client status UI, expanded there as a Go template
+    Fetch a report through the tunnel:
 
-      ~~~sh
-      curl -s http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
-      ~~~
+    ~~~sh
+    curl -s http://{{.LocalHost}}:{{.LocalPort}}/reports/latest
+    ~~~
 
-      Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
-      .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
+    Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
+    .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
     allow:
-      - "*"                                # any authenticated identity
-      # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
-      # - "alice@laptop"                   # SSH authorized_keys comment
-      # - "alice@corp.com"                 # exact verified OIDC email
-      # - "@corp.com"                      # OIDC email domain
-      # - "group:engineering"              # OIDC membership in auth.oidc.issuers[].groups_claim
-  # - name: egress                          # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
-  #   target: socks                         # required sentinel value that selects the SOCKS target type
-  #   virtual_port: 11080
-  #   allow: ["group:engineering"]
-  #   socks:
-  #     only_local: false                   # true restricts to private ranges only (10/8, 172.16/12, 192.168/16, fc00::/7) and ignores every other socks.* filter below
-  #     filters: []                         # destination CIDR allow-list, e.g. ["10.0.0.0/8", "fc00::/7"]
-  #     domain_filters: []                  # destination hostname-suffix allow-list, e.g. [".svc.cluster.local"]
-  #     asn_filters: []                     # destination ASN allow-list (IPv4 only), e.g. [15169]
-  #     asn_updates: null                   # periodically refresh the ASN index; defaults to true when asn_filters is non-empty
-  #     asn_url: ""                         # override the ASN index download URL; default: https://openaf.io/asnidx.json.gz
-  #     reverse_filters: false              # invert the above from an allow-list into a deny-list
-  #     dns_timeout: 10s                    # timeout for resolving SOCKS5 domain requests
-  #     allow_all: false                    # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
-  #     allow_bind: false                   # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
+    - "*"                                # any authenticated identity
+    # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
+    # - "alice@laptop"                   # SSH authorized_keys comment
+    # - "alice@corp.com"                 # exact verified OIDC email
+    # - "@corp.com"                      # OIDC email domain
+    # - "group:engineering"              # OIDC membership in an issuer groups_claim
+# - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
+#   target      : socks                   # required sentinel value that selects the SOCKS target type
+#   virtual_port: 11080
+#   allow       :
+#   - group:engineering
+#   socks       :
+#     transparent   : false              # true copies the client SOCKS stream directly to upstream; upstream then owns DNS, filtering, and SOCKS auth
+#     only_local    : false              # true restricts to private ranges only (10/8, 172.16/12, 192.168/16, fc00::/7) and ignores every other socks.* filter below
+#     filters       :                    # destination CIDR allow-list
+#     - 10.0.0.0/8
+#     - fc00::/7
+#     domain_filters:                    # destination hostname-suffix allow-list
+#     - .svc.cluster.local
+#   asn_filters :                       # destination ASN allow-list (IPv4 only)
+#   - 15169
+#   asn_updates : null                  # periodically refresh the ASN index; defaults to true when asn_filters is non-empty
+#     asn_url         : ""                 # override the ASN index download URL; default: https://openaf.io/asnidx.json.gz
+#     reverse_filters : false              # invert the above from an allow-list into a deny-list
+#     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
+#     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+#     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
+#     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
+#     udp_idle_timeout: 2m                # idle timeout for SOCKS5 UDP ASSOCIATE flows; 0 uses the default
+#     # With transparent: true, upstream is required; do not set any other
+#     # socks filtering, DNS, BIND, or UDP option. socks5:// and socks5h://
+#     # both work and the client/upstream decide destination DNS behavior.
+#   portal:                               # optional presentation metadata for this tunnel in the Portal
+#     name        : Corporate egress
+#     description : Browser proxy
+#     category    : Network
+#     icon        : globe
+#     url         : ""                    # optional absolute http(s) launch URL
+#     socks_tunnel: egress                # optional SOCKS tunnel to use when launching url
+#     applications:                       # application IDs offered for this target
+#     - chrome
+#     - firefox
+
+# Optional Portal landing page and separate web listener.
+portal:
+  enabled      : false
+  title        : ntwire Portal
+  template     : ""                             # inline template or a path relative to this YAML file
+  variables    :                                # string substitutions exposed to the portal template
+  # environment  : production
+  web          :
+    enabled: false
+    listen : ""                           # required host:port when portal.web.enabled is true
 
 log:
   format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
-  level: info                               # debug, info, warn, or error
+  level : info                             # debug, info, warn, or error
   # Precedence: -log-format/-log-level flags > this file > NTWIRE_LOG_FORMAT/NTWIRE_LOG_LEVEL env > built-in default (text, info). See docs/LOGGING.md.
 
 audit:
@@ -728,9 +772,6 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			if t.Socks == nil {
 				return c, fmt.Errorf("tunnel %q: target: socks requires a socks: block", t.Name)
 			}
-			if t.ExternalSocks != nil {
-				return c, fmt.Errorf("tunnel %q: external_socks: block requires target: external_socks", t.Name)
-			}
 			for _, cidr := range t.Socks.Filters {
 				if _, _, e := net.ParseCIDR(cidr); e != nil {
 					return c, fmt.Errorf("tunnel %q: socks.filters: %w", t.Name, e)
@@ -748,25 +789,16 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 					return c, fmt.Errorf("tunnel %q: socks.upstream must be a socks5:// or socks5h:// URL", t.Name)
 				}
 			}
-		} else if t.IsExternalSocks() {
-			if t.Socks != nil {
-				return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+			if t.Socks.Transparent {
+				if t.Socks.Upstream == "" {
+					return c, fmt.Errorf("tunnel %q: socks.transparent requires socks.upstream", t.Name)
+				}
+				if t.Socks.OnlyLocal || len(t.Socks.Filters) > 0 || len(t.Socks.DomainFilters) > 0 || len(t.Socks.ASNFilters) > 0 || t.Socks.ASNUpdates != nil || t.Socks.ASNURL != "" || t.Socks.ReverseFilters || t.Socks.AllowAll || t.Socks.AllowBind || t.Socks.DNSTimeout != 0 || t.Socks.UDPIdleTimeout != 0 {
+					return c, fmt.Errorf("tunnel %q: socks.transparent cannot be combined with ntwire SOCKS filtering, DNS, BIND, or UDP options", t.Name)
+				}
 			}
-			if t.ExternalSocks == nil {
-				return c, fmt.Errorf("tunnel %q: target: external_socks requires an external_socks: block", t.Name)
-			}
-			if _, err := externalSocksAddress(t.ExternalSocks.URL); err != nil {
-				return c, fmt.Errorf("tunnel %q: external_socks.url %w", t.Name, err)
-			}
-			if t.Protocol != "" && t.Protocol != "tcp" {
-				return c, fmt.Errorf("tunnel %q: target: external_socks is TCP-only", t.Name)
-			}
-			t.Protocol = "tcp"
-			if t.UDPIdleTimeout != 0 {
-				return c, fmt.Errorf("tunnel %q: target: external_socks does not support udp_idle_timeout", t.Name)
-			}
-		} else if t.Socks != nil || t.ExternalSocks != nil {
-			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks and external_socks: block requires target: external_socks", t.Name)
+		} else if t.Socks != nil {
+			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
 		} else {
 			if t.Protocol == "" {
 				t.Protocol = "tcp"

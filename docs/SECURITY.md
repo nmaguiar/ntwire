@@ -220,10 +220,11 @@ destination the tunnel's `socks:` filters permit, and the server itself, not
 just the client, initiates each of those outbound connections and DNS
 resolutions. Weigh that before granting one broadly:
 
-`target: external_socks` is different: ntwire authorizes and applies the
-destination policy only to its configured `socks5://host:port` endpoint. The
-subsequent SOCKS5 requests are opaque to ntwire, so use it only when that
-external service is trusted to enforce destination and authentication policy.
+`target: socks` with `socks.transparent: true` is different: ntwire
+authorizes and applies destination policy only to its configured
+`socks.upstream` endpoint. The subsequent SOCKS5 requests are opaque to
+ntwire, so use it only when that upstream service is trusted to enforce
+destination and authentication policy.
 
 Fixed `protocol: udp` tunnels are narrower: each source IP/port receives its
 own connected upstream flow, replies are sent only to that source, and idle
