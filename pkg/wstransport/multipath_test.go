@@ -11,7 +11,6 @@ import (
 func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
 	b, err := json.Marshal(PathStatus{
 		Name: "udp-relay", Kind: PathUDPRelay, Healthy: true, RTT: 12 * time.Millisecond, Loss: 0.1,
-		DeliveryRatio: 0.9, ThroughputBytesPerSec: 1234.5,
 		DuplicatedBytes: 100, DuplicationSuppressedBytes: 25,
 	})
 	if err != nil {
@@ -20,8 +19,7 @@ func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
 	got := string(b)
 	for _, want := range []string{
 		`"name":"udp-relay"`, `"kind":"udp-relay"`, `"healthy":true`, `"rtt":12000000`, `"loss":0.1`,
-		`"delivery_ratio":0.9`, `"throughput_bytes_per_sec":1234.5`,
-		`"duplicated_bytes":100`, `"duplication_suppressed_bytes":25`, `"payload_stalled":false`,
+		`"duplicated_bytes":100`, `"duplication_suppressed_bytes":25`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Marshal() = %s, missing %s", got, want)
@@ -29,23 +27,6 @@ func TestPathStatusJSONUsesStatusAPIFieldNames(t *testing.T) {
 	}
 	if strings.Contains(got, `"Name"`) || strings.Contains(got, `"RTT"`) {
 		t.Errorf("Marshal() = %s, contains Go field names", got)
-	}
-}
-
-func TestReportThroughputSmoothsPassiveSamples(t *testing.T) {
-	s := NewScheduler()
-	s.Register("udp-relay", PathUDPRelay)
-	s.ReportThroughput("udp-relay", 1_000, 1_000)
-	if got := s.Status()[0].ThroughputBytesPerSec; got != 1_000 {
-		t.Fatalf("first throughput = %v, want 1000", got)
-	}
-	s.ReportThroughput("udp-relay", 3_000, 1_000)
-	if got, want := s.Status()[0].ThroughputBytesPerSec, 1_250.0; got != want {
-		t.Fatalf("smoothed throughput = %v, want %v", got, want)
-	}
-	s.ReportThroughput("udp-relay", 0, 1_000)
-	if got, want := s.Status()[0].ThroughputBytesPerSec, 1_250.0; got != want {
-		t.Fatalf("zero-byte sample changed throughput to %v, want %v", got, want)
 	}
 }
 
@@ -68,7 +49,7 @@ func TestSchedulerSelectsBestAndDuplicatesOnlyWhenNeeded(t *testing.T) {
 	}
 	s.ProbeResult("relay", 0, false, now)
 	primary, alternate, dup = s.Select()
-	if primary != "wss" || alternate != "relay" || !dup {
+	if primary != "relay" || alternate != "wss" || !dup {
 		t.Fatalf("loss trigger = %q %q %v", primary, alternate, dup)
 	}
 }
@@ -126,20 +107,68 @@ func TestRegisterPathStartsUnhealthy(t *testing.T) {
 	}
 }
 
-func TestSchedulerRecoversAfterThreeMisses(t *testing.T) {
+func TestActivateCarrierPinsInitialIncumbentAgainstFasterProbe(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	s.ActivateCarrier("wss", time.Now())
+	s.Register("direct-udp", PathDirect)
+	for i := 0; i < 4; i++ {
+		s.ProbeResult("direct-udp", time.Millisecond, true, time.Now())
+	}
+	if primary, alternate, duplicate := s.Select(); primary != "wss" || alternate != "" || duplicate {
+		t.Fatalf("selection = %q %q %v, want WSS bootstrap incumbent without duplication", primary, alternate, duplicate)
+	}
+}
+
+func TestWSSUsesCarrierLifecycleInsteadOfActiveProbes(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	s.Register("direct-udp", PathDirect)
+	if s.requiresActiveProbe("wss") {
+		t.Fatal("WSS unexpectedly requires an active payload-stream probe")
+	}
+	if !s.requiresActiveProbe("direct-udp") {
+		t.Fatal("direct UDP must require active reachability probes")
+	}
+}
+
+func TestSchedulerStreamCarrierRetainsEscapeRouteAndRecoversAfterReconnect(t *testing.T) {
 	s := NewScheduler()
 	s.Register("wss", PathWSS)
 	now := time.Now()
-	s.ProbeResult("wss", time.Millisecond, true, now)
-	for i := 0; i < 3; i++ {
-		s.ProbeResult("wss", 0, false, now)
+	s.ActivateCarrier("wss", now)
+	if p, _, _ := s.Select(); p != "wss" {
+		t.Fatalf("initial candidate = %q, want wss", p)
 	}
-	if p, _, _ := s.Select(); p != "" {
-		t.Fatalf("unhealthy candidate selected: %q", p)
+	s.CarrierFailure("wss")
+	if p, _, _ := s.Select(); p != "wss" {
+		t.Fatalf("degraded sole candidate = %q, want last incumbent wss", p)
 	}
-	s.ProbeResult("wss", 2*time.Millisecond, true, now)
+	s.ActivateCarrier("wss", now)
 	if p, _, _ := s.Select(); p != "wss" {
 		t.Fatalf("recovered candidate = %q", p)
+	}
+}
+
+func TestSchedulerCarrierFailureImmediatelySelectsStandby(t *testing.T) {
+	s := NewScheduler()
+	s.Register("wss", PathWSS)
+	s.Register("direct-udp", PathDirect)
+	now := time.Now()
+	s.ActivateCarrier("wss", now)
+	s.ProbeResult("direct-udp", 2*time.Millisecond, true, now)
+	if p, _, _ := s.Select(); p != "wss" {
+		t.Fatalf("initial primary = %q, want wss", p)
+	}
+	s.CarrierFailure("wss")
+	if p, _, _ := s.Select(); p != "direct-udp" {
+		t.Fatalf("primary after carrier failure = %q, want direct-udp", p)
+	}
+	s.ActivateCarrier("wss", now)
+	for _, path := range s.Status() {
+		if path.Name == "wss" && !path.Healthy {
+			t.Fatal("carrier reconnect did not recover failed WSS path")
+		}
 	}
 }
 
@@ -228,65 +257,11 @@ func TestSchedulerCachesOnlyConfirmedConservativeMTU(t *testing.T) {
 	}
 }
 
-// TestScoreNeutralWithNoDeliveryRatioData guards the bootstrap case score's
-// doc comment calls out explicitly: a candidate with no comparable
-// delivery-ratio sample yet (DeliveryRatio == -1) must add no penalty at
-// all, not be scored as if it had confirmed total loss.
-func TestScoreNeutralWithNoDeliveryRatioData(t *testing.T) {
+// TestSelectDoesNotSwitchHealthyIncumbentOnScoreGap protects v3's sticky
+// primary: score changes are diagnostic/ranking input for failure recovery,
+// not permission to reorder a live flow between carriers.
+func TestSelectDoesNotSwitchHealthyIncumbentOnScoreGap(t *testing.T) {
 	s := NewScheduler()
-	p := &candidate{PathStatus: PathStatus{DeliveryRatio: -1}}
-	if got := s.score(p); got != 0 {
-		t.Fatalf("score with no delivery-ratio data = %v, want 0", got)
-	}
-}
-
-// TestScoreDeliveryRatioPenaltyScalesAndCaps exercises score's throughput
-// term directly: no penalty at or above minDeliveryRatio, a penalty scaled
-// linearly by shortfall below it, and the natural cap at DeliveryRatio == 0
-// (shortfall == 1) landing exactly at maxThroughputPenalty.
-func TestScoreDeliveryRatioPenaltyScalesAndCaps(t *testing.T) {
-	s := NewScheduler() // defaults: minDeliveryRatio=0.85, maxThroughputPenalty=500ms
-	atThreshold := &candidate{PathStatus: PathStatus{DeliveryRatio: defaultMinDeliveryRatio}}
-	if got := s.score(atThreshold); got != 0 {
-		t.Fatalf("score at threshold ratio = %v, want 0", got)
-	}
-	// shortfall = (0.85-0.425)/0.85 = 0.5 -> penalty = 250ms.
-	halfShortfall := &candidate{PathStatus: PathStatus{DeliveryRatio: defaultMinDeliveryRatio / 2}}
-	wantHalf := time.Duration(0.5 * float64(defaultMaxThroughputPenalty))
-	if got := s.score(halfShortfall); got != wantHalf {
-		t.Fatalf("score at half shortfall = %v, want %v", got, wantHalf)
-	}
-	zero := &candidate{PathStatus: PathStatus{DeliveryRatio: 0}}
-	if got := s.score(zero); got != defaultMaxThroughputPenalty {
-		t.Fatalf("score at zero delivery ratio = %v, want capped at %v", got, defaultMaxThroughputPenalty)
-	}
-}
-
-// TestReportDeliveryRatioClampsAndSmooths checks the three properties
-// ReportDeliveryRatio's doc comment promises: out-of-range inputs clamp to
-// [0,1], the first sample sets the value directly (no smoothing against the
-// -1 sentinel), and every subsequent sample is EWMA-smoothed like RTT.
-func TestReportDeliveryRatioClampsAndSmooths(t *testing.T) {
-	s := NewScheduler()
-	s.Register("a", PathWSS)
-	s.ReportDeliveryRatio("a", 2.0) // out of range: clamp to 1, first sample sets directly
-	if got := s.Status()[0].DeliveryRatio; got != 1.0 {
-		t.Fatalf("first (clamped) sample = %v, want 1.0", got)
-	}
-	s.ReportDeliveryRatio("a", -5.0) // out of range: clamp to 0, then EWMA-smoothed against 1.0
-	want := (1.0*7 + 0.0) / 8
-	if got := s.Status()[0].DeliveryRatio; got != want {
-		t.Fatalf("smoothed sample = %v, want %v", got, want)
-	}
-}
-
-// TestSelectHysteresisMarginBlocksSmallFlap is the flap-prevention test the
-// plan's Testing section calls out explicitly: once a delivery-ratio sample
-// makes the challenger's score gap over the incumbent smaller than
-// switchMargin, primary must not flip.
-func TestSelectHysteresisMarginBlocksSmallFlap(t *testing.T) {
-	s := NewScheduler()
-	s.SetV2Options(V2Options{SwitchMargin: 50 * time.Millisecond, MinDwell: time.Millisecond})
 	s.Register("a", PathWSS)
 	s.Register("b", PathUDPRelay)
 	now := time.Now()
@@ -297,68 +272,20 @@ func TestSelectHysteresisMarginBlocksSmallFlap(t *testing.T) {
 	if primary, _, _ := s.Select(); primary != "a" {
 		t.Fatalf("initial primary = %q, want a", primary)
 	}
-	time.Sleep(2 * time.Millisecond) // clear the 1ms MinDwell
-	// shortfall*500ms = 40ms -> raises a's score by 40ms, to 12ms above b's
-	// raw 12ms -- under the 50ms margin.
-	s.ReportDeliveryRatio("a", defaultMinDeliveryRatio*(1-0.08))
-	if primary, _, _ := s.Select(); primary != "a" {
-		t.Fatalf("primary flapped to %q on a sub-margin score gap, want a to remain incumbent", primary)
+	for i := 0; i < 20; i++ {
+		s.ProbeResult("a", 500*time.Millisecond, true, now)
+		s.ProbeResult("b", time.Millisecond, true, now)
+	}
+	if primary, alternate, duplicate := s.Select(); primary != "a" || alternate != "" || duplicate {
+		t.Fatalf("selection after score gap = %q %q %v, want sticky a without payload duplication", primary, alternate, duplicate)
 	}
 }
 
-// TestSelectSwitchesWhenGapExceedsMarginAndDwellSatisfied is
-// TestSelectHysteresisMarginBlocksSmallFlap's counterpart: once the gap
-// clears the margin and dwell has elapsed, the switch does commit.
-func TestSelectSwitchesWhenGapExceedsMarginAndDwellSatisfied(t *testing.T) {
-	s := NewScheduler()
-	s.SetV2Options(V2Options{SwitchMargin: 50 * time.Millisecond, MinDwell: time.Millisecond})
-	s.Register("a", PathWSS)
-	s.Register("b", PathUDPRelay)
-	now := time.Now()
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("a", 10*time.Millisecond, true, now)
-		s.ProbeResult("b", 12*time.Millisecond, true, now)
-	}
-	if primary, _, _ := s.Select(); primary != "a" {
-		t.Fatalf("initial primary = %q, want a", primary)
-	}
-	time.Sleep(2 * time.Millisecond)
-	// shortfall*500ms = 80ms -> raises a's score 80ms above b's, over margin.
-	s.ReportDeliveryRatio("a", defaultMinDeliveryRatio*(1-0.16))
-	if primary, _, _ := s.Select(); primary != "b" {
-		t.Fatalf("primary = %q after exceeding switch margin, want b", primary)
-	}
-}
-
-// TestSelectMinDwellBlocksImmediateSwitch checks the other half of
-// hysteresis: even a large, clearly-over-margin score gap must not switch
-// primary before the incumbent has held the role for MinDwell.
-func TestSelectMinDwellBlocksImmediateSwitch(t *testing.T) {
-	s := NewScheduler()
-	s.SetV2Options(V2Options{SwitchMargin: 10 * time.Millisecond, MinDwell: time.Hour})
-	s.Register("a", PathWSS)
-	s.Register("b", PathUDPRelay)
-	now := time.Now()
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("a", 10*time.Millisecond, true, now)
-		s.ProbeResult("b", 12*time.Millisecond, true, now)
-	}
-	if primary, _, _ := s.Select(); primary != "a" {
-		t.Fatalf("initial primary = %q, want a", primary)
-	}
-	s.ReportDeliveryRatio("a", 0) // maximal shortfall: b is now the clear best by any margin
-	if primary, _, _ := s.Select(); primary != "a" {
-		t.Fatalf("primary = %q immediately after becoming clearly worse, want a to remain incumbent until MinDwell elapses", primary)
-	}
-}
-
-// TestSelectFailsOverInstantlyWhenIncumbentUnhealthyDespiteHysteresis checks
+// TestSelectFailsOverInstantlyWhenIncumbentUnhealthy checks
 // selectLocked's documented exception: an incumbent that drops out of the
-// healthy set fails over immediately, even with a MinDwell/SwitchMargin
-// large enough to block every other kind of switch.
-func TestSelectFailsOverInstantlyWhenIncumbentUnhealthyDespiteHysteresis(t *testing.T) {
+// healthy set fails over immediately despite the normal sticky policy.
+func TestSelectFailsOverInstantlyWhenIncumbentUnhealthy(t *testing.T) {
 	s := NewScheduler()
-	s.SetV2Options(V2Options{SwitchMargin: time.Hour, MinDwell: time.Hour})
 	s.Register("a", PathWSS)
 	s.Register("b", PathUDPRelay)
 	now := time.Now()
@@ -376,60 +303,10 @@ func TestSelectFailsOverInstantlyWhenIncumbentUnhealthyDespiteHysteresis(t *test
 	}
 }
 
-// TestSelectV2ProtectsIncumbentFromUnsampledChallenger is a regression test
-// for a production incident: a UDP-relay candidate answered health probes
-// perfectly (great RTT, 0% loss) while silently dropping every real
-// WireGuard packet, and immediately stole primary from a working WSS
-// incumbent on probe RTT alone. With CapabilityMultipathV2 negotiated, a
-// challenger with no ReportDeliveryRatio sample yet must not unseat a
-// healthy incumbent no matter how much better its raw probe score is.
-func TestSelectV2ProtectsIncumbentFromUnsampledChallenger(t *testing.T) {
+// TestSelectRetainsIncumbentWithoutLegacyV1Flapping shows that the scheduler
+// no longer has a less-safe v1 mode: all automatic selections are sticky.
+func TestSelectRetainsIncumbentWithoutLegacyV1Flapping(t *testing.T) {
 	s := NewScheduler()
-	s.SetV2(true)
-	s.Register("wss", PathWSS)
-	now := time.Now()
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("wss", 70*time.Millisecond, true, now)
-	}
-	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("initial primary = %q, want wss", primary)
-	}
-	s.Register("udp-relay", PathUDPRelay)
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("udp-relay", time.Millisecond, true, now) // far better RTT, still unsampled
-	}
-	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("primary = %q after an unsampled challenger registered with better RTT, want wss to remain incumbent", primary)
-	}
-}
-
-// TestSelectV1StillSwitchesImmediatelyToUnsampledChallenger shows the
-// protection above is v2-specific: v1 has no delivery-ratio signal to wait
-// for, so it keeps switching on RTT/loss alone exactly as before.
-func TestSelectV1StillSwitchesImmediatelyToUnsampledChallenger(t *testing.T) {
-	s := NewScheduler() // v2 left false
-	s.Register("wss", PathWSS)
-	now := time.Now()
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("wss", 70*time.Millisecond, true, now)
-	}
-	s.Register("udp-relay", PathUDPRelay)
-	for i := 0; i < 4; i++ {
-		s.ProbeResult("udp-relay", time.Millisecond, true, now)
-	}
-	if primary, _, _ := s.Select(); primary != "udp-relay" {
-		t.Fatalf("primary = %q, want immediate v1 switch to udp-relay", primary)
-	}
-}
-
-// TestSelectV2PromotesChallengerOnceDeliveryProven confirms the incumbent
-// protection is temporary, not a permanent freeze: once the challenger earns
-// a real delivery-ratio sample and clears the usual margin+dwell hysteresis,
-// it can still become primary.
-func TestSelectV2PromotesChallengerOnceDeliveryProven(t *testing.T) {
-	s := NewScheduler()
-	s.SetV2Options(V2Options{SwitchMargin: 5 * time.Millisecond, MinDwell: time.Millisecond})
-	s.SetV2(true)
 	s.Register("wss", PathWSS)
 	now := time.Now()
 	for i := 0; i < 4; i++ {
@@ -443,12 +320,7 @@ func TestSelectV2PromotesChallengerOnceDeliveryProven(t *testing.T) {
 		s.ProbeResult("udp-relay", time.Millisecond, true, now)
 	}
 	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("primary = %q before any delivery sample, want wss protected", primary)
-	}
-	time.Sleep(2 * time.Millisecond) // clear MinDwell
-	s.ReportDeliveryRatio("udp-relay", 1.0)
-	if primary, _, _ := s.Select(); primary != "udp-relay" {
-		t.Fatalf("primary = %q after udp-relay proved perfect delivery, want it promoted", primary)
+		t.Fatalf("primary = %q, want sticky wss incumbent", primary)
 	}
 }
 
@@ -520,89 +392,7 @@ func TestSchedulerForcedSelectionAndFallback(t *testing.T) {
 		t.Fatalf("Forced() after auto = %q, want empty", s.Forced())
 	}
 	primary, _, _ = s.Select()
-	if primary != "direct-udp" {
-		t.Fatalf("auto primary = %q, want direct-udp", primary)
+	if primary != "wss" {
+		t.Fatalf("auto primary = %q, want current healthy incumbent wss", primary)
 	}
-}
-
-func TestSchedulerPayloadLivenessFailsBusyPrimaryAndRecovers(t *testing.T) {
-	s := NewScheduler()
-	now := time.Now()
-	s.Register("wss", PathWSS)
-	s.Register("udp-relay", PathUDPRelay)
-	s.ProbeResult("wss", time.Millisecond, true, now)
-	s.ProbeResult("udp-relay", 20*time.Millisecond, true, now)
-	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("initial primary = %q, want wss", primary)
-	}
-
-	// A continuing data flow with no data acknowledgement must outweigh the
-	// still-successful tiny path probes and immediately select the alternate.
-	p := s.candidates["wss"]
-	p.payloadPendingFirst.Store(now.Add(-payloadStallTimeout - time.Millisecond).UnixNano())
-	p.payloadLastSent.Store(now.UnixNano())
-	s.FailStalledPrimary(now)
-	paths := s.Status()
-	var stalled PathStatus
-	for _, p := range paths {
-		if p.Name == "wss" {
-			stalled = p
-		}
-	}
-	if !stalled.PayloadStalled || stalled.Healthy {
-		t.Fatalf("stalled WSS = %+v, want payload_stalled and unhealthy", stalled)
-	}
-	if primary, _, _ := s.Select(); primary != "udp-relay" {
-		t.Fatalf("primary after payload stall = %q, want udp-relay", primary)
-	}
-
-	// A real data acknowledgement, not a probe ACK, is the only recovery.
-	s.RecordPayloadAck("wss", now)
-	for _, p := range s.Status() {
-		if p.Name == "wss" && (!p.Healthy || p.PayloadStalled) {
-			t.Fatalf("payload acknowledgement did not recover WSS: %+v", p)
-		}
-	}
-}
-
-func TestSchedulerPayloadLivenessKeepsOnlyHealthyPathSelectable(t *testing.T) {
-	s := NewScheduler()
-	now := time.Now()
-	s.Register("wss", PathWSS)
-	s.ProbeResult("wss", time.Millisecond, true, now)
-	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("initial primary = %q, want wss", primary)
-	}
-	p := s.candidates["wss"]
-	p.payloadPendingFirst.Store(now.Add(-payloadStallTimeout - time.Millisecond).UnixNano())
-	p.payloadLastSent.Store(now.UnixNano())
-
-	s.FailStalledPrimary(now)
-	path := s.Status()[0]
-	if !path.Healthy || path.PayloadStalled {
-		t.Fatalf("sole path = %+v, want healthy and selectable", path)
-	}
-	if primary, _, _ := s.Select(); primary != "wss" {
-		t.Fatalf("primary after stalled sole path = %q, want wss", primary)
-	}
-}
-
-func TestSchedulerPayloadAcknowledgementsAreSingleFlight(t *testing.T) {
-	s := NewScheduler()
-	s.Register("wss", PathWSS)
-	now := time.Now()
-	if !s.ShouldSendPayloadAck("wss", now) {
-		t.Fatal("first payload acknowledgement was not reserved")
-	}
-	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval)) {
-		t.Fatal("second acknowledgement was reserved while the first write was pending")
-	}
-	s.FinishPayloadAck("wss")
-	if s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval/2)) {
-		t.Fatal("rate-limited acknowledgement was reserved too soon")
-	}
-	if !s.ShouldSendPayloadAck("wss", now.Add(payloadAckInterval+time.Millisecond)) {
-		t.Fatal("acknowledgement was not reserved after the rate limit elapsed")
-	}
-	s.FinishPayloadAck("wss")
 }

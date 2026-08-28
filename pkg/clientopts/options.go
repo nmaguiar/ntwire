@@ -165,7 +165,7 @@ var registry = []Option{
 		Bind:    []Binding{{Command: "connect"}},
 		Default: strDefault(func(s client.Settings) string { return s.Transport }),
 		Label:   "Transport mode", Group: "🌐 Connection", Widget: WidgetText, Advanced: true,
-		Help: `Select a transport mode ("auto", "direct-udp", "udp-relay", "wss"). Default is "auto" (dynamic evaluation and switching across available transports). When forced to a specific transport, ntwire will use it while healthy and automatically fall back to the best available transport if unavailable.`,
+		Help: `Select a transport mode ("auto", "direct-udp", "udp-relay", "wss"). Default is "auto" (sticky health-driven failover across available transports). When forced to a specific transport, ntwire will use it while healthy and automatically fall back to the best available transport if unavailable.`,
 	},
 	{
 		Name: "known-servers", Kind: KindString, Usage: "known servers file",

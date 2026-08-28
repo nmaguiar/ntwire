@@ -138,16 +138,14 @@ type Options struct {
 	// nil for the production defaults; see DirectUpgradeTiming's doc.
 	DirectUpgradeTiming *DirectUpgradeTiming
 
-	// MultipathV2 overrides multipath-v2's passive throughput-sampling
-	// tuning (mirror bandwidth cap, scoring/hysteresis thresholds). Only
-	// takes effect when the server also negotiates CapabilityMultipathV2;
-	// leave nil for the production defaults.
-	MultipathV2 *MultipathV2Options
+	// Multipath overrides v3's bounded reactive-duplication budget. Leave nil
+	// for the production default.
+	Multipath *MultipathOptions
 
 	// Transport selects a preferred or forced transport mode ("auto",
 	// "direct-udp", "udp-relay", "wss"). When set to a specific transport,
 	// the client forces that transport as primary while healthy, and
-	// automatically falls back to the fastest available healthy transport
+	// automatically falls back to the best available healthy transport
 	// if the forced transport becomes unavailable or degraded.
 	Transport string
 
@@ -708,7 +706,7 @@ func fetchInfo(h *http.Client, base string) (protocol.InfoResponse, error) {
 // understand. They are kept separate from what a particular connection
 // requests so an InfoResponse can fail a required capability before auth.
 func clientCapabilities() []string {
-	return []string{protocol.CapabilityMultipathV1, protocol.CapabilityMultipathV2, protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+	return []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
 }
 
 func clientTransportCapabilities() []string { return clientCapabilities() }
@@ -1174,16 +1172,11 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	if err != nil {
 		return nil, err
 	}
-	multipathV1 := r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV1)
-	// A v1 scheduler has only probe RTT and loss. Those are enough to fail
-	// over after a path dies, but not enough to decide that a direct UDP path
-	// can carry bulk traffic: small probes can succeed while full WireGuard
-	// packets stall behind a restrictive NAT or MTU. Only v2 supplies the
-	// passive real-traffic delivery signal needed for automatic promotion.
-	multipathV2 := multipathV1 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV2)
-	multipathV3 := multipathV2 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3)
-	pathMTU := multipathV1 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
-	useWS, err := selectTransport(options.UseWebSocket, transport, multipathV1, udpEndpoint, r.WebSocket)
+	// v3 is the complete and sole multipath contract. A server offering only
+	// retired v1/v2 identifiers is treated as a legacy single-path peer.
+	multipathV3 := r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3)
+	pathMTU := multipathV3 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
+	useWS, err := selectTransport(options.UseWebSocket, transport, multipathV3, udpEndpoint, r.WebSocket)
 	if err != nil {
 		return nil, err
 	}
@@ -1200,9 +1193,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	var hybrid *wstransport.Hybrid
 	var multipath *wstransport.MultipathBind
 	if useWS {
-		if multipathV1 {
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, multipathV2, pathMTU, resolveMultipathV2Options(options.MultipathV2), options.IPVersion, options.Logger)
-			multipath.SetPayloadLiveness(multipathV3)
+		if multipathV3 {
+			// V3 deliberately uses sticky carrier/probe health and never samples
+			// a standby by mirroring ordinary tunnel payload.
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, resolveMultipathOptions(options.Multipath), options.IPVersion, options.Logger)
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)
@@ -1325,13 +1319,10 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	go c.renewLoop()
 	go c.historyLoop()
-	// A direct server advertising both legs starts a real multipath session
-	// only after v2 was negotiated. V1 can establish probe health but has no
-	// real-traffic delivery signal, so adding direct UDP there lets the client
-	// and server independently promote an unproven bulk-data path. Keep WSS
-	// as the safe automatic route for v1; callers can still explicitly choose
-	// direct-udp, which uses the ordinary single-path UDP setup.
-	if multipath != nil && shouldBootstrapDirectMultipath(multipathV2, udpEndpoint, options.UseWebSocket) {
+	// v3 bootstraps over WSS and registers direct UDP as a probe-qualified standby.
+	// The scheduler retains its healthy incumbent until actual failure, so a
+	// probe-only challenger cannot steal live tunnel traffic.
+	if multipath != nil && shouldBootstrapDirectMultipath(multipathV3, udpEndpoint, options.UseWebSocket) {
 		go c.bootstrapDirectMultipath(udpEndpoint)
 	}
 	if hybrid != nil && udpEndpoint == "" && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
@@ -1350,45 +1341,18 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	return c, nil
 }
 
-// MultipathV2Options overrides multipath-v2's passive throughput-sampling
-// tuning (see wstransport.V2Options, which this mirrors field-for-field).
-// Every field left at its zero value keeps that one setting's production
-// default -- the same convention DirectUpgradeTiming uses.
-type MultipathV2Options struct {
-	// MirrorRateBytesPerSec bounds how much real traffic per second is
-	// opportunistically mirrored to the standby candidate purely to sample
-	// it -- the mechanism that gives multipath-v2 something to measure
-	// without synthesizing new bandwidth-eating test transfers.
-	MirrorRateBytesPerSec int
-	// MinDeliveryRatio is the minimum fraction (0,1] of mirrored bytes a
-	// candidate must be reported as actually delivering before scoring adds
-	// a capped penalty. Deliberately loose by default -- see
-	// wstransport.V2Options.MinDeliveryRatio's doc for why.
-	MinDeliveryRatio float64
-	// SwitchMargin and MinDwell bound how eagerly a delivery-ratio-driven
-	// primary switch happens, to avoid flapping on individually noisy
-	// mirrored samples -- see wstransport.Scheduler's selectLocked doc.
-	SwitchMargin time.Duration
-	MinDwell     time.Duration
-	// ReportInterval paces how often a receiver summarizes mirrored-traffic
-	// counters back to the sender.
-	ReportInterval time.Duration
-	// DuplicateRateBytesPerSec bounds reactive WireGuard-only duplication --
-	// see wstransport.V2Options.DuplicateRateBytesPerSec's doc for why it
-	// applies regardless of whether v2 negotiated.
+// MultipathOptions contains the bounded v3 data-path knobs. A zero field uses
+// the production default.
+type MultipathOptions struct {
+	// DuplicateRateBytesPerSec bounds reactive WireGuard-only duplication.
 	DuplicateRateBytesPerSec int
 }
 
-func resolveMultipathV2Options(o *MultipathV2Options) wstransport.V2Options {
+func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
 	if o == nil {
-		return wstransport.V2Options{}
+		return wstransport.MultipathOptions{}
 	}
-	return wstransport.V2Options{
-		MirrorRateBytesPerSec:    o.MirrorRateBytesPerSec,
-		MinDeliveryRatio:         o.MinDeliveryRatio,
-		SwitchMargin:             o.SwitchMargin,
-		MinDwell:                 o.MinDwell,
-		ReportInterval:           o.ReportInterval,
+	return wstransport.MultipathOptions{
 		DuplicateRateBytesPerSec: o.DuplicateRateBytesPerSec,
 	}
 }
@@ -1449,11 +1413,10 @@ func selectTransport(explicit bool, transport string, multipath bool, udp, webso
 }
 
 // shouldBootstrapDirectMultipath gates automatic direct-UDP registration.
-// Multipath-v1 is deliberately excluded: its probes do not measure whether
-// full-size WireGuard packets are delivered, so registering the candidate can
-// make the two endpoint schedulers choose incompatible data paths.
-func shouldBootstrapDirectMultipath(multipathV2 bool, udpEndpoint string, websocketForced bool) bool {
-	return multipathV2 && udpEndpoint != "" && !websocketForced
+// Only the complete v3 contract can add a probe-qualified standby while keeping the
+// established WSS incumbent stable.
+func shouldBootstrapDirectMultipath(multipathV3 bool, udpEndpoint string, websocketForced bool) bool {
+	return multipathV3 && udpEndpoint != "" && !websocketForced
 }
 
 func normalizeTransportPreference(websocket bool, transport string) (string, error) {

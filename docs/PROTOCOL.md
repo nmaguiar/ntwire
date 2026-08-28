@@ -85,19 +85,44 @@ the relay returns the shared subset, and either side may use
 `required_capabilities` to fail registration before the data/control path is
 used. `GET /v1/info` can similarly require a client capability before login.
 
-The current transport identifiers are `multipath-v1`, `multipath-v2`, and
-`multipath-v3`. `multipath-v2` is useful only together with `multipath-v1`;
-a peer that knows only v1 ignores the optional v2 offer and continues using
-v1. `multipath-v3` additionally requires v2 and acknowledges rate-limited,
-real WireGuard transport packets on their receiving candidate. This lets a
-busy path fail over when its tiny probe/ack frames still work but its payload
-stream is wedged; idle paths are never failed solely for lack of traffic.
-Because v1 has
-only small-packet probe RTT/loss and cannot establish bulk-data delivery,
-automatic direct-UDP promotion requires v2; v1 retains WSS as its automatic
-route while explicit direct-UDP selection remains available. Tests cover the
-old/old, old/new, shared-new, unknown-optional, and required-unsupported
-matrices in `pkg/protocol/capability_test.go`.
+The sole supported multipath identifier is `multipath-v3`. The retired
+`multipath-v1` and `multipath-v2` identifiers are not offered or accepted by
+current peers; a peer that cannot negotiate v3 uses the legacy single-path
+data plane. V3 combines stable logical endpoints, sticky failure-only
+selection, and bounded out-of-band UDP carrier health probes. It does not mirror
+real tunnel payloads onto standby paths merely to measure them. A healthy
+incumbent is never replaced merely because a standby has a better small-probe
+score. The scheduler switches only after native WSS carrier failure or UDP
+probe health fails, so client and server do not independently flap an active
+flow between carriers.
+Idle paths are never failed solely for lack of traffic.
+
+Both peers commit the authenticated WSS bootstrap as their initial incumbent
+before UDP candidates can compete. This removes a startup race in which the
+client and server could select different directions merely because their UDP
+probe acknowledgements arrived in a different order.
+
+WSS health follows the stream carrier's native lifecycle: connect,
+disconnect/read failure, bounded write failure, and redial. V3 deliberately
+does not send path-health or path-MTU probes over that ordered payload stream;
+only UDP candidates receive active probes. This avoids turning redundant
+health traffic into head-of-line interference for tunnel payload.
+
+After one or two consecutive missed probes, v3 may duplicate encrypted
+WireGuard transport packets to one healthy alternate under a byte-rate cap.
+This is a short failure-recovery window, not continuous sampling; successful
+probe recovery stops duplication and the third consecutive miss changes the
+primary. Handshake and control packets remain single-path.
+
+Control-frame type 8 (the retired v2 mirror/report experiment) and type 11
+(the retired receive-triggered payload-ACK experiment) remain reserved wire
+values. Current peers intercept and ignore them; neither frame participates in
+v3 health or selection.
+
+A server advertises v3 only when its multipath bind is active and a second
+carrier is currently available. WSS-only servers and relays deliberately omit
+v3 and use the legacy single-path data plane; one candidate cannot provide
+failover, so running the v3 control loop there has no benefit.
 
 Protocol changes require the bounded protocol-envelope fuzz smoke test in
 addition to these compatibility tests. It is included in `ojob tasks.yaml
@@ -492,20 +517,18 @@ Multipath peers that negotiate `path-mtu-v1` additionally use frame `9`
 registered candidate. A probe contains a random 12-byte nonce, its requested
 UDP payload size, and zero padding so the complete control datagram is exactly
 1200, 1400, or 1500 bytes. The receiver returns only the nonce and requested
-size, so the exchange cannot amplify traffic. Both ends probe independently
-only after the ordinary health probe succeeds and cache the largest matching
+size, so the exchange cannot amplify traffic. Both ends probe UDP candidates
+independently only after the ordinary UDP health probe succeeds and cache the largest matching
 ack as diagnostic `datagram_mtu` path status. No packet sizing is changed by
 this version of the feature: WireGuard retains the safe 1420-byte tunnel MTU.
 
-Multipath peers that negotiate `multipath-v3` additionally use frame `11`
-(`FramePathDataAck`). It is a fixed 12-byte payload and is rate-limited to
-one acknowledgement per candidate every 250 ms. It is emitted only after a
-real WireGuard transport packet has arrived on that candidate, then returned
-over the same candidate. After three seconds of continuing payload sends
-without such an acknowledgement, the sender marks that candidate
-`payload_stalled`, fails over to a healthy alternate, and sends bounded
-duplicate recovery traffic there until a real-payload acknowledgement restores
-it. Ordinary probe acknowledgements never clear `payload_stalled`.
+Frame `11` is reserved for the retired receive-triggered payload-acknowledgement
+experiment and current peers neither emit nor accept it. Direct and relay E2E
+testing showed that replying to real payload from inside the receive path could
+starve the WebSocket return path. Current v3 health control is therefore
+periodic, asynchronous, and bounded; no receive callback waits for a control
+write. A future payload-progress signal must also be periodic and out of band
+before frame `11` can be assigned new semantics.
 
 A caller (server or client) sends `FrameReflectRequest` to `reflect_addr`
 and gets back `FrameReflectResponse` with its own address as the relay

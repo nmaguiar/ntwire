@@ -250,7 +250,7 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	if resp.Version != protocol.Version {
 		return false, fmt.Errorf("relay uses unsupported protocol version %d", resp.Version)
 	}
-	if err := protocol.ValidateRequiredCapabilities([]string{protocol.CapabilityMultipathV1}, resp.RequiredCapabilities); err != nil {
+	if err := protocol.ValidateRequiredCapabilities([]string{protocol.CapabilityMultipathV3}, resp.RequiredCapabilities); err != nil {
 		return false, fmt.Errorf("relay requires an unsupported capability: %w", err)
 	}
 	a.log.Info("relay registered", "name", resp.Name, "domain", resp.Domain)
@@ -525,7 +525,7 @@ func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 	req := protocol.RelayRegisterRequest{
 		Version: protocol.Version, PublicKey: pub, Name: a.cfg.Name,
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n),
-		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV1, protocol.CapabilityNativeWireGuardRelay},
+		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV3, protocol.CapabilityNativeWireGuardRelay},
 		SocksTargets: a.getSocksTargets(),
 	}
 	payload, err := protocol.RelayRegisterPayload(req)

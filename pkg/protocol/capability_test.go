@@ -14,10 +14,11 @@ func TestCapabilityCompatibilityMatrix(t *testing.T) {
 		want      []string
 		wantErr   bool
 	}{
-		{"old peer omits capabilities", nil, []string{CapabilityMultipathV1}, nil, nil, false},
-		{"new peer's unknown optional capability is ignored", []string{CapabilityMultipathV1, "future-transport"}, []string{CapabilityMultipathV1}, nil, []string{CapabilityMultipathV1}, false},
-		{"new peers negotiate shared transport", []string{CapabilityMultipathV1, CapabilityMultipathV2}, []string{CapabilityMultipathV1, CapabilityMultipathV2}, []string{CapabilityMultipathV2}, []string{CapabilityMultipathV1, CapabilityMultipathV2}, false},
-		{"required unsupported transport fails early", []string{CapabilityMultipathV1}, []string{CapabilityMultipathV1}, []string{CapabilityMultipathV2}, []string{CapabilityMultipathV1}, true},
+		{"old peer omits capabilities", nil, []string{CapabilityMultipathV3}, nil, nil, false},
+		{"new peer's unknown optional capability is ignored", []string{CapabilityMultipathV3, "future-transport"}, []string{CapabilityMultipathV3}, nil, []string{CapabilityMultipathV3}, false},
+		{"v3 peers negotiate complete transport", []string{CapabilityMultipathV3, CapabilityPathMTUV1}, []string{CapabilityMultipathV3, CapabilityPathMTUV1}, []string{CapabilityMultipathV3}, []string{CapabilityMultipathV3, CapabilityPathMTUV1}, false},
+		{"retired tiers do not negotiate with v3", []string{CapabilityMultipathV1, CapabilityMultipathV2}, []string{CapabilityMultipathV3}, nil, nil, false},
+		{"required unsupported transport fails early", []string{CapabilityMultipathV3}, []string{CapabilityMultipathV3}, []string{CapabilityPathMTUV1}, []string{CapabilityMultipathV3}, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -65,4 +66,4 @@ func TestCapabilityFieldsRemainWireCompatible(t *testing.T) {
 	}
 }
 
-func clientTestCapabilities() []string { return []string{CapabilityMultipathV1, CapabilityMultipathV2} }
+func clientTestCapabilities() []string { return []string{CapabilityMultipathV3, CapabilityPathMTUV1} }

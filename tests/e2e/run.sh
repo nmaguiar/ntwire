@@ -11,8 +11,18 @@ cleanup() {
 	status=$?
 	if [ "$status" -ne 0 ]; then
 		echo "ntwire E2E diagnostics (project: $e2e_project)" >&2
+		echo "direct client transport state" >&2
+		$e2e_compose exec -T direct-client /ntwire transport >&2 || true
+		echo "relay client transport state" >&2
+		$e2e_compose exec -T relay-client /ntwire transport >&2 || true
+		echo "direct multipath events" >&2
+		$e2e_compose logs --no-color direct-client direct-server 2>&1 |
+			grep -E 'multipath|transport candidate|WebSocket|websocket|session renewed|connected to' >&2 || true
+		echo "verifier tails" >&2
+		$e2e_compose logs --no-color --tail 40 verify-direct verify-relay >&2 || true
+		echo "relay tails" >&2
+		$e2e_compose logs --no-color --tail 80 relay-client relayed-server relay >&2 || true
 		$e2e_compose ps >&2 || true
-		$e2e_compose logs --no-color >&2 || true
 	fi
 	$e2e_compose down --volumes --remove-orphans >/dev/null 2>&1 || true
 	docker network rm "$e2e_direct_network" >/dev/null 2>&1 || true
@@ -46,6 +56,27 @@ while :; do
 	fi
 	sleep 1
 done
+
+# Prove the intended negotiation shape, not only tunnel reachability: the
+# direct topology has two live carriers and must expose both v3 candidates;
+# the relay fixture intentionally offers WSS only and must remain on the
+# single-path data plane with no multipath paths in status.
+while :; do
+	direct_status=$($e2e_compose exec -T direct-client /ntwire status --json 2>/dev/null || true)
+	if echo "$direct_status" | grep -q '"name": "wss"' && echo "$direct_status" | grep -q '"name": "direct-udp"'; then
+		break
+	fi
+	if [ "$(date +%s)" -ge "$e2e_deadline" ]; then
+		echo "direct client did not expose both v3 candidates" >&2
+		exit 1
+	fi
+	sleep 1
+done
+relay_status=$($e2e_compose exec -T relay-client /ntwire status --json)
+if echo "$relay_status" | grep -q '"paths"'; then
+	echo "WSS-only relay unexpectedly negotiated multipath" >&2
+	exit 1
+fi
 
 while :; do
 	if $e2e_compose up --detach --no-deps verify-direct verify-relay; then

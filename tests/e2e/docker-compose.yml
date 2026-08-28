@@ -11,6 +11,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     command: ["-config", "/e2e/direct-server.yaml"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
     volumes:
       - ${E2E_STATE_DIR}:/e2e:ro
     networks:
@@ -48,6 +50,8 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.client
     command: ["connect", "--no-browser", "--known-servers", "/e2e/direct-known-servers.yaml", "-i", "/e2e/client-id", "https://direct-server:8443"]
+    environment:
+      NTWIRE_LOG_LEVEL: debug
     restart: on-failure
     volumes:
       - ${E2E_STATE_DIR}:/e2e:ro
@@ -78,10 +82,14 @@ services:
         # the WireGuard data plane has completed its initial handshake. In
         # particular, the relayed WSS path can need several seconds more on
         # a cold CI runner. Keep each individual request tightly bounded,
-        # but allow a bounded readiness window for the tunnel itself.
+        # but allow a bounded readiness window for the tunnel itself. Require
+        # twenty consecutive rounds after readiness so the check crosses the
+        # client's 15-second renewal interval and a short-lived startup
+        # connection followed by the historical multipath stall cannot pass.
         i=0
-        while [ "$$i" -lt 12 ]; do
-          (
+        stable=0
+        while [ "$$i" -lt 50 ]; do
+          if (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
             test "$$(curl -fsS --max-time 2 http://127.70.0.1:18081)" = ntwire-e2e-ok &
@@ -93,7 +101,12 @@ services:
             wait "$$ip_pid" || status=1
             wait "$$socks_pid" || status=1
             test "$$status" -eq 0
-          ) && exit 0
+          ); then
+            stable=$$((stable + 1))
+            [ "$$stable" -ge 20 ] && exit 0
+          else
+            stable=0
+          fi
           i=$$((i + 1))
           sleep 1
         done
@@ -107,10 +120,12 @@ services:
     command:
       - |
         # See verify-direct: this is a tunnel-readiness retry window, not a
-        # relaxation of the per-request two-second timeout.
+        # relaxation of the per-request two-second timeout. Twenty consecutive
+        # rounds cross renewal and catch a connection that works only at startup.
         i=0
-        while [ "$$i" -lt 12 ]; do
-          (
+        stable=0
+        while [ "$$i" -lt 50 ]; do
+          if (
             test "$$(curl -fsS --max-time 2 http://127.0.0.1:18080)" = ntwire-e2e-ok &
             host_pid=$$!
             test "$$(curl -fsS --max-time 2 http://127.70.0.1:18081)" = ntwire-e2e-ok &
@@ -122,7 +137,12 @@ services:
             wait "$$ip_pid" || status=1
             wait "$$socks_pid" || status=1
             test "$$status" -eq 0
-          ) && exit 0
+          ); then
+            stable=$$((stable + 1))
+            [ "$$stable" -ge 20 ] && exit 0
+          else
+            stable=0
+          fi
           i=$$((i + 1))
           sleep 1
         done

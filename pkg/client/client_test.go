@@ -92,18 +92,18 @@ func TestSelectTransportPreference(t *testing.T) {
 func TestShouldBootstrapDirectMultipath(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
-		multipathV2, forcedWS bool
+		multipathV3, forcedWS bool
 		udp                   string
 		want                  bool
 	}{
-		{"v2 direct endpoint", true, false, "203.0.113.10:51820", true},
-		{"v1 never promotes direct automatically", false, false, "203.0.113.10:51820", false},
+		{"v3 direct endpoint", true, false, "203.0.113.10:51820", true},
+		{"legacy peer does not bootstrap multipath", false, false, "203.0.113.10:51820", false},
 		{"missing endpoint", true, false, "", false},
 		{"explicit websocket", true, true, "203.0.113.10:51820", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := shouldBootstrapDirectMultipath(tc.multipathV2, tc.udp, tc.forcedWS); got != tc.want {
-				t.Fatalf("shouldBootstrapDirectMultipath(%t, %q, %t) = %t, want %t", tc.multipathV2, tc.udp, tc.forcedWS, got, tc.want)
+			if got := shouldBootstrapDirectMultipath(tc.multipathV3, tc.udp, tc.forcedWS); got != tc.want {
+				t.Fatalf("shouldBootstrapDirectMultipath(%t, %q, %t) = %t, want %t", tc.multipathV3, tc.udp, tc.forcedWS, got, tc.want)
 			}
 		})
 	}
@@ -140,6 +140,9 @@ func TestMatchesIPVersion(t *testing.T) {
 }
 
 func TestValidateAuthResponseCapabilities(t *testing.T) {
+	if got, want := clientCapabilities(), []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("clientCapabilities() = %v, want v3-only %v", got, want)
+	}
 	if err := validateAuthResponseCapabilities(protocol.AuthResponse{TransportCapabilities: []string{"future-transport"}}); err != nil {
 		t.Fatalf("unknown optional transport capability should be ignored: %v", err)
 	}
@@ -876,7 +879,7 @@ func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
 	c := &Connection{
 		Response: protocol.AuthResponse{SessionID: "s1", Token: "t1",
 			TunnelIP: "10.90.0.7", ServerTunnelIP: "10.90.0.1", ServerPublicKey: "abc=",
-			TransportCapabilities: []string{protocol.CapabilityMultipathV1}},
+			TransportCapabilities: []string{protocol.CapabilityMultipathV3}},
 		base: srv.URL, http: srv.Client(),
 	}
 	if err := c.renew(); err != nil {
@@ -888,7 +891,7 @@ func TestRenewKeepsAddressingFromPreviousResponse(t *testing.T) {
 	if c.Response.TunnelIP != "10.90.0.7" || c.Response.ServerTunnelIP != "10.90.0.1" || c.Response.ServerPublicKey != "abc=" {
 		t.Fatalf("addressing lost on renew: %+v", c.Response)
 	}
-	if !reflect.DeepEqual(c.State().Security.TransportCapabilities, []string{protocol.CapabilityMultipathV1}) {
+	if !reflect.DeepEqual(c.State().Security.TransportCapabilities, []string{protocol.CapabilityMultipathV3}) {
 		t.Fatalf("State().Security.TransportCapabilities = %v, want negotiated capability preserved", c.State().Security.TransportCapabilities)
 	}
 }
@@ -923,8 +926,8 @@ func TestStateReportsTypedGUIConnectionState(t *testing.T) {
 	c := &Connection{
 		Response: protocol.AuthResponse{
 			TTLSeconds:                    42,
-			TransportCapabilities:         []string{protocol.CapabilityMultipathV1},
-			RequiredTransportCapabilities: []string{protocol.CapabilityMultipathV2},
+			TransportCapabilities:         []string{protocol.CapabilityMultipathV3},
+			RequiredTransportCapabilities: []string{protocol.CapabilityMultipathV3},
 			Tunnels:                       []protocol.Tunnel{{Name: "reports", Description: "Reports"}},
 		},
 		base:            "https://ntwire.example:8443",
@@ -953,7 +956,7 @@ func TestStateReportsTypedGUIConnectionState(t *testing.T) {
 	if got.Expiration.TTLSeconds != 42 || got.Expiration.ExpiresAt == nil {
 		t.Fatalf("Expiration = %+v", got.Expiration)
 	}
-	if !got.Security.InsecureTLS || !reflect.DeepEqual(got.Security.TransportCapabilities, []string{protocol.CapabilityMultipathV1}) {
+	if !got.Security.InsecureTLS || !reflect.DeepEqual(got.Security.TransportCapabilities, []string{protocol.CapabilityMultipathV3}) {
 		t.Fatalf("Security = %+v", got.Security)
 	}
 	if len(got.Tunnels) != 1 || got.Tunnels[0].Name != "reports" || got.Tunnels[0].LocalAddress != "127.0.0.1:8443" {
