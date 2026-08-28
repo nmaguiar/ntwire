@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/configguide"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"gopkg.in/yaml.v3"
@@ -176,13 +178,55 @@ log:
 `
 }
 
+// ConfigGuide renders the relay configuration reference from the canonical
+// SampleConfig YAML template.
+func ConfigGuide() (string, error) { return relayGuide().Markdown() }
+
+// ConfigJSONSchema renders the strict Draft 2020-12 schema used by tooling.
+func ConfigJSONSchema() ([]byte, error) { return relayGuide().JSONSchema() }
+
+func relayGuide() configguide.Guide {
+	return configguide.Guide{
+		Title:       "ntwire-relay configuration guide",
+		Description: "Complete reference for ntwire-relay YAML configuration.",
+		Sample:      SampleConfig(), Root: Config{},
+		QA: []configguide.QA{
+			{Question: "What domain and TLS are required?", Answer: "Set domain to the wildcard suffix and configure TLS for listen.agents; public client TLS is spliced, never terminated."},
+			{Question: "Which listeners are needed?", Answer: "listen.public and listen.agents have defaults. reflect and udp_relay are optional UDP services."},
+			{Question: "How are tenants registered?", Answer: "Each registration needs a lowercase DNS-label name and an authorized SSH public key; optional dedicated TCP/UDP listeners bypass shared routing."},
+			{Question: "Need direct UDP or UDP relay?", Answer: "reflect supports server opt-in direct-UDP discovery; udp_relay needs udp_relay_ports and retains the relay in the data path."},
+			{Question: "How should capacity be set?", Answer: "Set limits for handshake, dial-back, connections, rate, and UDP relay sessions; the UDP port range bounds the relay pool."},
+			{Question: "Need native WireGuard?", Answer: "Set registration native_wireguard.listen for a dedicated UDP endpoint per tenant."},
+			{Question: "Need Kubernetes discovery?", Answer: "Enable it only with valid namespace/service selectors and the required service port name."},
+		},
+		Rules: []string{
+			"domain is required and must be a normalized DNS name; registration names are lowercase DNS labels and registration public keys must parse.",
+			"listen.udp_relay_ports is required and must be a valid 1-65535 range whenever listen.udp_relay is set.",
+			"When kubernetes.enabled is true, service.selector and service.port_name are required; selected namespaces need names or selector.",
+			"cert_file and key_file must be set together or both left empty for generated TLS.",
+		},
+		SchemaOverrides: map[string]map[string]any{
+			"listen.public": {"default": ":443"}, "listen.agents": {"default": ":8444"},
+			"listen.udp_relay_ports":   {"pattern": "^[0-9]+(-[0-9]+)?$"},
+			"limits.handshake_timeout": {"default": "5s"}, "limits.dial_back_timeout": {"default": "10s"},
+			"limits.max_pending_per_server": {"default": 32, "minimum": 1}, "limits.max_conns_per_server": {"default": 256, "minimum": 1},
+			"limits.max_new_conns_per_minute": {"default": 60, "minimum": 1}, "limits.udp_relay_idle_timeout": {"default": "60s"},
+			"limits.max_udp_relay_sessions_per_server": {"default": 64, "minimum": 1},
+			"kubernetes.namespaces.mode":               {"enum": []string{"all", "selected"}, "default": "all"},
+			"log.format":                               {"enum": []string{"text", "json"}, "default": "text"}, "log.level": {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
+		},
+	}
+}
+
 func LoadConfig(path string) (Config, error) {
 	var c Config
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return c, err
 	}
-	if err = yaml.Unmarshal(b, &c); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if err = decoder.Decode(&c); err != nil {
 		return c, err
 	}
 	if c.TLS.StateDir == "" {

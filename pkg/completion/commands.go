@@ -105,6 +105,8 @@ func ServerCommand() Command {
 			{Name: "list", Usage: "list configured server tunnels and proxy PAC endpoints and exit", TakesValue: false},
 			{Name: "json", Usage: "output in JSON format (used with -list)", TakesValue: false},
 			{Name: "print-sample-config", Usage: "print a fully commented sample YAML configuration and exit", TakesValue: false},
+			{Name: "print-config-guide", Usage: "print a self-contained configuration guide and exit", TakesValue: false},
+			{Name: "config-guide-format", Usage: "format for -print-config-guide", TakesValue: true, Choices: []string{"markdown", "json-schema"}},
 			{Name: "version", Usage: "print the build version and exit", TakesValue: false},
 			{Name: "generate-relay-key", Usage: "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit", TakesValue: true, IsFilePath: true},
 			{Name: "generate-wireguard-key", Usage: "generate a WireGuard key pair at this path (and path.pub) for a native_wireguard peer, print setup instructions, and exit", TakesValue: true, IsFilePath: true},
@@ -140,6 +142,8 @@ func RelayCommand() Command {
 		Flags: []Flag{
 			{Name: "config", Usage: "relay configuration file", TakesValue: true, IsFilePath: true},
 			{Name: "print-sample-config", Usage: "print a fully commented sample YAML configuration and exit", TakesValue: false},
+			{Name: "print-config-guide", Usage: "print a self-contained configuration guide and exit", TakesValue: false},
+			{Name: "config-guide-format", Usage: "format for -print-config-guide", TakesValue: true, Choices: []string{"markdown", "json-schema"}},
 			{Name: "version", Usage: "print the build version and exit", TakesValue: false},
 			{Name: "log-format", Usage: "log output format: text or json", TakesValue: true, Choices: []string{"text", "json"}},
 			{Name: "log-level", Usage: "log level: debug, info, warn, error", TakesValue: true, Choices: []string{"debug", "info", "warn", "error"}},

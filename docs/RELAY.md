@@ -169,6 +169,11 @@ Run `ntwire-relay --config path/to/ntwire-relay.yaml`; the default path is
 for a complete, commented template. A relay serves multiple tenants under one
 wildcard DNS domain, each identified by a first DNS label:
 
+The self-contained [relay configuration guide](RELAY-CONFIG-GUIDE.md) starts
+with topology and capacity questions, includes the exact YAML reference, and
+embeds the strict JSON Schema. Generate it with `ntwire-relay -print-config-guide`
+or use `-config-guide-format=json-schema` for raw schema output.
+
 ```yaml
 listen:
   public: ":443"          # raw TCP; client TLS is spliced through, never terminated here

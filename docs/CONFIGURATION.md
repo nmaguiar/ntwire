@@ -60,6 +60,10 @@ ntwire connect \
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.
+For LLM-assisted or validator workflows, use the checked-in
+[server configuration guide](SERVER-CONFIG-GUIDE.md), or generate it with
+`ntwire-server -print-config-guide`. Add
+`-config-guide-format=json-schema` to print raw Draft 2020-12 JSON Schema.
 At least one of `auth.authorized_keys_dir`, `auth.oidc.issuers`, or
 `native_wireguard.enabled: true` is required.
 

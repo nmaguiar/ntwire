@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/configguide"
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
@@ -504,6 +506,46 @@ audit:
 `
 }
 
+// ConfigGuide renders the server configuration reference. It deliberately
+// embeds SampleConfig verbatim so there is only one canonical YAML template.
+func ConfigGuide() (string, error) { return serverGuide().Markdown() }
+
+// ConfigJSONSchema renders the strict Draft 2020-12 schema used by tooling.
+func ConfigJSONSchema() ([]byte, error) { return serverGuide().JSONSchema() }
+
+func serverGuide() configguide.Guide {
+	return configguide.Guide{
+		Title:       "ntwire-server configuration guide",
+		Description: "Complete reference for ntwire-server YAML configuration.",
+		Sample:      SampleConfig(), Root: Config{},
+		QA: []configguide.QA{
+			{Question: "How should clients reach the server?", Answer: "Use direct listen.https, or relay.enabled with a registered relay tenant; relay.direct_clients explicitly enables both."},
+			{Question: "How do users authenticate?", Answer: "Configure authorized_keys_dir, OIDC issuers, or native_wireguard.enabled. OIDC client_secret is deliberately rejected."},
+			{Question: "Which TLS/listeners are needed?", Answer: "Set cert_file and key_file together, or allow generated TLS. listen.https and listen.wireguard have defaults."},
+			{Question: "Which tunnel type is needed?", Answer: "Use a fixed host:port target, target: socks for the embedded filtered proxy, or target: external_socks with external_socks.url for an opaque upstream."},
+			{Question: "How are destinations controlled?", Answer: "Use tunnel allow lists, destination_policies, and SOCKS filters; an unfiltered embedded SOCKS tunnel denies all unless allow_all is explicit."},
+			{Question: "Need ordinary WireGuard clients?", Answer: "Enable native_wireguard and configure peers; it is independent from authenticated HTTP sessions."},
+			{Question: "Need observability or Portal?", Answer: "Configure log/audit for records and portal for operator presentation metadata; do not put tokens or secrets in generated examples."},
+			{Question: "Need Apple Network Relay/MASQUE?", Answer: "Enable masque only with its fixed tunnel mapping and certificate inputs; it is opt-in and separate from other transports."},
+		},
+		Rules: []string{
+			"At least one of auth.authorized_keys_dir, auth.oidc.issuers, or native_wireguard.enabled must be configured.",
+			"TLS cert_file and key_file must be set together; client_secret is a legacy key that always fails semantic validation.",
+			"relay.url/fingerprint cannot be combined with relay.endpoints; relay.advertise_direct requires relay mode.",
+			"target: socks and target: external_socks each require their corresponding configuration; external SOCKS URLs are credential-free socks5://host:port.",
+		},
+		SchemaOverrides: map[string]map[string]any{
+			"listen.https": {"default": ":8443"}, "listen.wireguard": {"default": ":51820"},
+			"auth.session_ttl": {"default": "15m"}, "authorizer.timeout": {"default": "5s"},
+			"network.tunnel_cidr": {"default": "100.64.0.0/16"},
+			"transport.force":     {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
+			"log.format":          {"enum": []string{"text", "json"}, "default": "text"},
+			"log.level":           {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
+			"tunnels":             {"minItems": 0},
+		},
+	}
+}
+
 // maxInstructionsFileSize bounds what loadInstructionsFile will read. Without
 // it, a tunnel's instructions -- previously bounded by whatever an operator
 // typed into YAML -- could balloon to the size of any file on disk the
@@ -568,7 +610,9 @@ func LoadConfig(path string) (Config, error) {
 func ParseConfig(b []byte, stateDir string) (Config, error) {
 	var c Config
 	var e error
-	if e = yaml.Unmarshal(b, &c); e != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if e = decoder.Decode(&c); e != nil {
 		return c, e
 	}
 	if c.TLS.StateDir == "" {

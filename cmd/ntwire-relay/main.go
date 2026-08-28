@@ -33,6 +33,8 @@ func main() {
 
 	config := flag.String("config", "ntwire-relay.yaml", "relay configuration file")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
+	printConfigGuide := flag.Bool("print-config-guide", false, "print the self-contained Markdown configuration guide and exit")
+	configGuideFormat := flag.String("config-guide-format", "markdown", "format for -print-config-guide: markdown or json-schema")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	logFormat := flag.String("log-format", "", "log output format: text or json (default: config file, then NTWIRE_LOG_FORMAT, then text)")
 	logLevel := flag.String("log-level", "", "log level: debug, info, warn, error (default: config file, then NTWIRE_LOG_LEVEL, then info)")
@@ -49,6 +51,8 @@ func main() {
 			Examples: []string{
 				"ntwire-relay -config ntwire-relay.yaml",
 				"ntwire-relay -print-sample-config > ntwire-relay.yaml",
+				"ntwire-relay -print-config-guide > docs/relay-config-guide.md",
+				"ntwire-relay -print-config-guide -config-guide-format=json-schema > relay-config.schema.json",
 				"ntwire-relay completion bash > /etc/bash_completion.d/ntwire-relay",
 				"ntwire-relay -version",
 			},
@@ -65,6 +69,27 @@ func main() {
 	}
 	if *printSampleConfig {
 		fmt.Print(relay.SampleConfig())
+		return
+	}
+	if *printConfigGuide {
+		var out string
+		var err error
+		switch *configGuideFormat {
+		case "markdown":
+			out, err = relay.ConfigGuide()
+		case "json-schema":
+			var schema []byte
+			schema, err = relay.ConfigJSONSchema()
+			out = string(schema) + "\n"
+		default:
+			fmt.Fprintf(os.Stderr, "configuration guide format must be markdown or json-schema, got %q\n", *configGuideFormat)
+			os.Exit(2)
+		}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configuration guide error: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Print(out)
 		return
 	}
 
