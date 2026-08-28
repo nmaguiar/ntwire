@@ -498,7 +498,7 @@ func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
 }
 
 func TestMultipathHealthDoesNotLetRelayMaskFailedDirectPath(t *testing.T) {
-	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.MultipathOptions{})
 	defer multipath.Close()
 
 	now := time.Now()

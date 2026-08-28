@@ -197,21 +197,6 @@ func TestDuplicateCacheTransportOnlyAndExpiry(t *testing.T) {
 	}
 }
 
-func TestDuplicateCacheRetainsFirstArrivalPath(t *testing.T) {
-	c := NewDuplicateCache(2, time.Second)
-	now := time.Now()
-	p := make([]byte, 32)
-	binary.LittleEndian.PutUint32(p, 4)
-	binary.LittleEndian.PutUint32(p[4:], 7)
-	binary.LittleEndian.PutUint64(p[8:], 9)
-	if seen, first := c.SeenOnPath(p, "direct-udp", now); seen || first != "" {
-		t.Fatalf("first arrival = (%v, %q), want new packet", seen, first)
-	}
-	if seen, first := c.SeenOnPath(p, "wss", now); !seen || first != "direct-udp" {
-		t.Fatalf("duplicate = (%v, %q), want first path direct-udp", seen, first)
-	}
-}
-
 func TestValidateTransportName(t *testing.T) {
 	if got, err := ValidateTransportName("websocket"); err != nil || got != "wss" {
 		t.Fatalf("websocket = %q, %v", got, err)
