@@ -6,6 +6,19 @@ import (
 	"testing"
 )
 
+func TestIsBrowserSocksTarget(t *testing.T) {
+	for hint, want := range map[string]bool{
+		"socks":          true,
+		"external_socks": true,
+		"postgres:5432":  false,
+		"":               false,
+	} {
+		if got := IsBrowserSocksTarget(hint); got != want {
+			t.Errorf("IsBrowserSocksTarget(%q) = %v, want %v", hint, got, want)
+		}
+	}
+}
+
 func TestSigningPayloadCanonical(t *testing.T) {
 	r := AuthRequest{Version: Version, PublicKey: "a", WireGuardPublicKey: "b", Timestamp: "2026-01-01T00:00:00Z", Nonce: "n", Info: ClientInfo{Extra: map[string]string{"z": "2", "a": "1"}}}
 	a, _ := SigningPayload(r)

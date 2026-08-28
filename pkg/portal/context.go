@@ -19,6 +19,7 @@ type TargetInfo struct {
 	Instructions string
 	DocsURL      string
 	IsSocks      bool
+	BrowserSocks bool
 	Portal       *TargetPortalConfig
 }
 
@@ -51,7 +52,7 @@ func BuildContext(
 	var socksHost string
 	var socksPort int
 	for _, t := range targets {
-		if t.IsSocks {
+		if t.IsSocks || t.BrowserSocks {
 			if isNative && t.LocalPort > 0 {
 				socksHost = "127.0.0.1"
 				if t.LocalHost != "" {

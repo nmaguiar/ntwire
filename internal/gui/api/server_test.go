@@ -41,6 +41,7 @@ func (fakeHandle) State() client.ConnectionState {
 		Tunnels: []client.ListenerState{
 			{Name: "web", LocalAddress: "127.0.0.1:8080"},
 			{Name: "socks", LocalAddress: "127.0.0.1:1080", TargetHint: "socks"},
+			{Name: "external", LocalAddress: "127.0.0.1:1081", TargetHint: "external_socks"},
 		},
 	}
 }
@@ -330,6 +331,10 @@ func TestOpenBrowserRejectsNonSocksAndUnknownTunnels(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("open-browser for non-SOCKS tunnel status = %d, want 400", resp.StatusCode)
 	}
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/web/reset-browser-profile", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("reset-browser-profile for non-SOCKS tunnel status = %d, want 400", resp.StatusCode)
+	}
 
 	// Resetting a profile that was never opened is a deterministic, Chrome-
 	// independent no-op success -- CleanProfile treats a missing directory
@@ -337,6 +342,10 @@ func TestOpenBrowserRejectsNonSocksAndUnknownTunnels(t *testing.T) {
 	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/socks/reset-browser-profile", nil)
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reset-browser-profile status = %d, want 204", resp.StatusCode)
+	}
+	resp = s.do(t, http.MethodPost, "/api/profiles/"+created.ID+"/tunnels/external/reset-browser-profile", nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reset-browser-profile for external SOCKS tunnel status = %d, want 204", resp.StatusCode)
 	}
 }
 

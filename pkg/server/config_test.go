@@ -423,6 +423,55 @@ tunnels:
 	}
 }
 
+func TestExternalSocksConfigValidation(t *testing.T) {
+	valid := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+  - name: corporate-egress
+    target: external_socks
+    virtual_port: 11080
+    external_socks:
+      url: socks5://proxy.example:1080
+`
+	got, err := ParseConfig([]byte(valid), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseConfig(valid external_socks): %v", err)
+	}
+	if !got.Tunnels[0].IsExternalSocks() || !got.Tunnels[0].IsBrowserSocks() || got.Tunnels[0].Protocol != "tcp" {
+		t.Fatalf("external SOCKS tunnel = %+v", got.Tunnels[0])
+	}
+
+	for name, replacement := range map[string]string{
+		"missing block":      "",
+		"wrong scheme":       "    external_socks:\n      url: socks://proxy.example:1080\n",
+		"credentials":        "    external_socks:\n      url: socks5://user:pass@proxy.example:1080\n",
+		"path":               "    external_socks:\n      url: socks5://proxy.example:1080/path\n",
+		"query":              "    external_socks:\n      url: socks5://proxy.example:1080?x=1\n",
+		"fragment":           "    external_socks:\n      url: socks5://proxy.example:1080#x\n",
+		"missing port":       "    external_socks:\n      url: socks5://proxy.example\n",
+		"invalid port":       "    external_socks:\n      url: socks5://proxy.example:70000\n",
+		"udp":                "    external_socks:\n      url: socks5://proxy.example:1080\n    protocol: udp\n",
+		"embedded socks mix": "    socks: {}\n    external_socks:\n      url: socks5://proxy.example:1080\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := valid
+			if replacement == "" {
+				cfg = strings.Replace(valid, "    external_socks:\n      url: socks5://proxy.example:1080\n", "", 1)
+			} else {
+				cfg = strings.Replace(valid, "    external_socks:\n      url: socks5://proxy.example:1080\n", replacement, 1)
+			}
+			if _, err := ParseConfig([]byte(cfg), t.TempDir()); err == nil {
+				t.Fatal("ParseConfig accepted invalid external_socks configuration")
+			}
+		})
+	}
+
+	if _, err := ParseConfig([]byte(strings.Replace(valid, "    target: external_socks\n", "    target: proxy.example:1080\n", 1)), t.TempDir()); err == nil {
+		t.Fatal("ParseConfig accepted external_socks block on a fixed target")
+	}
+}
+
 func TestLoadConfigRejectsSocksBlockWithoutSocksTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ntwire.yaml")
 	config := `

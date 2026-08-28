@@ -463,7 +463,7 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 		if t.Name != tunnelName {
 			continue
 		}
-		if t.TargetHint != "socks" {
+		if !protocol.IsBrowserSocksTarget(t.TargetHint) {
 			return fmt.Errorf("gui: tunnel %q is not a SOCKS tunnel", tunnelName)
 		}
 		return browseropen.OpenSocks(id+"-"+tunnelName, t.LocalAddress)
@@ -475,7 +475,20 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 // OpenBrowser uses for (id, tunnelName), so the next OpenBrowser call starts
 // from a clean slate.
 func (m *Manager) ResetBrowserProfile(id, tunnelName string) error {
-	return browseropen.CleanProfile(id + "-" + tunnelName)
+	snap, ok := m.Snapshot(id)
+	if !ok || snap.Connection == nil {
+		return fmt.Errorf("gui: profile %q is not connected", id)
+	}
+	for _, t := range snap.Connection.Tunnels {
+		if t.Name != tunnelName {
+			continue
+		}
+		if !protocol.IsBrowserSocksTarget(t.TargetHint) {
+			return fmt.Errorf("gui: tunnel %q is not a SOCKS tunnel", tunnelName)
+		}
+		return browseropen.CleanProfile(id + "-" + tunnelName)
+	}
+	return fmt.Errorf("gui: tunnel %q not found", tunnelName)
 }
 
 // ListBrowserProfiles returns all browser profile directories under

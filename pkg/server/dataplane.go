@@ -460,7 +460,7 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	for name, tl := range d.listeners {
 		nt, ok := wanted[name]
 		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target || nt.Protocol != tl.config.Protocol || nt.UDPIdleTimeout != tl.config.UDPIdleTimeout ||
-			socksConfigChanged(nt.Socks, tl.config.Socks) {
+			socksConfigChanged(nt.Socks, tl.config.Socks) || !reflect.DeepEqual(nt.ExternalSocks, tl.config.ExternalSocks) {
 			toClose = append(toClose, tl)
 			delete(d.listeners, name)
 		}
@@ -911,7 +911,15 @@ func (s *Server) allowedIP(ip, tunnel string) bool {
 // that exact address. This prevents DNS rebinding between policy evaluation
 // and the actual outbound connection.
 func (s *Server) dialFixedTarget(principal DataPlanePrincipal, t TunnelConfig) (net.Conn, error) {
-	host, portText, err := net.SplitHostPort(t.Target)
+	target := t.Target
+	if t.IsExternalSocks() {
+		var err error
+		target, err = externalSocksAddress(t.ExternalSocks.URL)
+		if err != nil {
+			return nil, err
+		}
+	}
+	host, portText, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err
 	}

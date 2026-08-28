@@ -264,6 +264,29 @@ the `authorizer:` webhook/exec hook, per-source rate limiting, and
 `audit.log_file` all still apply exactly as they do to a fixed-target tunnel;
 `socks:` only adds a second, per-destination filtering layer inside it.
 
+### External SOCKS5 tunnels
+
+Use `target: external_socks` when the SOCKS5 server already exists elsewhere
+and ntwire should only carry its TCP stream. The client or browser performs
+the SOCKS5 handshake directly with that endpoint:
+
+```yaml
+- name: corporate-egress
+  target: external_socks
+  virtual_port: 11080
+  external_socks:
+    url: socks5://proxy.example:1080
+```
+
+`external_socks.url` must be a credential-free `socks5://host:port` URL (no
+`socks:`, `socks5h:`, user info, path, query, or fragment). This target is
+TCP-only: it has no embedded filtering, BIND, UDP ASSOCIATE, PAC endpoint, or
+SOCKS runtime. ntwire still applies tunnel grants and destination policy when
+it connects to the configured proxy endpoint, but it cannot inspect or filter
+destinations requested inside the encrypted transparent SOCKS stream. Native
+client browser controls remain available for both SOCKS target types; PAC is
+embedded-SOCKS-only.
+
 A SOCKS tunnel is a general-purpose egress proxy: whatever it's allowed to
 reach, every session holding its grant can reach. **Unlike socksd, which
 defaults to allowing every destination when no filters are configured, an
