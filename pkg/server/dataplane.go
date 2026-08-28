@@ -185,9 +185,7 @@ func (s *Server) StartDataPlane() error {
 	var multipath *wstransport.ServerMultipathBind
 	if s.Config.MultipathEnabled() {
 		mc := s.Config.Relay.Multipath
-		multipath = wstransport.NewServerMultipathBind(ws, wstransport.V2Options{
-			MirrorRateBytesPerSec: mc.MirrorRateBytesPerSec, MinDeliveryRatio: mc.MinDeliveryRatio,
-			SwitchMargin: mc.SwitchMargin, MinDwell: mc.MinDwell, ReportInterval: mc.ReportInterval,
+		multipath = wstransport.NewServerMultipathBind(ws, wstransport.MultipathOptions{
 			DuplicateRateBytesPerSec: mc.DuplicateRateBytesPerSec,
 		})
 		multipath.SetForced(s.Config.Transport.Force)
@@ -195,7 +193,7 @@ func (s *Server) StartDataPlane() error {
 		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
 		// handler's ServeHTTP call). Gate on that session's own negotiated
 		// Multipath flag, not just Relay.Enabled: a peer that didn't
-		// negotiate multipath-v1 (an older client, or one that simply
+		// negotiate multipath-v3 (an older client, or one that simply
 		// doesn't offer the capability) has no MultipathBind of its own and
 		// will never understand a FramePathProbe sent to it -- registering
 		// it here anyway would only add a phantom candidate this bind
@@ -204,8 +202,14 @@ func (s *Server) StartDataPlane() error {
 			s.observe("websocket_connected", "")
 			s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", true)
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
-				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.MultipathV2, sess.MultipathV3, sess.PathMTU)
+				multipath.RegisterPath(id, "wss", wstransport.PathWSS, ep, sess.PathMTU)
+				multipath.ActivatePath(id, "wss")
 			}
+		}
+		ws.WebSocket.OnPeerDisconnected = func(id string, _ conn.Endpoint) {
+			s.observe("websocket_disconnected", "")
+			s.log.Info("transport event", "event", "websocket_disconnected", "transport", "websocket", "relay", true)
+			multipath.DeactivatePath(id, "wss")
 		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
 		// Direct clients use this authenticated control-plane registration flow

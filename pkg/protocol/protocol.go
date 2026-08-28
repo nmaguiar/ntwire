@@ -12,31 +12,23 @@ import (
 
 const Version = 1
 
-// CapabilityMultipathV1 opts a client into stable relay-path selection rather
-// than WireGuard's native endpoint roaming.
+// CapabilityMultipathV1 and CapabilityMultipathV2 are retired identifiers.
+// They remain constants so older configuration/tests can produce a clear
+// non-negotiated fallback, but current peers neither offer nor accept them.
 const CapabilityMultipathV1 = "multipath-v1"
 
-// CapabilityMultipathV2 opts a multipath-v1 client into passive,
-// bandwidth-capped throughput sampling of standby candidates on top of v1's
-// RTT/loss-only selection (see pkg/wstransport's ServerMultipathBind/
-// MultipathBind). Always sent alongside CapabilityMultipathV1, never alone:
-// a peer that understands only v1 simply never recognizes this string and
-// falls back to v1 behavior untouched (hasCapability is a plain membership
-// check on both sides, so an unrecognized capability string is always safe
-// to ignore).
+// Retained only as a retired wire identifier; current peers do not negotiate it.
 const CapabilityMultipathV2 = "multipath-v2"
 
-// CapabilityMultipathV3 opts a multipath-v2 peer into authenticated payload
-// progress acknowledgements.  Unlike a path probe, an acknowledgement is only
-// emitted after a real WireGuard transport packet was received on that path,
-// allowing a scheduler to fail over when tiny control frames survive but the
-// data plane is wedged.
+// CapabilityMultipathV3 is the sole supported multipath contract. It includes
+// stable logical endpoints, sticky failure-only selection, and bounded
+// out-of-band carrier health probes. It never mirrors real tunnel payloads to
+// sample a standby path.
 const CapabilityMultipathV3 = "multipath-v3"
 
-// CapabilityPathMTUV1 opts a multipath peer into conservative, authenticated
-// path-MTU probes. It is separate from multipath-v2 because an older v2 peer
-// may safely ignore unknown control frames, but must never be made to spend
-// bandwidth on them without explicitly opting in.
+// CapabilityPathMTUV1 opts a v3 peer into conservative, authenticated path-MTU
+// probes. It remains separate so a peer must explicitly opt into the extra
+// diagnostic datagrams.
 const CapabilityPathMTUV1 = "path-mtu-v1"
 
 // CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
@@ -229,7 +221,7 @@ type AuthResponse struct {
 	Multipath             bool     `json:"multipath,omitempty"`
 	TransportCapabilities []string `json:"transport_capabilities,omitempty"`
 	// RequiredTransportCapabilities lists capabilities the server mandates
-	// for this session (e.g. it refuses to fall back below multipath-v1).
+	// for this session (e.g. it refuses to fall back below multipath-v3).
 	// A client that cannot honor one of these should treat the session as
 	// unusable rather than silently degrading.
 	RequiredTransportCapabilities []string `json:"required_transport_capabilities,omitempty"`

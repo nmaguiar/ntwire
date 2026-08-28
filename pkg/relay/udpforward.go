@@ -103,20 +103,13 @@ func (d *datagramRelay) handleClientDatagram(b []byte, from netip.AddrPort) {
 			// The relay never interprets these -- it forwards the opaque
 			// frame between an already-bound session pair under exactly the
 			// same permission check as an ordinary WireGuard datagram (see
-			// forwardFromClient), so multipath-v1's health probing can ride
+			// forwardFromClient), so multipath-v3's health probing can ride
 			// this tier without the relay needing to understand it.
 			if wstransport.ValidPathControl(typ, payload) {
 				d.forwardFromClient(b, from)
 			}
-		case wstransport.FrameThroughputReport:
-			// Same opaque, permission-checked forwarding as probe/ack --
-			// multipath-v2's passive throughput sampling can ride this tier
-			// too, without the relay understanding (or trusting) its payload.
-			if wstransport.ValidThroughputReport(payload) {
-				d.forwardFromClient(b, from)
-			}
 		}
-		return // every other recognized control type (or an invalid probe/ack/report shape) stays dropped: e.g. a stray reflector/prime frame that ended up on this socket, not ours
+		return // every other recognized control type (including retired frames 8 and 11) stays dropped: e.g. a stray reflector/prime frame that ended up on this socket, not ours
 	}
 	if !wstransport.ValidRelayDatagram(b) {
 		return
@@ -174,10 +167,6 @@ func (d *datagramRelay) handleServerDatagram(port uint16, b []byte, from netip.A
 			_, _ = sess.serverConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
 		case wstransport.FramePathProbe, wstransport.FramePathAck:
 			if wstransport.ValidPathControl(typ, payload) {
-				d.forwardFromServer(sess, b, from)
-			}
-		case wstransport.FrameThroughputReport:
-			if wstransport.ValidThroughputReport(payload) {
 				d.forwardFromServer(sess, b, from)
 			}
 		}

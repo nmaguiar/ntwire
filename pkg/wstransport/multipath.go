@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/netip"
 	"sort"
 	"sync"
@@ -46,30 +45,10 @@ type MultipathBind struct {
 	lifecycleMu sync.Mutex
 	stopped     bool
 
-	// v2 is true iff this session negotiated CapabilityMultipathV2, gating
-	// the passive throughput-sampling subsystem. Constant for the bind's
-	// whole life, set once at construction.
-	v2      bool
-	v3      atomic.Bool
 	pathMTU bool
-	opts    V2Options
 
-	// mirror bounds how much real primary traffic gets opportunistically
-	// duplicated to the standby candidate purely to sample it (see Send);
-	// nil unless v2. recvMu/recvCounters accumulate what actually arrived
-	// per candidate between report ticks (see wrapReceive/reportLoop).
-	// attempts tracks the send side of the same exchange -- how much this
-	// bind itself mirrored -- so an incoming report can be turned into a
-	// delivery ratio (see handlePathControl).
-	mirror       *mirrorLimiter
-	recvMu       sync.Mutex
-	recvCounters map[string]*recvCounter
-	attempts     *mirrorAccounting
-
-	// dupLimiter bounds Select's reactive WireGuard-only duplication (see
-	// Send), regardless of v1/v2: unlike mirror, duplication is a v1
-	// behavior too, so this is always allocated.
-	dupLimiter *mirrorLimiter
+	// dupLimiter bounds Select's reactive WireGuard type-4 duplication.
+	dupLimiter *byteRateLimiter
 
 	// relayEndpointID is the "udp-relay" candidate's endpoint identity
 	// string, cached at RegisterPath time so Send/wrapReceive can recognize
@@ -152,33 +131,26 @@ func (e multipathEndpoint) DstToBytes() []byte  { return []byte(e.id) }
 func (e multipathEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
 func (e multipathEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
-func NewMultipathBind(base conn.Bind, id string, v2, pathMTU bool, opts V2Options) *MultipathBind {
-	opts = resolveV2Options(opts)
+func NewMultipathBind(base conn.Bind, id string, pathMTU bool, opts MultipathOptions) *MultipathBind {
+	opts = resolveMultipathOptions(opts)
 	m := &MultipathBind{
 		base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second),
 		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
 		probes: make(map[string]outstandingProbe), mtuProbes: make(map[string]outstandingMTUProbe), mtuDone: make(map[string]bool), stop: make(chan struct{}),
-		v2: v2, pathMTU: pathMTU, opts: opts,
-		dupLimiter: newMirrorLimiter(opts.DuplicateRateBytesPerSec),
-	}
-	if v2 {
-		m.scheduler.SetV2Options(opts)
-		m.scheduler.SetV2(true)
-		m.mirror = newMirrorLimiter(opts.MirrorRateBytesPerSec)
-		m.recvCounters = make(map[string]*recvCounter)
-		m.attempts = newMirrorAccounting()
-		go m.reportLoop(m.stop)
+		pathMTU:    pathMTU,
+		dupLimiter: newByteRateLimiter(opts.DuplicateRateBytesPerSec),
 	}
 	go m.probeLoop(m.stop)
 	return m
 }
 
 // RegisterPath adds or refreshes a candidate. endpoint must be produced by
-// the underlying carrier bind, not by this bind. It also fires one immediate,
-// out-of-band probe for the new candidate rather than waiting for the next
-// probeLoop tick: Select only ever returns a Healthy candidate, so without
-// this a freshly registered path would sit unusable for up to a full
-// probeInterval.
+// the underlying carrier bind, not by this bind. Datagram candidates fire an
+// immediate out-of-band probe rather than waiting for the next probeLoop tick.
+// WSS is deliberately not actively probed: its ordered stream already has
+// authoritative connect/disconnect and read/write-error lifecycle signals,
+// and injecting health/MTU frames into that same stream can interfere with
+// payload delivery without adding useful reachability evidence.
 func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.Endpoint) {
 	m.mu.Lock()
 	m.paths[name] = endpoint
@@ -188,16 +160,14 @@ func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.E
 		m.relayEndpointID.Store(&id)
 	}
 	m.scheduler.Register(name, kind)
-	m.sendProbe(name, time.Now())
+	if kind != PathWSS {
+		m.sendProbe(name, time.Now())
+	}
 }
 func (m *MultipathBind) Scheduler() *Scheduler { return m.scheduler }
 func (m *MultipathBind) Paths() []PathStatus   { return m.scheduler.Status() }
 func (m *MultipathBind) SetForced(name string) { m.scheduler.SetForced(name) }
 func (m *MultipathBind) Forced() string        { return m.scheduler.Forced() }
-
-// SetPayloadLiveness enables multipath-v3's real-payload acknowledgement
-// checks. It is only enabled after explicit capability negotiation.
-func (m *MultipathBind) SetPayloadLiveness(enabled bool) { m.v3.Store(enabled) }
 
 func (m *MultipathBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	m.restartProbeLoop()
@@ -238,30 +208,12 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					m.handlePathControl(typ, payload, eps[i])
 					continue
 				}
-				if m.v3.Load() && isWireGuardTransport(b) {
-					m.sendPayloadAck(eps[i])
-				}
-				arrivalPath := ""
-				if m.v2 {
-					arrivalPath, _ = m.nameForEndpoint(eps[i])
-				}
-				seen, firstPath := m.cache.SeenOnPath(b, arrivalPath, time.Now())
-				if id := m.relayEndpointID.Load(); id != nil && eps[i].DstToString() == *id {
-					m.relayReceivedBytes.Add(uint64(len(b)))
-					m.relayReceivedPackets.Add(1)
-				}
-				if seen && m.v2 && arrivalPath != "" && firstPath != "" && arrivalPath != firstPath {
-					// A packet DuplicateCache recognizes as a repeat is
-					// exactly what mirroring produces: the same encrypted
-					// packet arriving twice, once via primary and once via
-					// the mirrored copy. Count both physical arrivals before
-					// dropping the repeat. If the challenger is faster it arrives
-					// first; counting only the later copy attributes the sample to
-					// the incumbent and leaves the challenger permanently
-					// unsampled. The sender ignores the report for whichever path
-					// has no matching mirror attempt.
-					m.countMirroredName(firstPath, len(b))
-					m.countMirroredName(arrivalPath, len(b))
+				seen := m.cache.Seen(b, time.Now())
+				if !seen {
+					if id := m.relayEndpointID.Load(); id != nil && eps[i].DstToString() == *id {
+						m.relayReceivedBytes.Add(uint64(len(b)))
+						m.relayReceivedPackets.Add(1)
+					}
 				}
 				if seen {
 					continue
@@ -297,24 +249,19 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	if err := m.base.Send(bufs, first); err != nil {
 		slog.Debug("multipath client primary send failed", "candidate", primary, "error", err)
-		m.scheduler.RecordSendFailure(primary)
-		fallback, _, _ := m.scheduler.Select()
-		m.mu.RLock()
-		fallbackEP := m.paths[fallback]
-		m.mu.RUnlock()
-		if fallback == "" || fallback == primary || fallbackEP == nil {
-			return err
-		}
-		if fallbackErr := m.base.Send(bufs, fallbackEP); fallbackErr != nil {
-			m.scheduler.RecordSendFailure(fallback)
-			return errors.Join(err, fallbackErr)
-		}
-		m.recordSuccessfulSend(fallback, bufs)
-		return nil
+		m.scheduler.CarrierFailure(primary)
+		return err
 	}
-	m.recordSuccessfulSend(primary, bufs)
+	if primary == string(PathUDPRelay) {
+		n := 0
+		for _, b := range bufs {
+			n += len(b)
+		}
+		m.relaySentBytes.Add(uint64(n))
+		m.relaySentPackets.Add(uint64(len(bufs)))
+	}
 	// Type 4 is WireGuard transport. All handshake/control types remain
-	// single-path even when the scheduler asks for duplication or mirroring.
+	// single-path even when the scheduler asks for reactive duplication.
 	if !(len(bufs) > 0 && len(bufs[0]) >= 4 && binary.LittleEndian.Uint32(bufs[0][:4]) == 4) {
 		return nil
 	}
@@ -327,60 +274,20 @@ func (m *MultipathBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 			// budget and counters must charge for the batch's total size or
 			// they undercount by up to that batch size under load, exactly
 			// when the budget matters most.
-			n := bufferBytes(bufs)
+			n := 0
+			for _, b := range bufs {
+				n += len(b)
+			}
 			if !m.dupLimiter.Allow(n) {
 				m.scheduler.RecordDuplication(alternate, n, false)
 				return nil
 			}
-			if err := m.base.Send(bufs, second); err != nil {
-				m.scheduler.RecordSendFailure(alternate)
-			} else {
-				m.scheduler.RecordDuplication(alternate, n, true)
-				m.recordRelaySend(alternate, bufs)
-			}
-			return nil
+			m.scheduler.RecordDuplication(alternate, n, true)
+			return m.base.Send(bufs, second)
 		}
 		return nil
 	}
-	if m.v2 {
-		// Select only returns alternate alongside duplicate=true; v2's
-		// continuous (not just reactive) mirroring asks the scheduler
-		// directly for a standby candidate to sample instead, rate-capped
-		// and strictly best-effort -- a mirror failure must never fail the
-		// primary send above.
-		if name, ok := m.scheduler.MirrorCandidate(); ok {
-			m.mu.RLock()
-			mirrorEP := m.paths[name]
-			m.mu.RUnlock()
-			n := bufferBytes(bufs)
-			if mirrorEP != nil && m.mirror.Allow(n) {
-				if err := m.base.Send(bufs, mirrorEP); err == nil {
-					m.attempts.recordAttempt(name, n)
-					m.recordRelaySend(name, bufs)
-				} else {
-					m.scheduler.RecordSendFailure(name)
-				}
-			}
-		}
-	}
-	if m.v3.Load() {
-		m.sendPayloadRecovery(bufs)
-	}
 	return nil
-}
-
-func (m *MultipathBind) recordSuccessfulSend(name string, bufs [][]byte) {
-	if m.v3.Load() && isWireGuardTransportBatch(bufs) {
-		m.scheduler.RecordPayloadSent(name, time.Now())
-	}
-	m.recordRelaySend(name, bufs)
-}
-
-func (m *MultipathBind) recordRelaySend(name string, bufs [][]byte) {
-	if name == string(PathUDPRelay) {
-		m.relaySentBytes.Add(uint64(bufferBytes(bufs)))
-		m.relaySentPackets.Add(uint64(len(bufs)))
-	}
 }
 func (m *MultipathBind) Close() error {
 	m.lifecycleMu.Lock()
@@ -402,9 +309,6 @@ func (m *MultipathBind) restartProbeLoop() {
 		m.stop = make(chan struct{})
 		m.stopped = false
 		go m.probeLoop(m.stop)
-		if m.v2 {
-			go m.reportLoop(m.stop)
-		}
 	}
 	m.lifecycleMu.Unlock()
 }
@@ -431,19 +335,6 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		if !ValidPathControl(typ, payload) {
 			return
 		}
-	case FramePathDataAck:
-		if !m.v3.Load() || !ValidPathDataAck(payload) {
-			return
-		}
-	case FrameThroughputReport:
-		// m.attempts/m.mirror/m.recvCounters are only ever initialized when
-		// v2 is set (see NewMultipathBind); a peer sending this frame to a
-		// non-v2 session -- buggy, or the relay/peer being less than fully
-		// trusted per docs/SECURITY.md -- must be rejected here rather than
-		// reaching those nil fields below.
-		if !m.v2 || !ValidThroughputReport(payload) {
-			return
-		}
 	case FramePathMTUProbe, FramePathMTUAck:
 		if !m.pathMTU {
 			return
@@ -453,8 +344,7 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 	}
 	switch typ {
 	case FramePathProbe:
-		ack := EncodeControlFrame(FramePathAck, payload)
-		_ = m.base.Send([][]byte{ack}, ep)
+		m.sendControlReply(ep, EncodeControlFrame(FramePathAck, payload))
 	case FramePathAck:
 		name, ok := m.nameForEndpoint(ep)
 		if !ok {
@@ -473,16 +363,12 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
 			m.sendMTUProbe(name, minPathMTUProbe)
 		}
-	case FramePathDataAck:
-		if name, ok := m.nameForEndpoint(ep); ok {
-			m.scheduler.RecordPayloadAck(name, time.Now())
-		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
 		if !ok {
 			return
 		}
-		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUAck, EncodePathMTUAck(probe.Nonce, probe.Target))}, ep)
+		m.sendControlReply(ep, EncodeControlFrame(FramePathMTUAck, EncodePathMTUAck(probe.Nonce, probe.Target)))
 	case FramePathMTUAck:
 		ack, ok := DecodePathMTUAck(payload)
 		if !ok {
@@ -511,24 +397,23 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 				m.sendMTUProbe(name, next)
 			}
 		}
-	case FrameThroughputReport:
-		name, ok := m.nameForEndpoint(ep)
-		if !ok {
-			return
-		}
-		report, ok := DecodeThroughputReport(payload)
-		if !ok {
-			return
-		}
-		// Compare against what this side itself attempted to mirror in the
-		// comparable window; if nothing was attempted, there is nothing
-		// meaningful to compute a ratio from -- skip rather than manufacture
-		// one (see mirrorAccounting.attemptedLastWindow's doc comment).
-		if attempted, ok := m.attempts.attemptedLastWindow(name); ok {
-			m.scheduler.ReportDeliveryRatio(name, float64(report.BytesReceived)/float64(attempted))
-			m.scheduler.ReportThroughput(name, report.BytesReceived, report.WindowMillis)
-		}
 	}
+}
+
+// sendControlReply is used only from a carrier receive callback. It must
+// return immediately: in particular, a WSS write can wait behind a congested
+// payload batch, and blocking here stops WireGuard from receiving unrelated
+// packets and eventually fills Bind.packets. One bounded worker per candidate
+// is sufficient because every health probe is retried.
+func (m *MultipathBind) sendControlReply(ep conn.Endpoint, frame []byte) {
+	name, ok := m.nameForEndpoint(ep)
+	if !ok || !m.scheduler.ReserveControlSend(name) {
+		return
+	}
+	go func() {
+		defer m.scheduler.FinishControlSend(name)
+		_ = m.base.Send([][]byte{frame}, ep)
+	}()
 }
 
 // nameForEndpoint reverse-looks-up which registered candidate ep belongs to,
@@ -561,9 +446,6 @@ func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 
 func (m *MultipathBind) probeAll() {
 	now := time.Now()
-	if m.v3.Load() {
-		m.scheduler.FailStalledPrimary(now)
-	}
 	m.mu.RLock()
 	names := make([]string, 0, len(m.paths))
 	for name := range m.paths {
@@ -571,6 +453,9 @@ func (m *MultipathBind) probeAll() {
 	}
 	m.mu.RUnlock()
 	for _, name := range names {
+		if !m.scheduler.requiresActiveProbe(name) {
+			continue
+		}
 		m.probeOne(name, now)
 	}
 }
@@ -581,47 +466,6 @@ func isWireGuardTransport(b []byte) bool {
 
 func isWireGuardTransportBatch(bufs [][]byte) bool {
 	return len(bufs) > 0 && isWireGuardTransport(bufs[0])
-}
-
-func bufferBytes(bufs [][]byte) int {
-	n := 0
-	for _, b := range bufs {
-		n += len(b)
-	}
-	return n
-}
-
-func (m *MultipathBind) sendPayloadAck(ep conn.Endpoint) {
-	name, ok := m.nameForEndpoint(ep)
-	if !ok || !m.scheduler.ShouldSendPayloadAck(name, time.Now()) {
-		return
-	}
-	// This runs on WireGuard's receive path. A WebSocket write can block
-	// behind relay or peer backpressure, so never make delivery of the
-	// triggering packet wait for this control acknowledgement. The scheduler
-	// bounds this to one pending write per path.
-	go func() {
-		defer m.scheduler.FinishPayloadAck(name)
-		_ = m.base.Send([][]byte{EncodeControlFrame(FramePathDataAck, make([]byte, pathProbeSize))}, ep)
-	}()
-}
-
-func (m *MultipathBind) sendPayloadRecovery(bufs [][]byte) {
-	if !isWireGuardTransportBatch(bufs) {
-		return
-	}
-	name, ok := m.scheduler.PayloadRecoveryCandidate()
-	if !ok || m.mirror == nil || !m.mirror.Allow(bufferBytes(bufs)) {
-		return
-	}
-	m.mu.RLock()
-	ep := m.paths[name]
-	m.mu.RUnlock()
-	if ep != nil {
-		if err := m.base.Send(bufs, ep); err == nil {
-			m.recordRelaySend(name, bufs)
-		}
-	}
 }
 
 // probeOne sends a fresh probe for name unless one is already outstanding
@@ -705,13 +549,13 @@ const (
 	FramePathProbe byte = 6
 	FramePathAck   byte = 7
 	pathProbeSize       = 12
-	// FrameThroughputReport is a multipath-v2-only frame; see its own doc
-	// comment further down for the payload shape.
+	// FrameThroughputReport is reserved for the retired multipath-v2
+	// real-payload mirror/report experiment. Current peers ignore it.
 	FrameThroughputReport byte = 8
 	FramePathMTUProbe     byte = 9
 	FramePathMTUAck       byte = 10
-	// FramePathDataAck is a v3-only fixed-size acknowledgement emitted only
-	// after a real WireGuard type-4 packet is received on a candidate.
+	// FramePathDataAck is reserved for the retired receive-triggered payload
+	// ACK experiment. Current v3 peers ignore it.
 	FramePathDataAck byte = 11
 )
 
@@ -761,21 +605,6 @@ type PathStatus struct {
 	Loss        float64       `json:"loss"`
 	LastSuccess time.Time     `json:"last_success"`
 	Primary     bool          `json:"primary"`
-	// DeliveryRatio is an EWMA-smoothed fraction, in [0,1], of mirrored bytes
-	// sent to this candidate that the peer actually reported receiving back
-	// (see Scheduler.ReportDeliveryRatio) -- a relative "is this candidate
-	// dropping traffic under its current load" signal, not an absolute
-	// bits/sec estimate: a mirror sample is deliberately bandwidth-capped, so
-	// it could never prove an absolute throughput ceiling. -1 means "no
-	// comparable sample yet", not "confirmed total loss" -- see
-	// Scheduler.score's doc comment.
-	DeliveryRatio float64 `json:"delivery_ratio"`
-	// ThroughputBytesPerSec is an EWMA-smoothed estimate from the peer's
-	// mirrored-traffic report window. It describes only the deliberately
-	// rate-capped sample traffic, so it is diagnostic data rather than a
-	// bandwidth guarantee or an automatic-selection input. -1 means no report
-	// has arrived yet.
-	ThroughputBytesPerSec float64 `json:"throughput_bytes_per_sec"`
 	// DatagramMTU is the largest conservative UDP payload confirmed by the
 	// authenticated probe exchange. It is diagnostic only: WireGuard keeps
 	// its established 1420-byte tunnel MTU for this connection.
@@ -791,10 +620,6 @@ type PathStatus struct {
 	// bounding it blindly.
 	DuplicatedBytes            uint64 `json:"duplicated_bytes"`
 	DuplicationSuppressedBytes uint64 `json:"duplication_suppressed_bytes"`
-	// PayloadStalled means probes still succeed but recently sent real
-	// WireGuard traffic was not acknowledged by the peer. The path is kept
-	// registered for bounded recovery mirroring but is not selectable.
-	PayloadStalled bool `json:"payload_stalled"`
 }
 
 type candidate struct {
@@ -802,10 +627,6 @@ type candidate struct {
 	probes          [20]bool // newest result overwrites probes[probeNext]
 	probeNext, used int
 	misses          int
-	// recent RTT observations let the latency duplication rule use p95
-	// without retaining unbounded telemetry.
-	rtts    [20]time.Duration
-	rttNext int
 	// duplicatedBytes/duplicationSuppressedBytes back PathStatus's
 	// identically-named fields. Updated via RecordDuplication from the
 	// packet-send hot path, which only ever holds Scheduler.mu's read lock
@@ -814,19 +635,13 @@ type candidate struct {
 	// plain fields.
 	duplicatedBytes            atomic.Uint64
 	duplicationSuppressedBytes atomic.Uint64
-	payloadPendingFirst        atomic.Int64
-	payloadLastSent            atomic.Int64
-	payloadAck                 atomic.Int64
-	payloadAckSent             atomic.Int64
-	payloadAckSending          atomic.Bool
-	payloadStalled             atomic.Bool
+	controlSending             atomic.Bool
 }
 
-// Scheduler implements the v1 (RTT/loss) selection policy, extended in v2
-// with an optional throughput term (see score) and the hysteresis that term
-// requires (see selectLocked). It is intentionally independent from sockets
-// so both UDP and WebSocket carriers use identical health decisions and it
-// is straightforward to test deterministically.
+// Scheduler implements v3's sticky, failure-driven selection policy. Probe
+// RTT/loss rank replacements only after the incumbent fails; they never
+// preempt a healthy live flow. It is intentionally
+// independent from sockets so both UDP and WSS use identical decisions.
 type Scheduler struct {
 	mu         sync.RWMutex
 	candidates map[string]*candidate
@@ -835,27 +650,11 @@ type Scheduler struct {
 	// "udp-relay", "wss"). When set and the corresponding candidate is
 	// registered and Healthy, it is selected as primary. If the forced
 	// transport is unavailable or unhealthy, selectLocked falls back to
-	// automatic score-based candidate selection.
+	// the best healthy replacement while retaining sticky selection.
 	forced atomic.Pointer[string]
 
-	// v2 tuning knobs; defaulted at construction, overridable via
-	// SetV2Options. maxThroughputPenalty is deliberately not
-	// caller-configurable -- it exists to keep the throughput term's
-	// contribution to score bounded relative to the existing loss term's,
-	// not to be tuned per deployment.
-	minDeliveryRatio     float64
-	maxThroughputPenalty time.Duration
-	switchMargin         time.Duration
-	minDwell             time.Duration
-	// v2 records whether this scheduler's session negotiated
-	// CapabilityMultipathV2 -- and so can actually measure a challenger's
-	// real-traffic delivery via ReportDeliveryRatio. Gates the incumbent
-	// protection in selectLocked; false (v1) keeps the original immediate
-	// RTT/loss-only switching, since v1 has no delivery signal to wait for.
-	v2 bool
-
-	// primary holds the hysteresis-committed incumbent name and when it was
-	// last (re)selected, swapped atomically rather than guarded by mu: Select
+	// primary holds the committed incumbent name, swapped atomically rather
+	// than guarded by mu: Select
 	// is called on every packet send, concurrently, from wireguard-go's
 	// pooled encryption/send workers, and must stay a cheap read lock in the
 	// common (no-switch) case. Committing a primary change is the rare
@@ -864,50 +663,13 @@ type Scheduler struct {
 	primary atomic.Pointer[primaryState]
 }
 
-// primaryState is Scheduler.primary's payload: the hysteresis-committed
-// incumbent and when it was last (re)selected.
+// primaryState is Scheduler.primary's committed incumbent.
 type primaryState struct {
-	name  string
-	since time.Time
+	name string
 }
 
 func NewScheduler() *Scheduler {
-	return &Scheduler{
-		candidates:           make(map[string]*candidate),
-		minDeliveryRatio:     defaultMinDeliveryRatio,
-		maxThroughputPenalty: defaultMaxThroughputPenalty,
-		switchMargin:         defaultSwitchMargin,
-		minDwell:             defaultMinDwell,
-	}
-}
-
-// SetV2Options overrides this scheduler's throughput-scoring/hysteresis
-// tunables. Call resolveV2Options on the caller-supplied config first (see
-// its doc comment) so a zero field here reliably means "use the production
-// default", not "leave whatever this scheduler happened to start with".
-func (s *Scheduler) SetV2Options(opts V2Options) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if opts.MinDeliveryRatio > 0 {
-		s.minDeliveryRatio = opts.MinDeliveryRatio
-	}
-	if opts.SwitchMargin > 0 {
-		s.switchMargin = opts.SwitchMargin
-	}
-	if opts.MinDwell > 0 {
-		s.minDwell = opts.MinDwell
-	}
-}
-
-// SetV2 records whether this scheduler's session negotiated
-// CapabilityMultipathV2. Pass the same value every time it can change for a
-// given scheduler (a server-side peer's scheduler is constructed before its
-// negotiated capability is known -- see RegisterPath), since selectLocked
-// reads it on every Select call.
-func (s *Scheduler) SetV2(enabled bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.v2 = enabled
+	return &Scheduler{candidates: make(map[string]*candidate)}
 }
 
 func (s *Scheduler) Register(name string, kind PathKind) {
@@ -917,7 +679,37 @@ func (s *Scheduler) Register(name string, kind PathKind) {
 		p.Kind = kind
 		return
 	}
-	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind, DeliveryRatio: -1, ThroughputBytesPerSec: -1, DatagramMTU: 1420}}
+	s.candidates[name] = &candidate{PathStatus: PathStatus{Name: name, Kind: kind, DatagramMTU: 1420}}
+}
+
+// requiresActiveProbe reports whether candidate health needs an out-of-band
+// datagram challenge. Stream carriers use their native connection lifecycle;
+// probing them on the ordered payload stream is both redundant and capable of
+// creating head-of-line interference.
+func (s *Scheduler) requiresActiveProbe(name string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	p := s.candidates[name]
+	return p != nil && p.Kind != PathWSS
+}
+
+// ActivateCarrier records an already-established carrier as usable and, if
+// no primary exists yet, commits it as the initial incumbent. V3 uses this for
+// its authenticated WSS bootstrap so later UDP probe timing cannot make the
+// client and server independently choose different first paths. Native stream
+// lifecycle callbacks can later fail or recover the carrier.
+func (s *Scheduler) ActivateCarrier(name string, now time.Time) {
+	s.mu.Lock()
+	p := s.candidates[name]
+	if p != nil {
+		p.Healthy = true
+		p.LastSuccess = now
+		p.misses = 0
+	}
+	s.mu.Unlock()
+	if p != nil && s.primary.CompareAndSwap(nil, &primaryState{name: name}) {
+		slog.Debug("multipath initial carrier activated", "candidate", name)
+	}
 }
 
 // ProbeResult records one completed or timed-out probe. Three failures make a
@@ -938,233 +730,61 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 	if !ok {
 		p.misses++
 		if p.misses >= 3 {
+			if p.Healthy {
+				slog.Debug("multipath candidate became unhealthy", "candidate", name, "consecutive_probe_misses", p.misses)
+			}
 			p.Healthy = false
 		}
 		p.Loss = p.loss()
 		return
 	}
 	p.misses = 0
-	// Probe health cannot revive a v3 payload-stalled path: the entire point
-	// of v3 is that a small control frame may survive while the data plane is
-	// broken. A real-payload acknowledgement clears that state instead.
-	p.Healthy, p.LastSuccess = !p.payloadStalled.Load(), now
+	p.Healthy, p.LastSuccess = true, now
 	if rtt > 0 {
 		if p.RTT == 0 {
 			p.RTT = rtt
 		} else {
 			p.RTT = (p.RTT*7 + rtt) / 8
 		}
-		p.rtts[p.rttNext] = rtt
-		p.rttNext = (p.rttNext + 1) % len(p.rtts)
 	}
 	p.Loss = p.loss()
 }
 
-// RecordSendFailure immediately removes a candidate from selection when an
-// actual carrier write fails and another healthy route is available. Waiting
-// for three later probe timeouts would otherwise keep every packet pinned to
-// a transport that has already reported a local failure for several seconds.
-// One failed sample is retained in the rolling loss window so a single probe
-// acknowledgement can restore reachability without instantly making the
-// failed path look pristine again. With no alternate, keep the only route
-// selectable and let its carrier reconnect/probe lifecycle recover it.
-func (s *Scheduler) RecordSendFailure(name string) {
+// CarrierFailure immediately removes a candidate from selection after its
+// payload carrier returns an error. Waiting for three later probe timeouts
+// would unnecessarily keep sending into a known-broken WebSocket. A later
+// successful probe makes the candidate healthy again.
+func (s *Scheduler) CarrierFailure(name string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := s.candidates[name]
-	if p == nil || !p.Healthy {
+	if p == nil {
 		return
 	}
-	for otherName, other := range s.candidates {
-		if otherName != name && other.Healthy {
-			p.probes[p.probeNext] = false
-			p.probeNext = (p.probeNext + 1) % len(p.probes)
-			if p.used < len(p.probes) {
-				p.used++
-			}
-			p.misses = 3
-			p.Healthy = false
-			p.Loss = p.loss()
-			return
-		}
+	if p.Healthy {
+		slog.Debug("multipath candidate carrier failed", "candidate", name)
 	}
+	p.Healthy = false
+	p.misses = 3
 }
 
-const payloadAckInterval = 250 * time.Millisecond
-const payloadStallTimeout = 3 * time.Second
+// ReserveControlSend bounds receive-triggered probe and MTU replies to one
+// pending write per candidate. Dropping an overlapping reply is safe: health
+// probes retry, while allowing them to queue behind a backpressured carrier
+// can stall WireGuard's receive workers and all tunnel connections.
+func (s *Scheduler) ReserveControlSend(name string) bool {
+	s.mu.RLock()
+	p := s.candidates[name]
+	s.mu.RUnlock()
+	return p != nil && p.controlSending.CompareAndSwap(false, true)
+}
 
-func (s *Scheduler) RecordPayloadSent(name string, now time.Time) {
+func (s *Scheduler) FinishControlSend(name string) {
 	s.mu.RLock()
 	p := s.candidates[name]
 	s.mu.RUnlock()
 	if p != nil {
-		n := now.UnixNano()
-		p.payloadLastSent.Store(n)
-		// Keep the first packet sent after the last acknowledged payload. It
-		// is the start of an outstanding-progress interval; replacing it on
-		// every packet would postpone failure forever during a busy stall.
-		first := p.payloadPendingFirst.Load()
-		if first == 0 || p.payloadAck.Load() >= first {
-			p.payloadPendingFirst.CompareAndSwap(first, n)
-		}
-	}
-}
-
-func (s *Scheduler) ShouldSendPayloadAck(name string, now time.Time) bool {
-	s.mu.RLock()
-	p := s.candidates[name]
-	s.mu.RUnlock()
-	if p == nil {
-		return false
-	}
-	if !p.payloadAckSending.CompareAndSwap(false, true) {
-		return false
-	}
-	last := time.Unix(0, p.payloadAckSent.Load())
-	if !last.IsZero() && now.Sub(last) < payloadAckInterval {
-		p.payloadAckSending.Store(false)
-		return false
-	}
-	p.payloadAckSent.Store(now.UnixNano())
-	return true
-}
-
-// FinishPayloadAck releases the single-flight reservation made by
-// ShouldSendPayloadAck. Call it when the asynchronous control write returns.
-func (s *Scheduler) FinishPayloadAck(name string) {
-	s.mu.RLock()
-	p := s.candidates[name]
-	s.mu.RUnlock()
-	if p != nil {
-		p.payloadAckSending.Store(false)
-	}
-}
-
-func (s *Scheduler) RecordPayloadAck(name string, now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p := s.candidates[name]
-	if p == nil {
-		return
-	}
-	p.payloadAck.Store(now.UnixNano())
-	if p.payloadStalled.Swap(false) {
-		p.Healthy = true
-	}
-}
-
-// FailStalledPrimary removes a busy primary only when its peer has not
-// acknowledged any real WireGuard payload for payloadStallTimeout. Idle paths
-// never meet the "sent recently" condition and remain untouched.
-func (s *Scheduler) FailStalledPrimary(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	cur := s.primary.Load()
-	if cur == nil {
-		return
-	}
-	p := s.candidates[cur.name]
-	if p == nil || !p.Healthy {
-		return
-	}
-	first := time.Unix(0, p.payloadPendingFirst.Load())
-	last := time.Unix(0, p.payloadLastSent.Load())
-	// Only a continuing real-data flow may fail a path. A lone packet from an
-	// otherwise idle tunnel never makes the path unhealthy.
-	if first.IsZero() || now.Sub(first) < payloadStallTimeout || last.IsZero() || now.Sub(last) > payloadAckInterval*4 {
-		return
-	}
-	ack := time.Unix(0, p.payloadAck.Load())
-	if !ack.IsZero() && !ack.Before(first) {
-		return
-	}
-	// Liveness can only justify a failover when an alternate is actually
-	// usable. Demoting a sole WSS candidate turns an observable partial
-	// failure into a guaranteed outage: Send has no route left on which to
-	// carry the next real packet or recover. Keep the lone route selectable
-	// and let its ordinary probe/reconnect lifecycle handle recovery instead.
-	for name, candidate := range s.candidates {
-		if name != p.Name && candidate.Healthy {
-			p.payloadStalled.Store(true)
-			p.Healthy = false
-			return
-		}
-	}
-}
-
-// PayloadRecoveryCandidate returns a v3-stalled candidate for bounded
-// duplicate delivery testing. A successful payload ACK restores it; without
-// traffic this sends nothing and the failed-over primary remains stable.
-func (s *Scheduler) PayloadRecoveryCandidate() (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for name, p := range s.candidates {
-		if p.payloadStalled.Load() {
-			return name, true
-		}
-	}
-	return "", false
-}
-
-// ReportDeliveryRatio records one comparable sample of how much mirrored
-// traffic a candidate actually delivered: ratio is bytesReceived (from an
-// incoming FrameThroughputReport) divided by however many bytes the sender
-// itself attempted to mirror to this candidate in a comparable window (see
-// MultipathBind/ServerMultipathBind's mirrorAccounting) -- computed by the
-// caller, not here, since only the caller knows its own send-side
-// accounting. Clamped to [0,1] and EWMA-smoothed, the same idiom
-// ProbeResult uses for RTT. Deliberately never called when nothing
-// comparable was attempted (a caller with no attempted-bytes sample for the
-// window simply skips the call) -- that silence is what keeps
-// DeliveryRatio's -1 "no data yet" sentinel meaningful; passing a
-// manufactured ratio like 0 or 1 for missing data would corrupt score's
-// neutral-when-unknown handling. LastSuccess intentionally stays
-// probe-driven, not report-driven: a report reflects goodput, not
-// reachability.
-func (s *Scheduler) ReportDeliveryRatio(name string, ratio float64) {
-	if ratio < 0 {
-		ratio = 0
-	}
-	if ratio > 1 {
-		ratio = 1
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p := s.candidates[name]
-	if p == nil {
-		return
-	}
-	if p.DeliveryRatio < 0 {
-		p.DeliveryRatio = ratio
-	} else {
-		p.DeliveryRatio = (p.DeliveryRatio*7 + ratio) / 8
-	}
-}
-
-// ReportThroughput records a passive mirrored-traffic goodput sample in bytes
-// per second. It is deliberately kept out of score: the mirror itself is
-// rate-capped, so this value is useful for inspection and trend comparison but
-// cannot safely establish a path's full-transfer capacity. Non-positive or
-// non-finite samples are ignored; subsequent samples use the same conservative
-// 7/8 EWMA as RTT and delivery ratio.
-func (s *Scheduler) ReportThroughput(name string, bytes uint32, windowMillis uint32) {
-	if bytes == 0 || windowMillis == 0 {
-		return
-	}
-	ratio := float64(bytes) * 1000 / float64(windowMillis)
-	if ratio <= 0 || math.IsInf(ratio, 0) || math.IsNaN(ratio) {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	p := s.candidates[name]
-	if p == nil {
-		return
-	}
-	if p.ThroughputBytesPerSec < 0 {
-		p.ThroughputBytesPerSec = ratio
-	} else {
-		p.ThroughputBytesPerSec = (p.ThroughputBytesPerSec*7 + ratio) / 8
+		p.controlSending.Store(false)
 	}
 }
 
@@ -1217,40 +837,16 @@ func (p *candidate) loss() float64 {
 	return float64(p.used-good) / float64(p.used)
 }
 
-func (p *candidate) p95() time.Duration {
-	v := make([]time.Duration, 0, len(p.rtts))
-	for _, r := range p.rtts {
-		if r > 0 {
-			v = append(v, r)
-		}
-	}
-	if len(v) == 0 {
-		return p.RTT
-	}
-	sort.Slice(v, func(i, j int) bool { return v[i] < v[j] })
-	return v[(len(v)*95+99)/100-1]
-}
-
 // score ranks a candidate: lower is better. Loss dominates jitter (a
-// one-percent loss penalty is 100ms). A delivery-ratio shortfall below the
-// scheduler's minimum adds a further, capped penalty -- but only once a
-// comparable sample exists: DeliveryRatio < 0 means "no data yet" and is
-// scored as neutral, never as if the candidate had confirmed total loss. The
-// alternative (treating no-data-yet as zero) would make every freshly
-// registered v2 candidate unusable until its first mirrored sample happened
-// to land and be reported back.
+// one-percent loss penalty is 100ms).
 func (s *Scheduler) score(p *candidate) time.Duration {
-	sc := p.RTT + time.Duration(p.Loss*10_000_000_000)
-	if p.DeliveryRatio >= 0 && p.DeliveryRatio < s.minDeliveryRatio {
-		shortfall := (s.minDeliveryRatio - p.DeliveryRatio) / s.minDeliveryRatio
-		sc += time.Duration(shortfall * float64(s.maxThroughputPenalty))
-	}
-	return sc
+	return p.RTT + time.Duration(p.Loss*10_000_000_000)
 }
 
 // Select returns the primary path and, when required, exactly one alternate.
-// Empty strings mean that no healthy candidate exists. It holds only a read
-// lock: selectLocked commits hysteresis bookkeeping via Scheduler.primary's
+// Empty strings mean that no proven or previously selected candidate exists.
+// It holds only a read lock: selectLocked commits the incumbent via
+// Scheduler.primary's
 // atomic pointer, not under mu, so this stays a cheap, non-exclusive read in
 // the common case despite being called on every send from wireguard-go's
 // pooled, concurrent encryption/send workers -- an exclusive lock here would
@@ -1261,28 +857,11 @@ func (s *Scheduler) Select() (primary, alternate string, duplicate bool) {
 	return s.selectLocked()
 }
 
-// selectLocked ranks healthy candidates and picks the primary, applying
-// margin+dwell hysteresis only when the delivery-ratio term is actually part
-// of the picture (the challenger or the current incumbent has a real
-// sample) -- a plain RTT/loss comparison, which is v1's entire behavior,
-// switches immediately exactly as it always has. RTT is already
-// EWMA-smoothed and loss already uses a rolling window, so a suddenly lossy
-// or slow path must still fail over without delay; only the newly added,
-// individually noisy delivery-ratio samples need hysteresis to avoid
-// flapping. An incumbent that is no longer Healthy has already dropped out
-// of paths entirely, so it fails over instantly regardless -- hysteresis
-// never delays that case.
-//
-// v2 additionally never lets an unsampled challenger unseat a healthy
-// incumbent at all (see the DeliveryRatio < 0 check below): unlike v1, v2
-// has a real signal for "can this candidate actually carry WireGuard
-// traffic," so probe-only RTT/loss is deliberately not enough to promote it
-// until that signal exists.
-// SetForced overrides automatic candidate selection with a specific transport
+// SetForced overrides sticky automatic selection with a specific transport
 // name ("wss", "udp-relay", "direct-udp", or "" / "auto" to clear). When a
 // forced candidate is set, it will be selected as primary as long as it is
 // registered and Healthy. If the forced transport is not registered or becomes
-// unhealthy, selectLocked falls back to automatic score-based candidate selection.
+// unhealthy, selectLocked falls back to the healthy incumbent or best replacement.
 func (s *Scheduler) SetForced(name string) {
 	norm := NormalizeTransportName(name)
 	if norm == "" {
@@ -1301,19 +880,52 @@ func (s *Scheduler) Forced() string {
 	return *p
 }
 
-// selectLocked ranks healthy candidates and picks the primary, applying
-// user-forced selection when active and healthy, or falling back to
-// margin+dwell hysteresis and delivery-ratio terms in automatic mode.
+// selectLocked keeps a healthy incumbent sticky. Multipath switching is a
+// continuity mechanism, not a per-packet race between independently noisy
+// client/server scores: automatic mode changes path only when the incumbent
+// is genuinely unhealthy. A forced healthy path still takes effect
+// immediately. If every registered path is unhealthy, the last incumbent is
+// retained as a degraded escape route rather than silently dropping every
+// WireGuard packet; probes and carrier reconnects can then recover it.
 func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 	var paths []*candidate
+	var registered []*candidate
 	for _, p := range s.candidates {
+		registered = append(registered, p)
 		if p.Healthy {
 			paths = append(paths, p)
 		}
 	}
-	sort.Slice(paths, func(i, j int) bool { return s.score(paths[i]) < s.score(paths[j]) })
+	sort.Slice(paths, func(i, j int) bool {
+		left, right := s.score(paths[i]), s.score(paths[j])
+		if left == right {
+			return paths[i].Name < paths[j].Name
+		}
+		return left < right
+	})
 	if len(paths) == 0 {
-		s.primary.Store(nil)
+		if len(registered) == 0 {
+			s.primary.Store(nil)
+			return "", "", false
+		}
+		cur := s.primary.Load()
+		// Do not send on a newly registered path before it proves reachability.
+		// The degraded escape route applies only to a path that was previously
+		// selected and subsequently lost health.
+		if cur != nil {
+			for _, p := range registered {
+				if p.Name == cur.name {
+					return p.Name, "", false
+				}
+			}
+		}
+		if forcedName := s.Forced(); forcedName != "" {
+			for _, p := range registered {
+				if p.Name == forcedName && !p.LastSuccess.IsZero() {
+					return p.Name, "", false
+				}
+			}
+		}
 		return "", "", false
 	}
 
@@ -1325,32 +937,19 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		// User explicitly forced this candidate, and it is currently registered and Healthy.
 		chosen = forcedCandidate
 	} else {
-		// Either no forced candidate, or the forced candidate is unavailable/unhealthy.
-		// Fall back to automatic score-based selection among healthy candidates.
+		// Either no forced candidate, or the forced candidate is unavailable or
+		// unhealthy. Retain a healthy incumbent; score is used only to choose a
+		// replacement after actual failure.
 		cur := s.primary.Load()
 		var curName string
-		var curSince time.Time
 		if cur != nil {
-			curName, curSince = cur.name, cur.since
+			curName = cur.name
 		}
 		incumbent := findCandidate(paths, curName)
-
-		best := paths[0]
-		// v2 can actually measure a challenger's real WireGuard delivery (via
-		// mirrored-traffic sampling; see ReportDeliveryRatio). Until a
-		// challenger has at least one such sample, its score reflects only
-		// probe RTT/loss -- proof it can carry the tiny probe frames, not real
-		// traffic. A healthy incumbent must not be unseated on that alone.
-		if s.v2 && incumbent != nil && incumbent.Healthy && best != incumbent && best.DeliveryRatio < 0 {
-			best = incumbent
-		}
-		chosen = best
-		if incumbent != nil && incumbent != best &&
-			(best.DeliveryRatio >= 0 || incumbent.DeliveryRatio >= 0) {
-			now := time.Now()
-			if !(s.score(best)+s.switchMargin < s.score(incumbent) && now.Sub(curSince) >= s.minDwell) {
-				chosen = incumbent
-			}
+		if incumbent != nil {
+			chosen = incumbent
+		} else {
+			chosen = paths[0]
 		}
 	}
 
@@ -1360,7 +959,8 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		curName = cur.name
 	}
 	if chosen.Name != curName {
-		s.primary.Store(&primaryState{name: chosen.Name, since: time.Now()})
+		slog.Debug("multipath primary changed", "from", curName, "to", chosen.Name, "forced", forcedName != "")
+		s.primary.Store(&primaryState{name: chosen.Name})
 	}
 	primary = chosen.Name
 	if len(paths) == 1 {
@@ -1373,7 +973,10 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 			break
 		}
 	}
-	if chosen.Loss >= .05 || (chosen.p95() > 150*time.Millisecond && chosen.p95() >= alt.p95()+50*time.Millisecond) {
+	// Duplicate only during an active failure suspicion (one or two
+	// consecutive missed probes). RTT differences and historical rolling loss
+	// never mirror a healthy flow onto a standby path.
+	if chosen.misses > 0 {
 		return primary, alt.Name, true
 	}
 	return primary, "", false
@@ -1392,7 +995,7 @@ func findCandidate(paths []*candidate, name string) *candidate {
 }
 
 // Status holds only a read lock, for the same reason Select does (see its
-// doc comment): selectLocked commits any hysteresis state change through
+// doc comment): selectLocked commits any incumbent change through
 // Scheduler.primary's atomic pointer, not through mu.
 func (s *Scheduler) Status() []PathStatus {
 	s.mu.RLock()
@@ -1408,7 +1011,6 @@ func (s *Scheduler) Status() []PathStatus {
 		v.Forced = v.Name == forced
 		v.DuplicatedBytes = p.duplicatedBytes.Load()
 		v.DuplicationSuppressedBytes = p.duplicationSuppressedBytes.Load()
-		v.PayloadStalled = p.payloadStalled.Load()
 		out = append(out, v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -1420,14 +1022,9 @@ func (s *Scheduler) Status() []PathStatus {
 // and uniquely identify a retransmitted encrypted packet for this short cache.
 type DuplicateCache struct {
 	mu      sync.Mutex
-	entries map[[12]byte]duplicateEntry
+	entries map[[12]byte]time.Time
 	ttl     time.Duration
 	limit   int
-}
-
-type duplicateEntry struct {
-	expires time.Time
-	path    string
 }
 
 func NewDuplicateCache(limit int, ttl time.Duration) *DuplicateCache {
@@ -1437,7 +1034,7 @@ func NewDuplicateCache(limit int, ttl time.Duration) *DuplicateCache {
 	if ttl <= 0 {
 		ttl = 10 * time.Second
 	}
-	return &DuplicateCache{entries: make(map[[12]byte]duplicateEntry), limit: limit, ttl: ttl}
+	return &DuplicateCache{entries: make(map[[12]byte]time.Time), limit: limit, ttl: ttl}
 }
 
 func transportKey(b []byte) (k [12]byte, ok bool) {
@@ -1450,24 +1047,15 @@ func transportKey(b []byte) (k [12]byte, ok bool) {
 
 // Seen returns true only for a repeated type-4 packet in the cache window.
 func (c *DuplicateCache) Seen(b []byte, now time.Time) bool {
-	seen, _ := c.SeenOnPath(b, "", now)
-	return seen
-}
-
-// SeenOnPath is Seen with arrival-path metadata. On a duplicate it returns
-// the path that delivered the first copy, allowing v2 accounting to credit a
-// faster mirrored candidate even when that candidate arrived before the
-// incumbent and therefore was not itself the copy dropped by deduplication.
-func (c *DuplicateCache) SeenOnPath(b []byte, path string, now time.Time) (seen bool, firstPath string) {
 	k, ok := transportKey(b)
 	if !ok {
-		return false, ""
+		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if entry, found := c.entries[k]; found {
-		if entry.expires.After(now) {
-			return true, entry.path
+	if expiry, found := c.entries[k]; found {
+		if expiry.After(now) {
+			return true
 		}
 		delete(c.entries, k)
 	}
@@ -1477,13 +1065,11 @@ func (c *DuplicateCache) SeenOnPath(b []byte, path string, now time.Time) (seen 
 			break
 		}
 	}
-	c.entries[k] = duplicateEntry{expires: now.Add(c.ttl), path: path}
-	return false, ""
+	c.entries[k] = now.Add(c.ttl)
+	return false
 }
 
 // ValidPathControl strictly validates the fixed probe/ack payload shape.
 func ValidPathControl(typ byte, payload []byte) bool {
 	return (typ == FramePathProbe || typ == FramePathAck) && len(payload) == pathProbeSize
 }
-
-func ValidPathDataAck(payload []byte) bool { return len(payload) == pathProbeSize }

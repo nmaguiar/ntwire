@@ -228,7 +228,7 @@ func TestPostUDPRelayIncludesClientObservedStatsAndStoresResponse(t *testing.T) 
 	defer srv.Close()
 
 	base := conn.NewStdNetBind()
-	m := wstransport.NewMultipathBind(base, "relay-server", false, false, wstransport.V2Options{})
+	m := wstransport.NewMultipathBind(base, "relay-server", false, wstransport.MultipathOptions{})
 	defer m.Close()
 	if _, _, err := m.Open(0); err != nil {
 		t.Skipf("loopback UDP unavailable: %v", err)
@@ -291,7 +291,7 @@ func TestTryUDPRelayUpgradeResetsLegStatsOnTokenChange(t *testing.T) {
 	defer clientBind.Close()
 
 	base := conn.NewStdNetBind()
-	m := wstransport.NewMultipathBind(base, "relay-server", false, false, wstransport.V2Options{})
+	m := wstransport.NewMultipathBind(base, "relay-server", false, wstransport.MultipathOptions{})
 	defer m.Close()
 	if _, _, err := m.Open(0); err != nil {
 		t.Skipf("loopback UDP unavailable: %v", err)
@@ -479,7 +479,7 @@ func TestProbeDirectPathFailsWithoutServerTunnelIP(t *testing.T) {
 // can succeed over WSS while a newly added UDP relay candidate is still dead;
 // that must not be treated as a UDP upgrade.
 func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
-	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.MultipathOptions{})
 	defer multipath.Close()
 
 	now := time.Now()
@@ -498,7 +498,7 @@ func TestMultipathUDPRelayHealthRequiresUDPRelayProbe(t *testing.T) {
 }
 
 func TestMultipathHealthDoesNotLetRelayMaskFailedDirectPath(t *testing.T) {
-	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.MultipathOptions{})
 	defer multipath.Close()
 
 	now := time.Now()

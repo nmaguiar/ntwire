@@ -329,8 +329,7 @@ func transportCmd(args []string, u *ui.UI) {
 					{Header: "KIND", Width: 10, Align: "left"},
 					{Header: "STATUS", Width: 30, Align: "left"},
 					{Header: "RTT", Width: 8, Align: "right"},
-					{Header: "LOSS", Width: 7, Align: "right"},
-					{Header: "DELIVERY", Sep: "  "},
+					{Header: "LOSS", Sep: "  ", Align: "right"},
 				},
 			}
 			for _, p := range info.Paths {
@@ -539,10 +538,8 @@ func tunnelStatusRow(t client.WebTunnel) []string {
 	return []string{t.Name, t.LocalAddress, status, connsSummary(t.Stats), trafficSummary(t.Stats)}
 }
 
-// pathStatusRow builds one row of a NAME | KIND | STATUS | RTT | LOSS |
-// DELIVERY table for a multipath candidate. DELIVERY renders "-" rather than
-// a percentage when DeliveryRatio is negative -- the scheduler's sentinel
-// for "no comparable mirrored-traffic sample yet", not "confirmed zero".
+// pathStatusRow builds one row of a NAME | KIND | STATUS | RTT | LOSS table
+// for a multipath candidate.
 func pathStatusRow(p wstransport.PathStatus) []string {
 	status := "unhealthy"
 	if p.Healthy {
@@ -557,11 +554,7 @@ func pathStatusRow(p wstransport.PathStatus) []string {
 	} else if p.Forced {
 		status += " (forced, fallback active)"
 	}
-	delivery := "-"
-	if p.DeliveryRatio >= 0 {
-		delivery = fmt.Sprintf("%.0f%%", p.DeliveryRatio*100)
-	}
-	return []string{p.Name, string(p.Kind), status, fmt.Sprintf("%dms", p.RTT.Milliseconds()), fmt.Sprintf("%.1f%%", p.Loss*100), delivery}
+	return []string{p.Name, string(p.Kind), status, fmt.Sprintf("%dms", p.RTT.Milliseconds()), fmt.Sprintf("%.1f%%", p.Loss*100)}
 }
 
 // listColumns is factored out of list() so a test can render the exact
@@ -713,8 +706,7 @@ func status(args []string, u *ui.UI) {
 				{Header: "KIND", Width: 10, Align: "left"},
 				{Header: "STATUS", Width: 30, Align: "left"},
 				{Header: "RTT", Width: 8, Align: "right"},
-				{Header: "LOSS", Width: 7, Align: "right"},
-				{Header: "DELIVERY", Sep: "  "},
+				{Header: "LOSS", Sep: "  ", Align: "right"},
 			},
 		}
 		for _, p := range ws.Paths {

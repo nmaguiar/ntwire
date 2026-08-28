@@ -69,6 +69,52 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWebSocketBindWriterWaitIsBounded(t *testing.T) {
+	server := NewServer()
+	if _, _, err := server.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = server.ServeHTTP(w, r, "session")
+	})
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("loopback listeners unavailable: %v", err)
+	}
+	h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+	h.Start()
+	defer h.Close()
+
+	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	client.writeTimeout = 25 * time.Millisecond
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ep, err := client.ParseEndpoint(WSSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	p := client.peers["remote"]
+	client.mu.Unlock()
+	if p == nil {
+		t.Fatal("client WebSocket peer missing")
+	}
+	<-p.writeGate // model a carrier write that has not returned yet
+	defer func() { p.writeGate <- struct{}{} }()
+
+	started := time.Now()
+	err = client.Send([][]byte{make([]byte, 16)}, ep)
+	if err == nil || !strings.Contains(err.Error(), "waiting for WebSocket writer") {
+		t.Fatalf("Send error = %v, want bounded writer wait error", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("Send waited %s for a wedged writer, want bounded return", elapsed)
+	}
+}
+
 // TestHybridClientRoutesBySentinelEndpoint is the load-bearing assertion
 // behind the opportunistic direct-UDP upgrade's revert path: a client-side
 // Hybrid must route a WSSentinel-seeded peer over WebSocket, and a real
@@ -150,56 +196,15 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, false, V2Options{}, "")
-	clientFns, _, err := client.Open(0)
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, MultipathOptions{}, "")
+	_, _, err = client.Open(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	// Hybrid.Open appends the UDP carrier's receive funcs (StdNetBind may
-	// return more than one, e.g. one per address family) before the single
-	// WebSocket one, so the WS func -- where the ack actually arrives -- is
-	// always the last element, never assumable as index 0.
-	clientWSFn := clientFns[len(clientFns)-1]
-
-	// RegisterPath (from the client's onOpen) fires an immediate probe but
-	// does not wait for the reply; this test's server is a bare Server, not
-	// wrapped in ServerMultipathBind, so nothing answers it automatically --
-	// read the probe and echo the ack by hand, exactly as
-	// ServerMultipathBind.dispatchControl would.
-	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
-	n, err := serverFns[0](serverBuf, serverSizes, serverEP)
-	if err != nil || n != 1 {
-		t.Fatalf("server receive of probe: n=%d err=%v", n, err)
-	}
-	typ, payload, ok := DecodeControlFrame(serverBuf[0][:serverSizes[0]])
-	if !ok || typ != FramePathProbe {
-		t.Fatalf("expected a path probe, got typ=%d ok=%v", typ, ok)
-	}
-	if err := server.Send([][]byte{EncodeControlFrame(FramePathAck, payload)}, serverEP[0]); err != nil {
-		t.Fatalf("server ack send: %v", err)
-	}
-
-	// The client must actually pump its receive func for wrapReceive to
-	// intercept the ack and call handlePathControl; a control-frame-only
-	// batch never returns to the caller (see wrapReceive), so this blocks
-	// until client.Close() tears down the connection -- run it in the
-	// background and poll Select for the result instead of waiting on it
-	// directly.
-	go func() {
-		buf, sizes, eps := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
-		_, _ = clientWSFn(buf, sizes, eps)
-	}()
-	deadline := time.Now().Add(2 * time.Second)
-	var primary string
-	for time.Now().Before(deadline) {
-		if primary, _, _ = client.Scheduler().Select(); primary == "wss" {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	primary, _, _ := client.Scheduler().Select()
 	if primary != "wss" {
-		t.Fatalf("primary path after ack = %q, want wss", primary)
+		t.Fatalf("primary path after WSS connect = %q, want wss", primary)
 	}
 
 	ep, err := client.ParseEndpoint(MultipathSentinel)
@@ -209,7 +214,7 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {
 		t.Fatalf("Send via multipath WSS = %v", err)
 	}
-	serverBuf, serverSizes, serverEP = [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
+	serverBuf, serverSizes, serverEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
 		t.Fatalf("server receive: n=%d err=%v size=%d", n, err, serverSizes[0])
 	}
@@ -222,14 +227,15 @@ func TestMultipathHybridClientRegistersWSSAfterOpen(t *testing.T) {
 // one-way path probe cannot prove.
 func TestMultipathWSSDeliversBidirectionalPayloads(t *testing.T) {
 	wsServer := NewServer()
-	server := NewServerMultipathBind(wsServer, V2Options{})
+	server := NewServerMultipathBind(wsServer, MultipathOptions{})
 	serverFns, _, err := server.Open(0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer server.Close()
 	wsServer.OnPeerConnected = func(id string, ep conn.Endpoint) {
-		server.RegisterPath(id, "wss", PathWSS, ep, true, true, false)
+		server.RegisterPath(id, "wss", PathWSS, ep, false)
+		server.ActivatePath(id, "wss")
 	}
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -245,8 +251,7 @@ func TestMultipathWSSDeliversBidirectionalPayloads(t *testing.T) {
 	h.Start()
 	defer h.Close()
 
-	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, true, false, V2Options{}, "")
-	client.SetPayloadLiveness(true)
+	_, client := NewMultipathHybridClient("ws"+h.URL[len("http"):], h.Client(), nil, false, MultipathOptions{}, "")
 	clientFns, _, err := client.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -621,6 +626,8 @@ func TestClientBindRedialUsesUpdatedHeader(t *testing.T) {
 // TestClientBindRedialsAfterDrop already covers.
 func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 	server := NewServer()
+	disconnected := make(chan struct{}, 1)
+	server.OnPeerDisconnected = func(string, conn.Endpoint) { disconnected <- struct{}{} }
 	serverFns, _, err := server.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -667,6 +674,12 @@ func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 {
 		t.Fatalf("server receive before drop: n=%d err=%v", n, err)
 	}
+	server.mu.Lock()
+	oldServerPeer := server.peers["session"]
+	server.mu.Unlock()
+	if oldServerPeer == nil {
+		t.Fatal("server did not retain the initial peer")
+	}
 
 	// Abandon the client's peer -- no Close on either side -- and redial
 	// directly, standing in for read()'s defer after the interface vanished.
@@ -680,6 +693,16 @@ func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 	client.mu.Unlock()
 	if !reconnected {
 		t.Fatal("redial did not install a new client-side peer")
+	}
+	select {
+	case <-oldServerPeer.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replaced server peer did not finish")
+	}
+	select {
+	case <-disconnected:
+		t.Fatal("replaced stale peer emitted a disconnect for the live replacement")
+	default:
 	}
 
 	if err := client.Send([][]byte{make([]byte, 16)}, ep); err != nil {

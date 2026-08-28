@@ -12,7 +12,7 @@ import (
 )
 
 func TestTransitionTransportCandidateLogsSelectedMultipathPrimary(t *testing.T) {
-	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, false, wstransport.V2Options{})
+	multipath := wstransport.NewMultipathBind(conn.NewStdNetBind(), "server", false, wstransport.MultipathOptions{})
 	defer multipath.Close()
 	now := time.Now()
 	multipath.Scheduler().Register("wss", wstransport.PathWSS)

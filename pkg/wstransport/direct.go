@@ -116,8 +116,8 @@ type FilterBind struct {
 	conn.Bind
 	control chan ControlPacket
 
-	// probeHandler, when set, receives FramePathProbe/FramePathAck (and, once
-	// negotiated, FrameThroughputReport) directly and synchronously from the
+	// probeHandler, when set, receives active v3 probe frames directly and
+	// synchronously from the
 	// receive path instead of via Control(). Those frame types need a
 	// persistent handler for the life of the connection, not the one-shot
 	// "send, then wait up to a timeout" pattern every existing Control()
@@ -143,8 +143,8 @@ func NewFilterBind(bind conn.Bind) *FilterBind {
 // receive or send path.
 func (f *FilterBind) Unwrap() conn.Bind { return f.Bind }
 
-// SetProbeHandler installs fn as the receiver for FramePathProbe/
-// FramePathAck/FrameThroughputReport frames arriving over this bind's UDP
+// SetProbeHandler installs fn as the receiver for active v3 probe frames
+// arriving over this bind's UDP
 // carrier. Not safe to change concurrently with receiving; callers set it
 // once, before the bind starts receiving traffic.
 func (f *FilterBind) SetProbeHandler(fn func(typ byte, payload []byte, ep conn.Endpoint)) {
@@ -210,14 +210,16 @@ func (f *FilterBind) deliverControl(b []byte, ep conn.Endpoint) {
 
 	isProbeFrame := typ == FramePathProbe || typ == FramePathAck || typ == FrameThroughputReport || typ == FramePathMTUProbe || typ == FramePathMTUAck || typ == FramePathDataAck
 	if isProbeFrame {
-		// These frame types are only ever meaningful to a probeHandler, never
+		// Active probe frames are meaningful only to a probeHandler, never
 		// to Control()'s existing transient readers (selfReflect,
 		// waitForBindAck, directUDP.selfReflect) -- if no handler is
 		// installed, drop rather than fall through to the shared channel
 		// below, so a peer that (mistakenly, or during some future code
 		// path) sends one of these to a bind with no handler can never
 		// occupy a slot in that channel's small fixed buffer at those
-		// readers' expense.
+		// readers' expense. Retired frame types 8 and 11 deliberately take the
+		// same path so they are intercepted and ignored rather than leaked into
+		// WireGuard or the transient-control channel.
 		if h := f.probeHandler; h != nil {
 			h(typ, append([]byte(nil), b[controlHeaderLen:]...), ep)
 		}

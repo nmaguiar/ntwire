@@ -68,7 +68,6 @@ func TestStatusPageCollapsesAndSafelyRendersTransportPaths(t *testing.T) {
 		"const tr=document.createElement('tr'),hasStatus=typeof p.healthy==='boolean'",
 		"const rtt=pathNumber(p.rtt)?Math.round(p.rtt/1000000)+' ms':'n/a'",
 		"const loss=pathNumber(p.loss)?(p.loss*100).toFixed(1)+'%':'n/a'",
-		"const delivery=pathNumber(p.delivery_ratio)&&p.delivery_ratio>=0?Math.round(p.delivery_ratio*100)+'%':'n/a'",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("status page is missing transport rendering behavior %q", want)

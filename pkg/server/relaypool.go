@@ -47,11 +47,10 @@ type relayPoolMember struct {
 // still carry the TLS/WSS control-plane traffic, but not the UDP-relay
 // tier), then members are ranked by observed AllocateUDPSession failure
 // rate. A member with no allocation attempts yet scores as neutral, never as
-// if it had already failed -- the same "no data yet is not confirmed
-// failure" convention wstransport.Scheduler's DeliveryRatio sentinel uses.
+// if it had already failed: no data yet is not confirmed failure.
 //
-// Deliberately lifetime-cumulative, not EWMA/rolling-window like every other
-// scoring input in this codebase (RTT, loss, DeliveryRatio): score only ever
+// Deliberately lifetime-cumulative, not EWMA/rolling-window like path RTT and
+// loss: score only ever
 // runs in choosePreferred, when there is no current preferred member at all
 // (a rare, coarse-grained event), not on a packet hot path, so there is no
 // windowing concern to smooth away transient noise for. The tradeoff is that

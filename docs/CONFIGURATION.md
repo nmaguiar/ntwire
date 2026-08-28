@@ -81,15 +81,25 @@ of silently falling back. `--websocket` remains a compatibility alias for
 
 `auto` can switch only after the server and client negotiate multipath. On a
 server with both UDP and WebSocket endpoints, `transport.multipath: true`
-(the default) bootstraps over WSS. Direct UDP is registered for automatic
-scheduling only when `multipath-v2` is negotiated, because v1's small-packet
-probes cannot establish bulk-data delivery. When both peers also negotiate
-`multipath-v3`, ongoing real WireGuard payload is acknowledged per candidate,
-so a path whose probes still work but whose payload stream stalls fails over
-automatically. A v1 session keeps WSS as its safe automatic route;
-`--transport direct-udp` remains available for an explicit single-path UDP
-connection. Set `transport.multipath: false` only for a legacy single-path
-deployment.
+(the default) negotiates `multipath-v3` and bootstraps over WSS. Direct UDP is
+registered as a probe-qualified standby. The established WSS carrier is the
+explicit initial incumbent on both peers, so independent probe timing cannot
+split the two directions across different startup paths. Automatic mode keeps
+its healthy incumbent and switches only after native WSS carrier failure or
+UDP probe health fails; a faster tiny UDP probe does not move or duplicate an
+active flow. WSS is not actively probed on its ordered payload stream:
+connect, disconnect/read failure, bounded write failure, and redial provide
+its health signals without injecting control traffic ahead of payload. During the first two
+consecutive missed probes, encrypted payload may be duplicated to one healthy
+standby under the configured byte-rate cap; the third miss changes the primary.
+Retired v1/v2 peers use the legacy single-path data plane.
+`--transport direct-udp` remains an explicit single-path UDP connection. Set
+`transport.multipath: false` to force legacy single-path behavior.
+
+V3 is advertised only while a second carrier is actually available. A relay
+that offers WSS but no UDP-relay or reflected-direct tier stays on the simpler
+single-path WSS data plane even when `transport.multipath` is enabled; probing
+a lone carrier cannot improve failover and only adds control traffic.
 
 ```yaml
 listen:
@@ -128,8 +138,7 @@ network:
     enabled: true                        # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
     domain: ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 transport:
-  # Automatic direct-UDP promotion requires multipath-v2; v1 keeps WSS as
-  # the safe route and retains direct UDP for explicit selection/failover.
+  # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                        # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force: auto                             # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
 authorizer:

@@ -13,12 +13,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -43,6 +45,41 @@ func TestAuthRequiredTransportCapabilityFailsBeforeAuthentication(t *testing.T) 
 	}
 	if out.Code != protocol.ErrorUnsupportedCapability {
 		t.Fatalf("code = %q, want %q", out.Code, protocol.ErrorUnsupportedCapability)
+	}
+}
+
+func TestTransportCapabilitiesAreV3Only(t *testing.T) {
+	if got, want := transportCapabilities(true, true), []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}; !slices.Equal(got, want) {
+		t.Fatalf("transportCapabilities(v3, mtu) = %v, want %v", got, want)
+	}
+	if got, want := transportCapabilities(true, false), []string{protocol.CapabilityMultipathV3}; !slices.Equal(got, want) {
+		t.Fatalf("transportCapabilities(v3) = %v, want %v", got, want)
+	}
+	if got := transportCapabilities(false, true); got != nil {
+		t.Fatalf("transportCapabilities(legacy) = %v, want nil", got)
+	}
+}
+
+func TestTransportCapabilitiesRequireLiveAlternateCarrier(t *testing.T) {
+	s := New(Config{}, nil)
+	s.data = &dataPlane{multipath: &wstransport.ServerMultipathBind{}}
+	if got := s.transportCapabilitiesAvailable(); got != nil {
+		t.Fatalf("WSS-only capabilities = %v, want legacy single-path", got)
+	}
+
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:51820"
+	if got := s.transportCapabilitiesAvailable(); !slices.Equal(got, []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}) {
+		t.Fatalf("direct+WSS capabilities = %v, want v3+path-mtu", got)
+	}
+
+	s.Config.Relay.Enabled = true
+	s.Config.Network.AdvertisedEndpoint = ""
+	if got := s.transportCapabilitiesAvailable(); got != nil {
+		t.Fatalf("relay WSS-only capabilities = %v, want legacy single-path", got)
+	}
+	s.udpr.Store(&udpRelay{})
+	if got := s.transportCapabilitiesAvailable(); !slices.Equal(got, []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}) {
+		t.Fatalf("relay UDP+WSS capabilities = %v, want v3+path-mtu", got)
 	}
 }
 

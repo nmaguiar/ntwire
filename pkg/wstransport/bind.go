@@ -34,6 +34,10 @@ type Bind struct {
 	// lookup stuck on a since-vanished interface) cannot block the retry loop
 	// from ever observing Close.
 	dialTimeout time.Duration
+	// writeTimeout bounds both waiting for the peer's single writer slot and
+	// writing a complete WireGuard batch. A timeout tears down the carrier so
+	// the existing redial path can replace it.
+	writeTimeout time.Duration
 	// noRedial disables the automatic reconnect entirely -- see DisableRedial.
 	noRedial bool
 
@@ -59,10 +63,11 @@ type peer struct {
 	endpoint endpoint
 	done     chan struct{}
 	// coder/websocket permits one reader and one writer, but not concurrent
-	// writes. WireGuard data-plane responses and multipath control frames can
-	// be produced by different goroutines, so serialize a complete batch per
-	// peer to preserve frame order and connection health.
-	writeMu sync.Mutex
+	// writes. A channel is used instead of sync.Mutex so waiting to become the
+	// writer is bounded by the same deadline as the write itself. Otherwise one
+	// wedged network write can permanently queue every payload and multipath
+	// control frame behind it without ever forcing a reconnect.
+	writeGate chan struct{}
 }
 type endpoint struct {
 	id      string
@@ -114,26 +119,34 @@ func NewHybridClient(url string, client *http.Client, header http.Header, ipVers
 }
 
 // NewMultipathHybridClient returns the existing carrier pair plus the stable
-// logical bind used by capable relay peers. WSS is registered first and is
-// immediately usable; UDP candidates are added only after their authenticated
-// setup succeeds. ipVersion is forwarded to NewHybridClient; see its doc.
-func NewMultipathHybridClient(url string, client *http.Client, header http.Header, v2, pathMTU bool, opts V2Options, ipVersion string, loggers ...*slog.Logger) (*Hybrid, *MultipathBind) {
+// logical bind used by capable relay peers. WSS is registered and activated first;
+// UDP candidates are added only after their authenticated setup succeeds.
+// ipVersion is forwarded to NewHybridClient; see its doc.
+func NewMultipathHybridClient(url string, client *http.Client, header http.Header, pathMTU bool, opts MultipathOptions, ipVersion string, loggers ...*slog.Logger) (*Hybrid, *MultipathBind) {
 	h := NewHybridClient(url, client, header, ipVersion, loggers...)
-	m := NewMultipathBind(h, "relay-server", v2, pathMTU, opts)
+	m := NewMultipathBind(h, "relay-server", pathMTU, opts)
 	h.UDP.(*FilterBind).SetProbeHandler(m.handlePathControl)
+	// The initial callback runs before onOpen has registered the path, so the
+	// explicit activation in onOpen below is still required. On a later redial
+	// the path already exists and this callback restores it immediately.
+	h.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
+		m.scheduler.ActivateCarrier("wss", time.Now())
+	}
+	h.WebSocket.OnPeerDisconnected = func(_ string, _ conn.Endpoint) {
+		m.scheduler.CarrierFailure("wss")
+	}
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
 	// has connected it. Register the fallback from MultipathBind.Open instead,
-	// after h.Open has established the peer. RegisterPath itself fires an
-	// immediate real probe (see its doc comment); a synthetic ProbeResult
-	// seed used to stand in here, but that's what left "wss" and every other
-	// candidate frozen at whatever health they started with forever, since
-	// nothing ever re-probed them afterward.
+	// after h.Open has established the peer. WSS health is activated from that
+	// real connection lifecycle; only later datagram candidates use active
+	// probes (see RegisterPath).
 	m.onOpen = func() error {
 		ep, err := h.WebSocket.ParseEndpoint(WSSentinel)
 		if err != nil {
 			return err
 		}
 		m.RegisterPath("wss", PathWSS, ep)
+		m.scheduler.ActivateCarrier("wss", time.Now())
 		return nil
 	}
 	return h, m
@@ -183,13 +196,14 @@ func (h *Hybrid) BatchSize() int { return h.UDP.BatchSize() }
 // defaults for the client-side redial loop (see redial). Exposed as instance
 // fields, not consulted directly, so a test can shrink them.
 const (
-	redialMinDefault   = time.Second
-	redialMaxDefault   = 30 * time.Second
-	dialTimeoutDefault = 10 * time.Second
+	redialMinDefault    = time.Second
+	redialMaxDefault    = 30 * time.Second
+	dialTimeoutDefault  = 10 * time.Second
+	writeTimeoutDefault = 5 * time.Second
 )
 
 func NewClient(url string, client *http.Client, header http.Header) *Bind {
-	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault}
+	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault, writeTimeout: writeTimeoutDefault}
 }
 
 // SetHeader replaces the headers used for the client's WebSocket dial (both
@@ -233,7 +247,13 @@ func (b *Bind) SetRedialBackoff(min, max, dialTimeout time.Duration) {
 
 // NewServer creates a bind whose ServeHTTP method attaches authenticated
 // WebSocket connections. The id is usually the ntwire session ID.
-func NewServer() *Bind { return &Bind{} }
+func NewServer() *Bind { return &Bind{writeTimeout: writeTimeoutDefault} }
+
+func newPeer(id string, ws *websocket.Conn, ep endpoint) *peer {
+	p := &peer{id: id, ws: ws, endpoint: ep, done: make(chan struct{}), writeGate: make(chan struct{}, 1)}
+	p.writeGate <- struct{}{}
+	return p
+}
 
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.mu.Lock()
@@ -253,7 +273,7 @@ func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 			b.mu.Unlock()
 			return nil, 0, err
 		}
-		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(b.url)}, done: make(chan struct{})}
+		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(b.url)})
 		b.peers[p.id] = p
 		connected, onConnected = p, b.OnPeerConnected
 	}
@@ -300,7 +320,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	if err != nil {
 		return err
 	}
-	p := &peer{id: id, ws: ws, endpoint: endpoint{id: id, address: endpointAddress(r.RemoteAddr)}, done: make(chan struct{})}
+	p := newPeer(id, ws, endpoint{id: id, address: endpointAddress(r.RemoteAddr)})
 	b.mu.Lock()
 	if !b.open {
 		// Closed between the readiness check above and here -- b.peers is
@@ -331,11 +351,14 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 
 func (b *Bind) read(p *peer) {
 	defer func() {
-		b.remove(p)
-		close(p.done)
-		if b.OnPeerDisconnected != nil {
+		removed := b.remove(p)
+		// A new connection with the same stable peer id may already have
+		// replaced p. In that case p is stale and must not mark the replacement
+		// carrier disconnected after its OnPeerConnected callback activated it.
+		if removed && b.OnPeerDisconnected != nil {
 			b.OnPeerDisconnected(p.id, p.endpoint)
 		}
+		close(p.done)
 		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
 		// Only a client-side Bind (b.url != "") ever dials out; a server-side
 		// Bind's peers arrive via ServeHTTP, and a disconnect there just means
@@ -344,7 +367,7 @@ func (b *Bind) read(p *peer) {
 		b.mu.Lock()
 		noRedial := b.noRedial
 		b.mu.Unlock()
-		if b.url != "" && !noRedial {
+		if removed && b.url != "" && !noRedial {
 			go b.redial()
 		}
 	}()
@@ -370,12 +393,14 @@ func (b *Bind) read(p *peer) {
 	}
 }
 
-func (b *Bind) remove(p *peer) {
+func (b *Bind) remove(p *peer) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.peers[p.id] == p {
 		delete(b.peers, p.id)
+		return true
 	}
+	return false
 }
 
 // redial keeps retrying the client-side WebSocket dial, with jittered
@@ -428,7 +453,7 @@ func (b *Bind) redial() {
 			slog.Debug("WireGuard WebSocket redial failed", "error", err)
 			continue
 		}
-		p := &peer{id: "remote", ws: ws, endpoint: endpoint{id: "remote", address: endpointAddress(url)}, done: make(chan struct{})}
+		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(url)})
 		b.mu.Lock()
 		if !b.open || b.done != done {
 			// Closed, or closed and reopened, while this attempt was dialing.
@@ -488,13 +513,27 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if p == nil {
 		return fmt.Errorf("WebSocket peer is not connected")
 	}
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
+	b.mu.Lock()
+	writeTimeout := b.writeTimeout
+	b.mu.Unlock()
+	if writeTimeout <= 0 {
+		writeTimeout = writeTimeoutDefault
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+	defer cancel()
+	select {
+	case <-ctx.Done():
+		p.ws.CloseNow()
+		return fmt.Errorf("waiting for WebSocket writer: %w", ctx.Err())
+	case <-p.writeGate:
+	}
+	defer func() { p.writeGate <- struct{}{} }()
 	for _, buf := range bufs {
 		if !ValidDatagram(buf) {
 			continue
 		}
-		if err := p.ws.Write(context.Background(), websocket.MessageBinary, buf); err != nil {
+		if err := p.ws.Write(ctx, websocket.MessageBinary, buf); err != nil {
+			p.ws.CloseNow()
 			return err
 		}
 	}
