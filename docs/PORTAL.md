@@ -6,7 +6,7 @@ It supports two distinct deployment and access modes:
 
 1. **Native ntwire Client Portal**
    * Accessible via the native client status dashboard (`http://127.0.0.1:<port>/?token=...`) under the **Portal** tab. The dashboard has fragment-addressable **Tunnels**, **Portal**, and (when available) **Settings** views, so `#portal` can be used to open the Portal directly.
-   * Supports rich interactive actions, such as launching Chrome/Chromium in an isolated browser profile (`ntwire://open/<target_id>`) with automated SOCKS proxying.
+   * Supports rich interactive actions, such as launching Chrome/Chromium in an isolated browser profile (`ntwire://open/<target_id>`) with automated embedded or external SOCKS5 proxying. External SOCKS remains transparent and has no PAC support.
    * Real-time local connection status and clipboard copying for service credentials or CLI commands.
 
 2. **WireGuard Web Portal**

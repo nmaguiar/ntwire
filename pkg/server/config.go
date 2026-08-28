@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -216,6 +217,10 @@ type TunnelConfig struct {
 	// a fixed-target forward. It is used, and required, when Target is the
 	// sentinel value "socks"; see SocksConfig.
 	Socks *SocksConfig `yaml:"socks"`
+	// ExternalSocks configures a transparent TCP relay to an existing SOCKS5
+	// endpoint. Unlike Socks, ntwire does not parse SOCKS requests or provide
+	// destination filtering, UDP ASSOCIATE, BIND, or PAC endpoints.
+	ExternalSocks *ExternalSocksConfig `yaml:"external_socks"`
 
 	// Portal configures optional presentation metadata for this tunnel when
 	// rendered in the ntwire Portal.
@@ -258,10 +263,24 @@ func (d DNSConfig) EffectiveDomain() string {
 // socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
 // embedded SOCKS proxy rather than a fixed host:port forward.
 const socksTarget = "socks"
+const externalSocksTarget = "external_socks"
 
 // IsSocks reports whether t is an embedded-SOCKS-server tunnel.
 func (t TunnelConfig) IsSocks() bool {
 	return t.Target == socksTarget
+}
+
+// IsExternalSocks reports whether t transparently forwards to an external
+// SOCKS5 endpoint.
+func (t TunnelConfig) IsExternalSocks() bool {
+	return t.Target == externalSocksTarget
+}
+
+// IsBrowserSocks reports whether a local tunnel listener can proxy browser
+// SOCKS5 traffic. It intentionally includes external SOCKS but not PAC-only
+// embedded SOCKS behavior.
+func (t TunnelConfig) IsBrowserSocks() bool {
+	return t.IsSocks() || t.IsExternalSocks()
 }
 
 // SocksConfig configures an embedded SOCKS tunnel's destination filtering,
@@ -291,6 +310,29 @@ type SocksConfig struct {
 	Upstream string `yaml:"upstream"`
 	// UDPIdleTimeout bounds inactive SOCKS5 UDP ASSOCIATE flows.
 	UDPIdleTimeout time.Duration `yaml:"udp_idle_timeout"`
+}
+
+// ExternalSocksConfig identifies an existing SOCKS5 endpoint. URL is
+// intentionally credential-free: authentication belongs to a future explicit
+// protocol revision, not to server configuration URLs.
+type ExternalSocksConfig struct {
+	URL string `yaml:"url"`
+}
+
+func externalSocksAddress(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "socks5" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must be a credential-free socks5://host:port URL")
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil || host == "" || port == "" {
+		return "", fmt.Errorf("must be a credential-free socks5://host:port URL")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 {
+		return "", fmt.Errorf("invalid port")
+	}
+	return u.Host, nil
 }
 
 // WantsASNUpdates reports whether the background ASN index refresh should
@@ -686,6 +728,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			if t.Socks == nil {
 				return c, fmt.Errorf("tunnel %q: target: socks requires a socks: block", t.Name)
 			}
+			if t.ExternalSocks != nil {
+				return c, fmt.Errorf("tunnel %q: external_socks: block requires target: external_socks", t.Name)
+			}
 			for _, cidr := range t.Socks.Filters {
 				if _, _, e := net.ParseCIDR(cidr); e != nil {
 					return c, fmt.Errorf("tunnel %q: socks.filters: %w", t.Name, e)
@@ -703,8 +748,25 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 					return c, fmt.Errorf("tunnel %q: socks.upstream must be a socks5:// or socks5h:// URL", t.Name)
 				}
 			}
-		} else if t.Socks != nil {
-			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+		} else if t.IsExternalSocks() {
+			if t.Socks != nil {
+				return c, fmt.Errorf("tunnel %q: socks: block requires target: socks", t.Name)
+			}
+			if t.ExternalSocks == nil {
+				return c, fmt.Errorf("tunnel %q: target: external_socks requires an external_socks: block", t.Name)
+			}
+			if _, err := externalSocksAddress(t.ExternalSocks.URL); err != nil {
+				return c, fmt.Errorf("tunnel %q: external_socks.url %w", t.Name, err)
+			}
+			if t.Protocol != "" && t.Protocol != "tcp" {
+				return c, fmt.Errorf("tunnel %q: target: external_socks is TCP-only", t.Name)
+			}
+			t.Protocol = "tcp"
+			if t.UDPIdleTimeout != 0 {
+				return c, fmt.Errorf("tunnel %q: target: external_socks does not support udp_idle_timeout", t.Name)
+			}
+		} else if t.Socks != nil || t.ExternalSocks != nil {
+			return c, fmt.Errorf("tunnel %q: socks: block requires target: socks and external_socks: block requires target: external_socks", t.Name)
 		} else {
 			if t.Protocol == "" {
 				t.Protocol = "tcp"

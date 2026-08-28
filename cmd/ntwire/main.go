@@ -449,7 +449,7 @@ func browser(args []string, u *ui.UI) {
 	}
 	var socksTunnels []client.WebTunnel
 	for _, t := range ws.Tunnels {
-		if t.TargetHint == "socks" {
+		if protocol.IsBrowserSocksTarget(t.TargetHint) {
 			socksTunnels = append(socksTunnels, t)
 		}
 	}

@@ -52,6 +52,7 @@ func (s *Server) portalHandler(w http.ResponseWriter, r *http.Request) {
 			Instructions: st.Instructions,
 			DocsURL:      st.DocsURL,
 			IsSocks:      cfg.IsSocks(),
+			BrowserSocks: cfg.IsBrowserSocks(),
 			Portal:       cfg.Portal,
 		})
 	}
@@ -158,6 +159,7 @@ func (s *Server) portalActionHandler(w http.ResponseWriter, r *http.Request) {
 		Instructions: grantedTunnel.Instructions,
 		DocsURL:      grantedTunnel.DocsURL,
 		IsSocks:      cfg.IsSocks(),
+		BrowserSocks: cfg.IsBrowserSocks(),
 		Portal:       cfg.Portal,
 	}
 
@@ -227,6 +229,7 @@ func (s *Server) WireGuardPortalHandler() http.Handler {
 				Instructions: t.Instructions,
 				DocsURL:      t.DocsURL,
 				IsSocks:      t.IsSocks(),
+				BrowserSocks: t.IsBrowserSocks(),
 				Portal:       t.Portal,
 			})
 		}

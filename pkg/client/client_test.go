@@ -1100,10 +1100,12 @@ func newSocksTestConnection() *Connection {
 	return &Connection{
 		Response: protocol.AuthResponse{Tunnels: []protocol.Tunnel{
 			{Name: "egress", TargetHint: "socks"},
+			{Name: "corporate", TargetHint: "external_socks"},
 			{Name: "database", TargetHint: "postgres.internal:5432"},
 		}},
 		tunnels: []*localTunnel{
 			{name: "egress", virtualPort: 11080, localAddr: "127.0.0.1:51080"},
+			{name: "corporate", virtualPort: 11081, localAddr: "127.0.0.1:51081"},
 			{name: "database", virtualPort: 15432, localAddr: "127.0.0.1:55432"},
 		},
 	}
@@ -1114,6 +1116,9 @@ func TestSocksTunnelLocalAddr(t *testing.T) {
 	addr, err := c.socksTunnelLocalAddr("egress")
 	if err != nil || addr != "127.0.0.1:51080" {
 		t.Fatalf("socksTunnelLocalAddr(egress) = (%q, %v)", addr, err)
+	}
+	if addr, err := c.socksTunnelLocalAddr("corporate"); err != nil || addr != "127.0.0.1:51081" {
+		t.Fatalf("socksTunnelLocalAddr(external) = (%q, %v)", addr, err)
 	}
 	if _, err := c.socksTunnelLocalAddr("database"); err == nil {
 		t.Fatal("socksTunnelLocalAddr(database) should reject a non-SOCKS tunnel")

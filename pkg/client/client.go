@@ -1318,7 +1318,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 			c.log.Warn("tunnel listener fell back from its requested local address", fields...)
 		}
 		target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
-		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, protocol: "tcp", socks: t.TargetHint == "socks", localAddr: bound, target: target}
+		lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, listener: l, protocol: "tcp", socks: protocol.IsBrowserSocksTarget(t.TargetHint), localAddr: bound, target: target}
 		c.tunnels = append(c.tunnels, lt)
 		c.LocalAddresses = append(c.LocalAddresses, bound)
 		c.log.Debug("tunnel listener bound", "tunnel", t.Name, "local_address", bound, "target", target)
@@ -2481,7 +2481,7 @@ func (c *Connection) grantedByName() map[string]protocol.Tunnel {
 
 // socksTunnelLocalAddr returns the bound loopback address of the named
 // tunnel, or an error naming why it can't back a browser proxy: unknown
-// name, or a tunnel that isn't a `target: socks` proxy -- opening a plain
+// name, or a tunnel that isn't a browser-capable SOCKS proxy -- opening a plain
 // port-forward tunnel as a browser's proxy would silently break it.
 func (c *Connection) socksTunnelLocalAddr(name string) (string, error) {
 	c.mu.Lock()
@@ -2491,7 +2491,7 @@ func (c *Connection) socksTunnelLocalAddr(name string) (string, error) {
 		if t.name != name {
 			continue
 		}
-		if granted[t.name].TargetHint != "socks" {
+		if !protocol.IsBrowserSocksTarget(granted[t.name].TargetHint) {
 			return "", fmt.Errorf("tunnel %q is not a SOCKS proxy", name)
 		}
 		return t.localAddr, nil

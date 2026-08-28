@@ -12,6 +12,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/tray/icons"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
 // maxProfiles and maxTunnelsPerProfile bound the fixed pool of menu items
@@ -388,7 +389,7 @@ func (m *menu) renderBrowserTunnels(slot *profileSlot, snap manager.Snapshot) {
 	var tunnels []client.ListenerState
 	if snap.Connection != nil {
 		for _, t := range snap.Connection.Tunnels {
-			if t.TargetHint == "socks" {
+			if protocol.IsBrowserSocksTarget(t.TargetHint) {
 				tunnels = append(tunnels, t)
 			}
 		}

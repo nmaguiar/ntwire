@@ -110,6 +110,7 @@ func runPortalDescribe(args []string, u *ui.UI) {
 					Instructions: t.Instructions,
 					DocsURL:      t.DocsURL,
 					IsSocks:      t.IsSocks(),
+					BrowserSocks: t.IsBrowserSocks(),
 					Portal:       t.Portal,
 				})
 			}
@@ -162,6 +163,7 @@ func runPortalPrompt(args []string, u *ui.UI) {
 			Instructions: t.Instructions,
 			DocsURL:      t.DocsURL,
 			IsSocks:      t.IsSocks(),
+			BrowserSocks: t.IsBrowserSocks(),
 			Portal:       t.Portal,
 		})
 	}
@@ -277,6 +279,7 @@ func runPortalRender(args []string, u *ui.UI) {
 			Instructions: t.Instructions,
 			DocsURL:      t.DocsURL,
 			IsSocks:      t.IsSocks(),
+			BrowserSocks: t.IsBrowserSocks(),
 			Portal:       t.Portal,
 		})
 	}
