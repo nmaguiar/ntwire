@@ -292,11 +292,11 @@ throughout this document.
    ```
    See [CONFIGURATION.md#socks-proxy-tunnels](CONFIGURATION.md#socks-proxy-tunnels).
 
-3. **External SOCKS tunnel** (`target: external_socks`) — point a SOCKS5-aware
-   client at `<server tunnel IP>:<virtual_port>`. ntwire transparently carries
-   the SOCKS5 stream to the configured external endpoint; destination policy
-   covers that endpoint, not the destinations inside its SOCKS requests. It
-   supports neither PAC, BIND, nor UDP ASSOCIATE.
+3. **Transparent upstream SOCKS tunnel** (`target: socks` with
+   `socks.transparent: true`) — point a SOCKS5-aware client at `<server tunnel
+   IP>:<virtual_port>`. ntwire transparently carries the SOCKS5 stream to
+   `socks.upstream`; the upstream controls destination policy and DNS. It
+   supports neither ntwire filtering, BIND, nor UDP ASSOCIATE.
 
 4. **UDP tunnel** (`protocol: udp`) — send datagrams to the displayed local
    `local_host:local_port`. ntwire keeps an isolated upstream mapping for each

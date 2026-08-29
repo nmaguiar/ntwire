@@ -3,6 +3,7 @@ package server
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -18,10 +19,18 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 		"timeout:", "tunnel_cidr:", "advertised_endpoint:", "virtual_port:",
 		"local_port:", "local_host:", "allow:", "target:", "description:", "log_file:",
 		"instructions:", "docs_url:", "advertise_direct:", "direct_clients:", "multipath:",
+		"destination_policies:", "protocols:", "ports:", "native_wireguard:", "public_key:",
+		"masque:", "http2_url:", "match_domains:", "certificate_ttl:", "transparent:",
+		"upstream:", "udp_idle_timeout:", "portal:", "applications:", "variables:",
 	} {
-		if !strings.Contains(sample, option) {
+		key := strings.TrimSuffix(option, ":")
+		pattern := `(?m)^\s*(?:#\s*)?` + regexp.QuoteMeta(key) + `\s*:`
+		if !regexp.MustCompile(pattern).MatchString(sample) {
 			t.Errorf("sample configuration is missing %q", option)
 		}
+	}
+	if strings.Contains(sample, "[]") {
+		t.Error("sample configuration must use block-style YAML arrays")
 	}
 
 	path := filepath.Join(t.TempDir(), "ntwire.yaml")
@@ -31,6 +40,40 @@ func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatalf("LoadConfig(SampleConfig()) failed: %v", err)
 	}
+}
+
+func TestTransparentSocksConfigValidation(t *testing.T) {
+	valid := `
+auth:
+  authorized_keys_dir: keys
+tunnels:
+- name: corporate-egress
+  target: socks
+  virtual_port: 11080
+  socks:
+    transparent: true
+    upstream: socks5h://proxy.example:1080
+`
+	got, err := ParseConfig([]byte(valid), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseConfig(transparent SOCKS): %v", err)
+	}
+	if !got.Tunnels[0].Socks.Transparent || got.Tunnels[0].Socks.Upstream != "socks5h://proxy.example:1080" {
+		t.Fatalf("transparent SOCKS tunnel = %+v", got.Tunnels[0])
+	}
+
+	for name, invalid := range map[string]string{
+		"missing upstream": strings.Replace(valid, "    upstream: socks5h://proxy.example:1080\n", "", 1),
+		"filter":           valid + "    filters:\n    - 10.0.0.0/8\n",
+		"UDP":              valid + "    udp_idle_timeout: 2m\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseConfig([]byte(invalid), t.TempDir()); err == nil {
+				t.Fatal("ParseConfig accepted invalid transparent SOCKS configuration")
+			}
+		})
+	}
+
 }
 
 func TestMultipathEnabledDefaultsOnAndCanBeDisabled(t *testing.T) {
@@ -420,55 +463,6 @@ tunnels:
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("LoadConfig accepted target: socks without a socks: block")
-	}
-}
-
-func TestExternalSocksConfigValidation(t *testing.T) {
-	valid := `
-auth:
-  authorized_keys_dir: keys
-tunnels:
-  - name: corporate-egress
-    target: external_socks
-    virtual_port: 11080
-    external_socks:
-      url: socks5://proxy.example:1080
-`
-	got, err := ParseConfig([]byte(valid), t.TempDir())
-	if err != nil {
-		t.Fatalf("ParseConfig(valid external_socks): %v", err)
-	}
-	if !got.Tunnels[0].IsExternalSocks() || !got.Tunnels[0].IsBrowserSocks() || got.Tunnels[0].Protocol != "tcp" {
-		t.Fatalf("external SOCKS tunnel = %+v", got.Tunnels[0])
-	}
-
-	for name, replacement := range map[string]string{
-		"missing block":      "",
-		"wrong scheme":       "    external_socks:\n      url: socks://proxy.example:1080\n",
-		"credentials":        "    external_socks:\n      url: socks5://user:pass@proxy.example:1080\n",
-		"path":               "    external_socks:\n      url: socks5://proxy.example:1080/path\n",
-		"query":              "    external_socks:\n      url: socks5://proxy.example:1080?x=1\n",
-		"fragment":           "    external_socks:\n      url: socks5://proxy.example:1080#x\n",
-		"missing port":       "    external_socks:\n      url: socks5://proxy.example\n",
-		"invalid port":       "    external_socks:\n      url: socks5://proxy.example:70000\n",
-		"udp":                "    external_socks:\n      url: socks5://proxy.example:1080\n    protocol: udp\n",
-		"embedded socks mix": "    socks: {}\n    external_socks:\n      url: socks5://proxy.example:1080\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg := valid
-			if replacement == "" {
-				cfg = strings.Replace(valid, "    external_socks:\n      url: socks5://proxy.example:1080\n", "", 1)
-			} else {
-				cfg = strings.Replace(valid, "    external_socks:\n      url: socks5://proxy.example:1080\n", replacement, 1)
-			}
-			if _, err := ParseConfig([]byte(cfg), t.TempDir()); err == nil {
-				t.Fatal("ParseConfig accepted invalid external_socks configuration")
-			}
-		})
-	}
-
-	if _, err := ParseConfig([]byte(strings.Replace(valid, "    target: external_socks\n", "    target: proxy.example:1080\n", 1)), t.TempDir()); err == nil {
-		t.Fatal("ParseConfig accepted external_socks block on a fixed target")
 	}
 }
 
