@@ -13,9 +13,10 @@
   navToggle?.addEventListener("click", () => { const open = nav.classList.toggle("open"); navToggle.setAttribute("aria-expanded", String(open)); });
   const platforms = { darwin: "macOS", windows: "Windows", linux: "Linux" };
   function platform() { const ua = navigator.userAgent.toLowerCase(); if (/mac|iphone|ipad/.test(ua)) return "darwin"; if (/win/.test(ua)) return "windows"; if (/linux|x11/.test(ua)) return "linux"; return null; }
-  function architecture() { const ua = navigator.userAgent.toLowerCase(); if (/arm64|aarch64/.test(ua)) return "arm64"; return "amd64"; }
+  function architecture() { const ua = navigator.userAgent.toLowerCase(); return /arm64|aarch64/.test(ua) ? "arm64" : "amd64"; }
   function bytes(size) { if (!size) return ""; const units = ["B", "KB", "MB", "GB"]; let i = 0, n = size; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; }
   function assetLabel(asset) { return `${platforms[asset.os] || asset.os} · ${asset.arch === "amd64" ? "Intel/AMD" : "Apple silicon / ARM"}`; }
+  function binary(asset) { return asset.binary || "ntwire-gui"; }
   async function releases() {
     const targets = document.querySelectorAll("[data-recommended-download], [data-download-list], [data-release-version]");
     if (!targets.length) return;
@@ -27,17 +28,14 @@
       document.querySelectorAll("[data-release-version]").forEach((el) => { el.textContent = data.version ? `Latest: ${data.version}` : "Latest release"; });
       document.querySelectorAll("[data-release-url]").forEach((el) => { el.href = data.releaseUrl || "https://github.com/nmaguiar/ntwire/releases/latest"; });
       const os = platform(), arch = architecture();
-      let suggested = assets.find((asset) => asset.os === os && asset.arch === arch);
-      if (!suggested && os === "darwin") suggested = assets.find((asset) => asset.os === "darwin" && asset.arch === "arm64");
-      document.querySelectorAll("[data-recommended-download]").forEach((el) => {
-        if (!suggested) { el.href = data.releaseUrl || "https://github.com/nmaguiar/ntwire/releases/latest"; el.textContent = "View downloads on GitHub"; return; }
-        el.href = suggested.url; el.textContent = `Download ntwire-gui for ${assetLabel(suggested)}`;
-      });
+      let suggested = assets.find((asset) => binary(asset) === "ntwire-gui" && asset.os === os && asset.arch === arch);
+      if (!suggested && os === "darwin") suggested = assets.find((asset) => binary(asset) === "ntwire-gui" && asset.os === "darwin" && asset.arch === "arm64");
+      document.querySelectorAll("[data-recommended-download]").forEach((el) => { if (!suggested) { el.href = data.releaseUrl || "https://github.com/nmaguiar/ntwire/releases/latest"; el.textContent = "View downloads on GitHub"; return; } el.href = suggested.url; el.textContent = `Download ntwire-gui for ${assetLabel(suggested)}`; });
       document.querySelectorAll("[data-recommendation-copy]").forEach((el) => { el.textContent = suggested ? `Recommended for this device: ${assetLabel(suggested)}${data.version ? ` · ${data.version}` : ""}.` : "Choose a download for your device."; });
       document.querySelectorAll("[data-download-list]").forEach((list) => {
         list.replaceChildren();
-        if (!assets.length) { list.innerHTML = `<tr><td colspan="3">A GUI release has not been published yet. <a href="${data.releaseUrl || "https://github.com/nmaguiar/ntwire/releases/latest"}">View releases on GitHub</a>.</td></tr>`; return; }
-        assets.sort((a,b) => `${a.os}-${a.arch}`.localeCompare(`${b.os}-${b.arch}`)).forEach((asset) => { const row = document.createElement("tr"); const name = document.createElement("td"); name.textContent = assetLabel(asset); const size = document.createElement("td"); size.textContent = bytes(asset.size); const linkCell = document.createElement("td"); const link = document.createElement("a"); link.href = asset.url; link.className = "button small"; link.textContent = "Download"; linkCell.append(link); row.append(name, size, linkCell); list.append(row); });
+        if (!assets.length) { list.innerHTML = `<tr><td colspan="4">A release has not been published yet. <a href="${data.releaseUrl || "https://github.com/nmaguiar/ntwire/releases/latest"}">View releases on GitHub</a>.</td></tr>`; return; }
+        assets.sort((a, b) => `${binary(a)}-${a.os}-${a.arch}`.localeCompare(`${binary(b)}-${b.os}-${b.arch}`)).forEach((asset) => { const row = document.createElement("tr"); const name = document.createElement("td"); name.textContent = binary(asset); const platformCell = document.createElement("td"); platformCell.textContent = assetLabel(asset); const size = document.createElement("td"); size.textContent = bytes(asset.size); const linkCell = document.createElement("td"); const link = document.createElement("a"); link.href = asset.url; link.className = "button small"; link.textContent = "Download"; linkCell.append(link); row.append(name, platformCell, size, linkCell); list.append(row); });
       });
       document.querySelectorAll("[data-checksum-url]").forEach((el) => { if (data.checksumUrl) { el.href = data.checksumUrl; el.hidden = false; } });
     } catch { document.querySelectorAll("[data-recommendation-copy]").forEach((el) => { el.textContent = "Open the latest GitHub release to choose your download."; }); }

@@ -42,7 +42,7 @@ jobs:
         uses: actions/configure-pages@v5
       - name: Validate static site
         run: node web/check.mjs
-      - name: Build latest GUI download manifest
+      - name: Build latest download manifest
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,9 +54,9 @@ jobs:
               checksumUrl: (([.assets[] | select(.name | test("checksums?\\.txt$"; "i")) | .browser_download_url] | first) // null),
               assets: [
                 .assets[] as $asset
-                | select($asset.name | test("^ntwire-gui_v?[^_]+_(darwin|linux|windows)_(amd64|arm64)\\.(tar\\.gz|zip)$"))
-                | ($asset.name | capture("^ntwire-gui_v?[^_]+_(?<os>darwin|linux|windows)_(?<arch>amd64|arm64)\\.(tar\\.gz|zip)$")) as $match
-                | {os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}
+                | select($asset.name | test("^ntwire(?:-server|-relay|-gui)?_v?[^_]+_(darwin|linux|windows)_(amd64|arm64)\\.(tar\\.gz|zip)$"))
+                | ($asset.name | capture("^(?<binary>ntwire(?:-server|-relay|-gui)?)_v?[^_]+_(?<os>darwin|linux|windows)_(?<arch>amd64|arm64)\\.(tar\\.gz|zip)$")) as $match
+                | {binary: $match.binary, os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}
               ]
             }' /tmp/ntwire-release.json > web/assets/release.json
           else
