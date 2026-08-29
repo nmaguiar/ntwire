@@ -8,6 +8,20 @@
   function renderTheme() { if (theme) theme.textContent = `Theme: ${labels[currentTheme()]}`; }
   theme?.addEventListener("click", () => { const next = { system: "light", light: "dark", dark: "system" }[currentTheme()]; localStorage.setItem("ntwire-theme", next); if (next === "system") delete root.dataset.theme; else root.dataset.theme = next; renderTheme(); });
   renderTheme();
+  function fallbackCopy(text) {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.cssText = "position:fixed;left:0;top:0;opacity:0";
+    document.body.append(textarea);
+    textarea.focus();
+    textarea.select();
+    textarea.setSelectionRange(0, textarea.value.length);
+    let copied = false;
+    try { copied = document.execCommand("copy"); } catch { /* Clipboard access is unavailable. */ }
+    textarea.remove();
+    return copied;
+  }
   document.querySelectorAll(".install-command code").forEach((code) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -15,12 +29,18 @@
     button.textContent = code.textContent;
     button.setAttribute("aria-label", `Copy command: ${code.textContent}`);
     button.addEventListener("click", async () => {
+      let copied = false;
       try {
         await navigator.clipboard.writeText(code.textContent);
-        button.classList.add("copied");
-        button.setAttribute("aria-label", "Copied command");
-        setTimeout(() => { button.classList.remove("copied"); button.setAttribute("aria-label", `Copy command: ${code.textContent}`); }, 1600);
-      } catch { window.prompt("Copy this command:", code.textContent); }
+        copied = true;
+      } catch { copied = fallbackCopy(code.textContent); }
+      button.classList.toggle("copied", copied);
+      button.classList.toggle("copy-failed", !copied);
+      button.setAttribute("aria-label", copied ? "Copied command" : "Unable to copy command");
+      setTimeout(() => {
+        button.classList.remove("copied", "copy-failed");
+        button.setAttribute("aria-label", `Copy command: ${code.textContent}`);
+      }, 1600);
     });
     code.replaceWith(button);
   });
