@@ -8,6 +8,22 @@
   function renderTheme() { if (theme) theme.textContent = `Theme: ${labels[currentTheme()]}`; }
   theme?.addEventListener("click", () => { const next = { system: "light", light: "dark", dark: "system" }[currentTheme()]; localStorage.setItem("ntwire-theme", next); if (next === "system") delete root.dataset.theme; else root.dataset.theme = next; renderTheme(); });
   renderTheme();
+  document.querySelectorAll(".install-command code").forEach((code) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "install-command-copy";
+    button.textContent = code.textContent;
+    button.setAttribute("aria-label", `Copy command: ${code.textContent}`);
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(code.textContent);
+        button.classList.add("copied");
+        button.setAttribute("aria-label", "Copied command");
+        setTimeout(() => { button.classList.remove("copied"); button.setAttribute("aria-label", `Copy command: ${code.textContent}`); }, 1600);
+      } catch { window.prompt("Copy this command:", code.textContent); }
+    });
+    code.replaceWith(button);
+  });
   const navToggle = document.querySelector("[data-nav-toggle]");
   const nav = document.querySelector("[data-nav]");
   navToggle?.addEventListener("click", () => { const open = nav.classList.toggle("open"); navToggle.setAttribute("aria-expanded", String(open)); });

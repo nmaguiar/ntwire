@@ -1,9 +1,9 @@
 #!/bin/bash
-# Downloads and installs the latest 'ntwire-server' release for the current OS/architecture.
+# Downloads and installs the latest 'ntwire' release for the current OS/architecture.
 # https://github.com/nmaguiar/ntwire
 # Author: Nuno Aguiar
 #
-# Usage: ./ntwire-server.sh [-d|--download-only] [-o|--output-dir <dir>]
+# Usage: ./get.sh [-d|--download-only] [-o|--output-dir <dir>]
 #
 # Env vars:
 #   INSTALL_DIR   - where to install the binary (default: /usr/local/bin)
@@ -17,7 +17,7 @@
 set -e
 
 REPO="nmaguiar/ntwire"
-BIN="ntwire-server"
+BIN="ntwire"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 DOWNLOAD_ONLY="${DOWNLOAD_ONLY:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-.}"
