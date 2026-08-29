@@ -501,7 +501,9 @@ tunnels:
     icon: "chart"
     url: ""                                # optional absolute http(s) URL for a browser action
     socks_tunnel: ""                       # optional name of an authorized embedded SOCKS tunnel for the browser action
-    applications: []
+    applications:
+    # - chrome
+    # - firefox
   allow:
   - "*"                                # any authenticated identity
   # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
@@ -545,17 +547,6 @@ tunnels:
 #     applications:                       # application IDs offered for this target
 #     - chrome
 #     - firefox
-
-# Optional Portal landing page and separate web listener.
-portal:
-  enabled      : false
-  title        : ntwire Portal
-  template     : ""                             # inline template or a path relative to this YAML file
-  variables    :                                # string substitutions exposed to the portal template
-  # environment  : production
-  web          :
-    enabled: false
-    listen : ""                           # required host:port when portal.web.enabled is true
 
 log:
   format: text                             # text or json (Logstash-format, for fluent-bit/Logstash); container images default to json via NTWIRE_LOG_FORMAT
