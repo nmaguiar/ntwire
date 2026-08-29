@@ -9,6 +9,12 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
+  # The GUI macOS artifact is uploaded after GoReleaser finishes. Waiting for
+  # the whole Release workflow means the manifest below sees every GUI asset.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
@@ -24,6 +30,7 @@ concurrency:
 jobs:
   # Single deploy job since we're just deploying
   deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -33,6 +40,28 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      - name: Validate static site
+        run: node web/check.mjs
+      - name: Build latest GUI download manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > /tmp/ntwire-release.json; then
+            jq '{
+              version: .tag_name,
+              publishedAt: .published_at,
+              releaseUrl: .html_url,
+              checksumUrl: (([.assets[] | select(.name | test("checksums?\\.txt$"; "i")) | .browser_download_url] | first) // null),
+              assets: [
+                .assets[] as $asset
+                | select($asset.name | test("^ntwire-gui_v?[^_]+_(darwin|linux|windows)_(amd64|arm64)\\.(tar\\.gz|zip)$"))
+                | ($asset.name | capture("^ntwire-gui_v?[^_]+_(?<os>darwin|linux|windows)_(?<arch>amd64|arm64)\\.(tar\\.gz|zip)$")) as $match
+                | {os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}
+              ]
+            }' /tmp/ntwire-release.json > web/assets/release.json
+          else
+            echo "No published release yet; using the committed fallback manifest."
+          fi
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
