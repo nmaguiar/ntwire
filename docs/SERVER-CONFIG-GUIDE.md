@@ -2,6 +2,26 @@
 
 Complete reference for ntwire-server YAML configuration.
 
+## Low-context LLM skill
+
+Generate a portable `ntwire-server-config` folder with:
+
+```sh
+ntwire-server -write-config-skill /path/to/ntwire-server-config
+```
+
+The folder contains a short `SKILL.md`, feature references that an agent loads only when needed, the complete reference, and the strict JSON Schema. Move the whole generated folder to one of these locations:
+
+| Tool | Skill folder |
+| --- | --- |
+| VS Code / GitHub Copilot | `.github/skills/ntwire-server-config/` |
+| Claude Code | `.claude/skills/ntwire-server-config/` |
+| Codex | `~/.codex/skills/ntwire-server-config/` |
+| Google Antigravity (`agy`) | `.agents/skills/ntwire-server-config/` |
+| mini-a | `~/.openaf-mini-a/skills/ntwire-server-config/` |
+
+Restart or refresh the agent after copying the folder. Regenerate it after upgrading the ntwire binary; it requires neither this repository nor network access.
+
 ## LLM configuration checklist
 
 Collect unanswered required choices before producing YAML. Retain the displayed YAML style and key spelling; never invent keys or secrets. Validate the conditional rules below before returning YAML. JSON Schema validates YAML after conversion to JSON; the binary remains the final semantic validator.
@@ -110,6 +130,18 @@ authorizer:
 admin:
   web_ui_token: ""                         # optional secret that enables the server dashboard at /?token=...; leave empty to disable it
 
+# The optional Portal presents only the tunnels the authenticated user may
+# access. The native ntwire client renders it when enabled; web adds an HTTP
+# listener inside the WireGuard overlay, never a public listener.
+portal:
+  enabled: false
+  title: "Internal Services Portal"
+  template: ""                              # empty uses the safe built-in template; otherwise inline Markdown or a path relative to this YAML file
+  variables: {}
+  web:
+    enabled: false
+    listen: ""                              # required overlay host:port (for example 100.64.0.1:8080) when web.enabled is true
+
 # A tunnel's instructions can also be kept in its own file: a single-line
 # instructions value with no newline (e.g. "instructions: examples/instructions/ssh.md")
 # is tried as a file path, and if it names an existing file, that file's
@@ -133,6 +165,14 @@ tunnels:
 
       Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
       .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
+    portal:                                  # optional presentation metadata when portal.enabled is true
+      name: "Reports"
+      description: "Reporting service"
+      category: "Operations"
+      icon: "chart"
+      url: ""                                # optional absolute http(s) URL for a browser action
+      socks_tunnel: ""                       # optional name of an authorized embedded SOCKS tunnel for the browser action
+      applications: []
     allow:
       - "*"                                # any authenticated identity
       # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)

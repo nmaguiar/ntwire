@@ -185,11 +185,16 @@ func ConfigGuide() (string, error) { return relayGuide().Markdown() }
 // ConfigJSONSchema renders the strict Draft 2020-12 schema used by tooling.
 func ConfigJSONSchema() ([]byte, error) { return relayGuide().JSONSchema() }
 
+// WriteConfigSkill creates a portable, low-context Agent Skill folder for
+// generating and reviewing ntwire-relay configuration.
+func WriteConfigSkill(dir string) error { return relayGuide().WriteSkill(dir) }
+
 func relayGuide() configguide.Guide {
 	return configguide.Guide{
 		Title:       "ntwire-relay configuration guide",
 		Description: "Complete reference for ntwire-relay YAML configuration.",
 		Sample:      SampleConfig(), Root: Config{},
+		Skill: relayConfigSkill(),
 		QA: []configguide.QA{
 			{Question: "What domain and TLS are required?", Answer: "Set domain to the wildcard suffix and configure TLS for listen.agents; public client TLS is spliced, never terminated."},
 			{Question: "Which listeners are needed?", Answer: "listen.public and listen.agents have defaults. reflect and udp_relay are optional UDP services."},
@@ -214,6 +219,103 @@ func relayGuide() configguide.Guide {
 			"limits.max_udp_relay_sessions_per_server": {"default": 64, "minimum": 1},
 			"kubernetes.namespaces.mode":               {"enum": []string{"all", "selected"}, "default": "all"},
 			"log.format":                               {"enum": []string{"text", "json"}, "default": "text"}, "log.level": {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
+		},
+	}
+}
+
+func relayConfigSkill() configguide.Skill {
+	return configguide.Skill{
+		Name:        "ntwire-relay-config",
+		Description: "Generate or review safe ntwire-relay YAML from a user's public relay, tenant registration, UDP, capacity, and Kubernetes requirements.",
+		Binary:      "ntwire-relay",
+		Workflow: []string{
+			"Read references/core.md, then match the requested capability to one additional reference below. Do not preload unrelated references.",
+			"Ask only for missing values required by the selected feature. If an existing YAML file is supplied, preserve unrelated fields and report assumptions separately.",
+			"Return the proposed YAML or a minimal patch, the unresolved choices, and any DNS, certificate, firewall, or key-installation work that remains. Never put private keys, bearer tokens, or a real registration public-key value in generated YAML.",
+			"Validate the resulting file with ntwire-relay -check-config -config <path> before deployment.",
+		},
+		References: []configguide.SkillReference{
+			{Path: "references/core.md", When: "public relay, wildcard domain, TLS, or basic listeners", Content: `# Core relay configuration
+
+Ask for the wildcard client domain, public TCP listener, server-agent listener, and TLS certificate source. The public listener only splices client TLS based on SNI; the relay does not terminate it. TLS settings apply to listen.agents.
+
+~~~yaml
+listen:
+  public: ":443"
+  agents: ":8444"
+tls:
+  cert_file: "/etc/ntwire/agents.crt"
+  key_file: "/etc/ntwire/agents.key"
+domain: "relay.example.com"
+~~~
+
+domain is required and must be a normalized DNS name. A tenant named home is reached as home.relay.example.com when it has a matching registration. Set cert_file and key_file together, or leave both empty only when generated TLS is acceptable.`},
+			{Path: "references/registrations.md", When: "tenant, server registration, dedicated listener, or native WireGuard endpoint", Content: `# Tenant registrations
+
+Ask for every tenant's lowercase DNS-label name, an operator-provided SSH public key, and whether it needs a dedicated TCP listener or native WireGuard UDP endpoint. A registration authorizes one server identity to claim the tenant name.
+
+~~~yaml
+registrations:
+  - name: "home"
+    public_key: "<operator-provided-ssh-public-key>"
+    listen: ""
+    native_wireguard:
+      listen: ""
+~~~
+
+The ntwire-server relay.name and relay.identity_file must match this registration. A non-empty registration.listen bypasses the shared wildcard DNS and SNI route. Do not use a placeholder key as a deployed value.`},
+			{Path: "references/udp.md", When: "direct UDP discovery, UDP relay, firewall range, or UDP socket tuning", Content: `# UDP features
+
+Ask whether the deployment needs direct-address discovery, relayed UDP data, or both. listen.reflect supports direct-UDP discovery only for servers that explicitly set relay.advertise_direct: true; it can expose the server's mapped address. listen.udp_relay keeps the relay in the data path and requires an open, sized server-leg port range.
+
+~~~yaml
+listen:
+  reflect: ":3480"
+  udp_relay: ":3481"
+  udp_relay_ports: "40000-40999"
+  udp_buffer_bytes: 4194304
+limits:
+  udp_relay_idle_timeout: 60s
+  max_udp_relay_sessions_per_server: 64
+~~~
+
+When udp_relay is set, udp_relay_ports is mandatory and every port in the inclusive range is bound at startup. The firewall must allow the shared client port and the entire server-leg range. Keep reflect empty unless direct discovery is explicitly wanted.`},
+			{Path: "references/capacity.md", When: "tenant limits, rate limits, connection capacity, or relay sizing", Content: `# Capacity and limits
+
+Ask for expected concurrent client connections, peak new connections per minute per source IP, and expected simultaneous UDP-relay sessions per tenant. Size the UDP port range and max_udp_relay_sessions_per_server together; neither setting alone establishes capacity.
+
+~~~yaml
+limits:
+  handshake_timeout: 5s
+  dial_back_timeout: 10s
+  max_pending_per_server: 32
+  max_conns_per_server: 256
+  max_new_conns_per_minute: 60
+  udp_relay_idle_timeout: 60s
+  max_udp_relay_sessions_per_server: 64
+~~~
+
+These limits fail closed under load. Do not increase them without confirming file-descriptor, CPU, memory, and firewall capacity.`},
+			{Path: "references/kubernetes.md", When: "Kubernetes Service discovery", Content: `# Kubernetes Service discovery
+
+Use Kubernetes discovery only when the relay should route to selected Services instead of, or alongside, authenticated outbound server registrations. Ask for the namespaces, namespace selector, Service selector, named Service port, and the hostname annotation. It is TCP TLS-passthrough only; it does not enable native WireGuard or UDP discovery.
+
+~~~yaml
+kubernetes:
+  enabled: true
+  namespaces:
+    mode: "selected"
+    names: ["production"]
+    selector: ""
+  service:
+    selector: "app.kubernetes.io/name=ntwire-server"
+    port_name: "ntwire-relay"
+  registration:
+    hostname_annotation: "ntwire.io/hostname"
+    tenant_annotation: "ntwire.io/tenant"
+~~~
+
+When enabled, service.selector and service.port_name are required. With namespaces.mode set to selected, provide names or a selector. The selected Service also needs ntwire.io/relay-enabled=true and a valid hostname annotation.`},
 		},
 	}
 }

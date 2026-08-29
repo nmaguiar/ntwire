@@ -60,10 +60,16 @@ ntwire connect \
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.
-For LLM-assisted or validator workflows, use the checked-in
-[server configuration guide](SERVER-CONFIG-GUIDE.md), or generate it with
-`ntwire-server -print-config-guide`. Add
-`-config-guide-format=json-schema` to print raw Draft 2020-12 JSON Schema.
+For LLM-assisted configuration, generate the compact, portable Agent Skill
+folder with `ntwire-server -write-config-skill /path/to/ntwire-server-config`.
+It keeps Portal, tunnel, relay, native-WireGuard, and MASQUE guidance in
+on-demand references, with the complete reference and Draft 2020-12 schema as
+fallbacks. Move that one folder to the relevant VS Code, Claude Code, Codex,
+Google Antigravity, or mini-a skills directory listed in the generated
+[server configuration guide](SERVER-CONFIG-GUIDE.md). Use
+`ntwire-server -check-config -config path/to/ntwire.yaml` to validate generated
+YAML without starting listeners. `-print-config-guide` prints the complete
+human reference, and `-config-guide-format=json-schema` prints only its schema.
 At least one of `auth.authorized_keys_dir`, `auth.oidc.issuers`, or
 `native_wireguard.enabled: true` is required.
 

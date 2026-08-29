@@ -2,6 +2,26 @@
 
 Complete reference for ntwire-relay YAML configuration.
 
+## Low-context LLM skill
+
+Generate a portable `ntwire-relay-config` folder with:
+
+```sh
+ntwire-relay -write-config-skill /path/to/ntwire-relay-config
+```
+
+The folder contains a short `SKILL.md`, feature references that an agent loads only when needed, the complete reference, and the strict JSON Schema. Move the whole generated folder to one of these locations:
+
+| Tool | Skill folder |
+| --- | --- |
+| VS Code / GitHub Copilot | `.github/skills/ntwire-relay-config/` |
+| Claude Code | `.claude/skills/ntwire-relay-config/` |
+| Codex | `~/.codex/skills/ntwire-relay-config/` |
+| Google Antigravity (`agy`) | `.agents/skills/ntwire-relay-config/` |
+| mini-a | `~/.openaf-mini-a/skills/ntwire-relay-config/` |
+
+Restart or refresh the agent after copying the folder. Regenerate it after upgrading the ntwire binary; it requires neither this repository nor network access.
+
 ## LLM configuration checklist
 
 Collect unanswered required choices before producing YAML. Retain the displayed YAML style and key spelling; never invent keys or secrets. Validate the conditional rules below before returning YAML. JSON Schema validates YAML after conversion to JSON; the binary remains the final semantic validator.

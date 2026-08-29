@@ -62,6 +62,8 @@ func main() {
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
 	printConfigGuide := flag.Bool("print-config-guide", false, "print the self-contained Markdown configuration guide and exit")
 	configGuideFormat := flag.String("config-guide-format", "markdown", "format for -print-config-guide: markdown or json-schema")
+	writeConfigSkill := flag.String("write-config-skill", "", "create a self-contained Agent Skill folder at this new directory and exit")
+	checkConfig := flag.Bool("check-config", false, "validate the configuration and exit without starting listeners")
 	printVersion := flag.Bool("version", false, "print the build version and exit")
 	generateRelayKey := flag.String("generate-relay-key", "", "generate an Ed25519 identity for relay.identity_file at this path, print setup instructions, and exit")
 	generateWireGuardKey := flag.String("generate-wireguard-key", "", "generate a WireGuard key pair at this path (and path.pub) for a native_wireguard peer, print setup instructions, and exit")
@@ -97,6 +99,8 @@ func main() {
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -print-config-guide > docs/server-config-guide.md",
 				"ntwire-server -print-config-guide -config-guide-format=json-schema > server-config.schema.json",
+				"ntwire-server -write-config-skill .github/skills/ntwire-server-config",
+				"ntwire-server -check-config -config ntwire.yaml",
 				"ntwire-server -print-wireguard-config -config ntwire.yaml",
 				"ntwire-server -print-wireguard-conf -config ntwire.yaml > client.conf",
 				"ntwire-server -print-wireguard-qr -config ntwire.yaml",
@@ -110,6 +114,14 @@ func main() {
 	flag.Parse()
 	if *printVersion {
 		fmt.Println(buildinfo.String())
+		return
+	}
+	if *checkConfig {
+		if _, err := server.LoadConfig(*config); err != nil {
+			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Printf("configuration is valid: %s\n", *config)
 		return
 	}
 	if *listFlag {
@@ -149,6 +161,14 @@ func main() {
 			os.Exit(2)
 		}
 		fmt.Print(out)
+		return
+	}
+	if *writeConfigSkill != "" {
+		if err := server.WriteConfigSkill(*writeConfigSkill); err != nil {
+			fmt.Fprintf(os.Stderr, "configuration skill error: %v\n", err)
+			os.Exit(2)
+		}
+		fmt.Printf("wrote configuration skill: %s\n", *writeConfigSkill)
 		return
 	}
 	if *generateRelayKey != "" {
