@@ -169,6 +169,18 @@ Run `ntwire-relay --config path/to/ntwire-relay.yaml`; the default path is
 for a complete, commented template. A relay serves multiple tenants under one
 wildcard DNS domain, each identified by a first DNS label:
 
+For LLM-assisted configuration, generate the compact, portable Agent Skill
+folder with `ntwire-relay -write-config-skill /path/to/ntwire-relay-config`.
+It keeps tenant registration, UDP, capacity, and Kubernetes guidance in
+on-demand references, with the complete reference and strict schema as
+fallbacks. Move that one folder to the relevant VS Code, Claude Code, Codex,
+Google Antigravity, or mini-a skills directory listed in the generated
+[relay configuration guide](RELAY-CONFIG-GUIDE.md). Use
+`ntwire-relay -check-config -config path/to/ntwire-relay.yaml` to validate
+generated YAML without starting listeners. `-print-config-guide` prints the
+complete human reference, and `-config-guide-format=json-schema` prints only
+its schema.
+
 ```yaml
 listen:
   public: ":443"          # raw TCP; client TLS is spliced through, never terminated here

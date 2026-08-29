@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/configguide"
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
@@ -457,6 +459,18 @@ authorizer:
 admin:
   web_ui_token: ""                         # optional secret that enables the server dashboard at /?token=...; leave empty to disable it
 
+# The optional Portal presents only the tunnels the authenticated user may
+# access. The native ntwire client renders it when enabled; web adds an HTTP
+# listener inside the WireGuard overlay, never a public listener.
+portal:
+  enabled: false
+  title: "Internal Services Portal"
+  template: ""                              # empty uses the safe built-in template; otherwise inline Markdown or a path relative to this YAML file
+  variables: {}
+  web:
+    enabled: false
+    listen: ""                              # required overlay host:port (for example 100.64.0.1:8080) when web.enabled is true
+
 # A tunnel's instructions can also be kept in its own file: a single-line
 # instructions value with no newline (e.g. "instructions: examples/instructions/ssh.md")
 # is tried as a file path, and if it names an existing file, that file's
@@ -464,17 +478,14 @@ admin:
 # from a file" in docs/CONFIGURATION.md and examples/instructions/ for
 # ready-to-adapt files (SSH, kubectl, and SOCKS-proxy clients).
 tunnels:
-- name              : reports               # unique identifier shown to clients
-  target            : reports.internal:8080 # host:port the server proxies to after traffic reaches its virtual port
-  description       : Reporting service     # optional free-text description shown to clients
-  virtual_port      : 18080                 # required port exposed inside the WireGuard tunnel; 1 through 65535
-  protocol          : tcp                   # tcp (default) or udp; UDP targets use per-source mappings
-  udp_idle_timeout  : 2m                    # UDP mapping idle timeout; only meaningful when protocol is udp; 0 uses the default
-  local_port        : 58080                 # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
-  local_host        : ""                    # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
-  docs_url          : ""                    # optional absolute http(s) link offered as "See more" beside the instructions below
-  destination_policy: ""                    # optional named policy from destination_policies, combined with any peer policy
-  instructions      : |                     # optional Markdown shown in the client status UI, expanded there as a Go template
+- name: reports                          # unique identifier shown to clients
+  target: reports.internal:8080          # host:port the server proxies to after traffic reaches its virtual port
+  description: Reporting service         # optional free-text description shown to clients
+  virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
+  local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
+  local_host: ""                           # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
+  docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
+  instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
     Fetch a report through the tunnel:
 
     ~~~sh
@@ -483,13 +494,21 @@ tunnels:
 
     Fields: .Name, .Description, .LocalAddress, .LocalHost, .LocalPort, .VirtualPort,
     .TargetHint, .TunnelIP, .ServerTunnelIP, .Server. Fenced blocks get a copy button.
-    allow:
-    - "*"                                # any authenticated identity
-    # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
-    # - "alice@laptop"                   # SSH authorized_keys comment
-    # - "alice@corp.com"                 # exact verified OIDC email
-    # - "@corp.com"                      # OIDC email domain
-    # - "group:engineering"              # OIDC membership in an issuer groups_claim
+  portal:                                  # optional presentation metadata when portal.enabled is true
+    name: "Reports"
+    description: "Reporting service"
+    category: "Operations"
+    icon: "chart"
+    url: ""                                # optional absolute http(s) URL for a browser action
+    socks_tunnel: ""                       # optional name of an authorized embedded SOCKS tunnel for the browser action
+    applications: []
+  allow:
+  - "*"                                # any authenticated identity
+  # - "SHA256:..."                     # SSH public-key fingerprint (preferred for SSH grants)
+  # - "alice@laptop"                   # SSH authorized_keys comment
+  # - "alice@corp.com"                 # exact verified OIDC email
+  # - "@corp.com"                      # OIDC email domain
+  # - "group:engineering"              # OIDC membership in an issuer groups_claim
 # - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
 #   target      : socks                   # required sentinel value that selects the SOCKS target type
 #   virtual_port: 11080
@@ -546,6 +565,190 @@ log:
 audit:
   log_file: ""                             # optional path for a dedicated JSON-lines audit log (auth_allowed, session_disconnected, session_expired, session_revoked); in addition to, not instead of, the main log
 `
+}
+
+// ConfigGuide renders the server configuration reference. It deliberately
+// embeds SampleConfig verbatim so there is only one canonical YAML template.
+func ConfigGuide() (string, error) { return serverGuide().Markdown() }
+
+// ConfigJSONSchema renders the strict Draft 2020-12 schema used by tooling.
+func ConfigJSONSchema() ([]byte, error) { return serverGuide().JSONSchema() }
+
+// WriteConfigSkill creates a portable, low-context Agent Skill folder for
+// generating and reviewing ntwire-server configuration.
+func WriteConfigSkill(dir string) error { return serverGuide().WriteSkill(dir) }
+
+func serverGuide() configguide.Guide {
+	return configguide.Guide{
+		Title:       "ntwire-server configuration guide",
+		Description: "Complete reference for ntwire-server YAML configuration.",
+		Sample:      SampleConfig(), Root: Config{},
+		Skill: serverConfigSkill(),
+		QA: []configguide.QA{
+			{Question: "How should clients reach the server?", Answer: "Use direct listen.https, or relay.enabled with a registered relay tenant; relay.direct_clients explicitly enables both."},
+			{Question: "How do users authenticate?", Answer: "Configure authorized_keys_dir, OIDC issuers, or native_wireguard.enabled. OIDC client_secret is deliberately rejected."},
+			{Question: "Which TLS/listeners are needed?", Answer: "Set cert_file and key_file together, or allow generated TLS. listen.https and listen.wireguard have defaults."},
+			{Question: "Which tunnel type is needed?", Answer: "Use a fixed host:port target, target: socks for the embedded filtered proxy, or target: external_socks with external_socks.url for an opaque upstream."},
+			{Question: "How are destinations controlled?", Answer: "Use tunnel allow lists, destination_policies, and SOCKS filters; an unfiltered embedded SOCKS tunnel denies all unless allow_all is explicit."},
+			{Question: "Need ordinary WireGuard clients?", Answer: "Enable native_wireguard and configure peers; it is independent from authenticated HTTP sessions."},
+			{Question: "Need observability or Portal?", Answer: "Configure log/audit for records and portal for operator presentation metadata; do not put tokens or secrets in generated examples."},
+			{Question: "Need Apple Network Relay/MASQUE?", Answer: "Enable masque only with its fixed tunnel mapping and certificate inputs; it is opt-in and separate from other transports."},
+		},
+		Rules: []string{
+			"At least one of auth.authorized_keys_dir, auth.oidc.issuers, or native_wireguard.enabled must be configured.",
+			"TLS cert_file and key_file must be set together; client_secret is a legacy key that always fails semantic validation.",
+			"relay.url/fingerprint cannot be combined with relay.endpoints; relay.advertise_direct requires relay mode.",
+			"target: socks and target: external_socks each require their corresponding configuration; external SOCKS URLs are credential-free socks5://host:port.",
+		},
+		SchemaOverrides: map[string]map[string]any{
+			"listen.https": {"default": ":8443"}, "listen.wireguard": {"default": ":51820"},
+			"auth.session_ttl": {"default": "15m"}, "authorizer.timeout": {"default": "5s"},
+			"network.tunnel_cidr": {"default": "100.64.0.0/16"},
+			"transport.force":     {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
+			"log.format":          {"enum": []string{"text", "json"}, "default": "text"},
+			"log.level":           {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
+			"tunnels":             {"minItems": 0},
+		},
+	}
+}
+
+func serverConfigSkill() configguide.Skill {
+	return configguide.Skill{
+		Name:        "ntwire-server-config",
+		Description: "Generate or review safe ntwire-server YAML from a user's deployment requirements, including Portal, tunnels, authentication, relay, native WireGuard, and MASQUE.",
+		Binary:      "ntwire-server",
+		Workflow: []string{
+			"Read references/core.md, then match the requested capability to one additional reference below. Do not preload unrelated references.",
+			"Ask only for missing values required by the selected feature. If an existing YAML file is supplied, preserve unrelated fields and report assumptions separately.",
+			"Return the proposed YAML or a minimal patch, the unresolved choices, and any file or firewall work that remains. Never put private keys, bearer tokens, OIDC client secrets, or a real public-key value in generated YAML.",
+			"Validate the resulting file with ntwire-server -check-config -config <path>. For a Portal template, also run ntwire-server portal validate -config <path> before deployment.",
+		},
+		References: []configguide.SkillReference{
+			{Path: "references/core.md", When: "direct or relay server, TLS, authentication, network, logging, or audit", Content: `# Core server configuration
+
+Ask whether clients reach this server directly or through an ntwire-relay, the public hostname and TLS source, the authentication method, the tunnel address range, and the services to publish. Do not ask for a value the user already supplied.
+
+At least one of auth.authorized_keys_dir, auth.oidc.issuers, or native_wireguard.enabled must be configured. OIDC uses a public client ID and PKCE; client_secret is rejected. Set tls.cert_file and tls.key_file together, or leave both empty only when generated TLS is acceptable.
+
+~~~yaml
+listen:
+  https: ":8443"
+  wireguard: ":51820"
+tls:
+  cert_file: "/etc/ntwire/tls.crt"
+  key_file: "/etc/ntwire/tls.key"
+auth:
+  authorized_keys_dir: "/etc/ntwire/keys"
+network:
+  tunnel_cidr: "100.64.0.0/16"
+transport:
+  multipath: true
+  force: auto
+~~~
+
+Use generated TLS only for a deliberate development or trust-on-first-use deployment. Keep log and audit paths writable by the service account. Read references/relay.md only for a server that dials an ntwire-relay.`},
+			{Path: "references/tunnels.md", When: "published services, TCP or UDP tunnels, SOCKS, egress policy, or per-user access", Content: `# Tunnels and access
+
+For every requested service, ask for a stable name, target host:port, virtual_port, optional preferred client local_port, and exactly who may access it. A tunnel allow list is the access-control boundary; Portal metadata never grants access.
+
+Use a normal target for one fixed service. Use target: socks only for ntwire's embedded, policy-controlled SOCKS proxy; an unfiltered embedded SOCKS tunnel denies all destinations unless socks.allow_all is explicitly true. Use target: external_socks only for a credential-free socks5://host:port upstream; it is opaque and has no local SOCKS filtering, UDP, BIND, or PAC service.
+
+~~~yaml
+tunnels:
+  - name: grafana
+    target: "grafana.internal:3000"
+    virtual_port: 3000
+    local_port: 3000
+    allow: ["group:engineering"]
+~~~
+
+For UDP, protocol, destination policy, browser, or instruction fields not covered here, use the complete reference or schema on demand.`},
+			{Path: "references/portal.md", When: "an ntwire Portal, user service catalog, browser launch, or in-tunnel web portal", Content: `# Portal
+
+Treat a request for a Portal as a request for a user-facing, authorization-aware catalog of existing tunnels. Ask whether the user needs the native ntwire client Portal, an in-tunnel WireGuard web portal, or both; ask for the title, optional template and variables, and the metadata for every service to present.
+
+For the native client Portal, set portal.enabled: true. For the web Portal, also set portal.web.enabled: true and portal.web.listen to a server WireGuard-overlay host:port such as 100.64.0.1:8080. It is not a public HTTP listener. portal.web.enabled without portal.web.listen is invalid.
+
+~~~yaml
+portal:
+  enabled: true
+  title: "Engineering Portal"
+  template: "portal.md"
+  variables:
+    environment: "Production"
+  web:
+    enabled: true
+    listen: "100.64.0.1:8080"
+
+tunnels:
+  - name: grafana
+    target: "grafana.internal:3000"
+    virtual_port: 3000
+    local_port: 3000
+    allow: ["group:engineering"]
+    portal:
+      name: "Grafana Dashboards"
+      description: "Metrics and observability dashboards"
+      category: "Observability"
+      icon: "chart"
+      url: "https://grafana.internal"
+      applications: ["grafana"]
+~~~
+
+Each displayed service still needs a real tunnel and its allow list. portal.url must be absolute http(s). Use socks_tunnel only when the browser should use a named authorized embedded SOCKS tunnel. Keep template content declarative; ask the binary for a safe authoring prompt with ntwire-server portal prompt -config <path>, then validate it with ntwire-server portal validate -config <path>.`},
+			{Path: "references/relay.md", When: "server behind NAT, relay tenant, relay pool, or direct-UDP privacy choice", Content: `# Server connection to an ntwire-relay
+
+Use relay mode when the server dials out from behind NAT and clients arrive through a relay registration. Ask for the relay URL or shared relay endpoints, tenant name, relay identity-file path, certificate pin policy, and whether direct client access or address disclosure is explicitly desired.
+
+~~~yaml
+relay:
+  enabled: true
+  url: "wss://relay.example.com:8444"
+  name: "home"
+  identity_file: "/etc/ntwire/relay_id_ed25519"
+  fingerprint: ""
+  advertise_direct: false
+  direct_clients: false
+~~~
+
+The tenant name and identity key must match a registration on the relay. In relay mode, network.advertised_endpoint must be empty. Keep advertise_direct false unless the operator explicitly accepts exposing the server's direct address; it also needs the relay reflector. Use relay.direct_clients only when an additional direct HTTPS listener is intended.`},
+			{Path: "references/native-wireguard.md", When: "ordinary WireGuard clients or an in-tunnel Portal for those clients", Content: `# Native WireGuard
+
+Native WireGuard peers are static server-side peers, separate from authenticated HTTP sessions. Ask for every peer's public key, unique overlay address, allowed tunnel names, and any destination policy. Keep the server WireGuard private key in network.wireguard_private_key_file, not in the YAML itself.
+
+~~~yaml
+network:
+  wireguard_private_key_file: "/etc/ntwire/server_wg.key"
+native_wireguard:
+  enabled: true
+  peers:
+    - name: "alice-phone"
+      public_key: "<operator-provided-public-key>"
+      tunnel_ip: "100.64.0.10"
+      tunnels: ["grafana"]
+~~~
+
+When a web Portal is enabled, its listener must use the same overlay and the peer still receives only the tunnels named above. Generate a client profile only after the server configuration validates.`},
+			{Path: "references/masque.md", When: "Apple Network Relay, MASQUE, or connect-udp gateway", Content: `# MASQUE gateway
+
+MASQUE is opt-in and separate from ntwire's ordinary WireGuard and WebSocket data planes. Ask for the fixed public HTTP/2 or HTTP/3 endpoint, client CA, issuer certificate and key file paths, certificate lifetime, match domains, and an explicit FQDN-to-existing-tunnel map. Do not create wildcard or arbitrary destination mappings.
+
+~~~yaml
+masque:
+  enabled: true
+  listen: ":443"
+  http2_url: "https://relay.example.com"
+  match_domains: ["internal.example.com"]
+  client_ca_file: "/etc/ntwire/masque-client-ca.pem"
+  issuer_cert_file: "/etc/ntwire/masque-issuer.pem"
+  issuer_key_file: "/etc/ntwire/masque-issuer.key"
+  tunnels:
+    "reports.internal.example.com": "reports"
+~~~
+
+Use the complete reference for certificate lifetime and HTTP/3 fields. Keep all private material in files with restricted permissions.`},
+		},
+	}
 }
 
 // maxInstructionsFileSize bounds what loadInstructionsFile will read. Without
@@ -612,7 +815,9 @@ func LoadConfig(path string) (Config, error) {
 func ParseConfig(b []byte, stateDir string) (Config, error) {
 	var c Config
 	var e error
-	if e = yaml.Unmarshal(b, &c); e != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(b))
+	decoder.KnownFields(true)
+	if e = decoder.Decode(&c); e != nil {
 		return c, e
 	}
 	if c.TLS.StateDir == "" {

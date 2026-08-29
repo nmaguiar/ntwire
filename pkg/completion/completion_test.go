@@ -107,6 +107,9 @@ func TestBashCompletionDetails(t *testing.T) {
 	if !strings.Contains(serverOut, "conf qr all") {
 		t.Errorf("expected wireguard-format choices in bash script")
 	}
+	if !strings.Contains(serverOut, "--write-config-skill") || !strings.Contains(serverOut, "--check-config") {
+		t.Errorf("expected configuration skill and validation flags in server bash script")
+	}
 
 	// Test relay and gui bash outputs
 	relayOut, err := GenerateString(ShellBash, RelayCommand())
@@ -115,6 +118,9 @@ func TestBashCompletionDetails(t *testing.T) {
 	}
 	if !strings.Contains(relayOut, "completion") {
 		t.Errorf("expected completion subcommand in relay bash script")
+	}
+	if !strings.Contains(relayOut, "--write-config-skill") || !strings.Contains(relayOut, "--check-config") {
+		t.Errorf("expected configuration skill and validation flags in relay bash script")
 	}
 
 	guiOut, err := GenerateString(ShellBash, GUICommand())
