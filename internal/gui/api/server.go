@@ -15,6 +15,8 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
@@ -117,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/prompts/{id}/trust", s.requireToken(s.handleAnswerTrust))
 	s.mux.HandleFunc("POST /api/prompts/{id}/passphrase", s.requireToken(s.handleAnswerPassphrase))
 	s.mux.HandleFunc("POST /api/keygen", s.requireToken(s.handleKeygen))
+	s.mux.HandleFunc("POST /api/identities/import", s.requireToken(s.handleImportIdentity))
 	s.mux.HandleFunc("GET /api/events", s.requireToken(s.handleEvents))
 	s.mux.HandleFunc("GET /api/settings", s.requireToken(s.handleGetSettings))
 	s.mux.HandleFunc("PUT /api/settings", s.requireToken(s.handleSetSettings))
@@ -323,12 +326,52 @@ func (s *Server) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if body.Path == "" {
+		body.Path = ""
+		// GenerateIdentity intentionally accepts an explicit destination. The
+		// page no longer asks a browser user to type one, so reserve a private
+		// GUI-owned path by importing an empty filename only for its directory.
+		// The random name also makes repeated key generation non-destructive.
+		path, err := s.mgr.ImportIdentity("ntwire", strings.NewReader(""))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := os.Remove(path); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
+		body.Path = path
+	}
 	fingerprint, publicKey, err := s.mgr.GenerateIdentity(body.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"fingerprint": fingerprint, "public_key": publicKey})
+}
+
+// handleImportIdentity accepts a key selected using the browser's standard
+// file chooser. The selected bytes are kept only in the private GUI config
+// directory; a browser never exposes the source pathname to page JavaScript.
+func (s *Server) handleImportIdentity(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
+	if err := r.ParseMultipartForm(10 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("identity file: %w", err))
+		return
+	}
+	f, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("identity file: %w", err))
+		return
+	}
+	defer f.Close()
+	path, err := s.mgr.ImportIdentity(header.Filename, f)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
 func (s *Server) handleAnswerTrust(w http.ResponseWriter, r *http.Request) {

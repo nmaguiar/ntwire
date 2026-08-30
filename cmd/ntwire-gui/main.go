@@ -205,7 +205,15 @@ func main() {
 		}
 	}
 
-	tray.Run(mgr, openSettingsFunc(srv))
+	openSettings := openSettingsFunc(srv)
+	openSetup := openSetupFunc(srv)
+	if len(mgr.Profiles()) == 0 {
+		// A blank installation has no useful tray action yet. Put the simple
+		// first-connection page in front of the user as soon as the protected
+		// loopback API is serving.
+		openSetup()
+	}
+	tray.Run(mgr, openSettings, openSetup)
 }
 
 // findExistingInstance reports a live instance's Info, or nil if none is
@@ -242,6 +250,13 @@ func openWindowFor(origin, token string) {
 // bare origin.
 func openSettingsFunc(srv *api.Server) func() {
 	return func() { openWindowFor("http://"+srv.Addr(), srv.Token()) }
+}
+
+// openSetupFunc opens the intentionally small first-connection view. It is
+// separate from Settings so a tray user can add another connection without
+// navigating the advanced profile editor.
+func openSetupFunc(srv *api.Server) func() {
+	return func() { openWindowFor("http://"+srv.Addr()+"/?setup=1", srv.Token()) }
 }
 
 // runHeadless serves the settings API in the foreground with no tray,

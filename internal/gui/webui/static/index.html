@@ -59,12 +59,29 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 .ports-toggle{border:1px solid var(--border);border-radius:12px;margin-top:.6rem;padding:.5rem .7rem}
 .ports-toggle summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text)}
 .ports-list{margin-top:.5rem}
+.setup{max-width:34rem;margin:8vh auto}.setup label{font-size:1rem}.setup input{font-size:1rem;padding:.7rem}.setup .help{margin:.1rem 0 1rem}
 </style>
-<main>
+<main id="main">
   <div class="brand-lockup"><svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="logo-cyan" x1="9" y1="37" x2="39" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#0755ed"/><stop offset="1" stop-color="#18dcff"/></linearGradient><linearGradient id="logo-indigo" x1="10" y1="11" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#1650e7"/><stop offset=".5" stop-color="#8f72ff"/><stop offset="1" stop-color="#2638bf"/></linearGradient></defs><path d="M13 36V16c0-3 3.6-4.5 5.7-2.4l12.5 12.5a3 3 0 0 0 4.2 0l4.8-4.8" fill="none" stroke="url(#logo-cyan)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m8.7 34.6 10.7-10.7a3.2 3.2 0 0 1 4.5 0l12.5 12.5c1.9 1.9 5.1.6 5.1-2.2V25" fill="none" stroke="url(#logo-indigo)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="20" r="2.7" fill="#16d9ff"/></svg><h1><span class="brand-nt">nt</span>wire settings</h1></div>
   <p class="lede">Configure server profiles for ntwire-gui. Changes here never touch the CLI's own ~/.ntwire/config.yaml.</p>
   <p id="message" role="status"></p>
 
+  <section class="panel setup hidden" id="setup-panel">
+    <h2>Connect to ntwire</h2>
+    <p class="lede">Paste the secure server or relay address provided by your ntwire administrator. We will connect right away.</p>
+    <form id="setup-form">
+      <label>ntwire address<input type="url" name="Server" placeholder="https://ntwire.example.com" autocomplete="url" required autofocus></label>
+      <p class="help">Use the complete <code>https://</code> address. You do not need to configure ports or other technical settings.</p>
+      <div class="row"><button type="submit">Connect</button><button type="button" class="secondary hidden" id="setup-cancel-btn">Back to settings</button></div>
+    </form>
+    <div class="hidden" id="setup-key">
+      <p>Your server does not offer single sign-on. Choose the SSH private key your administrator authorized for this connection.</p>
+      <label>SSH private key<input type="file" id="setup-identity-file" accept=".pem,.key,.pub,id_*,*/*"></label>
+      <div class="row"><button id="setup-identity-btn" type="button">Choose key and connect</button></div>
+    </div>
+  </section>
+
+  <div id="regular-settings">
   <section class="panel">
     <h2>👤 Profiles</h2>
     <div id="profiles" class="empty">Loading…</div>
@@ -97,6 +114,7 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
       <button class="secondary" id="refresh-browser-profiles-btn">🔄 Refresh</button>
     </div>
   </section>
+</div>
 </main>
 
 <div id="modal-root"></div>
@@ -113,11 +131,20 @@ const modalRoot = document.getElementById('modal-root');
 const browserProfilesEl = document.getElementById('browser-profiles');
 const deleteBrowserProfilesBtn = document.getElementById('delete-browser-profiles-btn');
 const refreshBrowserProfilesBtn = document.getElementById('refresh-browser-profiles-btn');
+const setupPanel = document.getElementById('setup-panel');
+const regularSettings = document.getElementById('regular-settings');
+const setupForm = document.getElementById('setup-form');
+const setupKey = document.getElementById('setup-key');
+const setupIdentityFile = document.getElementById('setup-identity-file');
+const setupIdentityBtn = document.getElementById('setup-identity-btn');
+const setupCancelBtn = document.getElementById('setup-cancel-btn');
+const setupMode = new URLSearchParams(location.search).get('setup') === '1';
 
 let schema = [];
 let profiles = new Map(); // id -> Snapshot
 let editingID = null; // null while the form is hidden or creating
 let browserProfiles = [];
+let setupProfileID = null;
 const selectedBrowserProfiles = new Set();
 
 function q(path) { return path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token); }
@@ -131,6 +158,15 @@ async function api(method, path, body) {
   if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : null;
+}
+
+async function importIdentity(file) {
+  if (!file) throw new Error('Choose your SSH private key first.');
+  const data = new FormData();
+  data.append('file', file, file.name);
+  const r = await fetch(q('/api/identities/import'), {method: 'POST', body: data});
+  if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+  return r.json();
 }
 
 let messageTimer = null;
@@ -192,16 +228,74 @@ function renderProfiles() {
   // buttons (Connect/Disconnect, Delete, ...) are also focused on click,
   // and this must not block their own state changes from rendering.
   const active = document.activeElement;
-  if (active && active.tagName === 'INPUT' && profilesEl.contains(active)) return;
+  if (active && active.tagName === 'INPUT' && profilesEl.contains(active)) {
+    renderSetup();
+    return;
+  }
   const list = [...profiles.values()].sort((a, b) => a.profile.Name.localeCompare(b.profile.Name));
   if (!list.length) {
     profilesEl.className = 'empty';
     profilesEl.textContent = 'No profiles yet.';
+    renderSetup();
     return;
   }
   profilesEl.className = '';
   profilesEl.replaceChildren(...list.map(renderProfileRow));
+  renderSetup();
 }
+
+function renderSetup() {
+  if (!setupMode) return;
+  setupPanel.classList.remove('hidden');
+  regularSettings.classList.add('hidden');
+  const snap = setupProfileID && profiles.get(setupProfileID);
+  if (!snap) return;
+  if (snap.state === 'connected' || snap.state === 'reconnecting') {
+    location.replace(snap.dashboard_url + '#portal');
+    return;
+  }
+  if (snap.state === 'failed') {
+    // A profile with no key selects OIDC when advertised. This is the one
+    // expected non-technical setup fork: no OIDC means ask for their key.
+    if (/no SSH private key available.*does not support SSO/i.test(snap.error || '')) {
+      setupForm.classList.add('hidden');
+      setupKey.classList.remove('hidden');
+      setupIdentityFile.focus();
+    } else {
+      setMessage(snap.error || 'Could not connect. Check the address and try again.');
+    }
+  }
+}
+
+setupForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  setMessage('', 'info');
+  try {
+    const server = setupForm.Server.value.trim();
+    const p = await api('POST', '/api/profiles', {Name: server, Server: server});
+    setupProfileID = p.ID;
+    await api('POST', `/api/profiles/${p.ID}/connect`);
+    setMessage('Connecting…', 'info', 0);
+  } catch (e) { setMessage(e.message); }
+});
+
+setupIdentityBtn.addEventListener('click', async () => {
+  try {
+    const imported = await importIdentity(setupIdentityFile.files[0]);
+    const snap = profiles.get(setupProfileID);
+    if (!snap) throw new Error('The connection setup expired. Please start again.');
+    await api('PUT', `/api/profiles/${setupProfileID}`, {
+      Name: snap.profile.Name, Server: snap.profile.Server, IdentityFile: imported.path,
+    });
+    await api('POST', `/api/profiles/${setupProfileID}/connect`);
+    setMessage('Connecting with your key…', 'info', 0);
+  } catch (e) { setMessage(e.message); }
+});
+
+setupCancelBtn.addEventListener('click', () => {
+  setupPanel.classList.add('hidden');
+  regularSettings.classList.remove('hidden');
+});
 
 function renderProfileRow(snap) {
   const p = snap.profile;
@@ -436,6 +530,24 @@ function fieldControl(f, value, profile) {
     if (value !== undefined && value !== null) input.value = value;
   }
   label.append(input);
+  if (f.widget === 'path') {
+    // A browser intentionally hides a selected file's source path. For
+    // identity files the setup flow imports the selected file into ntwire's
+    // private directory; the advanced editor keeps a text path for output
+    // paths and existing machine-local configuration.
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.className = 'secondary';
+    picker.title = 'Choose a file';
+    picker.addEventListener('change', async () => {
+      try {
+        const imported = await importIdentity(picker.files[0]);
+        input.value = imported.path;
+        setMessage('Selected file imported for this profile.', 'ok');
+      } catch (e) { setMessage(e.message); }
+    });
+    label.append(picker);
+  }
   if (f.help) {
     const help = document.createElement('p');
     help.className = 'help';
@@ -611,11 +723,9 @@ document.getElementById('add-profile-btn').addEventListener('click', () => openF
 document.getElementById('cancel-form-btn').addEventListener('click', closeForm);
 
 document.getElementById('keygen-btn').addEventListener('click', async () => {
-  const path = prompt('Output path for the new private key:', '~/.ntwire/id_ed25519');
-  if (!path) return;
   try {
-    const result = await api('POST', '/api/keygen', {path});
-    alert(`Identity created.\nFingerprint: ${result.fingerprint}\n\nPublic key:\n${result.public_key}`);
+    const result = await api('POST', '/api/keygen', {});
+    alert(`Identity created.\nFingerprint: ${result.fingerprint}\n\nPublic key (give this to your administrator):\n${result.public_key}`);
   } catch (e) { setMessage(e.message); }
 });
 
@@ -758,6 +868,7 @@ async function refreshProfiles() {
   const list = await api('GET', '/api/profiles');
   profiles = new Map(list.map(s => [s.profile.ID, s]));
   renderProfiles();
+  renderSetup();
   renderPrompts();
 }
 
@@ -922,6 +1033,7 @@ function connectEvents() {
       const update = JSON.parse(ev.data);
       profiles.set(update.ProfileID, update.Snapshot);
       renderProfiles();
+      renderSetup();
       renderPrompts();
     } catch {}
   };
@@ -942,6 +1054,7 @@ function connectEvents() {
     await refreshSchema();
     await refreshProfiles();
     await refreshBrowserProfiles();
+    if (setupMode) setupCancelBtn.classList.remove('hidden');
   } catch (e) {
     setMessage('Could not load settings: ' + e.message);
   }

@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"bytes"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -480,6 +481,28 @@ func TestGenerateIdentityWritesKeyAndReturnsFingerprint(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("private key not written: %v", err)
+	}
+}
+
+func TestImportIdentityCopiesToPrivateGUIStorage(t *testing.T) {
+	m, guiPath := newTestManager(t, &fakeConnector{})
+	path, err := m.ImportIdentity("id_ed25519", bytes.NewBufferString("private key bytes"))
+	if err != nil {
+		t.Fatalf("ImportIdentity() error = %v", err)
+	}
+	if filepath.Dir(filepath.Dir(path)) != filepath.Dir(guiPath) {
+		t.Fatalf("ImportIdentity() path = %q, want it below %q", path, filepath.Dir(guiPath))
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != "private key bytes" {
+		t.Fatalf("imported key = %q, %v", b, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Errorf("imported key mode = %o, want 0600", info.Mode().Perm())
 	}
 }
 

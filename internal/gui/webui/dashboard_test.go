@@ -109,3 +109,25 @@ func TestPassphrasePromptKeyboardControls(t *testing.T) {
 		}
 	}
 }
+
+func TestSimpleSetupUsesURLFirstOIDCThenFileChooserFallback(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"id=\"setup-panel\"", "id=\"setup-form\"", "setupMode",
+		"/api/identities/import", "type = 'file'",
+		"no SSH private key available.*does not support SSO",
+		"location.replace(snap.dashboard_url + '#portal')",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("simple setup is missing %q", want)
+		}
+	}
+}

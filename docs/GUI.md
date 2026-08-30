@@ -80,6 +80,22 @@ profile secret takes precedence over `NTWIRE_OIDC_CLIENT_SECRET`; the
 environment variable remains the CLI-compatible fallback when no GUI secret
 is saved.
 
+### Simple connection setup
+
+When no profiles are configured, ntwire-gui automatically opens its simple
+setup page. The user only pastes the `https://` server or relay URL supplied
+by their administrator. ntwire-gui then connects immediately: it starts OIDC
+sign-in when the server advertises it and otherwise asks the user to choose an
+authorized SSH private key. **Add connection…** in the tray opens the same
+page at any time. A successful connection opens the local dashboard at Portal;
+the dashboard automatically shows its target list if Portal is unavailable.
+
+The standard browser file chooser does not disclose a selected file's source
+pathname to JavaScript. SSH keys selected in the setup or advanced editor are
+therefore copied, mode `0600`, under `~/.ntwire/identities/` next to the GUI
+configuration. This avoids asking non-technical users to type a filesystem
+path while keeping the selected key private to their account.
+
 ## Autostart and single instance
 
 Toggling "Start at login" in the tray registers a per-OS login item via
