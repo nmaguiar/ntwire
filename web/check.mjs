@@ -46,7 +46,9 @@ if ((await readFile(resolve(site, "CNAME"), "utf8")).trim() !== "ntwire.io") fai
 const siteJS = await readFile(resolve(site, "assets/site.js"), "utf8");
 if (siteJS.includes("window.prompt(\"Copy this command:")) failures.push("assets/site.js: installer copy must not open a prompt");
 if (!siteJS.includes("function fallbackCopy(text)")) failures.push("assets/site.js: installer copy needs a clipboard fallback");
+if (!siteJS.includes("function orderedAssets(assets)") || !siteJS.includes("data-download-sort")) failures.push("assets/site.js: download table needs sortable binary and platform columns");
 const siteCSS = await readFile(resolve(site, "assets/site.css"), "utf8");
 if (!siteCSS.includes(".install-command-copy{display:flex;width:100%;min-width:0") || !siteCSS.includes("overflow-wrap:anywhere")) failures.push("assets/site.css: installer commands must wrap inside their cards");
+if (!siteCSS.includes(".download-sort") || !siteCSS.includes(".download-table th:hover .download-sort span")) failures.push("assets/site.css: download sort controls must appear on hover");
 if (failures.length) { console.error(failures.join("\n")); process.exit(1); }
 console.log(`Validated ${htmlFiles.length} HTML pages and release manifest.`);
