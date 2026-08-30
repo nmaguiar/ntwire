@@ -42,6 +42,18 @@ settled, not assumed). It also means:
 | `go build ./cmd/ntwire-gui` (default) | Native (`NSStatusItem` / DBus `StatusNotifierItem` / `Shell_NotifyIcon`) | Opens in the default browser |
 | `go build -tags gui ./cmd/ntwire-gui` | Native, same as above | Native webview (`WKWebView` / WebView2 / WebKitGTK) |
 
+When building the Windows GUI binary yourself, use the Windows GUI linker
+subsystem so launching it from Explorer or at login does not create a command
+prompt:
+
+```powershell
+go build -ldflags "-H=windowsgui" -o ntwire-gui.exe ./cmd/ntwire-gui
+```
+
+Published Windows `ntwire-gui` releases already use this setting. The command
+line tools (`ntwire`, `ntwire-server`, and `ntwire-relay`) intentionally remain
+console applications.
+
 The default build needs no C toolchain on Linux or Windows at all;
 `internal/gui/tray`'s Linux backend is pure Go over D-Bus, verified by a
 `CGO_ENABLED=0` cross-build in CI. It **does** need cgo on macOS regardless
@@ -79,6 +91,22 @@ leave the field blank while editing a profile to retain the saved value. A
 profile secret takes precedence over `NTWIRE_OIDC_CLIENT_SECRET`; the
 environment variable remains the CLI-compatible fallback when no GUI secret
 is saved.
+
+### Simple connection setup
+
+When no profiles are configured, ntwire-gui automatically opens its simple
+setup page. The user only pastes the `https://` server or relay URL supplied
+by their administrator. ntwire-gui then connects immediately: it starts OIDC
+sign-in when the server advertises it and otherwise asks the user to choose an
+authorized SSH private key. **Add connection…** in the tray opens the same
+page at any time. A successful connection opens the local dashboard at Portal;
+the dashboard automatically shows its target list if Portal is unavailable.
+
+The standard browser file chooser does not disclose a selected file's source
+pathname to JavaScript. SSH keys selected in the setup or advanced editor are
+therefore copied, mode `0600`, under `~/.ntwire/identities/` next to the GUI
+configuration. This avoids asking non-technical users to type a filesystem
+path while keeping the selected key private to their account.
 
 ## Autostart and single instance
 

@@ -86,7 +86,9 @@ jobs:
           # "gui-darwin-build-check" job below covers darwin separately,
           # natively, on macos-latest.
           if [ "$GOOS" != darwin ]; then
-            go build -o "dist/ntwire-gui${suffix}" ./cmd/ntwire-gui
+            gui_ldflags=""
+            if [ "$GOOS" = windows ]; then gui_ldflags="-H=windowsgui"; fi
+            go build -ldflags "$gui_ldflags" -o "dist/ntwire-gui${suffix}" ./cmd/ntwire-gui
           fi
       - name: Upload binaries
         uses: actions/upload-artifact@v4

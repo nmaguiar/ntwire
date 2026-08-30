@@ -3,9 +3,11 @@ package manager
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -27,6 +29,37 @@ const defaultPromptTimeout = 5 * time.Minute
 type Update struct {
 	ProfileID string
 	Snapshot  Snapshot
+}
+
+// ImportIdentity saves a private key selected through the settings page in a
+// GUI-owned, mode-0600 directory and returns its stable path. Browsers do not
+// expose a selected file's real pathname, so copying it here is the only
+// portable way for both the native webview and the browser fallback to use a
+// file chosen with the browser's file picker.
+func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
+	if name == "" {
+		name = "identity"
+	}
+	name = filepath.Base(name)
+	dir := filepath.Join(filepath.Dir(m.configPath), "identities")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("gui: create identity directory: %w", err)
+	}
+	path := filepath.Join(dir, config.NewID()+"-"+name)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", fmt.Errorf("gui: create imported identity: %w", err)
+	}
+	_, copyErr := io.Copy(f, r)
+	closeErr := f.Close()
+	if copyErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		if copyErr != nil {
+			return "", fmt.Errorf("gui: save imported identity: %w", copyErr)
+		}
+		return "", fmt.Errorf("gui: close imported identity: %w", closeErr)
+	}
+	return path, nil
 }
 
 // Manager owns every profile's connection lifecycle: it holds one session

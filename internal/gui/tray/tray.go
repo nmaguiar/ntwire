@@ -40,15 +40,15 @@ func pickRegularIcon(s icons.State) []byte {
 // parked awaiting a trust or passphrase decision, which only the settings
 // window can render and answer. A nil openSettings disables "Settings…"
 // instead of silently doing nothing.
-func Run(mgr *manager.Manager, openSettings func()) {
-	systray.Run(func() { onReady(mgr, openSettings) }, func() {})
+func Run(mgr *manager.Manager, openSettings, openSetup func()) {
+	systray.Run(func() { onReady(mgr, openSettings, openSetup) }, func() {})
 }
 
-func onReady(mgr *manager.Manager, openSettings func()) {
+func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 	systray.SetTemplateIcon(icons.TemplatePNG(icons.StateNone), pickRegularIcon(icons.StateNone))
 	systray.SetTooltip("ntwire")
 
-	m := newMenu(mgr, openSettings)
+	m := newMenu(mgr, openSettings, openSetup)
 	m.render(mgr.Snapshots())
 
 	updates, unsubscribe := mgr.Subscribe()

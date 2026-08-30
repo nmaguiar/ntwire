@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -379,6 +380,41 @@ func TestKeygenCreatesIdentity(t *testing.T) {
 	}
 	if !strings.HasPrefix(out["public_key"], "ssh-ed25519 ") {
 		t.Errorf("public_key = %q, want an ssh-ed25519 OpenSSH line", out["public_key"])
+	}
+}
+
+func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
+	s := newTestServer(t)
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	part, err := w.CreateFormFile("file", "id_ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("selected private key")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, s.urlFor("/api/identities/import"), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		message, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, message)
+	}
+	result := decode[map[string]string](t, resp)
+	key, err := os.ReadFile(result["path"])
+	if err != nil || string(key) != "selected private key" {
+		t.Fatalf("imported key = %q, %v", key, err)
 	}
 }
 

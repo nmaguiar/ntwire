@@ -45,7 +45,18 @@ go build -o bin/ntwire-gui ./cmd/ntwire-gui
 ./bin/ntwire-gui
 ```
 
-See [GUI.md](GUI.md) for build modes, profile storage, and autostart.
+See [GUI.md](GUI.md) for build modes, profile storage, autostart, and the
+Windows GUI-subsystem build command that avoids a command-prompt window.
+
+On a first launch with no saved connection, ntwire-gui opens a short setup
+page automatically. Paste the `https://` server or relay URL supplied by the
+administrator and it connects immediately. If the server offers OIDC, the
+normal browser sign-in starts; otherwise the page asks you to choose the SSH
+private key the administrator authorized. The tray's **Add connection…** item
+opens the same page later. After connecting it opens the local dashboard's
+Portal tab, which falls back to the target list when no Portal is available.
+Selected identity files are copied into ntwire-gui's private profile directory
+because browser file pickers do not expose a source pathname to the page.
 
 ## SSO login
 

@@ -94,6 +94,7 @@ func (s *profileSlot) showBrowserHeader() {
 type menu struct {
 	mgr          *manager.Manager
 	openSettings func()
+	openSetup    func()
 
 	profiles *slotPool // keyed by profile ID
 	slots    [maxProfiles]profileSlot
@@ -107,8 +108,8 @@ type menu struct {
 	quit         *systray.MenuItem
 }
 
-func newMenu(mgr *manager.Manager, openSettings func()) *menu {
-	m := &menu{mgr: mgr, openSettings: openSettings, lastState: map[string]manager.State{}}
+func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
+	m := &menu{mgr: mgr, openSettings: openSettings, openSetup: openSetup, lastState: map[string]manager.State{}}
 
 	profileItems := make([]Slot, maxProfiles)
 	for i := range m.slots {
@@ -168,6 +169,16 @@ func newMenu(mgr *manager.Manager, openSettings func()) *menu {
 	m.profiles = newSlotPool(profileItems)
 
 	systray.AddSeparator()
+	addConnection := systray.AddMenuItem("Add connection…", "Set up a new ntwire server or relay connection")
+	if openSetup != nil {
+		go func() {
+			for range addConnection.ClickedCh {
+				openSetup()
+			}
+		}()
+	} else {
+		addConnection.Disable()
+	}
 	settings := systray.AddMenuItem("Settings…", "Open the settings window")
 	if openSettings != nil {
 		go func() {
