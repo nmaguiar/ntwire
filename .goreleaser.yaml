@@ -27,12 +27,21 @@ builds:
   # macOS SDK to cross-compile Cocoa cgo against. The darwin build (and its
   # .app bundle) is produced separately, on a macos-latest runner, by
   # release.yml's "gui-darwin" job -- see packaging/darwin/build-app.sh.
-  - id: ntwire-gui
+  - id: ntwire-gui-linux
     main: ./cmd/ntwire-gui
     binary: ntwire-gui
-    goos: [linux, windows]
+    goos: [linux]
     goarch: [amd64, arm64]
     ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+  # A GUI-subsystem executable does not allocate a command prompt when the
+  # tray application starts from Explorer or at login. Keep this separate
+  # from the Linux build so the Windows-specific linker flag is explicit.
+  - id: ntwire-gui-windows
+    main: ./cmd/ntwire-gui
+    binary: ntwire-gui
+    goos: [windows]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w -H=windowsgui -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
 archives:
   # Publish the client, server, and relay as separate downloadable assets. Docker
   # images are a deployment alternative, not a replacement for these binaries.
@@ -49,6 +58,6 @@ archives:
     name_template: "{{ .ProjectName }}-relay_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
   - id: ntwire-gui
-    ids: [ntwire-gui]
+    ids: [ntwire-gui-linux, ntwire-gui-windows]
     name_template: "{{ .ProjectName }}-gui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]

@@ -42,6 +42,18 @@ settled, not assumed). It also means:
 | `go build ./cmd/ntwire-gui` (default) | Native (`NSStatusItem` / DBus `StatusNotifierItem` / `Shell_NotifyIcon`) | Opens in the default browser |
 | `go build -tags gui ./cmd/ntwire-gui` | Native, same as above | Native webview (`WKWebView` / WebView2 / WebKitGTK) |
 
+When building the Windows GUI binary yourself, use the Windows GUI linker
+subsystem so launching it from Explorer or at login does not create a command
+prompt:
+
+```powershell
+go build -ldflags "-H=windowsgui" -o ntwire-gui.exe ./cmd/ntwire-gui
+```
+
+Published Windows `ntwire-gui` releases already use this setting. The command
+line tools (`ntwire`, `ntwire-server`, and `ntwire-relay`) intentionally remain
+console applications.
+
 The default build needs no C toolchain on Linux or Windows at all;
 `internal/gui/tray`'s Linux backend is pure Go over D-Bus, verified by a
 `CGO_ENABLED=0` cross-build in CI. It **does** need cgo on macOS regardless
