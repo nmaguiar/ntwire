@@ -40,6 +40,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
       - name: Validate static site
         run: node web/check.mjs
       - name: Build latest download manifest
@@ -53,14 +55,34 @@ jobs:
               releaseUrl: .html_url,
               checksumUrl: (([.assets[] | select(.name | test("checksums?\\.txt$"; "i")) | .browser_download_url] | first) // null),
               assets: [
-                .assets[] as $asset
+                (.assets[] as $asset
                 | select($asset.name | test("^ntwire(?:-server|-relay|-gui)?_v?[^_]+_(darwin|linux|windows)_(amd64|arm64)\\.(tar\\.gz|zip)$"))
                 | ($asset.name | capture("^(?<binary>ntwire(?:-server|-relay|-gui)?)_v?[^_]+_(?<os>darwin|linux|windows)_(?<arch>amd64|arm64)\\.(tar\\.gz|zip)$")) as $match
-                | {binary: $match.binary, os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}
+                | {binary: $match.binary, os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}),
+                (.assets[]
+                | select(.name | test("^ntwire-[^_]+\\.tgz$"))
+                | {binary: "ntwire Helm chart", platform: "Kubernetes", name: .name, size: .size, url: .browser_download_url})
               ]
             }' /tmp/ntwire-release.json > web/assets/release.json
           else
             echo "No published release yet; using the committed fallback manifest."
+          fi
+      - name: Build Helm chart repository
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Helm repositories are static: publish every released chart archive
+          # and an index whose URLs point back to this Pages site. This keeps
+          # `helm repo update` independent of GitHub Release asset URLs.
+          while IFS= read -r tag; do
+            gh release download "$tag" --pattern 'ntwire-*.tgz' \
+              --dir web/charts --clobber
+          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft | not) | select(any(.assets[]; .name | test("^ntwire-[^_]+\\.tgz$"))) | .tag_name')
+          if find web/charts -maxdepth 1 -name 'ntwire-*.tgz' -print -quit | grep -q .; then
+            helm repo index web/charts --url https://ntwire.io/charts
+          else
+            echo "No published Helm chart yet; keeping the empty repository index."
           fi
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

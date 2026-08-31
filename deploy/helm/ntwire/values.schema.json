@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "ntwire chart values",
+  "type": "object",
+  "properties": {
+    "component": {
+      "type": "string",
+      "enum": ["server", "relay", "client"],
+      "description": "The ntwire component to deploy."
+    },
+    "server": {"type": "object", "properties": {"config": {"type": "object"}}},
+    "relay": {"type": "object", "properties": {"config": {"type": "object"}}},
+    "client": {"type": "object", "properties": {"config": {"type": "object"}}}
+  },
+  "required": ["component"]
+}

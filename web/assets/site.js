@@ -51,7 +51,7 @@
   function platform() { const ua = navigator.userAgent.toLowerCase(); if (/mac|iphone|ipad/.test(ua)) return "darwin"; if (/win/.test(ua)) return "windows"; if (/linux|x11/.test(ua)) return "linux"; return null; }
   function architecture() { const ua = navigator.userAgent.toLowerCase(); return /arm64|aarch64/.test(ua) ? "arm64" : "amd64"; }
   function bytes(size) { if (!size) return ""; const units = ["B", "KB", "MB", "GB"]; let i = 0, n = size; while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; } return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; }
-  function assetLabel(asset) { return `${platforms[asset.os] || asset.os} · ${asset.arch === "amd64" ? "Intel/AMD" : "Apple silicon / ARM"}`; }
+  function assetLabel(asset) { return asset.platform || `${platforms[asset.os] || asset.os} · ${asset.arch === "amd64" ? "Intel/AMD" : "Apple silicon / ARM"}`; }
   function binary(asset) { return asset.binary || "ntwire-gui"; }
   const downloadOrder = { key: "binary", direction: "ascending" };
   const compareText = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" }).compare;

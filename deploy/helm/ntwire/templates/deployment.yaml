@@ -1,0 +1,108 @@
+{{- $component := .Values.component -}}
+{{- $defaultPorts := index .Values.ports $component -}}
+{{- $ports := .Values.service.ports | default $defaultPorts -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ntwire.fullname" . }}
+  labels:
+    {{- include "ntwire.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "ntwire.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "ntwire.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "ntwire.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $component }}
+          image: {{ include "ntwire.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- if eq $component "server" }}
+            - -config
+            - /etc/ntwire/{{ include "ntwire.configFile" . }}
+            {{- else if eq $component "relay" }}
+            - -config
+            - /etc/ntwire/{{ include "ntwire.configFile" . }}
+            {{- else }}
+            - connect
+            - --config
+            - /etc/ntwire/{{ include "ntwire.configFile" . }}
+            {{- end }}
+          {{- if eq $component "client" }}
+          env:
+            # The client writes pins, status, and token state below HOME;
+            # persist that state volume instead of the image's read-only home.
+            - name: HOME
+              value: {{ .Values.persistence.mountPath | quote }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- with $ports }}
+          ports:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/ntwire/{{ include "ntwire.configFile" . }}
+              subPath: {{ include "ntwire.configFile" . }}
+              readOnly: true
+            - name: state
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- range .Values.secretMounts }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "ntwire.fullname" . }}-config
+        - name: state
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-state" (include "ntwire.fullname" .)) .Values.persistence.existingClaim }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- range .Values.secretMounts }}
+        - name: {{ .name }}
+          secret:
+            secretName: {{ .secretName }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
