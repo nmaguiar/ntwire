@@ -1,0 +1,17 @@
+{{- $component := .Values.component -}}
+{{- if not (has $component (list "server" "relay" "client")) }}
+{{- fail "component must be one of server, relay, or client" }}
+{{- end }}
+{{- $componentValues := index .Values $component -}}
+{{- if not $componentValues.config }}
+{{- fail (printf "%s.config is required" $component) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ntwire.fullname" . }}-config
+  labels:
+    {{- include "ntwire.labels" . | nindent 4 }}
+data:
+  {{ include "ntwire.configFile" . }}: |
+    {{- toYaml $componentValues.config | nindent 4 }}

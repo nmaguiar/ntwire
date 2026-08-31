@@ -1,0 +1,26 @@
+{{- $component := .Values.component -}}
+{{- $defaultPorts := index .Values.ports $component -}}
+{{- $ports := .Values.service.ports | default $defaultPorts -}}
+{{- if and .Values.service.enabled (ne $component "client") (gt (len $ports) 0) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ntwire.fullname" . }}
+  labels:
+    {{- include "ntwire.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "ntwire.selectorLabels" . | nindent 4 }}
+  ports:
+    {{- range $ports }}
+    - name: {{ .name }}
+      port: {{ default .containerPort .port }}
+      targetPort: {{ default .name .targetPort }}
+      protocol: {{ default "TCP" .protocol }}
+    {{- end }}
+{{- end }}

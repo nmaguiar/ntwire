@@ -51,10 +51,17 @@ developer account.
 
 Container images for all three components are also published to Docker Hub as
 `nmaguiar/ntwire-server`, `nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`
-(currently tagged `build`, built from `main`). They are optional deployment
+(with each tagged release published as both `<version>` and `latest`; `build`
+continues to track `main`). The release workflow publishes the same version and
+`latest` tags to GitHub Container Registry. They are optional deployment
 alternatives and do not replace the release binaries. All three images set
 `NTWIRE_LOG_FORMAT=json` by default, so logs are Logstash-format JSON out of
 the box; see [LOGGING.md](LOGGING.md) to change or override it.
+
+Every tagged release also includes a versioned `ntwire-<version>.tgz` Helm
+chart asset. Its default image tag matches the chart release version; use the
+source-tree chart only when you deliberately want the source `build` image or
+override `image.tag`.
 
 ## Docker Compose
 
@@ -304,6 +311,65 @@ kubectl rollout restart deployment/ntwire-server
 
 Edit `configmap.yaml`'s `tunnels:` list for real targets, and see
 [OIDC-SETUP.md](OIDC-SETUP.md) before uncommenting its `auth.oidc` block.
+
+### Helm chart
+
+`deploy/helm/ntwire` is the configurable alternative to the server-only
+Kustomize example. It deploys exactly one component selected with
+`component: server`, `component: relay`, or `component: client`. The matching
+`server.config`, `relay.config`, or `client.config` values map is rendered
+verbatim as that component's ntwire YAML file. This keeps the source of truth
+in normal ntwire configuration instead of creating a partial Helm-specific
+configuration language.
+
+Use a values file rather than many `--set` flags so lists, nested settings,
+and sensitive paths are preserved:
+
+```sh
+# Create the public-key Secret separately; it contains no private key.
+kubectl -n ntwire create secret generic ntwire-authorized-keys \
+  --from-file=authorized_keys="$HOME/.ntwire/id_ed25519.pub"
+
+helm upgrade --install ntwire-server deploy/helm/ntwire \
+  --namespace ntwire --create-namespace \
+  --values my-server-values.yaml
+```
+
+For example, `my-server-values.yaml` can keep the connection configuration and
+Secret reference together without embedding the secret itself:
+
+```yaml
+component: server
+secretMounts:
+  - name: authorized-keys
+    secretName: ntwire-authorized-keys
+    mountPath: /etc/ntwire/keys
+server:
+  config:
+    listen: {https: ":8443", wireguard: ":51820"}
+    tls: {state_dir: /var/lib/ntwire/tls}
+    auth: {authorized_keys_dir: /etc/ntwire/keys}
+    network: {tunnel_cidr: 100.64.0.0/16}
+    tunnels: []
+```
+
+Set `component: relay` and configure `relay.config` to deploy a public relay,
+or `component: client` and configure `client.config` for a persistent
+`ntwire connect` workload. The client normally needs no Service; mount its SSH
+identity or CA material through `secretMounts`, and set `client.config` to
+refer to those files. The default state volume is ephemeral. Enable
+`persistence` when generated TLS state, certificate pins, client status, or
+other configured files under `/var/lib/ntwire` must survive a replacement pod.
+
+The chart creates a ServiceAccount without an API token by default. If relay
+Kubernetes Service discovery is enabled, set
+`serviceAccount.automountServiceAccountToken: true` and bind only the RBAC
+needed for the selected namespaces and Services; reuse
+`deploy/k8s/relay-discovery-rbac.yaml` as the starting point. Do not expose
+optional metrics, relay reflector/UDP-relay, or dedicated tenant ports by
+accident: add them explicitly through `service.ports`, then match the
+configuration, load balancer, and firewall. Full chart settings are documented
+in [`deploy/helm/ntwire/README.md`](../deploy/helm/ntwire/README.md).
 
 ## See also
 

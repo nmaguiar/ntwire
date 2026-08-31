@@ -63,7 +63,7 @@ Common next steps:
 - [Connecting guide](docs/CONNECTING.md) — clients, official WireGuard, and relays.
 - [Client guide](docs/CLIENT.md) — commands, local state, GUI, and SSO.
 - [Configuration reference](docs/CONFIGURATION.md) — every server/client option.
-- [Deployment guide](docs/DEPLOYMENT.md) — release binaries, Docker, and Kubernetes.
+- [Deployment guide](docs/DEPLOYMENT.md) — release binaries, Docker, Kubernetes, and Helm.
 - [Security guide](docs/SECURITY.md) — TLS, OIDC, local bindings, and relay trust.
 
 ## Development

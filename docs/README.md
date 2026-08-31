@@ -11,7 +11,7 @@ links out to.
 | [CONFIGURATION.md](CONFIGURATION.md) | The complete `ntwire.yaml` option reference, grant matching, hot reload behavior, and the server dashboard |
 | [RELAY.md](RELAY.md) | Reaching an `ntwire-server` behind NAT via `ntwire-relay`, and its trust model |
 | [AUTHORIZATION.md](AUTHORIZATION.md) | The `authorizer:` webhook/executable hook: request/response schema and a worked example |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Release binaries, Docker Compose, and Kubernetes manifests |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Release binaries, Docker Compose, Kubernetes manifests, and the Helm chart |
 | [RELEASE.md](RELEASE.md) | Release-readiness checks and sign-off record |
 | [GUI.md](GUI.md) | `ntwire-gui`: the tray/menu-bar client, its two build modes, profile storage, and autostart |
 | [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) | Connecting official WireGuard clients (iOS, macOS, Windows, Android, Linux) straight to `ntwire-server` as native peers |

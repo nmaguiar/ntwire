@@ -1,0 +1,135 @@
+# Select exactly one ntwire component. Its configuration is rendered verbatim
+# from server.config, relay.config, or client.config into a ConfigMap.
+component: server
+
+replicaCount: 1
+
+image:
+  # Leave empty to use nmaguiar/ntwire-<component>.
+  repository: ""
+  # Leave empty to use this chart's appVersion (build from source, the release
+  # version from a packaged chart).
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+  # Keep the API token out of pods by default. Set true only when relay
+  # Kubernetes Service discovery is enabled and an appropriate RBAC binding
+  # has been created separately.
+  automountServiceAccountToken: false
+
+service:
+  enabled: true
+  type: ClusterIP
+  annotations: {}
+  # When non-empty, replaces the selected component's default ports. Add
+  # optional metrics, reflect, UDP relay, or dedicated tenant ports here.
+  ports: []
+
+# A writable state directory. It is needed for generated TLS state, client
+# pins/status, and any file paths in the selected configuration under this
+# mount. Set existingClaim or enable dynamic provisioning for durable state.
+persistence:
+  enabled: false
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 1Gi
+  mountPath: /var/lib/ntwire
+
+# Mount Secrets that hold keys, certificates, CA bundles, or administrator
+# tokens. Keep references in the selected config; never put secret values in
+# this file. Example:
+# secretMounts:
+#   - name: authorized-keys
+#     secretName: ntwire-authorized-keys
+#     mountPath: /etc/ntwire/keys
+#     readOnly: true
+secretMounts: []
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Defaults used only when service.ports is empty. Container ports are metadata;
+# keep these and the selected configuration/firewall exposure consistent.
+ports:
+  server:
+    - name: https
+      containerPort: 8443
+      protocol: TCP
+    - name: wireguard
+      containerPort: 51820
+      protocol: UDP
+  relay:
+    - name: public
+      containerPort: 443
+      protocol: TCP
+    - name: agents
+      containerPort: 8444
+      protocol: TCP
+  client: []
+
+# ntwire-server configuration. This map becomes /etc/ntwire/ntwire.yaml when
+# component: server. It is intentionally a normal ntwire configuration, not a
+# second chart-specific configuration language.
+server:
+  config:
+    listen:
+      https: ":8443"
+      wireguard: ":51820"
+    tls:
+      state_dir: /var/lib/ntwire/tls
+    auth:
+      authorized_keys_dir: /etc/ntwire/keys
+      session_ttl: 15m
+    network:
+      tunnel_cidr: 100.64.0.0/16
+    transport:
+      multipath: true
+      force: auto
+    tunnels: []
+
+# ntwire-relay configuration. This map becomes
+# /etc/ntwire/ntwire-relay.yaml when component: relay.
+relay:
+  config:
+    listen:
+      public: ":443"
+      agents: ":8444"
+    tls:
+      state_dir: /var/lib/ntwire/tls
+    domain: relay.example.com
+    registrations: []
+
+# Persistent ntwire client settings. This map becomes
+# /etc/ntwire/config.yaml when component: client; the deployment runs
+# `ntwire connect --config /etc/ntwire/config.yaml`.
+client:
+  config:
+    server: https://ntwire-server:8443
+    identity_file: /etc/ntwire/identity/id_ed25519
+    no_browser: true

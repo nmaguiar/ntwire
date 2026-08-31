@@ -1,0 +1,6 @@
+apiVersion: v2
+name: ntwire
+description: Deploy an ntwire server, relay, or persistent client connection
+type: application
+version: 0.1.0
+appVersion: "build"

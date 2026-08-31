@@ -72,8 +72,30 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" --clobber
 
+  helm-chart:
+    # Package the same chart that operators can inspect in the source tree.
+    # The chart appVersion makes its default images match the release tag.
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint and package chart
+        run: |
+          mkdir -p dist
+          helm lint deploy/helm/ntwire
+          helm package deploy/helm/ntwire --destination dist \
+            --version "${GITHUB_REF_NAME#v}" \
+            --app-version "${GITHUB_REF_NAME#v}"
+      - name: Upload to release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/ntwire-*.tgz --clobber
+
   images:
     needs: test
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -86,12 +108,23 @@ jobs:
             image: ntwire-relay
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve release version
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {username: "${{ secrets.DOCKERHUB_USERNAME }}", password: "${{ secrets.DOCKERHUB_TOKEN }}"}
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.ref_name }}
+            nmaguiar/${{ matrix.image }}:${{ steps.version.outputs.value }}
+            nmaguiar/${{ matrix.image }}:latest
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.version.outputs.value }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest

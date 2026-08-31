@@ -53,10 +53,13 @@ jobs:
               releaseUrl: .html_url,
               checksumUrl: (([.assets[] | select(.name | test("checksums?\\.txt$"; "i")) | .browser_download_url] | first) // null),
               assets: [
-                .assets[] as $asset
+                (.assets[] as $asset
                 | select($asset.name | test("^ntwire(?:-server|-relay|-gui)?_v?[^_]+_(darwin|linux|windows)_(amd64|arm64)\\.(tar\\.gz|zip)$"))
                 | ($asset.name | capture("^(?<binary>ntwire(?:-server|-relay|-gui)?)_v?[^_]+_(?<os>darwin|linux|windows)_(?<arch>amd64|arm64)\\.(tar\\.gz|zip)$")) as $match
-                | {binary: $match.binary, os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}
+                | {binary: $match.binary, os: $match.os, arch: $match.arch, name: $asset.name, size: $asset.size, url: $asset.browser_download_url}),
+                (.assets[]
+                | select(.name | test("^ntwire-[^_]+\\.tgz$"))
+                | {binary: "ntwire Helm chart", platform: "Kubernetes", name: .name, size: .size, url: .browser_download_url})
               ]
             }' /tmp/ntwire-release.json > web/assets/release.json
           else

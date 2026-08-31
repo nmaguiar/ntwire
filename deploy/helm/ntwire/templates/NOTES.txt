@@ -1,0 +1,7 @@
+The selected ntwire component is {{ .Values.component }}.
+
+Its configuration is stored in ConfigMap {{ include "ntwire.fullname" . }}-config
+and is rendered from {{ .Values.component }}.config in the Helm values file.
+
+Mount keys, certificates, and tokens from Kubernetes Secrets with secretMounts;
+do not add their contents to Helm values.
