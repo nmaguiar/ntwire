@@ -45,6 +45,13 @@ func Describe(portalCfg PortalConfig, targets []TargetInfo) SchemaDescription {
 		"copy",
 		"local_forward",
 		"ssh_launcher",
+		"client.capabilities.local_ports",
+		"client.capabilities.socks",
+		"client.capabilities.open_url",
+		"client.capabilities.native_wireguard",
+		"client.capabilities.portal_native",
+		"client.capabilities.portal_web",
+		"client.capabilities.launch_browser_with_socks",
 	}
 
 	constructs := []string{
@@ -61,6 +68,9 @@ func Describe(portalCfg PortalConfig, targets []TargetInfo) SchemaDescription {
 		"{{#each categories}} ... {{/each}}",
 		"{{#each targets}} ... {{/each}}",
 		"{{#each applications}} ... {{/each}}",
+		"{{client.os}}, {{client.view_os}}, {{client.type}}, {{client.browser}}, {{client.mobile}}",
+		"{{.Client.OS}}, {{if .Client.Capabilities.LocalPorts}} ... {{end}}",
+		"{{if eq .Client.ViewOS \"windows\"}} ... {{end}}",
 	}
 
 	actions := []string{

@@ -60,13 +60,40 @@ type PortalUser struct {
 	Groups      []string `json:"groups,omitempty"`
 }
 
-// PortalClient describes the client environment when known.
-type PortalClient struct {
-	OS            string `json:"os,omitempty"`
-	Arch          string `json:"arch,omitempty"`
-	Hostname      string `json:"hostname,omitempty"`
-	ClientVersion string `json:"client_version,omitempty"`
+// ClientCapabilities describes presentation features actually available to the
+// current connection. These values must never be used for authorization.
+type ClientCapabilities struct {
+	LocalPorts             bool `json:"local_ports"`
+	Socks                  bool `json:"socks"`
+	OpenURL                bool `json:"open_url"`
+	NativeWireGuard        bool `json:"native_wireguard"`
+	PortalNative           bool `json:"portal_native"`
+	PortalWeb              bool `json:"portal_web"`
+	LaunchBrowserWithSocks bool `json:"launch_browser_with_socks"`
 }
+
+// ClientContext is normalized presentation metadata for Portal templates.
+// OS is the actual detected OS; ViewOS is the documentation platform selected
+// by the web user and never changes Capabilities or authorization.
+type ClientContext struct {
+	OS            string             `json:"os"`
+	DetectedOS    string             `json:"detected_os"`
+	ViewOS        string             `json:"view_os"`
+	ViewType      string             `json:"view_type"`
+	Override      bool               `json:"override"`
+	Arch          string             `json:"arch,omitempty"`
+	Type          string             `json:"type"`
+	Version       string             `json:"version,omitempty"`
+	Browser       string             `json:"browser"`
+	Mobile        bool               `json:"mobile"`
+	Hostname      string             `json:"hostname,omitempty"`
+	ClientVersion string             `json:"client_version,omitempty"` // legacy JSON/template field
+	Capabilities  ClientCapabilities `json:"capabilities"`
+}
+
+// PortalClient is retained as an alias for callers that used the original
+// rendering API.
+type PortalClient = ClientContext
 
 // PortalCapabilities flags runtime features available in the current portal viewing mode.
 type PortalCapabilities struct {

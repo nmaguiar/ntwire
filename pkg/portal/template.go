@@ -2,6 +2,7 @@ package portal
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -24,6 +25,7 @@ func RenderTemplate(templateText string, ctx *PortalContext) (string, error) {
 		ctx = &PortalContext{}
 	}
 
+	templateText = normalizeGoTemplateAliases(templateText)
 	scope := newRootScope(ctx)
 	ast, err := parseTemplate(templateText)
 	if err != nil {
@@ -40,6 +42,62 @@ func RenderTemplate(templateText string, ctx *PortalContext) (string, error) {
 		return "", fmt.Errorf("rendered template exceeds maximum output size of %d bytes", MaxTemplateOutputSize)
 	}
 	return res, nil
+}
+
+var goTemplateAlias = regexp.MustCompile(`\{\{\s*(if\s+)?(eq\s+)?\.([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z][A-Za-z0-9]*)*)(\s+"[^"]+")?\s*\}\}`)
+
+// normalizeGoTemplateAliases accepts the small, declarative Go-template-shaped
+// syntax documented for Client fields while retaining the existing restricted
+// Portal engine. It does not execute Go templates or expose functions.
+func normalizeGoTemplateAliases(in string) string {
+	in = strings.ReplaceAll(in, "{{else}}", "{{else}}")
+	in = strings.ReplaceAll(in, "{{end}}", "{{/if}}")
+	return goTemplateAlias.ReplaceAllStringFunc(in, func(tag string) string {
+		m := goTemplateAlias.FindStringSubmatch(tag)
+		parts := strings.Split(m[3], ".")
+		for i := range parts {
+			parts[i] = camelToSnake(parts[i])
+		}
+		path := strings.Join(parts, ".")
+		if m[1] != "" {
+			if m[2] != "" {
+				return "{{#if eq " + path + m[4] + "}}"
+			}
+			return "{{#if " + path + "}}"
+		}
+		return "{{" + path + "}}"
+	})
+}
+
+func camelToSnake(s string) string {
+	switch s {
+	case "OS":
+		return "os"
+	case "ViewOS":
+		return "view_os"
+	case "DetectedOS":
+		return "detected_os"
+	case "OpenURL":
+		return "open_url"
+	case "NativeWireGuard":
+		return "native_wireguard"
+	case "PortalNative":
+		return "portal_native"
+	case "PortalWeb":
+		return "portal_web"
+	case "LaunchBrowserWithSocks":
+		return "launch_browser_with_socks"
+	case "ClientVersion":
+		return "client_version"
+	}
+	var b strings.Builder
+	for i, r := range s {
+		if i > 0 && r >= 'A' && r <= 'Z' {
+			b.WriteByte('_')
+		}
+		b.WriteRune(rune(strings.ToLower(string(r))[0]))
+	}
+	return b.String()
 }
 
 // Scope provides scoped variable resolution for templates.
@@ -73,9 +131,23 @@ func newRootScope(ctx *PortalContext) *Scope {
 	// Client metadata
 	clientMap := map[string]any{
 		"os":             ctx.Client.OS,
+		"detected_os":    ctx.Client.DetectedOS,
+		"view_os":        ctx.Client.ViewOS,
+		"view_type":      ctx.Client.ViewType,
+		"override":       ctx.Client.Override,
 		"arch":           ctx.Client.Arch,
+		"type":           ctx.Client.Type,
+		"version":        ctx.Client.Version,
+		"browser":        ctx.Client.Browser,
+		"mobile":         ctx.Client.Mobile,
 		"hostname":       ctx.Client.Hostname,
 		"client_version": ctx.Client.ClientVersion,
+		"capabilities": map[string]any{
+			"local_ports": ctx.Client.Capabilities.LocalPorts, "socks": ctx.Client.Capabilities.Socks,
+			"open_url": ctx.Client.Capabilities.OpenURL, "native_wireguard": ctx.Client.Capabilities.NativeWireGuard,
+			"portal_native": ctx.Client.Capabilities.PortalNative, "portal_web": ctx.Client.Capabilities.PortalWeb,
+			"launch_browser_with_socks": ctx.Client.Capabilities.LaunchBrowserWithSocks,
+		},
 	}
 	m["client"] = clientMap
 
@@ -478,8 +550,7 @@ func (n *ifNode) eval(s *Scope, sb *strings.Builder, depth int) error {
 		return fmt.Errorf("template nesting exceeds limit of %d", MaxTemplateNesting)
 	}
 
-	val, found := s.lookup(n.condition)
-	condTrue := found && isTruthy(val)
+	condTrue := s.condition(n.condition)
 	if n.invert {
 		condTrue = !condTrue
 	}
@@ -490,6 +561,21 @@ func (n *ifNode) eval(s *Scope, sb *strings.Builder, depth int) error {
 		return n.elseBody.eval(s, sb, depth+1)
 	}
 	return nil
+}
+
+func (s *Scope) condition(condition string) bool {
+	parts := strings.Fields(condition)
+	if len(parts) == 3 && (parts[0] == "eq" || parts[0] == "ne") {
+		want := strings.Trim(parts[2], `"`)
+		got, found := s.lookup(parts[1])
+		match := found && formatValue(got) == want
+		if parts[0] == "ne" {
+			return !match
+		}
+		return match
+	}
+	val, found := s.lookup(condition)
+	return found && isTruthy(val)
 }
 
 type eachNode struct {

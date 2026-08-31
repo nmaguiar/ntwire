@@ -38,14 +38,15 @@ func BuildContext(
 
 	modeLower := strings.ToLower(strings.TrimSpace(mode))
 	isNative := modeLower == "native" || modeLower == "client"
+	client = NormalizeClient(client, modeLower)
 
 	caps := PortalCapabilities{
-		NativeClient:     isNative,
+		NativeClient:     client.Capabilities.PortalNative,
 		WebPortal:        !isNative,
-		OpenSocksBrowser: isNative,
+		OpenSocksBrowser: client.Capabilities.LaunchBrowserWithSocks,
 		Copy:             true,
-		LocalForward:     isNative,
-		SSHLauncher:      isNative,
+		LocalForward:     client.Capabilities.LocalPorts,
+		SSHLauncher:      client.Capabilities.LocalPorts,
 	}
 
 	// Find any SOCKS proxy tunnel among authorized targets
@@ -72,7 +73,7 @@ func BuildContext(
 	categoryMap := make(map[string][]PortalTarget)
 
 	for _, t := range targets {
-		pt := derivePortalTarget(t, isNative, serverTunnelIP, socksHost, socksPort)
+		pt := derivePortalTarget(t, client.Capabilities.LocalPorts, serverTunnelIP, socksHost, socksPort)
 		portalTargets = append(portalTargets, pt)
 
 		cat := pt.Category

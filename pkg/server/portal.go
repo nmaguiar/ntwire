@@ -64,7 +64,7 @@ func (s *Server) portalHandler(w http.ResponseWriter, r *http.Request) {
 		Email:       session.Identity,
 		Groups:      session.Groups,
 	}
-	client := portal.PortalClient{}
+	client := portalClientFromInfo(session.ClientInfo)
 
 	portalCtx := portal.BuildContext(
 		portalCfg,
@@ -171,7 +171,7 @@ func (s *Server) portalActionHandler(w http.ResponseWriter, r *http.Request) {
 	portalCtx := portal.BuildContext(
 		portalCfg,
 		portal.PortalUser{Identity: session.Identity, DisplayName: session.Identity, Method: session.Method},
-		portal.PortalClient{},
+		portalClientFromInfo(session.ClientInfo),
 		[]portal.TargetInfo{targetInfo},
 		"native",
 		serverTunnelIP,
@@ -239,7 +239,20 @@ func (s *Server) WireGuardPortalHandler() http.Handler {
 			DisplayName: principal.Identity,
 			Method:      principal.Method,
 		}
-		client := portal.PortalClient{}
+		client := portal.DetectBrowserContext(r.Header)
+		if principal.Method == "native-wireguard" {
+			client.Type = "wireguard"
+			client.Capabilities.NativeWireGuard = true
+		} else if session, ok := s.sessionForTunnelIP(clientHost); ok {
+			native := portalClientFromInfo(session.ClientInfo)
+			// Browser headers refine only browser/OS presentation; the authenticated
+			// transport type and its capabilities remain from the session.
+			native.Browser, native.OS, native.DetectedOS, native.ViewOS, native.Mobile = client.Browser, client.OS, client.DetectedOS, client.ViewOS, client.Mobile
+			client = native
+		}
+		if view := r.URL.Query().Get("view_os"); view != "" {
+			client = client.WithViewOS(view)
+		}
 
 		portalCtx := portal.BuildContext(
 			portalCfg,
@@ -265,12 +278,40 @@ func (s *Server) WireGuardPortalHandler() http.Handler {
 		}
 
 		renderedHTML := portal.RenderMarkdown(renderedMD, portalCtx.Capabilities)
-		fullHTML := portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML)
+		fullHTML := portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(fullHTML))
 	})
+}
+
+func portalClientFromInfo(info protocol.ClientInfo) portal.ClientContext {
+	c := portal.ClientContext{OS: info.OS, Arch: info.Arch, Hostname: info.Hostname, Version: info.ClientVersion, ClientVersion: info.ClientVersion}
+	for _, cap := range info.PortalCapabilities {
+		switch cap {
+		case "local_ports":
+			c.Capabilities.LocalPorts = true
+		case "socks":
+			c.Capabilities.Socks = true
+		case "open_url":
+			c.Capabilities.OpenURL = true
+		case "portal_native":
+			c.Capabilities.PortalNative, c.Type = true, "ntwire"
+		case "launch_browser_with_socks":
+			c.Capabilities.LaunchBrowserWithSocks = true
+		}
+	}
+	return portal.NormalizeClient(c, "native")
+}
+
+func (s *Server) sessionForTunnelIP(ip string) (Session, bool) {
+	for _, session := range s.sessions.All() {
+		if session.TunnelIP == ip {
+			return session, true
+		}
+	}
+	return Session{}, false
 }
 
 func (s *Server) startWebPortal(d *dataPlane) error {
