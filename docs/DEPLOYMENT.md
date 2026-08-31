@@ -58,10 +58,10 @@ alternatives and do not replace the release binaries. All three images set
 `NTWIRE_LOG_FORMAT=json` by default, so logs are Logstash-format JSON out of
 the box; see [LOGGING.md](LOGGING.md) to change or override it.
 
-Every tagged release also includes a versioned `ntwire-<version>.tgz` Helm
-chart asset. Its default image tag matches the chart release version; use the
-source-tree chart only when you deliberately want the source `build` image or
-override `image.tag`.
+Every tagged release also publishes its versioned Helm chart to the ntwire
+Helm repository at `https://ntwire.io/charts`. Its default image tag matches
+the chart release version; use the source-tree chart only when you deliberately
+want the source `build` image or override `image.tag`.
 
 ## Docker Compose
 
@@ -330,10 +330,16 @@ and sensitive paths are preserved:
 kubectl -n ntwire create secret generic ntwire-authorized-keys \
   --from-file=authorized_keys="$HOME/.ntwire/id_ed25519.pub"
 
-helm upgrade --install ntwire-server deploy/helm/ntwire \
+helm repo add ntwire https://ntwire.io/charts
+helm repo update
+helm upgrade --install ntwire-server ntwire/ntwire \
   --namespace ntwire --create-namespace \
   --values my-server-values.yaml
 ```
+
+The repository always selects the newest published chart. For a controlled
+upgrade, add `--version <chart-version>` to the `helm upgrade` command. The
+source-tree path `deploy/helm/ntwire` remains useful for chart development.
 
 For example, `my-server-values.yaml` can keep the connection configuration and
 Secret reference together without embedding the secret itself:

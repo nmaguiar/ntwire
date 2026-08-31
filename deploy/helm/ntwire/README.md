@@ -7,10 +7,17 @@ as that component's YAML configuration file; it is not a chart-specific
 abstraction over ntwire configuration.
 
 ```sh
-helm upgrade --install ntwire-server deploy/helm/ntwire \
+helm repo add ntwire https://ntwire.io/charts
+helm repo update
+helm upgrade --install ntwire-server ntwire/ntwire \
   --namespace ntwire --create-namespace \
   --values my-server-values.yaml
 ```
+
+This installs the newest published chart. Add `--version <chart-version>` to
+pin an upgrade, for example during a controlled rollout. The source-tree chart
+remains available at `deploy/helm/ntwire` for development and unreleased
+changes.
 
 Start from `values.yaml`, set `component`, then change only the selected
 configuration map. Use a separate values file rather than `--set` for

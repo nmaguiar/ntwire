@@ -42,6 +42,8 @@ for (const file of htmlFiles) {
 
 const manifest = JSON.parse(await readFile(resolve(site, "assets/release.json"), "utf8"));
 if (!Array.isArray(manifest.assets) || !("releaseUrl" in manifest)) failures.push("assets/release.json: invalid fallback schema");
+const chartIndex = await readFile(resolve(site, "charts/index.yaml"), "utf8");
+if (!/^apiVersion: v1\nentries: \{\}/.test(chartIndex)) failures.push("charts/index.yaml: invalid Helm repository index");
 if ((await readFile(resolve(site, "CNAME"), "utf8")).trim() !== "ntwire.io") failures.push("CNAME must contain ntwire.io");
 const siteJS = await readFile(resolve(site, "assets/site.js"), "utf8");
 if (siteJS.includes("window.prompt(\"Copy this command:")) failures.push("assets/site.js: installer copy must not open a prompt");
