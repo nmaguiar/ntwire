@@ -59,7 +59,7 @@ var (
 func BuiltinInfo() protocol.ClientInfo {
 	h, _ := os.Hostname()
 	u := os.Getenv("USER")
-	return protocol.ClientInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: h, Username: u, ClientVersion: buildinfo.String(), Extra: map[string]string{}}
+	return protocol.ClientInfo{OS: runtime.GOOS, Arch: runtime.GOARCH, Hostname: h, Username: u, ClientVersion: buildinfo.String(), Extra: map[string]string{}, PortalCapabilities: []string{"local_ports", "socks", "open_url", "portal_native", "launch_browser_with_socks"}}
 }
 func (c ExecCollector) Collect() (map[string]string, error) {
 	out, err := exec.Command("sh", "-c", c.Command).Output()
@@ -2756,6 +2756,7 @@ func (c *Connection) webInstructions() WebInstructionsList {
 			VirtualPort: t.virtualPort, TargetHint: g.TargetHint,
 			TunnelIP: c.Response.TunnelIP, ServerTunnelIP: c.Response.ServerTunnelIP,
 			Server: c.base,
+			Client: portal.NormalizeClient(portal.ClientContext{OS: runtime.GOOS, Arch: runtime.GOARCH, Type: "ntwire", Version: buildinfo.String(), Capabilities: portal.ClientCapabilities{LaunchBrowserWithSocks: true}}, "native"),
 		}
 		if g.TargetHint == "socks" {
 			data.PACURL = pac.URLForPlatform(c.base, t.name, false)

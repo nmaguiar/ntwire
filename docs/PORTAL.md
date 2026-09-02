@@ -109,6 +109,46 @@ Portal templates use standard Markdown augmented with a safe, restricted placeho
 * `{{user.display_name}}` — User display name or email.
 * `{{variables.<NAME>}}` (or `{{<NAME>}}`) — Custom variables defined in `portal.variables`.
 
+### Client-aware templates
+
+Portal context also exposes a normalized `.Client` presentation object. The
+restricted Portal syntax accepts its existing lowercase form (`{{client.os}}`)
+and the documented Go-template-shaped aliases (`{{.Client.OS}}`,
+`{{if eq .Client.ViewOS "windows"}}...{{end}}`). The latter are translated to
+the same restricted engine; Portal templates never execute arbitrary Go code.
+
+`OS`/`DetectedOS` are the detected environment, while `ViewOS` is the
+documentation platform. `ViewType` can be `wireguard` when the user selects
+the generic WireGuard view. `Type` is `ntwire`, `wireguard`, or `unknown`;
+`Browser` is `safari`, `chrome`, `edge`, `firefox`, or `unknown`. OS values are
+`ios`, `ipados`, `macos`, `windows`, `linux`, `android`, or `unknown`.
+
+Use `.Client.Capabilities` for behavior: `LocalPorts` means the active native
+ntwire connection exposes local tunnel listeners; `Socks` means it exposes
+native SOCKS; `OpenURL` means native URL actions are supported;
+`NativeWireGuard` identifies an official/configured WireGuard peer;
+`PortalNative` and `PortalWeb` identify the renderer; and
+`LaunchBrowserWithSocks` means the native isolated-browser action is available.
+These are presentation hints only and never change grants, policies, hooks,
+filters, or ports.
+
+```markdown
+{{if eq .Client.ViewOS "ios"}}Use the WireGuard app and tunnel addresses.{{end}}
+{{if .Client.Capabilities.LocalPorts}}
+curl http://{{target.local_host}}:{{target.local_port}}/
+{{else}}
+curl http://{{target.connection.http.url}}
+{{end}}
+```
+
+The in-tunnel web Portal detects browser information from Client Hints and then
+User-Agent as a best effort. Its selector defaults to Auto and stores the
+selected `view_os` in the URL, so it survives reload/navigation. Selecting a
+platform changes `ViewOS` only: an iPhone generic-WireGuard user viewing
+Windows instructions does not gain local-port capabilities or authorization.
+Older native clients send no Portal metadata and safely render as `unknown`
+with conservative capabilities.
+
 ### Capabilities & Conditionals
 
 Use capabilities to adapt the presentation depending on whether the client is a native ntwire client or a standard WireGuard web browser:

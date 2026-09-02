@@ -419,6 +419,12 @@ Select one of the services available to you.
 {{connection_instructions}}
 {{/if}}
 
+{{#if client.capabilities.local_ports}}
+Local endpoint: {{local_address}}
+{{else}}
+Tunnel endpoint: use the server tunnel address and port {{virtual_port}}.
+{{/if}}
+
 {{/each}}
 {{/each}}
 `
@@ -436,11 +442,23 @@ func SecurityHeaders() map[string]string {
 }
 
 // WrapWebPage wraps rendered portal HTML in a self-contained, themed HTML document.
-func WrapWebPage(title, bodyHTML string) string {
+func WrapWebPage(title, bodyHTML string, client ClientContext) string {
 	escapedTitle := html.EscapeString(title)
 	if escapedTitle == "" {
 		escapedTitle = "ntwire Portal"
 	}
+	selector := `<form class="platform-selector" method="get"><label for="view_os">Instructions for</label><select id="view_os" name="view_os" onchange="this.form.submit()"><option value="">Auto (` + html.EscapeString(client.DetectedOS) + `)</option>`
+	for _, os := range []string{"ios", "ipados", "macos", "windows", "linux", "android"} {
+		selected := ""
+		if client.Override && client.ViewOS == os {
+			selected = " selected"
+		}
+		selector += `<option value="` + os + `"` + selected + `>` + html.EscapeString(os) + `</option>`
+	}
+	if client.Type == "wireguard" {
+		selector += `<option value="wireguard">Generic WireGuard</option>`
+	}
+	selector += `</select></form>`
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -486,6 +504,8 @@ body {
   max-width: 860px;
   margin: 0 auto;
 }
+.platform-selector { margin: 0 0 1rem; color: var(--text-muted); font-size: .9rem; }
+.platform-selector select { margin-left: .5rem; padding: .25rem; }
 header {
   margin-bottom: 2rem;
   padding-bottom: 1rem;
@@ -585,7 +605,7 @@ blockquote {
 </head>
 <body>
 <div class="portal-container">
-` + bodyHTML + `
+` + selector + bodyHTML + `
 </div>
 <script>
 document.querySelectorAll('.copy-button').forEach(btn => {

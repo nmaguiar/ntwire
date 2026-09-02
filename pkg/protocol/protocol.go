@@ -100,6 +100,10 @@ type ClientInfo struct {
 	LatencyMillis uint64            `json:"latency_millis,omitempty"`
 	Reconnections uint64            `json:"reconnections,omitempty"`
 	Extra         map[string]string `json:"extra,omitempty"`
+	// PortalCapabilities is presentation metadata advertised by a native
+	// ntwire client. It is deliberately not an authorization input and is not
+	// part of the signed authentication payload, preserving v1 compatibility.
+	PortalCapabilities []string `json:"portal_capabilities,omitempty"`
 }
 type AuthRequest struct {
 	Version               int        `json:"version"`
