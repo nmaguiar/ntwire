@@ -377,9 +377,141 @@ accident: add them explicitly through `service.ports`, then match the
 configuration, load balancer, and firewall. Full chart settings are documented
 in [`deploy/helm/ntwire/README.md`](../deploy/helm/ntwire/README.md).
 
+### Public exposure on EKS: NLB vs ALB
+
+`deploy/k8s/service.yaml`'s Service has no `type`, so it never leaves the
+cluster on its own — pick one of the two paths below to reach it from the
+internet on AWS. They are not equivalent: one preserves ntwire's end-to-end
+TLS model unchanged, the other terminates it at the load balancer and needs
+the trade-off understood before you rely on it.
+
+| | NLB, TCP pass-through | ALB, WSS re-encrypted |
+| --- | --- | --- |
+| **Pros** | Client's TLS reaches `ntwire-server` untouched — the TOFU fingerprint pin matches the real server, exactly the documented trust model. | Reuses ALB Ingress conventions/WAF/access-logging already standard elsewhere in the cluster, if that consistency matters. |
+| | Direct-UDP WireGuard data plane (`listen.wireguard`) works alongside WSS, avoiding WebSocket overhead. | ACM issues and renews the public-facing certificate automatically — no operator-run ACME client for that hop. |
+| | Nothing to tune: NLB doesn't inspect payload, so there's no idle-timeout or health-check-path configuration to get wrong. | L7 features (WAF, host/path routing, S3 access logs) are available if useful for reasons unrelated to ntwire. |
+| **Cons** | No L7 features (WAF, path/host routing) — this Service is exposed on its own. | The client no longer pins `ntwire-server`'s certificate — it pins the ALB's ACM certificate instead, so anything able to reach the ALB↔pod segment inside the VPC now sits inside what was meant to be an end-to-end encrypted, mutually-authenticated channel. |
+| | No ACM integration: a real certificate here still means running your own ACME client per [LETSENCRYPT.md](LETSENCRYPT.md), since a TCP listener never terminates TLS for ACM to attach to. | No direct-UDP path at all — ALB is HTTP(S)/gRPC only, so every session is permanently confined to the WSS fallback. |
+| | A single mixed TCP+UDP Service needs Kubernetes 1.26+, else two separate NLBs. | Default 60s idle timeout kills a long-lived WSS session unless raised explicitly; ALB also never validates the pod's backend certificate, so self-signed "just works" but gives no assurance on that hop either. |
+
+**Recommendation: use an NLB with a TCP listener** unless you have a
+specific reason (an existing ALB-centric platform convention, wanting
+ACM-managed renewal, or needing WAF) to accept the trust and UDP trade-offs
+of the ALB path.
+
+An ALB is Layer 7 only — it has no raw-TCP or TLS-passthrough listener, so
+putting one in front of `ntwire-server` always means it terminates the
+client's TLS (the ALB path below). An NLB with a **TCP** listener (not a TLS
+listener) is pure L4 pass-through instead: it forwards bytes untouched, so
+the certificate the client actually sees and pins is still `ntwire-server`'s
+own — self-signed by default, or a real one via
+[LETSENCRYPT.md](LETSENCRYPT.md) — exactly as in a non-EKS deployment. This
+mirrors why `ntwire-relay`'s SNI-splicing `listen.public` needs the same
+kind of pass-through NLB in front of it (see the
+[Kubernetes relay replicas](RELAY.md#kubernetes-relay-replicas) note in
+RELAY.md).
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ntwire-server
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"
+spec:
+  type: LoadBalancer
+  selector: {app: ntwire-server}
+  ports:
+    - {name: https, port: 8443, targetPort: https, protocol: TCP}
+    - {name: wireguard, port: 51820, targetPort: wireguard, protocol: UDP}
+```
+
+No ALB-style listener/target-group annotations are needed or possible here —
+there is nothing for the NLB to inspect. A mixed TCP+UDP Service like this
+needs Kubernetes 1.26+ (`MixedProtocolLBService`, GA there); on an older EKS
+version split it into two Services (one TCP, one UDP) selecting the same
+pods, which the AWS Load Balancer Controller provisions as two NLBs unless
+you bind them to a shared one yourself with `TargetGroupBinding`.
+
+**Alternative: ALB in front, WSS end to end, TLS re-encrypted at the pod.**
+If you already run everything else in the cluster behind ALB Ingress and
+want to keep using it, `ntwire-server`'s HTTPS/WSS control plane can go
+through it too — WebSocket upgrades work natively over an ALB HTTPS
+listener:
+
+```
+client --wss--> ALB (ACM certificate) --wss (re-encrypted)--> ntwire-server pod (self-signed)
+```
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata: {name: ntwire-server}
+spec:
+  type: NodePort
+  selector: {app: ntwire-server}
+  ports:
+    - {name: https, port: 8443, targetPort: https, protocol: TCP}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ntwire-server
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:REGION:ACCOUNT:certificate/CERT-ID
+    alb.ingress.kubernetes.io/backend-protocol: HTTPS
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTPS
+    alb.ingress.kubernetes.io/healthcheck-path: /v1/info
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=4000
+spec:
+  rules:
+    - host: server.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: {name: ntwire-server, port: {number: 8443}}
+```
+
+Notes specific to this path, all consequences of the ALB actually
+terminating and re-originating TLS rather than passing it through:
+
+- **The client no longer pins `ntwire-server`'s certificate.** `ntwire`'s
+  TOFU fingerprint pin (see
+  [SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts](SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts))
+  now pins the ALB's ACM certificate instead — connecting still works, but
+  the cryptographic identity the client is actually trusting is the ALB, not
+  the pod. `tls.cert_file`/`tls.key_file` on `ntwire-server` only matter for
+  the ALB→pod hop now, and cannot be set to the ALB's own certificate: ACM
+  never exports the private key for it.
+- **The ALB→pod hop needs no real certificate.** ALB's HTTPS target group
+  does not validate the backend's certificate chain, so `ntwire-server`'s
+  default self-signed certificate satisfies it with no extra configuration.
+- **Health check:** `GET /v1/info` is unauthenticated (see
+  [PROTOCOL.md](PROTOCOL.md)) and works as the target group's health check
+  path against the HTTPS backend.
+- **Raise the idle timeout.** ALB's default 60-second idle timeout is far
+  shorter than a live WireGuard-over-WebSocket session; without
+  `idle_timeout.timeout_seconds` above the client's keepalive interval, the
+  ALB silently drops the long-lived WSS connection and forces a redial loop.
+- **No direct-UDP path.** ALB is HTTP(S)/gRPC only — it cannot carry
+  `listen.wireguard`'s UDP data plane at all. Every session is confined to
+  the WSS fallback; there is no direct-UDP upgrade behind this Ingress.
+- Only one `ntwire-server` replica should back the target group — see
+  [Kubernetes server replicas](RELAY.md#kubernetes-server-replicas) for why
+  active-active isn't supported today.
+
 ## See also
 
 - [CONFIGURATION.md](CONFIGURATION.md) — full `ntwire.yaml` reference
 - [RELAY.md](RELAY.md) — deploying a relay for servers behind NAT
 - [SECURITY.md](SECURITY.md) — TLS trust model for a deployed server
+- [LETSENCRYPT.md](LETSENCRYPT.md) — obtaining a CA-trusted certificate for `ntwire-server` or `ntwire-relay`
 - [LOGGING.md](LOGGING.md) — text vs. JSON logs, and the container default
