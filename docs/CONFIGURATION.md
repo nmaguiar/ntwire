@@ -361,6 +361,19 @@ VPN tunnel interface rather than binding local listeners on `127.0.0.1`, the iOS
 variant routes proxied traffic directly to the server's WireGuard netstack IP (`network.tunnel_cidr`,
 default `100.64.0.1`) on the tunnel's virtual port.
 
+**These endpoints need a trusted `tls.cert_file`/`tls.key_file`, not the default
+self-signed certificate.** Unlike the `ntwire` client, which pins a self-signed
+certificate by fingerprint on first connect (see
+[SECURITY.md](SECURITY.md#tls-trust-model-and-avoiding-repeated-re-trust-prompts)),
+an OS proxy-auto-config fetcher or a browser does ordinary system certificate
+validation with no trust-on-first-use step — it fails the handshake silently
+(no prompt) against a self-signed certificate. Configure a CA-issued
+certificate for the exact hostname the device connects to before relying on
+`/proxy.pac`/`/proxy-ios.pac`; see [LETSENCRYPT.md](LETSENCRYPT.md). Behind
+`ntwire-relay`, this certificate belongs on the origin `ntwire-server`, not
+the relay — see
+[RELAY.md](RELAY.md#tls-certificates-for-the-public-listener-pac-and-browser-clients).
+
 The generated PAC files include pattern matching for Kubernetes internal services
 (`*.svc`, `*.svc.cluster.local`, `*.cluster.local`), local domain extensions
 (`*.local`, `*.internal`, `*.lan`, `*.home`, `*.corp`), plain hostnames, and RFC 1918 /

@@ -253,6 +253,32 @@ the server's own reachable hostname and port. This only adds direct HTTPS/WSS
 ingress. Direct UDP promotion still requires `relay.advertise_direct: true`
 and a reachable WireGuard UDP path.
 
+### TLS certificates for the public listener, PAC, and browser clients
+
+The relay's `tls:` block (`cert_file`/`key_file`) applies only to
+`listen.agents` — the port `ntwire-server`s dial into to register (see
+[Running a relay](#running-a-relay)). It has no effect on `listen.public` or
+a tenant's dedicated `registrations[].listen` port: those never terminate
+TLS at all. The relay only reads the ClientHello's SNI to pick a tenant and
+splices the raw bytes through (`pkg/relay/sni.go`, `pkg/relay/public.go`), so
+the certificate a client actually receives on `wss://<tenant>.<relay-domain>`
+is whichever certificate the **origin `ntwire-server`** presents from its own
+`tls.cert_file`/`tls.key_file` — self-signed by default.
+
+This is invisible to the `ntwire` CLI/GUI client, which pins that
+certificate by SHA-256 fingerprint on first use regardless of hostname (see
+[SECURITY.md#the-relays-trust-model](SECURITY.md#the-relays-trust-model)).
+It is **not** invisible to anything that does ordinary system certificate
+validation instead of ntwire's TOFU pinning — an OS proxy auto-config
+fetcher (see [CONFIGURATION.md#proxy-auto-configuration-pac](CONFIGURATION.md#proxy-auto-configuration-pac)
+and [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md#using-socks-egress-with-proxy-auto-configuration-pac-on-ios)),
+a browser, or `relay.direct_clients` traffic hitting the server's plain
+hostname. Those fail the handshake against a self-signed certificate
+silently, with no trust prompt. To serve them, configure a CA-issued
+certificate for the tenant's exact public hostname on the **origin server**,
+not the relay — see [LETSENCRYPT.md](LETSENCRYPT.md) for obtaining one when
+the server has no direct inbound connectivity of its own.
+
 ## High availability and recovery
 
 `relay.url` remains the single-relay configuration. To run an active-active

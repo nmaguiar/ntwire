@@ -462,6 +462,17 @@ server) that already completed authenticated allocation over TLS.
   relay with normal PKI) to authenticate that hop; leaving it empty falls
   back to normal certificate verification, which requires the relay's
   `listen.agents` certificate to chain to a trusted root.
+- The inverse mistake is configuring that same `*.relay.example.com`
+  certificate on the relay and assuming it now protects client traffic on
+  `listen.public` — it does not. That port never terminates TLS (see
+  [RELAY.md#tls-certificates-for-the-public-listener-pac-and-browser-clients](RELAY.md#tls-certificates-for-the-public-listener-pac-and-browser-clients)),
+  so clients still see the origin server's own certificate, self-signed by
+  default. The `ntwire` client's fingerprint pinning does not care, but an
+  iOS/OS proxy auto-config fetch or a browser does ordinary hostname/chain
+  validation with no TOFU step and fails closed against a self-signed
+  certificate with no prompt. Put a CA-issued certificate on the **origin
+  server** for that case — [LETSENCRYPT.md](LETSENCRYPT.md) covers obtaining
+  one via DNS-01 when the server has no inbound connectivity of its own.
 - A scanner or unauthenticated connection to `listen.public` sees a TCP port
   that accepts, then resets without ever sending a byte — no certificate, no
   banner, no HTTP response, matching the behavior of an unregistered or

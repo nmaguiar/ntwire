@@ -78,6 +78,19 @@ When native WireGuard peers have access to a `target: socks` tunnel, iOS devices
    - Enter the iOS PAC URL: `https://<server>:8443/proxy-ios.pac` (or `/proxy-ios-<target>.pac`, or via relay `https://<tenant>.<relay-domain>/proxy-ios.pac`).
 3. **Browse:** Safari and iOS apps will route internal destinations (e.g. `*.svc`, `*.cluster.local`, `*.internal`, `10.0.0.0/8`) through the SOCKS proxy at `100.64.0.1:<virtual_port>` over the WireGuard tunnel, while standard internet traffic goes direct.
 
+**This requires a CA-trusted certificate on `ntwire-server`.** iOS fetches
+the PAC URL with ordinary system certificate validation — there is no
+trust-on-first-use prompt like the `ntwire` client's, so the server's
+default self-signed certificate is silently rejected and the Automatic proxy
+setting quietly stops applying, with no error shown to the user. Set
+`tls.cert_file`/`tls.key_file` on the server to a certificate covering the
+exact hostname iOS connects to (see [LETSENCRYPT.md](LETSENCRYPT.md)).
+Reaching the server through `ntwire-relay` does not change this: `listen.public`
+splices the TLS session straight through without terminating it, so the
+certificate iOS actually validates is still the origin server's — the relay's
+own `listen.agents` certificate is unrelated. See
+[RELAY.md](RELAY.md#tls-certificates-for-the-public-listener-pac-and-browser-clients).
+
 ### In-tunnel DNS and Target Discovery
 
 `ntwire-server` includes an in-tunnel DNS server listening on UDP port 53 inside the WireGuard netstack (`100.64.0.1:53`). Official WireGuard clients configured with `DNS = 100.64.0.1` can resolve and discover available targets directly over the tunnel:
