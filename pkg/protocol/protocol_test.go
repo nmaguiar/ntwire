@@ -28,6 +28,26 @@ func TestSigningPayloadCanonical(t *testing.T) {
 	}
 }
 
+func TestPortalCapabilitiesAreAdditivePresentationMetadata(t *testing.T) {
+	r := AuthRequest{Version: Version, PublicKey: "a", WireGuardPublicKey: "b", Timestamp: "2026-01-01T00:00:00Z", Nonce: "n"}
+	before, err := SigningPayload(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Info.PortalCapabilities = []string{"local_ports", "socks"}
+	after, err := SigningPayload(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("presentation metadata changed authorization signature payload")
+	}
+	b, err := json.Marshal(r)
+	if err != nil || !strings.Contains(string(b), `"portal_capabilities"`) {
+		t.Fatalf("metadata was not encoded: %s, %v", b, err)
+	}
+}
+
 func TestWireJSONFieldsAreDistinct(t *testing.T) {
 	b, err := json.Marshal(AuthResponse{SessionID: "id", Token: "token", TunnelIP: "100.64.0.2", ServerPublicKey: "server", Tunnels: []Tunnel{{Name: "db", Description: "database", LocalPort: 58080}}})
 	if err != nil {

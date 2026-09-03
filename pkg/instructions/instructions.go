@@ -13,6 +13,8 @@ import (
 	"bytes"
 	"strings"
 	"text/template"
+
+	"github.com/nmaguiar/ntwire/pkg/portal"
 )
 
 // maxSize caps both the instruction text that is templated and the result that
@@ -39,6 +41,9 @@ type Data struct {
 	TunnelIP       string // this client's address inside the tunnel
 	ServerTunnelIP string // the server's address inside the tunnel
 	Server         string // control-plane base URL this client is connected to
+	// Client is presentation metadata shared with Portal templates. It never
+	// grants access; instructions are rendered only after tunnel authorization.
+	Client portal.ClientContext
 	// PACURL/PACURLiOS are the Desktop and iOS Proxy Auto-Configuration
 	// URLs for this tunnel, populated only when TargetHint is "socks" --
 	// empty otherwise, so a template using them on a non-SOCKS tunnel

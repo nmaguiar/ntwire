@@ -324,7 +324,7 @@ func runPortalRender(args []string, u *ui.UI) {
 	case "html":
 		fmt.Fprintln(u.Out, renderedHTML)
 	case "full-html", "page":
-		fmt.Fprintln(u.Out, portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML))
+		fmt.Fprintln(u.Out, portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client))
 	case "json":
 		payload := portal.RenderedPortal{
 			Title:    portalCtx.Portal.Title,

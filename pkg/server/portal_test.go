@@ -155,6 +155,29 @@ func TestPortal_AuthorizationIsolation(t *testing.T) {
 	}
 }
 
+func TestPortalClientPresentationCannotChangeGrants(t *testing.T) {
+	s := New(Config{Portal: portal.PortalConfig{Enabled: true, Template: `{{.Client.OS}} {{.Client.Type}} {{#each targets}}{{name}} {{/each}}`}, Tunnels: []TunnelConfig{
+		{Name: "allowed", Target: "allowed.internal:443", VirtualPort: 443},
+		{Name: "hidden", Target: "hidden.internal:443", VirtualPort: 8443},
+	}}, nil)
+	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "alice", Tunnels: []protocol.Tunnel{{Name: "allowed", VirtualPort: 443}}, ClientInfo: protocol.ClientInfo{OS: "windows", PortalCapabilities: []string{"portal_native", "local_ports", "socks", "open_url"}}, TTL: time.Minute})
+	req := httptest.NewRequest(http.MethodGet, "/v1/portal", nil)
+	req.Header.Set("Authorization", "Bearer "+session.Token)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (iPhone) Safari/604.1")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d: %s", rec.Code, rec.Body.String())
+	}
+	var out portal.RenderedPortal
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Context.Targets) != 1 || out.Context.Targets[0].ID != "allowed" || strings.Contains(out.Markdown, "hidden") {
+		t.Fatalf("presentation metadata changed grants: %+v %q", out.Context.Targets, out.Markdown)
+	}
+}
+
 func TestPortal_ActionAuthorization(t *testing.T) {
 	s := New(Config{
 		Portal: portal.PortalConfig{Enabled: true},

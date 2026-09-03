@@ -616,6 +616,12 @@ tunnels:
 
 See [PORTAL.md](PORTAL.md) for full details on template syntax, variables, capabilities, and the `ntwire-server portal` CLI tools.
 
+Portal templates can also use the normalized `.Client` presentation context
+(detected OS/browser, native ntwire versus generic WireGuard, and conservative
+capabilities). This metadata is documentation-only; it cannot grant access or
+alter any tunnel, policy, hook, or SOCKS restriction. See the Client-aware
+templates section in [PORTAL.md](PORTAL.md) for the complete template API.
+
 ## See also
 
 - [../README.md](../README.md) — quick start and everyday client/server usage
