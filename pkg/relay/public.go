@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/authlimit"
 )
 
 // publicListener implements the always-relay TLS passthrough accept loop:
@@ -95,7 +97,7 @@ func (p *publicListener) handle(c net.Conn) {
 	if err != nil {
 		host = c.RemoteAddr().String()
 	}
-	if !p.rate.allow(host) {
+	if !p.rate.Allow(host) {
 		p.log.Debug("public listener: rate limit exceeded", "client", host)
 		return // silently reset; no reply, indistinguishable from any other close
 	}
@@ -127,7 +129,7 @@ func (p *publicListener) handleTenant(c net.Conn, tenantName string) {
 	if err != nil {
 		host = c.RemoteAddr().String()
 	}
-	if !p.rate.allow(host) {
+	if !p.rate.Allow(host) {
 		p.log.Debug("tenant public listener: rate limit exceeded", "tenant", tenantName, "client", host)
 		return
 	}
@@ -218,40 +220,17 @@ func splice(a, b net.Conn) {
 	wg.Wait()
 }
 
-type rateState struct {
-	n     int
-	since time.Time
-}
-
-// rateLimiter is the relay's per-source-IP cap on new public connections,
-// the same shape as pkg/server's allowSource. Unlike the server, this is
-// mandatory: a valid-SNI inbound SYN forces the origin server to open an
-// outbound dial-back connection, so an unbounded public listener is a
-// dial-back amplification vector.
-type rateLimiter struct {
-	mu    sync.Mutex
-	limit int
-	rates map[string]*rateState
-}
+// rateLimiter is the relay's per-source-IP cap on new connections. It is
+// mandatory here in a way pkg/server's allowSource is not: a valid-SNI inbound
+// SYN forces the origin server to open an outbound dial-back connection, so an
+// unbounded public listener is a dial-back amplification vector.
+//
+// The counting itself lives in pkg/authlimit, shared with pkg/server. The
+// previous open-coded version swept its whole map on every call and never
+// capped it, so a source rotating addresses -- trivial over IPv6 -- turned the
+// limiter into the amplifier it exists to prevent.
+type rateLimiter = authlimit.SourceLimiter
 
 func newRateLimiter(limit int) *rateLimiter {
-	return &rateLimiter{limit: limit, rates: map[string]*rateState{}}
-}
-
-func (r *rateLimiter) allow(host string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	for k, v := range r.rates {
-		if now.Sub(v.since) > time.Minute {
-			delete(r.rates, k)
-		}
-	}
-	v := r.rates[host]
-	if v == nil || now.Sub(v.since) > time.Minute {
-		r.rates[host] = &rateState{n: 1, since: now}
-		return true
-	}
-	v.n++
-	return v.n <= r.limit
+	return authlimit.NewSourceLimiter(limit, time.Minute, 0)
 }

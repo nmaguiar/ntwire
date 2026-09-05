@@ -53,7 +53,7 @@ func TestSocks5ConnectAllowed(t *testing.T) {
 	upstream, closeUpstream := stubUpstream(t)
 	defer closeUpstream()
 
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	client, server := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -113,7 +113,7 @@ func TestSocks5ConnectRemoteHostnamePreservesDomainForDial(t *testing.T) {
 
 	var dialed string
 	s, err := New(Config{
-		Filter:             FilterConfig{AllowAll: true},
+		Filter:             FilterConfig{AllowAll: true, AllowLocalEgress: true},
 		DialRemoteHostname: true,
 		Logger:             slog.New(slog.DiscardHandler),
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -175,7 +175,7 @@ func TestSocks5ConnectDenied(t *testing.T) {
 }
 
 func TestSocks5NoAuthRequired(t *testing.T) {
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
@@ -192,7 +192,7 @@ func TestSocks4Connect(t *testing.T) {
 	upstream, closeUpstream := stubUpstream(t)
 	defer closeUpstream()
 
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
@@ -237,7 +237,7 @@ func TestSocks4Denied(t *testing.T) {
 }
 
 func TestSocks5UnsupportedCommandRejected(t *testing.T) {
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 
@@ -257,7 +257,7 @@ func TestSocks5UnsupportedCommandRejected(t *testing.T) {
 
 func TestSocks5UDPAssociateUsesHostRelay(t *testing.T) {
 	called := false
-	s, err := New(Config{Filter: FilterConfig{AllowAll: true}, UDPAssociate: func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool) {
+	s, err := New(Config{Filter: FilterConfig{AllowAll: true, AllowLocalEgress: true}, UDPAssociate: func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool) {
 		called = true
 		return &UDPAssociation{Addr: netip.MustParseAddr("127.0.0.1"), Port: 9999}, true
 	}})
@@ -303,7 +303,7 @@ func readSocks5Reply(t *testing.T, r io.Reader) (rep byte, port uint16) {
 }
 
 func TestSocks5Bind(t *testing.T) {
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	s.allowBind = true
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
@@ -349,7 +349,7 @@ func TestSocks5Bind(t *testing.T) {
 }
 
 func TestSocks5BindRequiresExplicitOptIn(t *testing.T) {
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)
 	client.Write([]byte{0x05, 0x01, 0x00})
@@ -382,7 +382,7 @@ func TestSocks5BindDeniedByFilter(t *testing.T) {
 }
 
 func TestSocks4Bind(t *testing.T) {
-	s := testServer(t, FilterConfig{AllowAll: true})
+	s := testServer(t, FilterConfig{AllowAll: true, AllowLocalEgress: true})
 	s.allowBind = true
 	client, server := net.Pipe()
 	go s.ServeConn(context.Background(), server)

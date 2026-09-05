@@ -50,7 +50,7 @@ func (r *reflector) handle(b []byte, addr net.Addr) {
 	if !ok {
 		return
 	}
-	if !r.rate.allow(udpAddr.IP.String()) {
+	if !r.rate.Allow(udpAddr.IP.String()) {
 		r.log.Debug("reflector: rate limit exceeded", "peer", addr)
 		return
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,6 +27,15 @@ type agentServer struct {
 	domain   string
 	limits   Limits
 	log      *slog.Logger
+
+	// rate caps registration attempts per source address, and pending counts
+	// control connections accepted but not yet registered. listen.agents is
+	// internet-facing by necessity (a NAT'd server must be able to dial out to
+	// it), so both are needed: without them anyone who can reach the port can
+	// upgrade to a WebSocket, never send a registration, and hold a goroutine
+	// and an fd for the life of the process.
+	rate    *rateLimiter
+	pending atomic.Int64
 
 	mu           sync.Mutex
 	reflectAddr  string
@@ -111,7 +121,7 @@ func newAgentServer(registry *Registry, domain string, limits Limits, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &agentServer{registry: registry, domain: domain, limits: limits, log: log, socksTargets: make(map[string][]protocol.SocksTarget)}
+	return &agentServer{registry: registry, domain: domain, limits: limits, log: log, rate: newRateLimiter(limits.MaxRegistrationsPerMinute), socksTargets: make(map[string][]protocol.SocksTarget)}
 }
 
 func (a *agentServer) Handler() http.Handler {
@@ -248,6 +258,33 @@ func (a *agentServer) servePAC(w http.ResponseWriter, r *http.Request, targetNam
 // connection open as the tenant's live agent, pushing RelayOpen messages and
 // pinging for NAT keepalive until the connection drops.
 func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
+	// Both gates run before the WebSocket upgrade: once the connection is
+	// hijacked, net/http's ReadHeaderTimeout no longer applies and the cost of
+	// an abusive connection is ours to bound.
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if !a.rate.Allow(host) {
+		a.log.Debug("relay registration rate limit exceeded", "remote", r.RemoteAddr)
+		http.Error(w, "too many registration attempts", http.StatusTooManyRequests)
+		return
+	}
+	if max := a.limits.MaxPendingRegistrations; max > 0 && a.pending.Add(1) > int64(max) {
+		a.pending.Add(-1)
+		a.log.Warn("relay registration refused: too many unregistered control connections", "remote", r.RemoteAddr, "limit", max)
+		http.Error(w, "too many pending registrations", http.StatusServiceUnavailable)
+		return
+	}
+	// Released once registration completes or fails; a registered agent no
+	// longer occupies a pending slot, since it is bounded by the tenant set.
+	releasePending := sync.OnceFunc(func() {
+		if a.limits.MaxPendingRegistrations > 0 {
+			a.pending.Add(-1)
+		}
+	})
+	defer releasePending()
+
 	ws, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		return
@@ -261,7 +298,12 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	remote := r.RemoteAddr
-	_, data, err := ws.Read(ctx)
+	// The registration message must arrive within the handshake window. The
+	// request context alone has no deadline, so an upgraded-but-silent
+	// connection would otherwise block here for the life of the process.
+	regCtx, cancelReg := context.WithTimeout(ctx, a.registrationTimeout())
+	_, data, err := ws.Read(regCtx)
+	cancelReg()
 	if err != nil {
 		ws.Close(websocket.StatusPolicyViolation, "expected registration message")
 		return
@@ -322,6 +364,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	a.registry.RegisterAgent(name, agent)
 	defer a.registry.DeregisterAgent(name, agent)
+	releasePending()
 	a.mu.Lock()
 	if len(req.SocksTargets) > 0 {
 		a.socksTargets[name] = req.SocksTargets
@@ -406,6 +449,18 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+// defaultRegistrationTimeout applies when Limits carries no HandshakeTimeout.
+// LoadConfig always sets one, but Limits is also constructed directly (tests,
+// embedding callers), and a zero there must not mean "expire immediately".
+const defaultRegistrationTimeout = 5 * time.Second
+
+func (a *agentServer) registrationTimeout() time.Duration {
+	if a.limits.HandshakeTimeout > 0 {
+		return a.limits.HandshakeTimeout
+	}
+	return defaultRegistrationTimeout
 }
 
 // controlMessageType sniffs the "type" discriminator on a message read from

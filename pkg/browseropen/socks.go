@@ -102,6 +102,22 @@ func OpenSocks(key, localAddr string, targetURL ...string) error {
 	if err != nil {
 		return err
 	}
+	args, err := socksArgs(dir, localAddr, targetURL)
+	if err != nil {
+		return err
+	}
+	return exec.Command(bin, args...).Start()
+}
+
+// socksArgs builds Chrome's argument list. It is separate from OpenSocks so the
+// URL handling can be tested without a browser installed.
+//
+// Two guards, because a target URL here is server-supplied. Chromium reads any
+// argument beginning with "-" as a switch, so a URL of "--load-extension=..."
+// or "--remote-debugging-port=..." would otherwise be honoured as one: reject
+// it outright, and terminate flag parsing with "--" so anything after can only
+// be read as a positional URL.
+func socksArgs(dir, localAddr string, targetURL []string) ([]string, error) {
 	args := []string{
 		"--user-data-dir=" + dir,
 		"--proxy-server=socks5://" + localAddr,
@@ -109,13 +125,22 @@ func OpenSocks(key, localAddr string, targetURL ...string) error {
 		"--no-default-browser-check",
 		"--disable-sync",
 	}
+	var urls []string
 	for _, u := range targetURL {
 		u = strings.TrimSpace(u)
-		if u != "" {
-			args = append(args, u)
+		if u == "" {
+			continue
 		}
+		if !safeURL(u) {
+			return nil, fmt.Errorf("%w: %q", ErrUnsafeURL, u)
+		}
+		urls = append(urls, u)
 	}
-	return exec.Command(bin, args...).Start()
+	if len(urls) > 0 {
+		args = append(args, "--")
+		args = append(args, urls...)
+	}
+	return args, nil
 }
 
 // OpenSocksURL is an explicit alias for OpenSocks with a target URL.

@@ -12,12 +12,31 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
+// adminTestToken satisfies minAdminTokenLength, which LoadConfig now enforces.
+const adminTestToken = "operator-secret-operator-secret-0"
+
+// adminGET and adminPOST present the operator token the way callers must now:
+// in an Authorization header, never in the query string.
+func adminGET(t *testing.T, path string) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, path, nil)
+	r.Header.Set("Authorization", "Bearer "+adminTestToken)
+	return r
+}
+
+func adminPOST(t *testing.T, path string) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, path, nil)
+	r.Header.Set("Authorization", "Bearer "+adminTestToken)
+	return r
+}
+
 func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 	c := Config{Tunnels: []TunnelConfig{{Name: "reports", Target: "reports.internal:8080", Description: "Reports", VirtualPort: 18080}, {Name: "egress", Target: "socks", VirtualPort: 18081, Socks: &SocksConfig{AllowAll: true, AllowBind: true}}}}
 	c.Authorizer.Exec = "/usr/local/bin/ntwire-authorizer"
 	c.Relay.Enabled = true
 	c.Relay.AdvertiseDirect = true
-	c.Admin.WebUIToken = "operator-secret"
+	c.Admin.WebUIToken = adminTestToken
 	s := New(c, nil)
 	session := s.sessions.Create(CreateParams{Method: "oidc", Identity: "alice@example.com", WireGuardPublicKey: "wg-alice", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "reports", VirtualPort: 18080}}, LatencyMillis: 18, Reconnections: 2, TTL: time.Minute})
 	stats := s.statsFor("100.64.0.2", "reports")
@@ -35,7 +54,7 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 		}
 	}
 	rec := httptest.NewRecorder()
-	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/dashboard?token=operator-secret", nil))
+	s.MetricsHandler().ServeHTTP(rec, adminGET(t, "/v1/dashboard"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
@@ -60,7 +79,7 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 		t.Fatalf("security_capabilities = %v, want %v", out.SecurityCapabilities, wantCapabilities)
 	}
 	control := httptest.NewRecorder()
-	s.Handler().ServeHTTP(control, httptest.NewRequest(http.MethodGet, "/v1/dashboard?token=operator-secret", nil))
+	s.Handler().ServeHTTP(control, adminGET(t, "/v1/dashboard"))
 	if control.Code != http.StatusNotFound {
 		t.Fatalf("control API dashboard status = %d, want 404", control.Code)
 	}
@@ -68,7 +87,7 @@ func TestDashboardRequiresTokenAndShowsGrantedTunnel(t *testing.T) {
 
 func TestRevokeSessionRequiresToken(t *testing.T) {
 	c := Config{}
-	c.Admin.WebUIToken = "operator-secret"
+	c.Admin.WebUIToken = adminTestToken
 	s := New(c, nil)
 	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
 
@@ -84,12 +103,12 @@ func TestRevokeSessionRequiresToken(t *testing.T) {
 
 func TestRevokeSessionEndsSessionByID(t *testing.T) {
 	c := Config{}
-	c.Admin.WebUIToken = "operator-secret"
+	c.Admin.WebUIToken = adminTestToken
 	s := New(c, nil)
 	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
 
 	rec := httptest.NewRecorder()
-	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/"+session.ID+"/revoke?token=operator-secret", nil))
+	s.MetricsHandler().ServeHTTP(rec, adminPOST(t, "/v1/admin/sessions/"+session.ID+"/revoke"))
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
@@ -100,11 +119,11 @@ func TestRevokeSessionEndsSessionByID(t *testing.T) {
 
 func TestRevokeSessionUnknownIDNotFound(t *testing.T) {
 	c := Config{}
-	c.Admin.WebUIToken = "operator-secret"
+	c.Admin.WebUIToken = adminTestToken
 	s := New(c, nil)
 
 	rec := httptest.NewRecorder()
-	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/does-not-exist/revoke?token=operator-secret", nil))
+	s.MetricsHandler().ServeHTTP(rec, adminPOST(t, "/v1/admin/sessions/does-not-exist/revoke"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 for an unknown session id", rec.Code)
 	}
@@ -112,12 +131,12 @@ func TestRevokeSessionUnknownIDNotFound(t *testing.T) {
 
 func TestRevokeSessionNotOnPublicControlAPI(t *testing.T) {
 	c := Config{}
-	c.Admin.WebUIToken = "operator-secret"
+	c.Admin.WebUIToken = adminTestToken
 	s := New(c, nil)
 	session := s.sessions.Create(CreateParams{Method: "ssh", Identity: "fp", TTL: time.Minute})
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/admin/sessions/"+session.ID+"/revoke?token=operator-secret", nil))
+	s.Handler().ServeHTTP(rec, adminPOST(t, "/v1/admin/sessions/"+session.ID+"/revoke"))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("control API revoke status = %d, want 404 (admin endpoints stay off the public API)", rec.Code)
 	}

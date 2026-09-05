@@ -22,6 +22,32 @@ type FilterConfig struct {
 	// egress proxy, so ntwire instead defaults to deny-all in that case
 	// unless AllowAll is explicitly set.
 	AllowAll bool
+
+	// AllowLocalEgress lifts the loopback/link-local floor below. It exists
+	// for the legitimate "proxy to a service on the server host" case and is
+	// reported as a security capability, because it re-exposes the server's
+	// own loopback and its cloud metadata endpoint to every session holding
+	// the tunnel's grant.
+	AllowLocalEgress bool
+}
+
+// deniedByDefault are destination classes no filter configuration reaches: the
+// server's own loopback, the link-local range that carries cloud instance
+// metadata (169.254.169.254 and its IPv6 equivalent), and the unspecified
+// address.
+//
+// Without this, socks.allow_all -- or any filter set an operator wrote thinking
+// only about external destinations -- turns an authenticated tunnel into a
+// request forgery primitive against services that trust the server's own
+// address. Set AllowLocalEgress to opt back in deliberately.
+func deniedByDefault(ip netip.Addr) bool {
+	ip = ip.Unmap()
+	return !ip.IsValid() ||
+		ip.IsLoopback() ||
+		ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsInterfaceLocalMulticast()
 }
 
 // localCIDRs matches socksd's getLocalNetFilter(): the private ranges used
@@ -53,6 +79,7 @@ type ASNLookup interface {
 
 // Filter is the compiled, ready-to-evaluate form of a FilterConfig.
 type Filter struct {
+	allowLocal bool
 	onlyLocal  bool
 	cidrs      []netip.Prefix
 	domains    []string
@@ -79,6 +106,7 @@ func NewFilter(cfg FilterConfig, asnLookup ASNLookup) (*Filter, error) {
 		asns[a] = struct{}{}
 	}
 	return &Filter{
+		allowLocal: cfg.AllowLocalEgress,
 		onlyLocal:  cfg.OnlyLocal,
 		cidrs:      cidrs,
 		domains:    cfg.DomainSuffixes,
@@ -105,6 +133,12 @@ func NewFilter(cfg FilterConfig, asnLookup ASNLookup) (*Filter, error) {
 // (no CIDR) configurations do not gate the domain check at all, mirroring
 // socksd's use of `filters.length > 0` (the CIDR list only) for that veto.
 func (f *Filter) Allowed(hostname string, ip netip.Addr) bool {
+	// Evaluated before onlyLocal, allowAll and invert, so no configuration can
+	// reach these destinations by accident and invert cannot turn the floor
+	// into an allow.
+	if !f.allowLocal && deniedByDefault(ip) {
+		return false
+	}
 	if f.onlyLocal {
 		return matchesAnyCIDR(ip, localCIDRs)
 	}

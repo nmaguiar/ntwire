@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/authlimit"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"golang.org/x/crypto/ssh"
@@ -39,6 +40,11 @@ type Limits struct {
 	// only the public listener using it.
 	UDPRelayIdleTimeout          time.Duration
 	MaxUDPRelaySessionsPerServer int
+	// MaxRegistrationsPerMinute and MaxPendingRegistrations bound the agents
+	// listener; like HandshakeTimeout they live here so callers construct one
+	// Limits value, and are used by agentServer rather than by Registry.
+	MaxRegistrationsPerMinute int
+	MaxPendingRegistrations   int
 }
 
 // Agent is a live control connection for one registered tenant name.
@@ -117,7 +123,7 @@ type Registry struct {
 	byFingerprint map[string]Registration
 	tenants       map[string]*tenantState
 	pending       map[string]*pendingConn
-	nonces        map[string]time.Time
+	nonces        *authlimit.NonceCache
 	kubernetes    map[string]ServerEndpoint
 	conflicts     map[string]map[string]ServerEndpoint
 	limits        Limits
@@ -128,7 +134,7 @@ func NewRegistry(registrations []Registration, limits Limits) *Registry {
 		byFingerprint: map[string]Registration{},
 		tenants:       map[string]*tenantState{},
 		pending:       map[string]*pendingConn{},
-		nonces:        map[string]time.Time{},
+		nonces:        authlimit.NewNonceCache(5*time.Minute, maxNonces),
 		kubernetes:    map[string]ServerEndpoint{},
 		conflicts:     map[string]map[string]ServerEndpoint{},
 		limits:        limits,
@@ -202,41 +208,11 @@ func (r *Registry) List() []ServerEndpoint {
 	return out
 }
 
-// maxNonces backstops useNonceLocked's normal 5-minute expiry: it bounds
-// memory if an authenticated peer (the only kind that can reach this point
-// post-reorder, see Register) registers with an unusual number of distinct
-// nonces within one window.
-const maxNonces = 4096
-
-// useNonceLocked records n as seen, evicting expired entries and -- if still
-// over maxNonces afterward -- the single oldest surviving entry as a
-// backstop.
-func (r *Registry) useNonceLocked(n string) bool {
-	if n == "" {
-		return false
-	}
-	if _, ok := r.nonces[n]; ok {
-		return false
-	}
-	now := time.Now()
-	r.nonces[n] = now
-	var oldestKey string
-	var oldestTime time.Time
-	haveOldest := false
-	for k, v := range r.nonces {
-		if now.Sub(v) > 5*time.Minute {
-			delete(r.nonces, k)
-			continue
-		}
-		if !haveOldest || v.Before(oldestTime) {
-			oldestKey, oldestTime, haveOldest = k, v, true
-		}
-	}
-	if len(r.nonces) > maxNonces && haveOldest {
-		delete(r.nonces, oldestKey)
-	}
-	return true
-}
+// maxNonces backstops the nonce cache's normal 5-minute expiry: it bounds
+// memory if an authenticated peer (the only kind that can reach this point,
+// see Register) registers with an unusual number of distinct nonces within one
+// window.
+const maxNonces = authlimit.DefaultMaxNonces
 
 // Register verifies a RelayRegisterRequest against the configured
 // registrations and returns the authoritative tenant name and the
@@ -274,10 +250,7 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 	if err != nil || sshkey.Verify(reg.PublicKey, payload, req.Signature) != nil {
 		return "", "", &RegisterError{Code: protocol.ErrorBadSignature, Message: "invalid signature"}
 	}
-	r.mu.Lock()
-	nonceOK := r.useNonceLocked(req.Nonce)
-	r.mu.Unlock()
-	if !nonceOK {
+	if !r.nonces.Use(req.Nonce) {
 		return "", "", &RegisterError{Code: protocol.ErrorReplayedNonce, Message: "replayed nonce"}
 	}
 	if req.Name != reg.Name {

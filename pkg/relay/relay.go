@@ -117,6 +117,8 @@ func New(cfg Config, log *slog.Logger) (*Relay, error) {
 		DialBackTimeout:              cfg.Limits.DialBackTimeout,
 		MaxPendingPerServer:          cfg.Limits.MaxPendingPerServer,
 		MaxConnsPerServer:            cfg.Limits.MaxConnsPerServer,
+		MaxRegistrationsPerMinute:    cfg.Limits.MaxRegistrationsPerMinute,
+		MaxPendingRegistrations:      cfg.Limits.MaxPendingRegistrations,
 		UDPRelayIdleTimeout:          cfg.Limits.UDPRelayIdleTimeout,
 		MaxUDPRelaySessionsPerServer: cfg.Limits.MaxUDPRelaySessionsPerServer,
 	}
@@ -180,7 +182,10 @@ func (r *Relay) Start() error {
 		abortAll()
 		return fmt.Errorf("listen.agents: %w", err)
 	}
-	tlsAgentsLn := tls.NewListener(agentsLn, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12})
+	// TLS 1.3, matching pkg/server's listener. Both ends of this hop are
+	// ntwire binaries built from this module, so there is no pre-1.3 peer to
+	// stay compatible with.
+	tlsAgentsLn := tls.NewListener(agentsLn, &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS13})
 
 	var reflectAddr string
 	if r.cfg.Listen.Reflect != "" {

@@ -83,8 +83,14 @@ remains outstanding before an iOS data plane can be enabled by default.
 - Client requests are signed over a byte-exact canonical payload.
 - The server validates key membership and compares public-key digests in
   constant time.
+- The key comment used for grant matching comes from the server's own
+  `authorized_keys` file, never from the request, so the holder of one
+  authorized key cannot claim a grant written for another
+  ([PROTOCOL.md](PROTOCOL.md#authentication-request)).
 - Timestamps have a two-minute window and accepted nonces are retained for
-  five minutes to prevent replay.
+  five minutes to prevent replay. A nonce is consumed only **after** the
+  signature verifies, so an unauthenticated request cannot churn the cache;
+  the cache is size-capped as a backstop, as is the per-source rate limiter.
 - YAML ACLs limit keys to configured tunnels. Optional hooks fail closed and
   can only narrow YAML grants or shorten a session TTL.
 - Session tokens are random bearer credentials and expire when checked.
@@ -177,6 +183,10 @@ automatically" workarounds; instead, use one of:
   headless or otherwise unsupported system, the documented fallback remains
   that mode-`0600` file; treat it like a private key. `ntwire logout` removes
   a server's local entries but does not revoke the refresh token at the IdP.
+- **Deleting an authorized-key file revokes immediately.** The key directory
+  is watched for removals as well as writes, so removing a `.pub` file both
+  blocks new logins and drops that key's live sessions on the resulting
+  reload, with an `authorization_revoked` audit record.
 - **Revocation is YAML/groups change + session TTL, not instantaneous —
   unless an operator revokes the session directly.** Removing a user's
   email/domain/group grant, removing an issuer, or editing the groups a
@@ -189,10 +199,11 @@ automatically" workarounds; instead, use one of:
   waiting on a config change or TTL, an operator with `admin.web_ui_token`
   can end one session right away: read its `session_id` from
   `GET /v1/dashboard` (see [Server dashboard](CONFIGURATION.md#server-dashboard)),
-  then `POST /v1/admin/sessions/{id}/revoke?token=...` on the metrics
-  listener. This endpoint is deliberately not on the public control API — it
-  shares the dashboard's token gate and listener, so it inherits the same
-  "bind to loopback or place it behind an authenticating proxy" guidance.
+  then `POST /v1/admin/sessions/{id}/revoke` on the metrics listener with
+  `Authorization: Bearer <admin.web_ui_token>`. This endpoint is deliberately
+  not on the public control API — it shares the dashboard's token gate and
+  listener, so it inherits the same "bind to loopback or place it behind an
+  authenticating proxy" guidance.
 - **Per-identity session cap.** `max_sessions_per_key` applies per identity
   for OIDC too (the verified email), independent of the SSH fingerprint
   namespace.
@@ -210,7 +221,7 @@ high-risk configuration classes, never tunnel names, identities, URLs, or
 secrets. The same array is available to an authenticated operator in
 `GET /v1/dashboard?token=...` as `security_capabilities`. Current values are
 `authorization_hook`, `socks_unrestricted`, `socks_bind`,
-`relay_mediated_udp`, and `direct_udp_relay_bypass`. An empty array means none
+`socks_local_egress`, `relay_mediated_udp`, and `direct_udp_relay_bypass`. An empty array means none
 of these opt-ins is configured. Client-side `--insecure` emits the separate
 `insecure_tls_enabled` warning when a connection is established.
 
@@ -232,6 +243,18 @@ flows expire after two minutes by default. The target is resolved, authorized,
 and then dialled as that exact IP, so policy evaluation cannot be bypassed by
 DNS rebinding.
 
+- **Loopback and link-local destinations are denied unconditionally.** No
+  `socks:` configuration reaches the server's own `127.0.0.0/8` or `::1`, the
+  link-local range that carries cloud instance metadata
+  (`169.254.169.254` and its IPv6 equivalent), or the unspecified address --
+  not `allow_all`, not a `0.0.0.0/0` filter, and not `reverse_filters`, since
+  the check runs before all three. Those destinations trust the *server's*
+  network position rather than the requester's, so reaching them through a
+  tunnel is request forgery. Set `socks.allow_local_egress: true` to opt back
+  in for the legitimate "proxy to a service on the server host" case; it is
+  reported as the `socks_local_egress` security capability when enabled.
+  (Fixed `target:` tunnels are unaffected: their destination is chosen by the
+  operator in configuration, not by the requester.)
 - **The default denies everything, not everything.** socksd (the filter set
   this re-implements) defaults to allowing every destination when no filters
   are configured; ntwire deliberately does not, because that default would
@@ -366,6 +389,35 @@ dependency separately from a failing assertion in the release sign-off
   loopback redirect URI for PKCE and, if used, device-flow support enabled at
   the IdP.
 
+## Operator and client-UI tokens are not query parameters
+
+Two credentials guard local control surfaces: `admin.web_ui_token` on the
+server's metrics listener, and the per-process access token on `ntwire
+connect`'s local status UI. Both used to travel as `?token=`, which put them
+in access logs, proxy logs, and browser history on every poll, and made them
+available to any external link the page rendered via `Referer`.
+
+Both now work the same way:
+
+- **Presented as `Authorization: Bearer …`** by programmatic callers (`curl`,
+  `ntwire status`, `ntwire list`).
+- **Exchanged once at `GET /`** for an `HttpOnly; SameSite=Strict` cookie, with
+  an immediate redirect that drops the parameter from the address bar before
+  the page loads. This is why the URL `ntwire connect` prints still contains a
+  token: it is the way in, used once.
+- **State-changing routes require more than the cookie.** The server's
+  `POST /v1/admin/sessions/{id}/revoke` requires the header specifically, and
+  the client UI's write routes reject a foreign `Origin`. A browser attaches a
+  cookie to a cross-site request but can attach neither, so the cookie cannot
+  become a CSRF vector.
+
+`admin.web_ui_token` must be at least 32 characters — the server refuses to
+start otherwise — and the whole metrics listener is rate-limited per source
+address. The client status UI additionally sends `Referrer-Policy:
+no-referrer`, `X-Frame-Options: DENY`, `Cache-Control: no-store`, and a CSP
+whose `connect-src 'self'` bounds where script on that page could send the
+token.
+
 ## The relay's trust model
 
 An ntwire-server behind NAT with no inbound connectivity can dial out to a
@@ -485,6 +537,15 @@ server) that already completed authenticated allocation over TLS.
   breaking routing entirely. ntwire's Go TLS stack does not send ECH by
   default, so this is not a concern today, but it is a known future
   incompatibility if ECH is ever adopted on the client side.
+- `listen.agents` is rate-limited per source address
+  (`limits.max_registrations_per_minute`), caps connections accepted but not
+  yet registered (`limits.max_pending_registrations`), and requires the
+  registration message within `limits.handshake_timeout`. All three are needed
+  because that listener must be internet-facing for a NAT'd server to dial out
+  to it, and `net/http`'s own header timeout stops applying once the
+  connection is upgraded to a WebSocket: without them, anyone who can reach
+  the port can hold goroutines and file descriptors open indefinitely and deny
+  service to every tenant. Its TLS floor is 1.3, matching the server's.
 - Rate limiting on `listen.public` (`limits.max_new_conns_per_minute`) is
   **mandatory**, unlike the server's `allowSource`, because the relay is
   internet-facing and a relay is a **dial-back amplification vector**: every
@@ -501,7 +562,49 @@ The ntwire Portal (see [PORTAL.md](PORTAL.md)) follows strict least-privilege an
 Portal templates are treated as untrusted declarative content. The template engine:
 * Executes in a sandboxed, restricted AST evaluator with no runtime reflection, filesystem access, command execution, or network capabilities.
 * Limits template evaluation output size to prevent memory exhaustion (DoS).
-* Disallows script tags (`<script>`), inline JavaScript event attributes (`onclick`, `onload`, `onerror`), and dangerous URI schemes (`javascript:`, `data:`, `file:`).
+* Rejects raw HTML in template text outright (any `<` opening a tag), rather
+  than enumerating dangerous tags and attributes. A portal template is
+  Markdown, so no raw tag has a legitimate use, and an allowlist has no gaps
+  to find — an earlier blocklist naming `onclick`/`onload`/`onerror` left
+  `onmouseover`, `onfocus`, `srcdoc` and `formaction` through.
+
+**Escaping, not validation, is what makes rendered content safe.** Template
+validation runs at configuration load and sees only the template source, never
+the values interpolated into it at render time — a target `description`, an
+identity, a client-reported hostname. The Markdown renderer therefore
+HTML-escapes every run of caller-supplied text *as it emits it*, and never
+re-scans its own output for markup. There is no pass in which caller text and
+generated markup share a string.
+
+### Content-Security-Policy
+The in-tunnel web portal's `script-src` is a **per-response nonce**, not
+`'unsafe-inline'`. This matters because `'unsafe-inline'` permits inline event
+handler attributes, which is exactly the shape an escaping bug would produce:
+under a nonce, an injected `onmouseover=` cannot execute even if it reaches the
+DOM. The page's own inline script carries the nonce; it has no inline handler
+attributes of its own.
+
+### The client never renders server HTML
+The `/v1/portal` response carries both `markdown` and a rendered `html`. The
+reference client **ignores `html`** and parses `markdown` with its own parser,
+building DOM nodes from the resulting block tree. This is deliberately
+independent of the server-side escaping above: the client's local status UI
+origin holds that UI's own access token, and script running there could rebind
+a tunnel listener onto a LAN interface (`PUT /tunnels/{name}`) or launch a
+browser. A hostile server does not have to defeat any sanitizer to put markup
+in a JSON field, so the client must not treat that field as markup at all.
+`html` is deprecated; see [PROTOCOL.md](PROTOCOL.md#successful-response).
+
+### Portal action URLs
+A portal action resolves to a target the session is granted, and separately to
+a URL. Authorization answers *which target*, never *what URL*, so the URL is
+validated as an absolute `http(s)` URL at three points: the server drops an
+unusable one from the action response, the client refuses one before
+dispatching, and `pkg/browseropen` refuses one at the launcher and places any
+URL after a `--` flag terminator. The launcher check is not redundant:
+Chromium reads an argument beginning with `-` as a switch, so a target URL of
+`--load-extension=…` or `--remote-debugging-port=…` would otherwise be honoured
+as one, and `open`/`xdg-open` would act on a local path.
 
 ### Authorization-filtered context
 Portal rendering occurs **exclusively** against pre-filtered target sets. A client receives only target metadata for tunnels granted to that specific session or peer identity. Target names, descriptions, and categories for unauthorized resources are never included in the JSON payload, Markdown, or HTML sent to the client.
@@ -514,7 +617,7 @@ The in-tunnel WireGuard web portal:
 * Maps incoming TCP connections to authenticated identities via the client's overlay IP address (`r.RemoteAddr`).
 * Fails closed: if the client IP address does not match an active authenticated session or native peer table entry, the request is immediately rejected with `403 Forbidden`.
 * Applies strict HTTP security headers:
-  * `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'`
+  * `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-<per-response>'; img-src 'self' data:; connect-src 'self'`
   * `X-Content-Type-Options: nosniff`
   * `X-Frame-Options: DENY`
   * `Referrer-Policy: no-referrer`

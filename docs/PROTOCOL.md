@@ -159,6 +159,24 @@ and within two minutes of the server clock. A non-empty nonce is accepted only
 once; accepted nonces are remembered for five minutes. The key must be in the
 configured authorized-key directory.
 
+Any comment on the presented `public_key` is ignored for authorization. The
+server matches the key blob against its authorized-key directory and takes the
+comment used for grant matching from **the matching file**, never from the
+request: a client controls the comment on the key it presents, so trusting it
+would let the holder of any authorized key claim any comment-based grant.
+
+### Verification order
+
+The server checks, in this order: envelope version → required transport
+capabilities → timestamp window → key present in the authorized-key directory
+(else `unknown_key`) → signature valid (else `bad_signature`) → nonce unseen
+(5-minute cache, size-capped as a backstop; else `replayed_nonce`) → grants.
+
+Replay is checked only after the signature verifies, mirroring the relay's
+[registration order](#verification-order-1): consuming a nonce slot for an
+unauthenticated request would let anyone who can merely reach `/v1/auth`
+exhaust the cache without ever presenting a valid key.
+
 ### Signing payload
 
 The signature is over binary data, never a JSON serialization:
@@ -235,7 +253,11 @@ override, and both fall back -- to another local port, and to `127.0.0.1`,
 respectively -- when the preferred address cannot be bound (see
 [CONFIGURATION.md](CONFIGURATION.md#tunnel-local-address-and-port)); a
 `local_host` that is not a loopback address is ignored by a conforming
-client even if a compromised or misconfigured server sends one. `instructions`
+client even if a compromised or misconfigured server sends one. `markdown` and `html` in the `/v1/portal` response both render the portal;
+`html` is **deprecated** and the reference client ignores it, parsing
+`markdown` itself instead. A client must not insert a server's `html` into its
+own DOM: the client's local status UI origin holds that UI's access token, from
+which script can rebind a tunnel listener and launch browsers. `instructions`
 and `docs_url` are optional per-tunnel setup guidance for the client's status UI:
 the client expands `instructions` as a Go template against its own bound
 address and port and renders the result as Markdown (see
@@ -282,9 +304,11 @@ email-shaped entry as an email, and the OIDC request is never compared against
 it as a comment. There is no code path where a party who controls one identity
 can be granted access intended for the other.
 
-In practice, the reference client never sends a key comment (a private key
-file carries none), so comment-based SSH grants only work against requests
-built to include one; prefer fingerprints for SSH `allow` entries.
+A comment-based SSH grant matches the comment on the key's own
+`authorized_keys` file, so it works regardless of what the client sends (the
+reference client sends no comment, since a private key file carries none).
+Fingerprints remain the clearer choice for SSH `allow` entries, because a
+comment is a mutable annotation on a file rather than a property of the key.
 
 ## Authorizer hook additions for OIDC
 

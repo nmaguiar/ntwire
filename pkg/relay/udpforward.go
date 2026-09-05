@@ -90,7 +90,7 @@ func (d *datagramRelay) handleClientDatagram(b []byte, from netip.AddrPort) {
 	if typ, payload, ok := wstransport.DecodeControlFrame(b); ok {
 		switch typ {
 		case wstransport.FrameRelayBind:
-			if !d.rate.allow(from.Addr().String()) {
+			if !d.rate.Allow(from.Addr().String()) {
 				d.log.Debug("udp relay: client bind rate limit exceeded", "peer", from)
 				return
 			}

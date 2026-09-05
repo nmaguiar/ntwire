@@ -324,7 +324,15 @@ func runPortalRender(args []string, u *ui.UI) {
 	case "html":
 		fmt.Fprintln(u.Out, renderedHTML)
 	case "full-html", "page":
-		fmt.Fprintln(u.Out, portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client))
+		// The preview carries a nonce so its markup matches what the server
+		// serves under SecurityHeaders, even though a file opened locally has
+		// no CSP header enforcing it.
+		nonce, nonceErr := portal.NewScriptNonce()
+		if nonceErr != nil {
+			u.Errorf("nonce error: %v", nonceErr)
+			os.Exit(1)
+		}
+		fmt.Fprintln(u.Out, portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client, nonce))
 	case "json":
 		payload := portal.RenderedPortal{
 			Title:    portalCtx.Portal.Title,

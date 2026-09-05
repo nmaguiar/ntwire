@@ -1,6 +1,8 @@
 package portal
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"html"
 	"net/url"
 	"regexp"
@@ -258,128 +260,152 @@ func parseListItem(s string) (text string, ordered bool, ok bool) {
 	return "", false, false
 }
 
-var linkRegex = regexp.MustCompile(`\[([^\]]+)\]\(([^)]+)\)`)
+// inlineKind distinguishes the three things that can appear inside a line of
+// portal Markdown.
+type inlineKind int
 
-// renderInlines parses inline markdown: `code`, **bold**, *em*, and [links](url).
-// Raw HTML characters (<, >, &, ") are escaped safely.
-func renderInlines(text string, caps PortalCapabilities) string {
-	// First extract code spans so we don't parse markdown inside code spans
-	var placeholders []string
-	codeSpanRegex := regexp.MustCompile("`([^`]+)`")
-	text = codeSpanRegex.ReplaceAllStringFunc(text, func(match string) string {
-		inner := match[1 : len(match)-1]
-		idx := len(placeholders)
-		placeholders = append(placeholders, "<code>"+html.EscapeString(inner)+"</code>")
-		return "@@NTWIRECODESPAN" + strconv.Itoa(idx) + "@@"
-	})
+const (
+	inlineText inlineKind = iota
+	inlineCode
+	inlineLink
+)
 
-	// Process links
-	text = linkRegex.ReplaceAllStringFunc(text, func(match string) string {
-		sub := linkRegex.FindStringSubmatch(match)
-		if len(sub) < 3 {
-			return html.EscapeString(match)
-		}
-		label := sub[1]
-		href := strings.TrimSpace(sub[2])
-
-		// Handle ntwire:// action links
-		if strings.HasPrefix(href, "ntwire://") {
-			action, targetID, err := ParseActionURI(href)
-			if err == nil {
-				escapedLabel := html.EscapeString(label)
-				if caps.NativeClient && caps.OpenSocksBrowser {
-					return `<button type="button" class="ntwire-action-btn" data-action="` + html.EscapeString(action) + `" data-target="` + html.EscapeString(targetID) + `">` + escapedLabel + `</button>`
-				}
-				// In WireGuard web mode or copy-only mode
-				return `<span class="ntwire-action-text">` + escapedLabel + `</span>`
-			}
-		}
-
-		// Validate external links
-		if isSafeExternalURL(href) {
-			escapedHref := html.EscapeString(href)
-			escapedLabel := html.EscapeString(label)
-			return `<a href="` + escapedHref + `" target="_blank" rel="noopener noreferrer" class="portal-link">` + escapedLabel + `</a>`
-		}
-
-		// Dangerous or unsupported scheme: neutralize and render plain label
-		return html.EscapeString(label)
-	})
-
-	// Escape remaining raw HTML
-	// Notice we must temporarily protect our generated HTML tags from escaping
-	text = escapeRawHTMLPreservingTags(text)
-
-	// Bold: **text** or __text__
-	boldRegex := regexp.MustCompile(`\*\*([^*]+)\*\*|__([^_]+)__`)
-	text = boldRegex.ReplaceAllStringFunc(text, func(m string) string {
-		inner := strings.Trim(m, "*_")
-		return "<strong>" + inner + "</strong>"
-	})
-
-	// Italic: *text* or _text_
-	italicRegex := regexp.MustCompile(`\*([^*]+)\*|_([^_]+)_`)
-	text = italicRegex.ReplaceAllStringFunc(text, func(m string) string {
-		inner := strings.Trim(m, "*_")
-		return "<em>" + inner + "</em>"
-	})
-
-	// Restore code spans
-	for idx, codeHTML := range placeholders {
-		placeholder := "@@NTWIRECODESPAN" + strconv.Itoa(idx) + "@@"
-		text = strings.ReplaceAll(text, placeholder, codeHTML)
-	}
-
-	return text
+type inlineToken struct {
+	kind inlineKind
+	text string // literal text, code-span content, or link label
+	href string // link target; inlineLink only
 }
 
-func escapeRawHTMLPreservingTags(s string) string {
-	var sb strings.Builder
-	i := 0
-	for i < len(s) {
-		if strings.HasPrefix(s[i:], "<a ") || strings.HasPrefix(s[i:], "</a>") ||
-			strings.HasPrefix(s[i:], "<button ") || strings.HasPrefix(s[i:], "</button>") ||
-			strings.HasPrefix(s[i:], "<span ") || strings.HasPrefix(s[i:], "</span>") ||
-			strings.HasPrefix(s[i:], "@@NTWIRECODESPAN") {
-			// Find end of tag or placeholder
-			if strings.HasPrefix(s[i:], "@@NTWIRECODESPAN") {
-				end := strings.Index(s[i:], "@@")
-				if end >= 0 {
-					end2 := strings.Index(s[i+end+2:], "@@")
-					if end2 >= 0 {
-						fullEnd := end + 2 + end2 + 2
-						sb.WriteString(s[i : i+fullEnd])
-						i += fullEnd
-						continue
-					}
-				}
+// renderInlines converts the supported inline Markdown subset -- `code`,
+// **bold**, *em*, [links](url), and ntwire:// action links -- into HTML.
+//
+// Every run of caller-supplied text is HTML-escaped as it is emitted, and the
+// escaped result is never re-scanned for markup. This ordering is the whole
+// point: the previous implementation escaped *after* substituting its own
+// generated tags, so it needed a pass that re-recognized that output, and
+// because that pass matched on the content string, any input that merely looked
+// like a generated tag ("<a ", "<button ", "<span ") was copied through raw.
+// Escape-then-emit removes the class of bug rather than the instance -- there is
+// no pass in which caller text and generated markup share a string.
+//
+// Note that portal Markdown carries interpolated configuration values
+// (descriptions, identities) that the template engine writes out unescaped, so
+// this function -- not template validation -- is what makes those values safe.
+func renderInlines(text string, caps PortalCapabilities) string {
+	var out strings.Builder
+	for _, tok := range scanInline(text) {
+		switch tok.kind {
+		case inlineCode:
+			out.WriteString("<code>" + html.EscapeString(tok.text) + "</code>")
+		case inlineLink:
+			out.WriteString(renderLink(tok.text, tok.href, caps))
+		default:
+			out.WriteString(emphasize(html.EscapeString(tok.text)))
+		}
+	}
+	return out.String()
+}
+
+// scanInline splits a line into literal, code-span, and link tokens. It
+// recognizes the same shapes the previous regexes did (`[^`]+` and
+// \[([^\]]+)\]\(([^)]+)\)) without ever substituting into the string it is
+// still scanning.
+func scanInline(s string) []inlineToken {
+	var toks []inlineToken
+	var lit strings.Builder
+	flush := func() {
+		if lit.Len() > 0 {
+			toks = append(toks, inlineToken{kind: inlineText, text: lit.String()})
+			lit.Reset()
+		}
+	}
+	for i := 0; i < len(s); {
+		switch s[i] {
+		case '`':
+			if n := strings.IndexByte(s[i+1:], '`'); n > 0 {
+				flush()
+				toks = append(toks, inlineToken{kind: inlineCode, text: s[i+1 : i+1+n]})
+				i += n + 2
+				continue
 			}
-			end := strings.Index(s[i:], ">")
-			if end >= 0 {
-				sb.WriteString(s[i : i+end+1])
-				i += end + 1
+		case '[':
+			if label, href, n, ok := parseInlineLink(s[i:]); ok {
+				flush()
+				toks = append(toks, inlineToken{kind: inlineLink, text: label, href: href})
+				i += n
 				continue
 			}
 		}
-
-		switch s[i] {
-		case '<':
-			sb.WriteString("&lt;")
-		case '>':
-			sb.WriteString("&gt;")
-		case '&':
-			sb.WriteString("&amp;")
-		case '"':
-			sb.WriteString("&quot;")
-		default:
-			sb.WriteByte(s[i])
-		}
+		lit.WriteByte(s[i])
 		i++
 	}
-	return sb.String()
+	flush()
+	return toks
 }
 
-func isSafeExternalURL(raw string) bool {
+// parseInlineLink matches "[label](href)" at the start of s, returning the
+// number of bytes consumed. Both parts must be non-empty, matching the regex it
+// replaces.
+func parseInlineLink(s string) (label, href string, n int, ok bool) {
+	closeIdx := strings.IndexByte(s, ']')
+	if closeIdx < 2 || closeIdx+1 >= len(s) || s[closeIdx+1] != '(' {
+		return "", "", 0, false
+	}
+	hrefEnd := strings.IndexByte(s[closeIdx+2:], ')')
+	if hrefEnd < 1 {
+		return "", "", 0, false
+	}
+	return s[1:closeIdx], s[closeIdx+2 : closeIdx+2+hrefEnd], closeIdx + 2 + hrefEnd + 1, true
+}
+
+// renderLink emits an action button, an external link, or -- for a scheme that
+// is neither -- the bare label. Label and href are escaped at every exit.
+func renderLink(label, rawHref string, caps PortalCapabilities) string {
+	href := strings.TrimSpace(rawHref)
+	escapedLabel := html.EscapeString(label)
+
+	if strings.HasPrefix(href, "ntwire://") {
+		if action, targetID, err := ParseActionURI(href); err == nil {
+			if caps.NativeClient && caps.OpenSocksBrowser {
+				return `<button type="button" class="ntwire-action-btn" data-action="` + html.EscapeString(action) +
+					`" data-target="` + html.EscapeString(targetID) + `">` + escapedLabel + `</button>`
+			}
+			// WireGuard web mode or copy-only mode.
+			return `<span class="ntwire-action-text">` + escapedLabel + `</span>`
+		}
+	}
+	if isSafeExternalURL(href) {
+		return `<a href="` + html.EscapeString(href) + `" target="_blank" rel="noopener noreferrer" class="portal-link">` + escapedLabel + `</a>`
+	}
+	// Dangerous or unsupported scheme: neutralize and render the plain label.
+	return escapedLabel
+}
+
+var (
+	boldRegex   = regexp.MustCompile(`\*\*([^*]+)\*\*|__([^_]+)__`)
+	italicRegex = regexp.MustCompile(`\*([^*]+)\*|_([^_]+)_`)
+)
+
+// emphasize applies **bold** and *italic* to text that has already been
+// HTML-escaped. Inserting tags here is safe precisely because the input can no
+// longer contain markup of its own, and because no HTML entity contains "*" or
+// "_" for the patterns to trip over.
+func emphasize(escaped string) string {
+	escaped = boldRegex.ReplaceAllStringFunc(escaped, func(m string) string {
+		return "<strong>" + strings.Trim(m, "*_") + "</strong>"
+	})
+	return italicRegex.ReplaceAllStringFunc(escaped, func(m string) string {
+		return "<em>" + strings.Trim(m, "*_") + "</em>"
+	})
+}
+
+func isSafeExternalURL(raw string) bool { return SafeExternalURL(raw) }
+
+// SafeExternalURL reports whether raw is a URL that may be presented to a user
+// as a link or handed to a browser. Only absolute http, https and mailto URLs
+// qualify; everything else (javascript:, data:, file:, a bare "--flag") is
+// server-supplied text that must not reach an href or a process argument.
+func SafeExternalURL(raw string) bool {
 	s := strings.TrimSpace(raw)
 	if strings.ContainsAny(s, " \t\r\n\"'<>") {
 		return false
@@ -429,10 +455,26 @@ Tunnel endpoint: use the server tunnel address and port {{virtual_port}}.
 {{/each}}
 `
 
-// SecurityHeaders returns standard HTTP security headers for web portal responses.
-func SecurityHeaders() map[string]string {
+// NewScriptNonce returns a fresh CSP nonce for one response. Callers must pass
+// the same value to SecurityHeaders and WrapWebPage.
+func NewScriptNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawStdEncoding.EncodeToString(b), nil
+}
+
+// SecurityHeaders returns standard HTTP security headers for web portal
+// responses, binding script execution to nonce.
+//
+// script-src was previously 'unsafe-inline', which permits inline event handler
+// attributes and therefore made the CSP no defense at all against markup that
+// slipped past the renderer. A nonce covers only the page's own <script> block:
+// an injected handler attribute cannot carry one.
+func SecurityHeaders(nonce string) map[string]string {
 	return map[string]string{
-		"Content-Security-Policy":   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
+		"Content-Security-Policy":   "default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-" + nonce + "'; img-src 'self' data:; connect-src 'self'",
 		"X-Content-Type-Options":    "nosniff",
 		"X-Frame-Options":           "DENY",
 		"Referrer-Policy":           "no-referrer",
@@ -441,13 +483,17 @@ func SecurityHeaders() map[string]string {
 	}
 }
 
-// WrapWebPage wraps rendered portal HTML in a self-contained, themed HTML document.
-func WrapWebPage(title, bodyHTML string, client ClientContext) string {
+// WrapWebPage wraps rendered portal HTML in a self-contained, themed HTML
+// document whose inline script carries nonce, matching SecurityHeaders.
+func WrapWebPage(title, bodyHTML string, client ClientContext, nonce string) string {
 	escapedTitle := html.EscapeString(title)
 	if escapedTitle == "" {
 		escapedTitle = "ntwire Portal"
 	}
-	selector := `<form class="platform-selector" method="get"><label for="view_os">Instructions for</label><select id="view_os" name="view_os" onchange="this.form.submit()"><option value="">Auto (` + html.EscapeString(client.DetectedOS) + `)</option>`
+	// No inline onchange handler here: it would need 'unsafe-inline' in
+	// script-src, which is exactly what the nonce replaces. The listener is
+	// attached from the nonced script at the bottom of the page instead.
+	selector := `<form class="platform-selector" method="get"><label for="view_os">Instructions for</label><select id="view_os" name="view_os"><option value="">Auto (` + html.EscapeString(client.DetectedOS) + `)</option>`
 	for _, os := range []string{"ios", "ipados", "macos", "windows", "linux", "android"} {
 		selected := ""
 		if client.Override && client.ViewOS == os {
@@ -607,7 +653,11 @@ blockquote {
 <div class="portal-container">
 ` + selector + bodyHTML + `
 </div>
-<script>
+<script nonce="` + html.EscapeString(nonce) + `">
+const viewOS = document.querySelector('#view_os');
+if (viewOS) {
+  viewOS.addEventListener('change', () => { viewOS.form.submit(); });
+}
 document.querySelectorAll('.copy-button').forEach(btn => {
   btn.addEventListener('click', () => {
     const text = btn.getAttribute('data-copy');

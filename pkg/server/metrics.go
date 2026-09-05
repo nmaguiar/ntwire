@@ -2,9 +2,11 @@ package server
 
 import (
 	"fmt"
-	"github.com/nmaguiar/ntwire/pkg/server/webui"
+	"net"
 	"net/http"
 	"strings"
+
+	"github.com/nmaguiar/ntwire/pkg/server/webui"
 )
 
 // MetricsHandler exposes the Prometheus snapshot and optional operator
@@ -15,7 +17,20 @@ func (s *Server) MetricsHandler() http.Handler {
 	m.HandleFunc("GET /", s.dashboard)
 	m.HandleFunc("GET /v1/dashboard", s.dashboardStatus)
 	m.HandleFunc("POST /v1/admin/sessions/{id}/revoke", s.revokeSession)
-	return m
+	// Per-source cap on the whole admin surface. The operator token is the only
+	// thing guarding live identities and session revocation, and it is chosen by
+	// hand, so guessing it must not be a line-speed exercise.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			host = r.RemoteAddr
+		}
+		if !s.adminRates.Allow(host) {
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		m.ServeHTTP(w, r)
+	})
 }
 
 // revokeSession lets an operator force-end a specific session immediately,
@@ -26,7 +41,10 @@ func (s *Server) MetricsHandler() http.Handler {
 // only on the metrics listener alongside the rest of the admin surface, not
 // the public control API.
 func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
-	if !s.dashboardAllowed(r) {
+	// Header only, never the dashboard cookie: a browser will attach a cookie
+	// to a cross-site POST but cannot attach an Authorization header, so this
+	// is what stops a page the operator visits from revoking sessions.
+	if !s.dashboardHeaderAllowed(r) {
 		http.NotFound(w, r)
 		return
 	}
@@ -44,11 +62,41 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 
 // dashboard serves the optional operator console. It is deliberately opt-in:
 // its data includes authenticated identities and tunnel addresses.
+//
+// This is the one route that still accepts ?token=, as the operator's way in.
+// It exchanges the parameter for a cookie and redirects, so the token leaves
+// the address bar (and therefore browser history and any Referer) before the
+// page loads, and the page's own polling never carries it in a URL again.
 func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
+	if token := r.URL.Query().Get("token"); token != "" {
+		if !matchesAdminToken(token, s.adminToken()) {
+			http.NotFound(w, r)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     adminCookie,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+			Secure:   r.TLS != nil,
+		})
+		stripped := *r.URL
+		q := stripped.Query()
+		q.Del("token")
+		stripped.RawQuery = q.Encode()
+		http.Redirect(w, r, stripped.RequestURI(), http.StatusSeeOther)
+		return
+	}
 	if !s.dashboardAllowed(r) {
 		http.NotFound(w, r)
 		return
 	}
+	// The console lists live identities; never let a shared cache hold it.
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "DENY")
 	fsys, err := webui.Files()
 	if err != nil {
 		http.Error(w, "dashboard unavailable", http.StatusInternalServerError)
