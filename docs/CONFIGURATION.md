@@ -591,7 +591,7 @@ target, live connection/traffic counters, client-observed control-plane
 latency, and reconnect counts.
 
 `?token=` works **only** on that root URL, which exchanges it for an
-`HttpOnly; SameSite=Strict` cookie and redirects, so the token leaves the
+`HttpOnly; SameSite=Lax` cookie and redirects, so the token leaves the
 address bar before the page loads and the dashboard's own polling never
 carries it in a URL. Every other route takes the token as a header:
 

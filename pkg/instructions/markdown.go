@@ -121,8 +121,8 @@ func Parse(text string) []Block {
 }
 
 // isHorizontalRule reports a thematic break: three or more of the same marker,
-// optionally separated by spaces. It is checked after list items so a "- item"
-// is never mistaken for one.
+// with nothing but spaces or tabs between them. A "- item" has other
+// characters, so it falls through to the list-item branch below.
 func isHorizontalRule(s string) bool {
 	if len(s) < 3 {
 		return false

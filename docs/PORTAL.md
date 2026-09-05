@@ -217,7 +217,11 @@ ntwire-server portal prompt -config ntwire.yaml > prompt.txt
 ```
 
 ### `portal validate`
-Statically validates a template for syntax correctness, prohibited `<script>` tags, dangerous URI schemes, and unknown target IDs:
+Statically validates a template for syntax correctness, raw HTML (rejected
+outright: a portal template is Markdown), dangerous URI schemes, and unknown
+target IDs. Note that validation sees only the template source, never the
+values interpolated into it at render time — escaping in the renderer is what
+makes those safe (see [SECURITY.md](SECURITY.md#portal-security-model)):
 
 ```bash
 ntwire-server portal validate -config ntwire.yaml -template portal.md
@@ -250,7 +254,7 @@ The server exposes the following HTTP endpoints on its HTTPS control plane:
   {
     "title": "Engineering Portal",
     "markdown": "# Engineering Portal...",
-    "html": "<h1>Engineering Portal</h1>...",
+    "html": "<h1>Engineering Portal</h1>...",  // deprecated; the client renders "markdown"
     "context": {
       "schema": "ntwire.portal/v1",
       "portal": {"title": "Engineering Portal"},

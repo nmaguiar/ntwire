@@ -82,7 +82,7 @@ func TestStatusUIBootstrapStripsToken(t *testing.T) {
 		t.Fatalf("redirect still carries the token: %s", loc)
 	}
 	cookies := resp.Cookies()
-	if len(cookies) != 1 || cookies[0].Name != uiCookie || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+	if len(cookies) != 1 || cookies[0].Name != uiCookie || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie = %+v", cookies)
 	}
 }
@@ -160,5 +160,60 @@ func TestFetchWebStatusUsesHeader(t *testing.T) {
 	}
 	if !sawHeader {
 		t.Fatal("token was not sent as a bearer header")
+	}
+}
+
+// TestNewUIRequestReachesEveryRoute is the regression test for the out-of-process
+// CLI commands (`ntwire port`, `ntwire transport`, `ntwire status`). They live in
+// a separate process and reach a running client only over this UI, carrying the
+// token from Status.UIURL. When the routes stopped accepting a query-string
+// token, anything that kept passing UIURL's raw query silently started 404ing --
+// a break no package-level test would have caught.
+func TestNewUIRequestReachesEveryRoute(t *testing.T) {
+	c, uiURL, h := startTestUI(t)
+	c.tunnels = []*localTunnel{{name: "reports", localAddr: "127.0.0.1:58080"}}
+
+	cases := []struct {
+		name, method, path string
+		body               string
+		wantNot            int
+	}{
+		{"status", http.MethodGet, "/status", "", http.StatusNotFound},
+		{"transport read", http.MethodGet, "/transport", "", http.StatusNotFound},
+		{"transport write", http.MethodPut, "/transport", `{"transport":""}`, http.StatusNotFound},
+		{"replace port", http.MethodPut, "/tunnels/reports", `{"local_port":58081}`, http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body *strings.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+			}
+			var req *http.Request
+			var err error
+			if body != nil {
+				req, err = NewUIRequest(uiURL, tc.method, tc.path, body)
+			} else {
+				req, err = NewUIRequest(uiURL, tc.method, tc.path, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if q := req.URL.RawQuery; q != "" {
+				t.Fatalf("token left in the query string: %q", q)
+			}
+			if !strings.HasPrefix(req.Header.Get("Authorization"), "Bearer ") {
+				t.Fatal("token was not moved to a bearer header")
+			}
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := h.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode == tc.wantNot {
+				t.Fatalf("%s %s returned 404: the CLI cannot reach this route", tc.method, tc.path)
+			}
+		})
 	}
 }

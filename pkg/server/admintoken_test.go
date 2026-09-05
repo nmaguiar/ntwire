@@ -46,8 +46,8 @@ func TestDashboardBootstrapSetsCookieAndStripsToken(t *testing.T) {
 	if len(cookies) != 1 || cookies[0].Name != adminCookie || cookies[0].Value != adminTestToken {
 		t.Fatalf("cookie = %+v", cookies)
 	}
-	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
-		t.Fatalf("cookie must be HttpOnly and SameSite=Strict: %+v", cookies[0])
+	if !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie must be HttpOnly and SameSite=Lax: %+v", cookies[0])
 	}
 
 	// The cookie then authenticates the page's own polling.

@@ -401,7 +401,7 @@ Both now work the same way:
 
 - **Presented as `Authorization: Bearer …`** by programmatic callers (`curl`,
   `ntwire status`, `ntwire list`).
-- **Exchanged once at `GET /`** for an `HttpOnly; SameSite=Strict` cookie, with
+- **Exchanged once at `GET /`** for an `HttpOnly; SameSite=Lax` cookie, with
   an immediate redirect that drops the parameter from the address bar before
   the page loads. This is why the URL `ntwire connect` prints still contains a
   token: it is the way in, used once.

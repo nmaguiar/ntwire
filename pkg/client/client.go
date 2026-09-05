@@ -2158,9 +2158,13 @@ func (c *Connection) startWebUI() {
 				http.NotFound(w, r)
 				return
 			}
+			// Lax rather than Strict, for the same reason as the server
+			// dashboard: the GUI and the terminal both hand this URL to a
+			// browser from elsewhere, and Strict would withhold the cookie set
+			// mid-redirect. The write routes check Origin regardless.
 			http.SetCookie(w, &http.Cookie{
 				Name: uiCookie, Value: token, Path: "/",
-				HttpOnly: true, SameSite: http.SameSiteStrictMode,
+				HttpOnly: true, SameSite: http.SameSiteLaxMode,
 			})
 			stripped := *r.URL
 			q := stripped.Query()
@@ -2886,6 +2890,35 @@ func (c *Connection) webInstructions() WebInstructionsList {
 	return out
 }
 
+// NewUIRequest builds a request against a running connect process's local
+// status UI, given that process's Status.UIURL.
+//
+// The token is in that URL because it is the operator's handle on a running
+// client (it is what `ntwire connect` prints and what the status file records),
+// but the UI's routes accept it only as a bearer header -- a credential in a
+// query string reaches logs and browser history. This is the one place that
+// conversion happens, so every out-of-process caller does it the same way.
+func NewUIRequest(uiURL, method, path string, body io.Reader) (*http.Request, error) {
+	if uiURL == "" {
+		return nil, errors.New("no local status UI")
+	}
+	u, err := urlpkg.Parse(uiURL)
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return nil, errors.New("running client does not expose a local status UI")
+	}
+	token := u.Query().Get("token")
+	u.Path = path
+	u.RawQuery = ""
+	req, err := http.NewRequest(method, u.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
 // FetchWebStatus retrieves live per-tunnel status from a running connect
 // process's local status UI (Status.UIURL). It is used on a best-effort
 // basis by commands like `list` and `status` that want to enrich their
@@ -2895,22 +2928,9 @@ func FetchWebStatus(uiURL string) (WebStatus, error) {
 	if uiURL == "" {
 		return ws, errors.New("no local status UI")
 	}
-	u, err := urlpkg.Parse(uiURL)
-	if err != nil || u.Scheme != "http" || u.Host == "" {
-		return ws, errors.New("running client does not expose a local status UI")
-	}
-	// The token travels in the URL only because Status.UIURL is the operator's
-	// handle on a running client; move it to a header before the request, so
-	// the local UI's API routes need not accept a query-string credential.
-	token := u.Query().Get("token")
-	u.Path = "/status"
-	u.RawQuery = ""
-	req, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	req, err := NewUIRequest(uiURL, http.MethodGet, "/status", nil)
 	if err != nil {
 		return ws, err
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	h := &http.Client{Timeout: 2 * time.Second}
 	resp, err := h.Do(req)

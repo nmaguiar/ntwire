@@ -73,12 +73,18 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		// SameSite=Lax, not Strict: an operator commonly reaches this URL from a
+		// link elsewhere (a runbook, a chat message), and Strict withholds a
+		// cookie set mid-redirect on a cross-site-initiated navigation, leaving
+		// them on a 404 until they reload. Lax still withholds it from
+		// cross-site POSTs -- and revoke requires the Authorization header
+		// regardless, so the CSRF defense does not rest on this attribute.
 		http.SetCookie(w, &http.Cookie{
 			Name:     adminCookie,
 			Value:    token,
 			Path:     "/",
 			HttpOnly: true,
-			SameSite: http.SameSiteStrictMode,
+			SameSite: http.SameSiteLaxMode,
 			Secure:   r.TLS != nil,
 		})
 		stripped := *r.URL

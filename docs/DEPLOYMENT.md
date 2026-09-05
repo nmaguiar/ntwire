@@ -167,8 +167,10 @@ When `listen.metrics` (e.g. `:9090` or `127.0.0.1:9090`) and `admin.web_ui_token
 # Prometheus metrics endpoint
 curl http://localhost:9090/metrics
 
-# Live operator dashboard status (JSON format)
-curl "http://localhost:9090/v1/dashboard?token=YOUR_ADMIN_WEB_UI_TOKEN"
+# Live operator dashboard status (JSON format). The token is a bearer header;
+# only the root URL below accepts it as a query parameter, and only to exchange
+# it for a cookie.
+curl -H "Authorization: Bearer $ADMIN_WEB_UI_TOKEN" http://localhost:9090/v1/dashboard
 
 # Or open the web dashboard in a browser:
 # http://localhost:9090/?token=YOUR_ADMIN_WEB_UI_TOKEN

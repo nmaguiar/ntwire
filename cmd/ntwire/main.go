@@ -231,12 +231,6 @@ func port(args []string, u *ui.UI) {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
-	uu, err := url.Parse(s.UIURL)
-	if err != nil || uu.Scheme != "http" || uu.Host == "" {
-		u.Errorf("running client does not expose a local status UI")
-		os.Exit(1)
-	}
-	uu.Path = "/tunnels/" + url.PathEscape(parts[0])
 	body, err := json.Marshal(struct {
 		LocalPort int    `json:"local_port"`
 		LocalHost string `json:"local_host,omitempty"`
@@ -245,7 +239,7 @@ func port(args []string, u *ui.UI) {
 		u.Errorf("%v", err)
 		os.Exit(1)
 	}
-	req, err := http.NewRequest(http.MethodPut, uu.String(), bytes.NewReader(body))
+	req, err := client.NewUIRequest(s.UIURL, http.MethodPut, "/tunnels/"+url.PathEscape(parts[0]), bytes.NewReader(body))
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
@@ -282,15 +276,8 @@ func transportCmd(args []string, u *ui.UI) {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
-	uu, err := url.Parse(s.UIURL)
-	if err != nil || uu.Scheme != "http" || uu.Host == "" {
-		u.Errorf("running client does not expose a local status UI")
-		os.Exit(1)
-	}
-	uu.Path = "/transport"
-
 	if fs.NArg() == 0 {
-		req, err := http.NewRequest(http.MethodGet, uu.String(), nil)
+		req, err := client.NewUIRequest(s.UIURL, http.MethodGet, "/transport", nil)
 		if err != nil {
 			u.Errorf("%v", err)
 			os.Exit(1)
@@ -348,7 +335,7 @@ func transportCmd(args []string, u *ui.UI) {
 		u.Errorf("%v", err)
 		os.Exit(1)
 	}
-	req, err := http.NewRequest(http.MethodPut, uu.String(), bytes.NewReader(body))
+	req, err := client.NewUIRequest(s.UIURL, http.MethodPut, "/transport", bytes.NewReader(body))
 	if err != nil {
 		u.Errorf("%v", err)
 		os.Exit(1)
