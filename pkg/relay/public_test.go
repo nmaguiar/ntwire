@@ -41,15 +41,15 @@ func TestResolveTenant(t *testing.T) {
 func TestRateLimiter(t *testing.T) {
 	rl := newRateLimiter(3)
 	for i := 0; i < 3; i++ {
-		if !rl.allow("1.2.3.4") {
+		if !rl.Allow("1.2.3.4") {
 			t.Fatalf("request %d should be allowed", i)
 		}
 	}
-	if rl.allow("1.2.3.4") {
+	if rl.Allow("1.2.3.4") {
 		t.Fatal("4th request within the window should be rejected")
 	}
 	// A distinct source IP has its own independent bucket.
-	if !rl.allow("5.6.7.8") {
+	if !rl.Allow("5.6.7.8") {
 		t.Fatal("a different source IP should not be affected by another IP's limit")
 	}
 }

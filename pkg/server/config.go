@@ -297,6 +297,13 @@ type SocksConfig struct {
 	// listener on the server host. It is independent of allow_all and false
 	// by default.
 	AllowBind bool `yaml:"allow_bind"`
+	// AllowLocalEgress lifts the unconditional deny on the server's own
+	// loopback, link-local addresses (including cloud instance metadata at
+	// 169.254.169.254) and the unspecified address. It is independent of
+	// allow_all and false by default, because those destinations trust the
+	// server's own network position rather than the requester's, and it is
+	// reported in the security_capabilities event when enabled.
+	AllowLocalEgress bool `yaml:"allow_local_egress"`
 	// Upstream optionally sends SOCKS CONNECT/BIND TCP traffic through an
 	// existing socks5:// or socks5h:// proxy. UDP ASSOCIATE remains local.
 	Upstream string `yaml:"upstream"`
@@ -532,6 +539,7 @@ tunnels:
 #     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
 #     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
 #     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
+#     allow_local_egress: false            # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 #     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
 #     udp_idle_timeout: 2m                # idle timeout for SOCKS5 UDP ASSOCIATE flows; 0 uses the default
 #     # With transparent: true, upstream is required; do not set any other
@@ -1018,6 +1026,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 				return c, fmt.Errorf("tunnel %q: portal.url must be an absolute http(s) URL", t.Name)
 			}
 		}
+	}
+	if t := c.Admin.WebUIToken; t != "" && len(t) < minAdminTokenLength {
+		return c, fmt.Errorf("admin.web_ui_token must be at least %d characters; it is the only credential guarding live identities and session revocation", minAdminTokenLength)
 	}
 	loadPortalTemplateFile(&c.Portal, stateDir)
 	if c.Portal.Enabled {

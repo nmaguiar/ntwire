@@ -5,12 +5,14 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/authlimit"
 	"github.com/nmaguiar/ntwire/pkg/oidcauth"
 	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
+	"golang.org/x/crypto/ssh"
 	"log/slog"
 	"net"
 	"net/http"
@@ -25,11 +27,29 @@ import (
 	"time"
 )
 
+const (
+	// nonceTTL matches the replay window docs/PROTOCOL.md documents.
+	nonceTTL = 5 * time.Minute
+	// maxAuthAttemptsPerMinute caps /v1/auth and /v1/auth/oidc per source.
+	maxAuthAttemptsPerMinute = 20
+	// maxAdminRequestsPerMinute caps the metrics listener's routes per source.
+	// It is well above the dashboard's own ~12/minute poll rate, and low enough
+	// that guessing an operator token is not a line-speed exercise.
+	maxAdminRequestsPerMinute = 120
+	// minAdminTokenLength is the shortest admin.web_ui_token accepted. The
+	// token guards live identities and a session-revocation endpoint, and there
+	// is no second factor behind it.
+	minAdminTokenLength = 32
+)
+
 type Server struct {
 	Config   Config
 	sessions *Sessions
-	nonces   map[string]time.Time
-	mu       sync.Mutex
+	// nonces and rates bound what an unauthenticated caller can allocate; see
+	// pkg/authlimit for why both are shared with pkg/relay rather than
+	// open-coded here.
+	nonces *authlimit.NonceCache
+	mu     sync.Mutex
 	// operationMu serializes control-plane operations that combine config,
 	// authorization, session allocation, and data-plane peer ownership.
 	// Sessions has its own map lock, but that alone cannot make a reload and a
@@ -37,7 +57,8 @@ type Server struct {
 	operationMu     sync.Mutex
 	log             *slog.Logger
 	data            *dataPlane
-	rates           map[string]*rateState
+	rates           *authlimit.SourceLimiter
+	adminRates      *authlimit.SourceLimiter
 	tunnelStats     sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
 	oidc            *oidcauth.Verifiers
 	tlsManager      *TLSManager
@@ -55,7 +76,7 @@ func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	s := &Server{Config: c, sessions: NewSessions(), nonces: map[string]time.Time{}, log: l, rates: map[string]*rateState{}, lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex()}
+	s := &Server{Config: c, sessions: NewSessions(), nonces: authlimit.NewNonceCache(nonceTTL, 0), log: l, rates: authlimit.NewSourceLimiter(maxAuthAttemptsPerMinute, time.Minute, 0), adminRates: authlimit.NewSourceLimiter(maxAdminRequestsPerMinute, time.Minute, 0), lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex()}
 	for name, policy := range c.DestinationPolicies {
 		if compiled, err := compilePolicy(policy, s.asn); err == nil {
 			s.policies[name] = compiled
@@ -280,11 +301,43 @@ func (s *Server) servePAC(w http.ResponseWriter, r *http.Request, targetName str
 	_, _ = w.Write([]byte(pacScript))
 }
 
-func (s *Server) dashboardAllowed(r *http.Request) bool {
+// adminCookie carries the operator token for the dashboard page's own fetches
+// once GET / has exchanged the one-time query parameter for it.
+const adminCookie = "ntwire_admin"
+
+func (s *Server) adminToken() string {
 	s.mu.Lock()
-	token := s.Config.Admin.WebUIToken
-	s.mu.Unlock()
-	return token != "" && subtle.ConstantTimeCompare([]byte(r.URL.Query().Get("token")), []byte(token)) == 1
+	defer s.mu.Unlock()
+	return s.Config.Admin.WebUIToken
+}
+
+func matchesAdminToken(presented, configured string) bool {
+	return configured != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(configured)) == 1
+}
+
+// dashboardHeaderAllowed accepts only Authorization: Bearer.
+//
+// It gates the state-changing admin routes. A browser attaches the cookie
+// below to a cross-site form post but cannot attach this header, so requiring
+// it is what keeps the cookie from becoming a CSRF vector.
+func (s *Server) dashboardHeaderAllowed(r *http.Request) bool {
+	return matchesAdminToken(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), s.adminToken())
+}
+
+// dashboardAllowed accepts the Authorization header or the session cookie set
+// by GET /.
+//
+// The token is deliberately no longer read from the query string: it was
+// written into access logs, proxy logs, and browser history on every dashboard
+// poll. GET / still accepts it once, as the operator's way in, and immediately
+// redirects to drop it from the address bar.
+func (s *Server) dashboardAllowed(r *http.Request) bool {
+	token := s.adminToken()
+	if matchesAdminToken(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), token) {
+		return true
+	}
+	c, err := r.Cookie(adminCookie)
+	return err == nil && matchesAdminToken(c.Value, token)
 }
 
 type dashboardTunnelStats struct {
@@ -320,6 +373,7 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	sessions := s.sessions.All()
 	out := make([]dashboardTunnel, 0)
 	for _, session := range sessions {
@@ -468,18 +522,35 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, protocol.ErrorClockSkew, "timestamp outside permitted window")
 		return
 	}
-	if !s.useNonce(a.Nonce) {
-		fail(w, 401, protocol.ErrorReplayedNonce, "replayed nonce")
+	key, _, err := sshkey.ParsePublicString(a.PublicKey)
+	if err != nil {
+		fail(w, 401, protocol.ErrorUnknownKey, "unknown public key")
 		return
 	}
-	key, comment, err := sshkey.ParsePublicString(a.PublicKey)
-	if err != nil || !s.authorized(key) {
+	// The comment used for grant matching comes from the matching
+	// authorized_keys entry, never from a.PublicKey. A client puts whatever
+	// comment it likes on the key it presents, so trusting the request's
+	// comment would let the holder of any authorized key claim any
+	// comment-based grant -- including an allow entry an operator wrote as an
+	// OIDC email (see docs/PROTOCOL.md, "Grant matching and the SSH/OIDC
+	// namespace"). a.PublicKey stays in the signed payload unchanged: the
+	// signature covers what was sent; only the authorization decision moves.
+	comment, known := s.authorizedEntry(key)
+	if !known {
 		fail(w, 401, protocol.ErrorUnknownKey, "unknown public key")
 		return
 	}
 	p, err := protocol.SigningPayload(a)
 	if err != nil || sshkey.Verify(key, p, a.Signature) != nil {
 		fail(w, 401, protocol.ErrorBadSignature, "invalid signature")
+		return
+	}
+	// Replay is checked only after the signature verifies, matching the relay's
+	// registration order (pkg/relay/registry.go): consuming a nonce slot for an
+	// unauthenticated request would let anyone who can merely reach this
+	// endpoint churn the cache without ever presenting a valid key.
+	if !s.nonces.Use(a.Nonce) {
+		fail(w, 401, protocol.ErrorReplayedNonce, "replayed nonce")
 		return
 	}
 	fp := sshkey.Fingerprint(key)
@@ -903,30 +974,44 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.audit("session_disconnected", old, "", 0)
 	w.WriteHeader(http.StatusNoContent)
 }
-func (s *Server) useNonce(n string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if n == "" {
-		return false
-	}
-	if _, ok := s.nonces[n]; ok {
-		return false
-	}
-	now := time.Now()
-	s.nonces[n] = now
-	for k, v := range s.nonces {
-		if now.Sub(v) > 5*time.Minute {
-			delete(s.nonces, k)
-		}
-	}
-	return true
+
+// authorizedEntry reports whether k is present in the authorized-key
+// directory and returns the comment recorded on the matching entry. The
+// comment is sourced here, from the server's own files, rather than from the
+// client's request, because it participates in grant matching (matchesAllow)
+// and a client controls the comment on the key it presents.
+//
+// It scans every entry without an early exit so a match's position in the
+// directory is not observable in the response time, matching the intent of the
+// constant-time digest comparison it already used.
+func (s *Server) authorizedEntry(k interface{ Marshal() []byte }) (string, bool) {
+	return s.scanAuthorizedKeys(func(p ssh.PublicKey) bool {
+		return subtle.ConstantTimeCompare([]byte(sshkey.Digest(k.Marshal())), []byte(sshkey.Digest(p.Marshal()))) == 1
+	})
 }
-func (s *Server) authorized(k interface{ Marshal() []byte }) bool {
+
+// authorizedFingerprintEntry is authorizedEntry keyed by an already-known
+// fingerprint, for re-evaluating a live session on configuration reload.
+func (s *Server) authorizedFingerprintEntry(fp string) (string, bool) {
+	return s.scanAuthorizedKeys(func(p ssh.PublicKey) bool {
+		return subtle.ConstantTimeCompare([]byte(fp), []byte(sshkey.Fingerprint(p))) == 1
+	})
+}
+
+// scanAuthorizedKeys reads every readable file in the authorized-key
+// directory and returns the comment on the first entry match accepts. It
+// deliberately keeps scanning after a match; see authorizedEntry.
+//
+// The directory is read on every call rather than cached: a cache invalidated
+// by the config watcher would keep authenticating a key whose file was
+// deleted if the watcher ever misses the event, which is a worse failure than
+// the read cost (see docs/SECURITY.md).
+func (s *Server) scanAuthorizedKeys(match func(ssh.PublicKey) bool) (string, bool) {
 	entries, err := os.ReadDir(s.Config.Auth.AuthorizedKeysDir)
 	if err != nil {
-		return false
+		return "", false
 	}
-	wanted := sshkey.Digest(k.Marshal())
+	comment, found := "", false
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -935,32 +1020,15 @@ func (s *Server) authorized(k interface{ Marshal() []byte }) bool {
 		if er != nil {
 			continue
 		}
-		p, _, er := sshkey.ParsePublic(b)
-		if er == nil && subtle.ConstantTimeCompare([]byte(wanted), []byte(sshkey.Digest(p.Marshal()))) == 1 {
-			return true
-		}
-	}
-	return false
-}
-func (s *Server) authorizedFingerprint(fp string) bool {
-	entries, err := os.ReadDir(s.Config.Auth.AuthorizedKeysDir)
-	if err != nil {
-		return false
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		b, er := os.ReadFile(filepath.Join(s.Config.Auth.AuthorizedKeysDir, e.Name()))
+		p, c, er := sshkey.ParsePublic(b)
 		if er != nil {
 			continue
 		}
-		p, _, er := sshkey.ParsePublic(b)
-		if er == nil && subtle.ConstantTimeCompare([]byte(fp), []byte(sshkey.Fingerprint(p))) == 1 {
-			return true
+		if match(p) && !found {
+			comment, found = c, true
 		}
 	}
-	return false
+	return comment, found
 }
 
 // grantSubject is the principal a tunnel's allow list is matched against.
@@ -1143,15 +1211,19 @@ func (s *Server) Reload(c Config) {
 			s.reconcileTunnels(v, allowed)
 			continue
 		}
-		if !s.authorizedFingerprint(v.Fingerprint) {
+		comment, known := s.authorizedFingerprintEntry(v.Fingerprint)
+		if !known {
 			s.sessions.Delete(v.Token)
 			s.dropSession(v)
 			s.observe("authorization_revoked", v.Method)
 			auditRecord(s.auditLog, s.log, "authorization_revoked", v, "SSH authorization removed on configuration reload", 0)
 			continue
 		}
+		// Same comment source as auth(), so a comment-granted session is
+		// re-evaluated against the grant it actually holds instead of being
+		// dropped for lack of a comment on every reload.
 		allowed := map[string]bool{}
-		for _, g := range s.grants(grantSubject{Method: "ssh", Fingerprint: v.Fingerprint}) {
+		for _, g := range s.grants(grantSubject{Method: "ssh", Fingerprint: v.Fingerprint, Comment: comment}) {
 			allowed[g.Name] = true
 		}
 		s.reconcileTunnels(v, allowed)
@@ -1183,31 +1255,16 @@ func emailDomain(email string) string {
 	return ""
 }
 
-type rateState struct {
-	n     int
-	since time.Time
-}
-
+// allowSource caps authentication attempts per source address. In relay mode
+// the address comes from RelayOpen.client_addr, which docs/SECURITY.md already
+// documents as relay-controlled, so this bounds honest load rather than a
+// determined attacker behind a hostile relay.
 func (s *Server) allowSource(remote string) bool {
 	host, _, _ := net.SplitHostPort(remote)
 	if host == "" {
 		host = remote
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now()
-	for k, v := range s.rates {
-		if now.Sub(v.since) > time.Minute {
-			delete(s.rates, k)
-		}
-	}
-	v := s.rates[host]
-	if v == nil || time.Since(v.since) > time.Minute {
-		s.rates[host] = &rateState{n: 1, since: time.Now()}
-		return true
-	}
-	v.n++
-	return v.n <= 20
+	return s.rates.Allow(host)
 }
 func (s *Server) audit(event string, session Session, reason string, risk int) {
 	s.mu.Lock()

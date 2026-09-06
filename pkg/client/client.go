@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -1934,6 +1935,34 @@ func (c *Connection) connectionInfo() protocol.ClientInfo {
 	return info
 }
 
+// uiCookie carries the local status UI's access token for the page's own
+// requests, once the root handler has exchanged the one-time query parameter.
+const uiCookie = "ntwire_ui"
+
+func subtleCompare(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// uiSecurityHeaders hardens every local status UI response. This origin holds a
+// token that can rebind a tunnel listener onto a LAN interface and launch
+// browsers, so it must not leak through a Referer, be framed by another page,
+// be cached, or be able to talk to any origin but its own.
+func uiSecurityHeaders(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cache-Control", "no-store")
+		// A page-specific policy rather than portal.SecurityHeaders(): this UI
+		// is a static embedded document with its own inline script and no place
+		// to inject a nonce. connect-src 'self' is the part that matters here --
+		// it bounds where script on this page could send the token.
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
+		h.ServeHTTP(w, r)
+	})
+}
+
 func (c *Connection) startWebUI() {
 	b := make([]byte, 24)
 	if _, err := rand.Read(b); err != nil {
@@ -1944,8 +1973,42 @@ func (c *Connection) startWebUI() {
 	if err != nil {
 		return
 	}
+	// Bind first: the listener's address is this UI's own origin, which the
+	// Origin check below compares against.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return
+	}
+	origin := "http://" + l.Addr().String()
+
 	mux := http.NewServeMux()
-	allowed := func(r *http.Request) bool { return r.URL.Query().Get("token") == access }
+	// The access token is presented as a header (the CLI) or as the cookie the
+	// root handler sets (the browser), never as a query parameter on these
+	// routes: a token in a URL reaches browser history and any Referer, and
+	// this origin can rebind a tunnel listener and launch browsers.
+	allowed := func(r *http.Request) bool {
+		if subtleCompare(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), access) {
+			return true
+		}
+		c, err := r.Cookie(uiCookie)
+		return err == nil && subtleCompare(c.Value, access)
+	}
+	// sameOrigin rejects a cross-site caller on state-changing routes. The
+	// cookie above would otherwise be attached by the browser to a request
+	// forged by any page the user happens to visit.
+	sameOrigin := func(r *http.Request) bool {
+		o := r.Header.Get("Origin")
+		return o == "" || o == origin
+	}
+	guard := func(r *http.Request) (int, bool) {
+		if !allowed(r) {
+			return http.StatusNotFound, false
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOrigin(r) {
+			return http.StatusForbidden, false
+		}
+		return http.StatusOK, true
+	}
 	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
 			http.NotFound(w, r)
@@ -1977,11 +2040,12 @@ func (c *Connection) startWebUI() {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(p)
+		// Deliberately not p.HTML: see WebPortal.
+		_ = json.NewEncoder(w).Encode(WebPortal{Title: p.Title, Blocks: parsePortalBlocks(p.Markdown)})
 	})
 	mux.HandleFunc("/portal/action", func(w http.ResponseWriter, r *http.Request) {
-		if !allowed(r) {
-			http.NotFound(w, r)
+		if code, ok := guard(r); !ok {
+			http.Error(w, http.StatusText(code), code)
 			return
 		}
 		if r.Method != http.MethodPost {
@@ -2002,8 +2066,8 @@ func (c *Connection) startWebUI() {
 		c.executePortalAction(r.Context(), w, in.Action, in.TargetID)
 	})
 	mux.HandleFunc("/transport", func(w http.ResponseWriter, r *http.Request) {
-		if !allowed(r) {
-			http.NotFound(w, r)
+		if code, ok := guard(r); !ok {
+			http.Error(w, http.StatusText(code), code)
 			return
 		}
 		if r.Method == http.MethodGet {
@@ -2029,8 +2093,8 @@ func (c *Connection) startWebUI() {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	})
 	mux.HandleFunc("/tunnels/", func(w http.ResponseWriter, r *http.Request) {
-		if !allowed(r) {
-			http.NotFound(w, r)
+		if code, ok := guard(r); !ok {
+			http.Error(w, http.StatusText(code), code)
 			return
 		}
 		rest := strings.TrimPrefix(r.URL.Path, "/tunnels/")
@@ -2083,23 +2147,65 @@ func (c *Connection) startWebUI() {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"local_address": address})
 	})
+	// The root is the only route that accepts ?token=: it is how the URL
+	// printed by `ntwire connect` gets the operator in. It converts the
+	// parameter into a cookie and redirects, so the token is out of the address
+	// bar -- and therefore out of history and any Referer -- before the page
+	// loads and starts polling.
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if token := r.URL.Query().Get("token"); token != "" {
+			if !subtleCompare(token, access) {
+				http.NotFound(w, r)
+				return
+			}
+			// Lax rather than Strict, for the same reason as the server
+			// dashboard: the GUI and the terminal both hand this URL to a
+			// browser from elsewhere, and Strict would withhold the cookie set
+			// mid-redirect. The write routes check Origin regardless.
+			http.SetCookie(w, &http.Cookie{
+				Name: uiCookie, Value: token, Path: "/",
+				HttpOnly: true, SameSite: http.SameSiteLaxMode,
+			})
+			stripped := *r.URL
+			q := stripped.Query()
+			q.Del("token")
+			stripped.RawQuery = q.Encode()
+			http.Redirect(w, r, stripped.RequestURI(), http.StatusSeeOther)
+			return
+		}
 		if !allowed(r) {
 			http.NotFound(w, r)
 			return
 		}
 		http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 	})
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return
-	}
-	ui := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	ui := &http.Server{Handler: uiSecurityHeaders(mux), ReadHeaderTimeout: 5 * time.Second}
 	c.mu.Lock()
 	c.ui = ui
-	c.UIURL = "http://" + l.Addr().String() + "/?token=" + access
+	c.UIURL = origin + "/?token=" + access
 	c.mu.Unlock()
 	go func() { _ = ui.Serve(l) }()
+}
+
+// WebPortal is what the local status UI receives for its Portal tab.
+//
+// It carries the portal as parsed blocks, never the server's rendered HTML.
+// The UI builds DOM nodes from these (see spans/blocks in webui/static), so
+// markup in a server's response is inert text rather than live markup in the
+// origin that holds the UI's own access token -- an origin from which script
+// could rebind a tunnel listener onto a LAN interface or launch a browser.
+// RenderedPortal.HTML is still sent by the server for older clients; this one
+// ignores it.
+type WebPortal struct {
+	Title  string               `json:"title"`
+	Blocks []instructions.Block `json:"blocks"`
+}
+
+// parsePortalBlocks turns the server's portal Markdown into the block tree the
+// status UI renders. It is the client's own parser, so the server's rendered
+// HTML never has to be trusted.
+func parsePortalBlocks(markdown string) []instructions.Block {
+	return instructions.Parse(markdown)
 }
 
 // WebTunnel is the live status of one tunnel on a running connect process,
@@ -2655,7 +2761,20 @@ func (c *Connection) executePortalAction(ctx context.Context, w http.ResponseWri
 		http.Error(w, fmt.Sprintf("target %q is not authorized", targetID), http.StatusForbidden)
 		return
 	}
+	// The client re-validates the resolved URL rather than relying on the
+	// server having done so: it is about to become an argument to a browser
+	// process on this machine, where a value beginning with "-" is read as a
+	// switch (--load-extension=, --remote-debugging-port=) and "open" would act
+	// on a local path. browseropen enforces this again at the launcher; both
+	// checks are deliberate, since neither party should be the only one.
 	targetURL := resolution.URL
+	if targetURL != "" && !portal.SafeExternalURL(targetURL) {
+		if c.log != nil {
+			c.log.Warn("portal action refused: server returned an unusable target URL", "target", targetID, "action", action)
+		}
+		http.Error(w, "server returned an unusable target URL", http.StatusBadGateway)
+		return
+	}
 
 	// Determine SOCKS local proxy address
 	var socksAddr string
@@ -2771,6 +2890,35 @@ func (c *Connection) webInstructions() WebInstructionsList {
 	return out
 }
 
+// NewUIRequest builds a request against a running connect process's local
+// status UI, given that process's Status.UIURL.
+//
+// The token is in that URL because it is the operator's handle on a running
+// client (it is what `ntwire connect` prints and what the status file records),
+// but the UI's routes accept it only as a bearer header -- a credential in a
+// query string reaches logs and browser history. This is the one place that
+// conversion happens, so every out-of-process caller does it the same way.
+func NewUIRequest(uiURL, method, path string, body io.Reader) (*http.Request, error) {
+	if uiURL == "" {
+		return nil, errors.New("no local status UI")
+	}
+	u, err := urlpkg.Parse(uiURL)
+	if err != nil || u.Scheme != "http" || u.Host == "" {
+		return nil, errors.New("running client does not expose a local status UI")
+	}
+	token := u.Query().Get("token")
+	u.Path = path
+	u.RawQuery = ""
+	req, err := http.NewRequest(method, u.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	return req, nil
+}
+
 // FetchWebStatus retrieves live per-tunnel status from a running connect
 // process's local status UI (Status.UIURL). It is used on a best-effort
 // basis by commands like `list` and `status` that want to enrich their
@@ -2780,13 +2928,12 @@ func FetchWebStatus(uiURL string) (WebStatus, error) {
 	if uiURL == "" {
 		return ws, errors.New("no local status UI")
 	}
-	u, err := urlpkg.Parse(uiURL)
-	if err != nil || u.Scheme != "http" || u.Host == "" {
-		return ws, errors.New("running client does not expose a local status UI")
+	req, err := NewUIRequest(uiURL, http.MethodGet, "/status", nil)
+	if err != nil {
+		return ws, err
 	}
-	u.Path = "/status"
 	h := &http.Client{Timeout: 2 * time.Second}
-	resp, err := h.Get(u.String())
+	resp, err := h.Do(req)
 	if err != nil {
 		return ws, err
 	}

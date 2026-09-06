@@ -36,6 +36,9 @@ func securityCapabilities(c Config) []string {
 		if tunnel.Socks.AllowBind {
 			set["socks_bind"] = true
 		}
+		if tunnel.Socks.AllowLocalEgress {
+			set["socks_local_egress"] = true
+		}
 	}
 	capabilities := make([]string, 0, len(set))
 	for capability := range set {

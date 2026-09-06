@@ -191,7 +191,13 @@ func (s *Server) portalActionHandler(w http.ResponseWriter, r *http.Request) {
 // WireGuardPortalHandler returns an http.Handler that serves the in-tunnel WireGuard web portal.
 func (s *Server) WireGuardPortalHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		for k, v := range portal.SecurityHeaders() {
+		nonce, err := portal.NewScriptNonce()
+		if err != nil {
+			s.log.Warn("web portal nonce generation failed", "error", err)
+			http.Error(w, "portal unavailable", http.StatusInternalServerError)
+			return
+		}
+		for k, v := range portal.SecurityHeaders(nonce) {
 			w.Header().Set(k, v)
 		}
 
@@ -278,7 +284,7 @@ func (s *Server) WireGuardPortalHandler() http.Handler {
 		}
 
 		renderedHTML := portal.RenderMarkdown(renderedMD, portalCtx.Capabilities)
-		fullHTML := portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client)
+		fullHTML := portal.WrapWebPage(portalCtx.Portal.Title, renderedHTML, portalCtx.Client, nonce)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)

@@ -54,16 +54,22 @@ type Data struct {
 
 // Span is a run of inline content within a Block.
 type Span struct {
-	// Type is one of "text", "code", "strong", "em" or "link".
+	// Type is one of "text", "code", "strong", "em", "link" or "action".
 	Type string `json:"type"`
 	Text string `json:"text"`
 	// Href is set for "link" spans only, and is always http(s).
 	Href string `json:"href,omitempty"`
+	// Action and Target are set for "action" spans only: an ntwire://
+	// portal-action link, already parsed and validated. The client turns one
+	// into a button; it is never a navigable URL, so no href accompanies it.
+	Action string `json:"action,omitempty"`
+	Target string `json:"target,omitempty"`
 }
 
 // Block is one top-level piece of rendered instruction content.
 type Block struct {
-	// Type is one of "heading", "paragraph", "code" or "list".
+	// Type is one of "heading", "paragraph", "code", "list", "rule",
+	// "blockquote" or "table".
 	Type string `json:"type"`
 	// Level is the heading level, 1 through 6, for "heading" blocks.
 	Level int `json:"level,omitempty"`
@@ -78,6 +84,10 @@ type Block struct {
 	Items [][]Span `json:"items,omitempty"`
 	// Ordered marks a numbered "list" block.
 	Ordered bool `json:"ordered,omitempty"`
+	// Header and Rows carry a "table" block: Header is the single header row
+	// and Rows the body, each cell holding its own inline content.
+	Header [][]Span   `json:"header,omitempty"`
+	Rows   [][][]Span `json:"rows,omitempty"`
 }
 
 // Render expands text as a Go template with data and parses the result as the

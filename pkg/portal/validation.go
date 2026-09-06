@@ -20,6 +20,29 @@ func (e ValidationError) Error() string {
 	return e.Message
 }
 
+// indexRawHTMLTag returns the byte offset of the first "<" that opens or closes
+// an HTML tag ("<x" or "</x"), or -1 if the line has none. A bare "<" used as a
+// less-than sign is left alone, since it renders harmlessly as escaped text.
+func indexRawHTMLTag(line string) int {
+	for i := 0; i < len(line); i++ {
+		if line[i] != '<' {
+			continue
+		}
+		rest := line[i+1:]
+		if strings.HasPrefix(rest, "/") {
+			rest = rest[1:]
+		}
+		if rest != "" && isASCIILetter(rest[0]) {
+			return i
+		}
+	}
+	return -1
+}
+
+func isASCIILetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
 // KnownContext describes known variable names and targets for validation.
 type KnownContext struct {
 	Variables    map[string]string
@@ -57,10 +80,22 @@ func ValidateTemplate(templateText string, known *KnownContext) []ValidationErro
 		lNum := lineNum + 1
 		lineLower := strings.ToLower(line)
 
-		if strings.Contains(lineLower, "<script") || strings.Contains(lineLower, "</script>") {
+		// Raw HTML is rejected wholesale rather than by enumerating dangerous
+		// tags and attributes. The previous blocklist named <script>, onload,
+		// onerror and onclick, which left onmouseover, onfocus, srcdoc and
+		// formaction through; a portal template is Markdown, so no raw tag has
+		// a legitimate use here and an allowlist has no gaps to find.
+		//
+		// This does not make interpolated values safe -- the template engine
+		// writes those out unescaped and they never pass through here. Escaping
+		// in RenderMarkdown is what covers them; this rule is defense in depth
+		// that reports an operator's mistake at load time instead of silently
+		// rendering it as text.
+		if col := indexRawHTMLTag(line); col >= 0 {
 			errs = append(errs, ValidationError{
 				Line:    lNum,
-				Message: "raw <script> tags are strictly forbidden in portal templates",
+				Column:  col + 1,
+				Message: "raw HTML tags are not allowed in portal templates; use Markdown",
 				Fatal:   true,
 			})
 		}
@@ -78,14 +113,6 @@ func ValidateTemplate(templateText string, known *KnownContext) []ValidationErro
 				Fatal:   true,
 			})
 		}
-		if strings.Contains(lineLower, "onload=") || strings.Contains(lineLower, "onerror=") || strings.Contains(lineLower, "onclick=") {
-			errs = append(errs, ValidationError{
-				Line:    lNum,
-				Message: "inline JavaScript event handlers are forbidden",
-				Fatal:   true,
-			})
-		}
-
 		// Action URI validation
 		if strings.Contains(line, "ntwire://") {
 			for _, part := range strings.Fields(line) {

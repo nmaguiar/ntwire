@@ -299,7 +299,7 @@ func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServerWithPortal(t *testi
 		},
 		Tunnels: []TunnelConfig{
 			{Name: "echo-svc", Target: upstream.String(), VirtualPort: 18080, Allow: []string{"*"}},
-			{Name: "socks-svc", Target: "socks", VirtualPort: 11080, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}},
+			{Name: "socks-svc", Target: "socks", VirtualPort: 11080, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true}},
 			{Name: "restricted-svc", Target: upstream.String(), VirtualPort: 19090, Allow: []string{"*"}},
 		},
 		NativeWireGuard: NativeWireGuardConfig{

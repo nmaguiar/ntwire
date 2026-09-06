@@ -85,6 +85,8 @@ limits:
   max_pending_per_server: 32                # un-dialed-back connections per tenant
   max_conns_per_server: 256                 # live spliced connections per tenant (roughly half that many clients, since each client opens 2+ connections)
   max_new_conns_per_minute: 60               # per source IP on listen.public
+  max_registrations_per_minute: 60           # per source IP on listen.agents
+  max_pending_registrations: 256             # accepted but not yet registered control connections
   udp_relay_idle_timeout: 60s                # reclaims an allocated udp_relay port if neither leg has sent traffic (including keepalives) this long
   max_udp_relay_sessions_per_server: 64      # concurrent UDP-relay sessions per tenant, independent of the udp_relay_ports pool size
 
@@ -201,6 +203,12 @@ log:
         "max_pending_per_server": {
           "default": 32,
           "minimum": 1,
+          "type": "integer"
+        },
+        "max_pending_registrations": {
+          "type": "integer"
+        },
+        "max_registrations_per_minute": {
           "type": "integer"
         },
         "max_udp_relay_sessions_per_server": {

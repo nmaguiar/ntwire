@@ -139,6 +139,48 @@ trap 'rm -rf "$TMPDIR"' EXIT
 echo "Downloading $ASSET_NAME ($VERSION)..."
 fetchToFile "$ASSET_URL" "$TMPDIR/$ASSET_NAME"
 
+# Verify the archive against the release's signed-by-provenance checksums file
+# before extracting anything. Without this the installer executes whatever the
+# download returned, so a compromised mirror, a hijacked redirect, or a
+# corrupted transfer would install a binary nobody published.
+CHECKSUM_URL=$(printf '%s\n' "$JSON" | awk '
+  /"name":/                { n=$0; sub(/.*"name": *"/,"",n); sub(/",?$/,"",n); name=n }
+  /"browser_download_url"/ { u=$0; sub(/.*"browser_download_url": *"/,"",u); sub(/",?$/,"",u); print name "\t" u }
+' | grep -E "^checksums\.txt\b" | head -1 | cut -f2)
+
+if [ -z "$CHECKSUM_URL" ]; then
+  echo "Release $VERSION publishes no checksums.txt; refusing to install an unverified binary." >&2
+  echo "Download the asset manually if you have another way to verify it: $ASSET_URL" >&2
+  exit 1
+fi
+
+echo "Verifying checksum..."
+fetchToFile "$CHECKSUM_URL" "$TMPDIR/checksums.txt"
+
+EXPECTED=$(grep -E "[[:space:]]\*?${ASSET_NAME}\$" "$TMPDIR/checksums.txt" | head -1 | awk '{print $1}')
+if [ -z "$EXPECTED" ]; then
+  echo "checksums.txt for $VERSION does not list $ASSET_NAME; refusing to install." >&2
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL=$(sha256sum "$TMPDIR/$ASSET_NAME" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL=$(shasum -a 256 "$TMPDIR/$ASSET_NAME" | awk '{print $1}')
+elif command -v openssl >/dev/null 2>&1; then
+  ACTUAL=$(openssl dgst -sha256 "$TMPDIR/$ASSET_NAME" | awk '{print $NF}')
+else
+  echo "No sha256sum, shasum or openssl available to verify the download; refusing to install." >&2
+  exit 1
+fi
+
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+  echo "Checksum mismatch for $ASSET_NAME!" >&2
+  echo "  expected: $EXPECTED" >&2
+  echo "  actual:   $ACTUAL" >&2
+  exit 1
+fi
+
 echo "Extracting..."
 cd "$TMPDIR"
 case "$ASSET_NAME" in

@@ -143,7 +143,7 @@ func TestReloadRecyclesListenerWhenTunnelTargetChanges(t *testing.T) {
 // take effect on SIGHUP/config-watch.
 func TestReloadRecyclesListenerWhenSocksFilterChanges(t *testing.T) {
 	s, _, _ := newTestServer(t, []TunnelConfig{
-		{Name: "egress", Target: "socks", VirtualPort: 18085, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}},
+		{Name: "egress", Target: "socks", VirtualPort: 18085, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true}},
 	})
 	startTestDataPlane(t, s)
 
@@ -277,7 +277,7 @@ func TestProxySocksOverRealWireGuardConn(t *testing.T) {
 
 	wgPort := freeUDPPort(t)
 	s, _, _ := newTestServer(t, []TunnelConfig{
-		{Name: "egress", Target: "socks", VirtualPort: 11090, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}},
+		{Name: "egress", Target: "socks", VirtualPort: 11090, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true}},
 	})
 	s.Config.Network.TunnelCIDR = "100.64.0.0/16"
 	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(wgPort)
@@ -418,7 +418,7 @@ func TestProxySocksConnectAllowedRelays(t *testing.T) {
 
 	tunnel := TunnelConfig{
 		Name: "egress", Target: "socks", VirtualPort: 11080, Allow: []string{"*"},
-		Socks: &SocksConfig{AllowAll: true},
+		Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true},
 	}
 	client := newSocksProxyCall(t, s, tunnel, "100.64.0.5")
 
@@ -553,7 +553,7 @@ func TestProxySocksUpstreamSocks5hPreservesHostname(t *testing.T) {
 	s, _, _ := newTestServer(t, nil)
 	tunnel := TunnelConfig{
 		Name: "egress", Target: "socks", VirtualPort: 11083, Allow: []string{"*"},
-		Socks: &SocksConfig{AllowAll: true, Upstream: "socks5h://" + upstream.Addr().String()},
+		Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true, Upstream: "socks5h://" + upstream.Addr().String()},
 	}
 	runtime := s.newSocksRuntime(tunnel)
 	if runtime == nil {
@@ -628,7 +628,7 @@ func TestProxySocksRejectsUnauthorizedTunnelIP(t *testing.T) {
 	s, _, _ := newTestServer(t, nil)
 	tunnel := TunnelConfig{
 		Name: "egress", Target: "socks", VirtualPort: 11082, Allow: []string{"*"},
-		Socks: &SocksConfig{AllowAll: true},
+		Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true},
 	}
 	tl := &tunnelListener{config: tunnel, socks: s.newSocksRuntime(tunnel)}
 	// Deliberately do not register a session for this tunnel IP: the

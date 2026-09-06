@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/authlimit"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -346,15 +348,32 @@ func TestAuditUsesAuditLogWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestAllowSourcePrunesStaleEntries(t *testing.T) {
+func TestAllowSourceLimitsAndPrunes(t *testing.T) {
 	s := New(Config{}, nil)
-	s.rates["198.51.100.1"] = &rateState{n: 20, since: time.Now().Add(-2 * time.Minute)}
 
-	if !s.allowSource("198.51.100.2:12345") {
-		t.Fatal("a fresh source should be allowed")
+	for i := 0; i < maxAuthAttemptsPerMinute; i++ {
+		if !s.allowSource("198.51.100.1:12345") {
+			t.Fatalf("attempt %d within the limit should be allowed", i+1)
+		}
 	}
-	if _, ok := s.rates["198.51.100.1"]; ok {
-		t.Fatal("a rate entry older than the window should have been pruned")
+	if s.allowSource("198.51.100.1:12345") {
+		t.Fatal("an attempt over the per-source limit should be refused")
+	}
+	if !s.allowSource("198.51.100.2:12345") {
+		t.Fatal("a different source should be unaffected")
+	}
+}
+
+// TestAllowSourceStaysBounded is the regression test for the unbounded,
+// swept-on-every-call rate map: an attacker rotating source addresses must not
+// be able to grow the table without limit.
+func TestAllowSourceStaysBounded(t *testing.T) {
+	s := New(Config{}, nil)
+	for i := 0; i < authlimit.DefaultMaxSources+5000; i++ {
+		s.allowSource(fmt.Sprintf("192.0.2.%d:1", i))
+	}
+	if got := s.rates.Len(); got > authlimit.DefaultMaxSources {
+		t.Fatalf("rate table grew past its cap: %d > %d", got, authlimit.DefaultMaxSources)
 	}
 }
 

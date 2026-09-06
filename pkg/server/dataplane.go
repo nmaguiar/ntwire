@@ -101,12 +101,13 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 	var err error
 	sv, err = socks.New(socks.Config{
 		Filter: socks.FilterConfig{
-			OnlyLocal:      sc.OnlyLocal,
-			CIDRs:          sc.Filters,
-			DomainSuffixes: sc.DomainFilters,
-			ASNs:           sc.ASNFilters,
-			Invert:         sc.ReverseFilters,
-			AllowAll:       sc.AllowAll,
+			AllowLocalEgress: t.Socks.AllowLocalEgress,
+			OnlyLocal:        sc.OnlyLocal,
+			CIDRs:            sc.Filters,
+			DomainSuffixes:   sc.DomainFilters,
+			ASNs:             sc.ASNFilters,
+			Invert:           sc.ReverseFilters,
+			AllowAll:         sc.AllowAll,
 		},
 		ASNLookup: s.asn,
 		Authorize: func(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) bool {

@@ -68,14 +68,25 @@ type ActionResolution struct {
 	Authorized   bool         `json:"authorized"`
 }
 
-// ResolveAction revalidates authorization for a target ID against the effective target set.
+// ResolveAction revalidates authorization for a target ID against the effective
+// target set.
+//
+// Authorization answers "which target", never "what URL". A resolved URL is
+// handed to a browser launcher on the client, where an argument beginning with
+// "-" is read as a command-line switch rather than a URL, so the scheme is
+// checked here too and an unusable one is dropped rather than forwarded. The
+// client re-validates independently; neither side relies on the other.
 func ResolveAction(targetID string, effectiveTargets []PortalTarget) (*ActionResolution, error) {
 	wanted := strings.ToLower(strings.TrimSpace(targetID))
 	for _, t := range effectiveTargets {
 		if strings.ToLower(t.ID) == wanted || strings.ToLower(t.Name) == wanted {
+			url := t.URL
+			if url != "" && !SafeExternalURL(url) {
+				url = ""
+			}
 			return &ActionResolution{
 				Target:     t,
-				URL:        t.URL,
+				URL:        url,
 				Authorized: true,
 			}, nil
 		}

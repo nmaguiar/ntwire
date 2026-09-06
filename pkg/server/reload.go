@@ -37,7 +37,13 @@ func WatchConfig(path string, s *Server, log *slog.Logger) (*fsnotify.Watcher, e
 				if filepath.Clean(e.Name) != filepath.Clean(path) && (keysDir == "" || filepath.Dir(filepath.Clean(e.Name)) != filepath.Clean(keysDir)) {
 					continue
 				}
-				if e.Has(fsnotify.Write | fsnotify.Create | fsnotify.Rename) {
+				// Remove matters as much as the others: deleting an
+				// authorized-key file is how an operator revokes a key, and
+				// without this the removal produced no reload, so live
+				// sessions for that key survived to their TTL. A Remove on the
+				// config file itself is harmless -- LoadConfig fails and the
+				// previous configuration stays in force.
+				if e.Has(fsnotify.Write | fsnotify.Create | fsnotify.Rename | fsnotify.Remove) {
 					c, err := LoadConfig(path)
 					if err != nil {
 						log.Warn("configuration reload rejected", "error", err)

@@ -182,10 +182,7 @@ func TestRegistry_NonceMapStaysCapped(t *testing.T) {
 			t.Fatalf("registration %d failed: %v", i, err)
 		}
 	}
-	reg.mu.Lock()
-	n := len(reg.nonces)
-	reg.mu.Unlock()
-	if n > maxNonces {
+	if n := reg.nonces.Len(); n > maxNonces {
 		t.Fatalf("nonce map grew to %d entries, want <= %d", n, maxNonces)
 	}
 }

@@ -65,6 +65,19 @@ type Config struct {
 		MaxPendingPerServer  int           `yaml:"max_pending_per_server"`
 		MaxConnsPerServer    int           `yaml:"max_conns_per_server"`
 		MaxNewConnsPerMinute int           `yaml:"max_new_conns_per_minute"`
+		// MaxRegistrationsPerMinute caps registration attempts per source
+		// address on listen.agents. That listener must be internet-facing
+		// for a NAT'd server to dial out to it, so without a cap anyone who
+		// can reach it can open control connections faster than they are
+		// reaped. It is the agents-listener counterpart of
+		// MaxNewConnsPerMinute.
+		MaxRegistrationsPerMinute int `yaml:"max_registrations_per_minute"`
+		// MaxPendingRegistrations caps control connections that have been
+		// accepted but have not yet completed registration. A half-open
+		// connection costs a goroutine and an fd; the per-source rate limit
+		// alone does not bound how many one attacker can accumulate over
+		// time, nor how many a botnet can hold open at once.
+		MaxPendingRegistrations int `yaml:"max_pending_registrations"`
 		// UDPRelayIdleTimeout reclaims a UDP-relay session (and its pooled
 		// port) that has seen no bind/keepalive/forwarded traffic on either
 		// leg for this long. Comfortably above the client/server keepalive
@@ -161,6 +174,8 @@ limits:
   max_pending_per_server: 32                # un-dialed-back connections per tenant
   max_conns_per_server: 256                 # live spliced connections per tenant (roughly half that many clients, since each client opens 2+ connections)
   max_new_conns_per_minute: 60               # per source IP on listen.public
+  max_registrations_per_minute: 60           # per source IP on listen.agents
+  max_pending_registrations: 256             # accepted but not yet registered control connections
   udp_relay_idle_timeout: 60s                # reclaims an allocated udp_relay port if neither leg has sent traffic (including keepalives) this long
   max_udp_relay_sessions_per_server: 64      # concurrent UDP-relay sessions per tenant, independent of the udp_relay_ports pool size
 
@@ -367,6 +382,12 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if c.Limits.MaxNewConnsPerMinute == 0 {
 		c.Limits.MaxNewConnsPerMinute = 60
+	}
+	if c.Limits.MaxRegistrationsPerMinute == 0 {
+		c.Limits.MaxRegistrationsPerMinute = 60
+	}
+	if c.Limits.MaxPendingRegistrations == 0 {
+		c.Limits.MaxPendingRegistrations = 256
 	}
 	if c.Limits.UDPRelayIdleTimeout == 0 {
 		c.Limits.UDPRelayIdleTimeout = 60 * time.Second

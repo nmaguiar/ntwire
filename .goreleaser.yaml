@@ -42,6 +42,14 @@ builds:
     goos: [windows]
     goarch: [amd64, arm64]
     ldflags: ["-s -w -H=windowsgui -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+# Pin the checksum manifest's name and algorithm: web/get*.sh and web/get*.bat
+# look for exactly "checksums.txt" and refuse to install without it, so this is
+# part of the install path's contract rather than a GoReleaser default that
+# could change under it.
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
 archives:
   # Publish the client, server, and relay as separate downloadable assets. Docker
   # images are a deployment alternative, not a replacement for these binaries.

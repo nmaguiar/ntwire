@@ -135,7 +135,7 @@ auth:
   session_ttl: 15m                       # bearer-token session lifetime before renewal is required; default: 15m
   max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc email); 0 = unlimited
 admin:
-  web_ui_token: ""                       # optional secret: enables the server dashboard on listen.metrics at http://server:9090/?token=...; leave empty to disable it
+  web_ui_token: ""                       # optional secret, min 32 chars: enables the server dashboard on listen.metrics at http://server:9090/?token=... (exchanged once for a cookie); leave empty to disable it
 network:
   tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; for IPv6 use /64 or no shorter than /112
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward); host may be a hostname, resolved fresh on every client connect/renew
@@ -230,6 +230,7 @@ tunnels:
       upstream: socks5h://proxy.example:1080 # optional TCP CONNECT pass-through via an external SOCKS5 proxy
       allow_all: false                  # required to permit every destination when no filters above are set
       allow_bind: false                 # explicitly allow SOCKS4/5 BIND (opens a temporary inbound server listener)
+      allow_local_egress: false         # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 log:
   format: text                          # text or json (Logstash-format); container images default to json
   level: info                           # debug, info, warn, or error
@@ -562,25 +563,57 @@ every reload, so a renewed certificate is served without a restart — an
 in-memory self-signed certificate is never regenerated this way, since that
 would invalidate every client's TOFU pin.
 
+### Loopback and link-local destinations
+
+Regardless of `socks.filters`, `allow_all`, or `reverse_filters`, a SOCKS
+tunnel may not reach the server's own `127.0.0.0/8`/`::1`, the link-local
+range that carries cloud instance metadata (`169.254.169.254`, `fe80::/10`),
+or the unspecified address. Those destinations trust the server's network
+position rather than the requester's, so reaching them through a tunnel is
+request forgery, and the check runs before every filter so no configuration
+can invert its way past it.
+
+Set `socks.allow_local_egress: true` for the legitimate case — proxying to a
+service that runs on the server host. It is independent of `allow_all`, and
+enabling it adds `socks_local_egress` to the `security_capabilities` array so
+an operator can see it from the dashboard. Fixed `target:` tunnels are
+unaffected: their destination comes from configuration, not from the
+requester.
+
 ## Server dashboard
 
-Set a long random `admin.web_ui_token` to enable the operator dashboard on the
+Set a long random `admin.web_ui_token` (at least 32 characters; the server
+refuses to start with a shorter one) to enable the operator dashboard on the
 metrics listener. Open `http://server:9090/?token=TOKEN` (using the address in
 `listen.metrics`) to see every
 currently granted tunnel, its authenticated identity, tunnel address, expiry,
 target, live connection/traffic counters, client-observed control-plane
-latency, and reconnect counts. Each tunnel entry's `session_id` can be passed
-to `POST /v1/admin/sessions/{id}/revoke?token=TOKEN` (same listener, same
-token) to immediately end that session — the one way to revoke a live
-session without waiting for its `session_ttl` or a config reload; see
+latency, and reconnect counts.
+
+`?token=` works **only** on that root URL, which exchanges it for an
+`HttpOnly; SameSite=Lax` cookie and redirects, so the token leaves the
+address bar before the page loads and the dashboard's own polling never
+carries it in a URL. Every other route takes the token as a header:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" http://server:9090/v1/dashboard
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  http://server:9090/v1/admin/sessions/$SESSION_ID/revoke
+```
+
+Revoking immediately ends that session — the one way to revoke a live session
+without waiting for its `session_ttl` or a config reload; see
 [SECURITY.md](SECURITY.md#oidc-threat-model) for why that matters for OIDC
-deprovisioning specifically. The dashboard and revoke endpoint are disabled by
-default and return 404 without the exact token because they expose
-operational and identity data (and, for revoke, session control); bind the
-metrics listener to loopback or place it behind a trusted TLS reverse proxy.
-The JSON form at `GET /v1/dashboard?token=TOKEN` also includes a
-`security_capabilities` array, listing enabled high-risk configuration classes
-without exposing tunnel names or credentials. See
+deprovisioning specifically. Revoke accepts the header only, never the cookie,
+so a page an operator visits cannot forge it. The dashboard and revoke
+endpoint are disabled by default and return 404 without the exact token
+because they expose operational and identity data (and, for revoke, session
+control); the whole listener is rate-limited per source address, but still
+bind it to loopback or place it behind a trusted TLS reverse proxy.
+
+The JSON form at `GET /v1/dashboard` also includes a `security_capabilities`
+array, listing enabled high-risk configuration classes without exposing tunnel
+names or credentials. See
 [SECURITY.md](SECURITY.md#operator-visible-risk-capabilities) for the stable
 values and their meaning.
 
