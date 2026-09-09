@@ -146,6 +146,11 @@ network:
   # accepted capacities through its transport bind diagnostics.
   dns:
     enabled: true                        # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
+    forwarding:                          # opt-in forwarding for non-ntwire names; disabled by default
+      enabled: true
+      upstreams:
+      - 1.1.1.1                          # literal IPv4/IPv6 address; port defaults to 53
+      - 8.8.8.8
     domain: ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
 transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.

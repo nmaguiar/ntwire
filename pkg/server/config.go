@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -239,8 +240,18 @@ type NativeWireGuardPeer struct {
 
 // DNSConfig configures the in-tunnel DNS discovery server on UDP port 53.
 type DNSConfig struct {
-	Enabled *bool  `yaml:"enabled"`
-	Domain  string `yaml:"domain"`
+	Enabled    *bool               `yaml:"enabled"`
+	Domain     string              `yaml:"domain"`
+	Forwarding DNSForwardingConfig `yaml:"forwarding"`
+}
+
+// DNSForwardingConfig controls opt-in forwarding of names outside ntwire's
+// authoritative namespaces. Upstreams intentionally accept only literal IP
+// addresses: resolving an upstream hostname through the host resolver can
+// silently create a loop back into this in-tunnel DNS service.
+type DNSForwardingConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	Upstreams []string `yaml:"upstreams"`
 }
 
 // IsEnabled reports whether the in-tunnel DNS server is enabled (defaults to true).
@@ -254,6 +265,41 @@ func (d DNSConfig) EffectiveDomain() string {
 		return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(d.Domain)), ".")
 	}
 	return "ntwire"
+}
+
+// normalizeDNSUpstream accepts a literal IPv4 or IPv6 address with an
+// optional port and returns a canonical dial address. Requiring a literal
+// address avoids recursively resolving an upstream through a potentially
+// looping system resolver.
+func normalizeDNSUpstream(raw string) (string, netip.Addr, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", netip.Addr{}, fmt.Errorf("empty upstream DNS server")
+	}
+	if ip, err := netip.ParseAddr(raw); err == nil {
+		return net.JoinHostPort(ip.String(), "53"), ip, nil
+	}
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return "", netip.Addr{}, fmt.Errorf("upstream %q must be a literal IP address with an optional port", raw)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return "", netip.Addr{}, fmt.Errorf("upstream %q must use a literal IP address", raw)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return "", netip.Addr{}, fmt.Errorf("upstream %q has an invalid port", raw)
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(p)), ip, nil
+}
+
+func prefixAddr(cidr string) netip.Addr {
+	prefix, err := netip.ParsePrefix(cidr)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return prefix.Addr().Next()
 }
 
 // socksTarget is the TunnelConfig.Target sentinel that marks a tunnel as an
@@ -377,6 +423,11 @@ network:
   # dns                       :
   #   enabled: true                         # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
   #   domain : ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
+  #   forwarding:                            # disabled by default; only non-ntwire names are sent upstream
+  #     enabled  : true
+  #     upstreams:
+  #     - 1.1.1.1                            # an omitted port means 53
+  #     - 8.8.8.8
 
 transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
@@ -866,6 +917,28 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 		if dom == "" || strings.ContainsAny(dom, "/: @") {
 			return c, fmt.Errorf("network.dns.domain %q is not a valid DNS domain", c.Network.DNS.Domain)
 		}
+	}
+	if c.Network.DNS.Forwarding.Enabled {
+		if len(c.Network.DNS.Forwarding.Upstreams) == 0 {
+			return c, fmt.Errorf("network.dns.forwarding: enabled but no upstream DNS servers configured")
+		}
+		serverIP := prefixAddr(c.Network.TunnelCIDR)
+		upstreams := make([]string, 0, len(c.Network.DNS.Forwarding.Upstreams))
+		seenUpstreams := map[string]bool{}
+		for _, raw := range c.Network.DNS.Forwarding.Upstreams {
+			upstream, ip, err := normalizeDNSUpstream(raw)
+			if err != nil {
+				return c, fmt.Errorf("network.dns.forwarding.upstreams: %w", err)
+			}
+			if ip == serverIP {
+				return c, fmt.Errorf("network.dns.forwarding.upstreams: %q refers to the in-tunnel DNS listener", raw)
+			}
+			if !seenUpstreams[upstream] {
+				upstreams = append(upstreams, upstream)
+				seenUpstreams[upstream] = true
+			}
+		}
+		c.Network.DNS.Forwarding.Upstreams = upstreams
 	}
 	force, err := wstransport.ValidateTransportName(c.Transport.Force)
 	if err != nil {

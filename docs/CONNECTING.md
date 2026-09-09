@@ -189,6 +189,7 @@ configuration; it's the server and relay operators who opt into it.
    [Interface]
    PrivateKey = <client private key>
    Address = 100.64.0.10/32
+   DNS = 100.64.0.1
    [Peer]
    PublicKey = <server public key, from wireguard_private_key_file>
    Endpoint = vpn.example.com:51820
@@ -198,6 +199,12 @@ configuration; it's the server and relay operators who opt into it.
    `AllowedIPs` is WireGuard's own cryptographic routing, not an ntwire
    destination grant — keep it to the tunnel_cidr range unless you deliberately
    want full routing (never `0.0.0.0/0`/`::/0` by accident).
+
+   If the server enables `network.dns.forwarding`, keep this as the only DNS
+   server. Do not append public resolvers: resolver selection does not
+   reliably implement split DNS. ntwire resolves granted `*.ntwire` names
+   locally and forwards public names through the configured upstreams; see
+   [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md#dns-forwarding-for-official-wireguard-clients).
 
 3. Connect from the official app as normal — there's no `ntwire connect` step
    for this path.
