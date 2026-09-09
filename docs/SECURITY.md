@@ -6,6 +6,23 @@ type: reference
 
 # Security notes
 
+## In-tunnel DNS forwarding
+
+DNS forwarding is disabled by default. When enabled, ntwire continues to bind
+DNS only inside the WireGuard/netstack on the server tunnel IP; it never opens
+a host or public `0.0.0.0:53` listener. Source tunnel IPs are mapped to an
+existing principal before forwarding, so unknown sources receive `REFUSED` and
+cannot use ntwire as an open resolver.
+
+The configured ntwire DNS domain, aliases, service-discovery records, reverse
+records, and single-label tunnel names are always authoritative/local. Unknown
+or unauthorized local names return `NXDOMAIN` and are never sent upstream.
+Only explicitly configured literal-IP upstreams receive non-ntwire queries.
+They are part of the DNS trust and privacy model: the server operator can
+observe resolver queries and the upstream provider receives forwarded public
+queries. Keep upstream addresses away from the in-tunnel DNS listener to avoid
+resolver loops.
+
 ## Kubernetes relay discovery
 
 Kubernetes discovery is opt-in. Do not enable it with a broad selector unless

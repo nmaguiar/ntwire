@@ -70,13 +70,16 @@ type Server struct {
 	nativeRelayStop chan struct{}
 	policies        map[string]*compiledPolicy
 	asn             *socks.ASNIndex
+	dnsForwardSlots chan struct{}
+	dnsForward      func([]byte, []string) ([]byte, error)
 }
 
 func New(c Config, l *slog.Logger) *Server {
 	if l == nil {
 		l = slog.Default()
 	}
-	s := &Server{Config: c, sessions: NewSessions(), nonces: authlimit.NewNonceCache(nonceTTL, 0), log: l, rates: authlimit.NewSourceLimiter(maxAuthAttemptsPerMinute, time.Minute, 0), adminRates: authlimit.NewSourceLimiter(maxAdminRequestsPerMinute, time.Minute, 0), lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex()}
+	s := &Server{Config: c, sessions: NewSessions(), nonces: authlimit.NewNonceCache(nonceTTL, 0), log: l, rates: authlimit.NewSourceLimiter(maxAuthAttemptsPerMinute, time.Minute, 0), adminRates: authlimit.NewSourceLimiter(maxAdminRequestsPerMinute, time.Minute, 0), lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex(), dnsForwardSlots: make(chan struct{}, 64)}
+	s.dnsForward = s.forwardDNS
 	for name, policy := range c.DestinationPolicies {
 		if compiled, err := compilePolicy(policy, s.asn); err == nil {
 			s.policies[name] = compiled

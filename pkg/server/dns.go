@@ -1,16 +1,33 @@
 package server
 
 import (
+	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
+	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
 )
 
 const typeANY dnsmessage.Type = 255
+
+const (
+	dnsForwardTimeout = 2 * time.Second
+	maxDNSPacketSize  = 65535
+)
+
+// Exchange variables keep packet forwarding independently testable without
+// requiring the package's authorization tests to open host listeners.
+var (
+	forwardDNSUDPExchange = forwardDNSUDP
+	forwardDNSTCPExchange = forwardDNSTCP
+)
 
 // startDNS starts the in-tunnel DNS server on UDP port 53 within the netstack.
 func (s *Server) startDNS(d *dataPlane) error {
@@ -20,13 +37,19 @@ func (s *Server) startDNS(d *dataPlane) error {
 	}
 	d.dnsConn = conn
 	s.log.Debug("in-tunnel DNS server opened", "address", conn.LocalAddr().String())
+	s.mu.Lock()
+	forwarding := s.Config.Network.DNS.Forwarding
+	s.mu.Unlock()
+	if forwarding.Enabled {
+		s.log.Info("in-tunnel DNS forwarding enabled", "upstreams", len(forwarding.Upstreams))
+	}
 	go s.dnsLoop(d)
 	return nil
 }
 
 // dnsLoop reads incoming UDP DNS queries and responds to them.
 func (s *Server) dnsLoop(d *dataPlane) {
-	buf := make([]byte, 2048)
+	buf := make([]byte, maxDNSPacketSize)
 	for {
 		n, fromAddr, err := d.dnsConn.ReadFrom(buf)
 		if err != nil {
@@ -96,7 +119,37 @@ func (s *Server) handleDNS(d *dataPlane, reqBytes []byte, fromAddr net.Addr) {
 
 	s.mu.Lock()
 	domain := s.Config.Network.DNS.EffectiveDomain()
+	forwarding := s.Config.Network.DNS.Forwarding
 	s.mu.Unlock()
+
+	// Keep every ntwire-owned namespace authoritative. A packet containing a
+	// local question is deliberately never sent upstream, which also avoids
+	// leaking local names in unusual multi-question DNS packets.
+	if forwarding.Enabled && allExternalDNSQuestions(req.Questions, domain) {
+		select {
+		case s.dnsForwardSlots <- struct{}{}:
+			defer func() { <-s.dnsForwardSlots }()
+		default:
+			s.log.Debug("DNS forwarding saturated")
+			resp.Authoritative = false
+			resp.RecursionAvailable = true
+			resp.RCode = dnsmessage.RCodeServerFailure
+			s.writeDNSResponse(d, fromAddr, resp)
+			return
+		}
+		out, err := s.dnsForward(reqBytes, forwarding.Upstreams)
+		if err == nil {
+			s.log.Debug("DNS forwarded query", "upstreams", len(forwarding.Upstreams))
+			_, _ = d.dnsConn.WriteTo(out, fromAddr)
+			return
+		}
+		s.log.Debug("DNS forwarding failed", "error", err)
+		resp.Authoritative = false
+		resp.RecursionAvailable = true
+		resp.RCode = dnsmessage.RCodeServerFailure
+		s.writeDNSResponse(d, fromAddr, resp)
+		return
+	}
 
 	allowedTunnels := s.allowedTunnelsForPrincipal(principal)
 	allowedMap := make(map[string]TunnelConfig, len(allowedTunnels))
@@ -108,12 +161,120 @@ func (s *Server) handleDNS(d *dataPlane, reqBytes []byte, fromAddr net.Addr) {
 		s.resolveDNSQuestion(d, q, principal, domain, allowedTunnels, allowedMap, &resp)
 	}
 
+	s.writeDNSResponse(d, fromAddr, resp)
+}
+
+func (s *Server) writeDNSResponse(d *dataPlane, fromAddr net.Addr, resp dnsmessage.Message) {
 	out, err := resp.Pack()
 	if err != nil {
 		s.log.Debug("failed to pack DNS response", "error", err)
 		return
 	}
 	_, _ = d.dnsConn.WriteTo(out, fromAddr)
+}
+
+func allExternalDNSQuestions(questions []dnsmessage.Question, domain string) bool {
+	if len(questions) == 0 {
+		return false
+	}
+	for _, q := range questions {
+		name := strings.TrimSuffix(strings.ToLower(q.Name.String()), ".")
+		if isLocalDNSName(name, domain) {
+			return false
+		}
+	}
+	return true
+}
+
+func isLocalDNSName(name, domain string) bool {
+	if strings.HasSuffix(name, ".in-addr.arpa") || strings.HasSuffix(name, ".ip6.arpa") {
+		return true
+	}
+	_, _, matched := matchDomainPrefix(name, domain)
+	return matched
+}
+
+// forwardDNS proxies a DNS packet as-is. It retains EDNS and response record
+// semantics that would be lost by reconstructing answers one record at a time.
+func (s *Server) forwardDNS(query []byte, upstreams []string) ([]byte, error) {
+	var request dnsmessage.Message
+	if err := request.Unpack(query); err != nil {
+		return nil, err
+	}
+	var errs []error
+	for i, upstream := range upstreams {
+		response, err := forwardDNSUDPExchange(query, upstream)
+		if err == nil && dnsResponseMatches(response, request.ID) {
+			var msg dnsmessage.Message
+			if unpackErr := msg.Unpack(response); unpackErr == nil && msg.Truncated {
+				response, err = forwardDNSTCPExchange(query, upstream)
+			}
+			if err == nil && dnsResponseMatches(response, request.ID) {
+				return response, nil
+			}
+		}
+		if err == nil {
+			err = errors.New("invalid upstream DNS response")
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", upstream, err))
+		if i+1 < len(upstreams) {
+			s.log.Debug("DNS upstream failover", "upstream", upstream, "error", err)
+		}
+	}
+	return nil, errors.Join(errs...)
+}
+
+func dnsResponseMatches(raw []byte, id uint16) bool {
+	var msg dnsmessage.Message
+	return msg.Unpack(raw) == nil && msg.Response && msg.ID == id
+}
+
+func forwardDNSUDP(query []byte, upstream string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsForwardTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "udp", upstream)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(dnsForwardTimeout))
+	if _, err := conn.Write(query); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, maxDNSPacketSize)
+	n, err := conn.Read(buf)
+	return buf[:n], err
+}
+
+func forwardDNSTCP(query []byte, upstream string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dnsForwardTimeout)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", upstream)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(dnsForwardTimeout))
+	if len(query) > maxDNSPacketSize {
+		return nil, fmt.Errorf("DNS query exceeds maximum size")
+	}
+	var size [2]byte
+	binary.BigEndian.PutUint16(size[:], uint16(len(query)))
+	if _, err := conn.Write(append(size[:], query...)); err != nil {
+		return nil, err
+	}
+	if _, err := io.ReadFull(conn, size[:]); err != nil {
+		return nil, err
+	}
+	n := int(binary.BigEndian.Uint16(size[:]))
+	if n == 0 {
+		return nil, fmt.Errorf("empty TCP DNS response")
+	}
+	response := make([]byte, n)
+	if _, err := io.ReadFull(conn, response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 func (s *Server) resolveDNSQuestion(

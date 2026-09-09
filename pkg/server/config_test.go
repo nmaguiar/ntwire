@@ -99,6 +99,29 @@ func TestParseConfigValidatesTransportForce(t *testing.T) {
 	}
 }
 
+func TestParseConfigDNSForwardingValidation(t *testing.T) {
+	base := "auth:\n  authorized_keys_dir: keys\nnetwork:\n  dns:\n    forwarding:\n      enabled: true\n      upstreams:\n"
+	got, err := ParseConfig([]byte(base+"      - 1.1.1.1\n      - '[2606:4700:4700::1111]:5353'\n"), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseConfig(valid DNS forwarding): %v", err)
+	}
+	if got.Network.DNS.Forwarding.Upstreams[0] != "1.1.1.1:53" || got.Network.DNS.Forwarding.Upstreams[1] != "[2606:4700:4700::1111]:5353" {
+		t.Fatalf("normalized upstreams = %#v", got.Network.DNS.Forwarding.Upstreams)
+	}
+	for name, config := range map[string]string{
+		"missing upstream": base,
+		"hostname":         base + "      - resolver.example\n",
+		"invalid port":     base + "      - 1.1.1.1:0\n",
+		"self reference":   base + "      - 100.64.0.1\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseConfig([]byte(config), t.TempDir()); err == nil {
+				t.Fatal("ParseConfig accepted invalid DNS forwarding configuration")
+			}
+		})
+	}
+}
+
 func TestLoadConfigReadsTunnelLocalPort(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ntwire.yaml")
 	config := `

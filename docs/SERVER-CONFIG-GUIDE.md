@@ -83,6 +83,11 @@ network:
   # dns                       :
   #   enabled: true                         # run an in-tunnel DNS server on UDP port 53 for service discovery; default: true
   #   domain : ntwire                       # top-level domain suffix for tunnel resolution and discovery (e.g. <tunnel>.ntwire); default: ntwire
+  #   forwarding:                            # disabled by default; only non-ntwire names are sent upstream
+  #     enabled  : true
+  #     upstreams:
+  #     - 1.1.1.1                            # an omitted port means 53
+  #     - 8.8.8.8
 
 transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
@@ -562,6 +567,21 @@ audit:
             },
             "enabled": {
               "type": "boolean"
+            },
+            "forwarding": {
+              "additionalProperties": false,
+              "properties": {
+                "enabled": {
+                  "type": "boolean"
+                },
+                "upstreams": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "type": "object"
             }
           },
           "type": "object"

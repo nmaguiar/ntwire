@@ -131,5 +131,41 @@ own `listen.agents` certificate is unrelated. See
 
 Native tunnel grants are checked before destination policy. Peer and tunnel policies compose with restrictive AND semantics. Unknown public keys are rejected by WireGuard itself. The direct listener is `listen.wireguard`. Behind a relay (no inbound UDP path to the server), a registered server can still admit native peers via a relay-mediated UDP endpoint — see [RELAY.md](RELAY.md#native-wireguard-udp-endpoints).
 
+### DNS forwarding for official WireGuard clients
+
+The authoritative DNS service is enough for tunnel discovery, but official
+WireGuard clients do not provide reliable split-DNS ordering across operating
+systems. Do not configure `DNS = 100.64.0.1, 1.1.1.1, 8.8.8.8`: a system may
+choose the public resolver for an ntwire name or the ntwire resolver for a
+public name. Instead, opt into forwarding on the server and configure only the
+server tunnel address on the client:
+
+```yaml
+network:
+  dns:
+    forwarding:
+      enabled: true
+      upstreams:
+        - 1.1.1.1
+        - 8.8.8.8
+```
+
+```ini
+[Interface]
+Address = 100.64.0.10/32
+DNS = 100.64.0.1
+```
+
+`*.ntwire` (and the supported aliases, discovery records, and reverse records)
+remain local and principal-filtered. Everything else is forwarded, in order,
+to the explicit upstreams. Forwarding is disabled by default; upstreams are
+literal IP addresses (with an optional port) and ntwire rejects its own tunnel
+DNS address to prevent loops. A UDP upstream truncation is retried over TCP.
+
+DNS is still exposed only on the WireGuard/netstack listener, and unknown
+source tunnel IPs receive `REFUSED` before an upstream request is made. Enable
+this only when you accept the privacy model: ntwire-server can observe all DNS
+queries sent to it, and the configured upstream receives forwarded non-ntwire
+queries.
 
 

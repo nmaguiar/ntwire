@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -105,6 +106,146 @@ func unpackDNSResponse(t *testing.T, raw []byte) dnsmessage.Message {
 		t.Fatalf("failed to unpack DNS response: %v", err)
 	}
 	return msg
+}
+
+func forwardingTestServer(t *testing.T) (*Server, *fakePacketConn, *dataPlane, *int) {
+	t.Helper()
+	s := newTestServerForDNS()
+	s.Config.Network.DNS.Forwarding = DNSForwardingConfig{Enabled: true, Upstreams: []string{"192.0.2.53:53", "192.0.2.54:53"}}
+	conn := &fakePacketConn{}
+	d := &dataPlane{serverIP: netip.MustParseAddr("100.64.0.1"), dnsConn: conn, stop: make(chan struct{})}
+	calls := 0
+	s.dnsForward = func(query []byte, upstreams []string) ([]byte, error) {
+		calls++
+		var req dnsmessage.Message
+		if err := req.Unpack(query); err != nil {
+			return nil, err
+		}
+		resp := dnsmessage.Message{Header: dnsmessage.Header{ID: req.ID, Response: true, RecursionAvailable: true}, Questions: req.Questions}
+		if len(req.Questions) > 0 && req.Questions[0].Type == dnsmessage.TypeA {
+			resp.Answers = append(resp.Answers, dnsARecord(req.Questions[0].Name, netip.MustParseAddr("203.0.113.9")))
+		}
+		return resp.Pack()
+	}
+	return s, conn, d, &calls
+}
+
+func TestDNS_ForwardingAuthorizedExternalQuery(t *testing.T) {
+	s, conn, d, calls := forwardingTestServer(t)
+	s.handleDNS(d, buildDNSQuery(9301, "example.com.", dnsmessage.TypeA), &net.UDPAddr{IP: net.ParseIP("100.64.0.2"), Port: 53000})
+	if *calls != 1 {
+		t.Fatalf("upstream calls = %d, want 1", *calls)
+	}
+	if len(conn.sent) != 1 {
+		t.Fatalf("responses = %d, want 1", len(conn.sent))
+	}
+	resp := unpackDNSResponse(t, conn.sent[0])
+	if !resp.RecursionAvailable || resp.Authoritative || len(resp.Answers) != 1 {
+		t.Fatalf("forwarded response = %+v, want non-authoritative recursive answer", resp.Header)
+	}
+}
+
+func TestDNS_ForwardingNeverLeaksUnauthorizedOrLocalNames(t *testing.T) {
+	tests := []struct {
+		name   string
+		client string
+		query  string
+		want   dnsmessage.RCode
+	}{
+		{"unknown peer", "100.64.0.99", "example.com.", dnsmessage.RCodeRefused},
+		{"unauthorized tunnel", "100.64.0.2", "admin-secret.ntwire.", dnsmessage.RCodeNameError},
+		{"unknown local name", "100.64.0.2", "does-not-exist.ntwire.", dnsmessage.RCodeNameError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, conn, d, calls := forwardingTestServer(t)
+			s.handleDNS(d, buildDNSQuery(9302, tt.query, dnsmessage.TypeA), &net.UDPAddr{IP: net.ParseIP(tt.client), Port: 53000})
+			if *calls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", *calls)
+			}
+			resp := unpackDNSResponse(t, conn.sent[0])
+			if resp.RCode != tt.want {
+				t.Fatalf("RCode = %v, want %v", resp.RCode, tt.want)
+			}
+		})
+	}
+}
+
+func TestDNS_ForwardingDisabledKeepsLocalNXDOMAIN(t *testing.T) {
+	s := newTestServerForDNS()
+	conn := &fakePacketConn{}
+	d := &dataPlane{serverIP: netip.MustParseAddr("100.64.0.1"), dnsConn: conn, stop: make(chan struct{})}
+	calls := 0
+	s.dnsForward = func([]byte, []string) ([]byte, error) { calls++; return nil, nil }
+	s.handleDNS(d, buildDNSQuery(9303, "example.com.", dnsmessage.TypeA), &net.UDPAddr{IP: net.ParseIP("100.64.0.2"), Port: 53000})
+	if calls != 0 {
+		t.Fatalf("upstream calls = %d, want 0", calls)
+	}
+	if got := unpackDNSResponse(t, conn.sent[0]).RCode; got != dnsmessage.RCodeNameError {
+		t.Fatalf("RCode = %v, want NXDOMAIN", got)
+	}
+}
+
+func dnsForwardingResponse(t *testing.T, query []byte, rcode dnsmessage.RCode, truncated bool) []byte {
+	t.Helper()
+	var req dnsmessage.Message
+	if err := req.Unpack(query); err != nil {
+		t.Fatal(err)
+	}
+	msg := dnsmessage.Message{Header: dnsmessage.Header{ID: req.ID, Response: true, RCode: rcode, Truncated: truncated}, Questions: req.Questions}
+	response, err := msg.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response
+}
+
+func TestDNSForwarderFailoverAndNXDOMAIN(t *testing.T) {
+	s := newTestServerForDNS()
+	query := buildDNSQuery(9401, "example.com.", dnsmessage.TypeA)
+	originalUDP := forwardDNSUDPExchange
+	originalTCP := forwardDNSTCPExchange
+	t.Cleanup(func() { forwardDNSUDPExchange, forwardDNSTCPExchange = originalUDP, originalTCP })
+	calls := 0
+	forwardDNSUDPExchange = func(query []byte, upstream string) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("timeout")
+		}
+		return dnsForwardingResponse(t, query, dnsmessage.RCodeSuccess, false), nil
+	}
+	if _, err := s.forwardDNS(query, []string{"192.0.2.53:53", "192.0.2.54:53"}); err != nil || calls != 2 {
+		t.Fatalf("failover result err=%v calls=%d, want second upstream success", err, calls)
+	}
+	calls = 0
+	forwardDNSUDPExchange = func(query []byte, upstream string) ([]byte, error) {
+		calls++
+		return dnsForwardingResponse(t, query, dnsmessage.RCodeNameError, false), nil
+	}
+	response, err := s.forwardDNS(query, []string{"192.0.2.53:53", "192.0.2.54:53"})
+	if err != nil || calls != 1 || unpackDNSResponse(t, response).RCode != dnsmessage.RCodeNameError {
+		t.Fatalf("NXDOMAIN err=%v calls=%d; it must return without failover", err, calls)
+	}
+}
+
+func TestDNSForwarderRetriesTruncatedUDPOverTCP(t *testing.T) {
+	s := newTestServerForDNS()
+	query := buildDNSQuery(9402, "example.com.", dnsmessage.TypeA)
+	originalUDP := forwardDNSUDPExchange
+	originalTCP := forwardDNSTCPExchange
+	t.Cleanup(func() { forwardDNSUDPExchange, forwardDNSTCPExchange = originalUDP, originalTCP })
+	tcpCalls := 0
+	forwardDNSUDPExchange = func(query []byte, upstream string) ([]byte, error) {
+		return dnsForwardingResponse(t, query, dnsmessage.RCodeSuccess, true), nil
+	}
+	forwardDNSTCPExchange = func(query []byte, upstream string) ([]byte, error) {
+		tcpCalls++
+		return dnsForwardingResponse(t, query, dnsmessage.RCodeSuccess, false), nil
+	}
+	response, err := s.forwardDNS(query, []string{"192.0.2.53:53"})
+	if err != nil || tcpCalls != 1 || unpackDNSResponse(t, response).Truncated {
+		t.Fatalf("TCP fallback err=%v tcpCalls=%d", err, tcpCalls)
+	}
 }
 
 func TestDNS_TunnelAQuery(t *testing.T) {
