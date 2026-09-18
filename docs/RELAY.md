@@ -429,6 +429,11 @@ client-facing side is different: every client relay-wide shares the single
 datagrams by a token-locked source address once a session is bound, not by
 port — a client's NAT only ever needs to reach one address.
 
+The per-server session limit also applies to simultaneous allocation requests.
+Rebinding replaces the previous client address in the forwarding index, and
+release removes that index entry atomically with the session so a concurrent
+keepalive cannot restore a released session.
+
 A session is only forwarded once *both* the server's and the client's leg
 have completed a token-verified bind; a datagram addressed to a half-bound
 session is dropped, never buffered. This is a symmetric pair-relay (a

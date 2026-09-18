@@ -163,9 +163,16 @@ func TestReleaseRemovesBothIndexesAndFreesPort(t *testing.T) {
 	if _, ok := table.BindClient(token, clientAddr); !ok {
 		t.Fatal("BindClient() failed")
 	}
+	sess, ok := table.BindServer(token, netip.MustParseAddrPort("127.0.0.1:2222"))
+	if !ok {
+		t.Fatal("BindServer() failed")
+	}
 
 	table.Release(token)
 
+	if _, serverBound, _, clientBound := sess.legs(); serverBound || clientBound {
+		t.Fatal("released session still has bound forwarding legs")
+	}
 	if _, ok := table.LookupByClientAddr(clientAddr); ok {
 		t.Fatal("LookupByClientAddr() still finds a session after Release()")
 	}
@@ -221,5 +228,111 @@ func TestSweepLeavesActiveSessionsAlone(t *testing.T) {
 
 	if _, ok := table.LookupByClientAddr(clientAddr); !ok {
 		t.Fatal("sweepOnce() reclaimed a freshly active session")
+	}
+}
+
+// These table tests need socket identities, but no network I/O.
+type sessionTestPacketConn struct {
+	net.PacketConn
+	port int
+}
+
+func (c sessionTestPacketConn) LocalAddr() net.Addr {
+	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: c.port}
+}
+
+func newConcurrentSessionTable(poolSize, limit int) *udpSessionTable {
+	conns := make(map[uint16]net.PacketConn, poolSize)
+	for i := 1; i <= poolSize; i++ {
+		conns[uint16(i)] = sessionTestPacketConn{port: i}
+	}
+	return newUDPSessionTable(newPortAllocator(conns), Limits{MaxUDPRelaySessionsPerServer: limit})
+}
+
+func TestAllocate_ConcurrentTenantCapacity(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		table := newConcurrentSessionTable(32, 1)
+		start := make(chan struct{})
+		results := make(chan error, 32)
+		for i := 0; i < cap(results); i++ {
+			go func() {
+				<-start
+				_, _, err := table.Allocate("tenant")
+				results <- err
+			}()
+		}
+		close(start)
+		successes := 0
+		for i := 0; i < cap(results); i++ {
+			if err := <-results; err == nil {
+				successes++
+			} else if !errors.Is(err, ErrUDPRelayTenantAtCapacity) {
+				t.Errorf("Allocate() = %v, want tenant capacity error", err)
+			}
+		}
+		if successes != 1 {
+			t.Fatalf("concurrent allocations admitted %d sessions with tenant limit 1", successes)
+		}
+		// Rejected allocations must leave the remaining pool available.
+		if len(table.alloc.free) != 31 {
+			t.Fatalf("free ports = %d, want 31", len(table.alloc.free))
+		}
+	}
+}
+
+func TestBindClient_ConcurrentReleaseDoesNotRestoreIndex(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	addr := netip.MustParseAddrPort("127.0.0.1:1234")
+	for round := 0; round < 3000; round++ {
+		token, _, err := table.Allocate("tenant")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		done := make(chan struct{}, 2)
+		go func() {
+			<-start
+			table.BindClient(token, addr)
+			done <- struct{}{}
+		}()
+		go func() {
+			<-start
+			table.Release(token)
+			done <- struct{}{}
+		}()
+		close(start)
+		<-done
+		<-done
+		if _, ok := table.LookupByClientAddr(addr); ok {
+			t.Fatal("released session restored in client forwarding index")
+		}
+	}
+}
+
+func TestBindClient_ConcurrentRebindKeepsSingleIndex(t *testing.T) {
+	for round := 0; round < 100; round++ {
+		table := newConcurrentSessionTable(1, 1)
+		token, _, err := table.Allocate("tenant")
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		done := make(chan struct{}, 32)
+		for i := 0; i < cap(done); i++ {
+			addr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(1000+i))
+			go func() {
+				<-start
+				table.BindClient(token, addr)
+				done <- struct{}{}
+			}()
+		}
+		close(start)
+		for i := 0; i < cap(done); i++ {
+			<-done
+		}
+		_, _, addr, _ := table.byToken[token].legs()
+		if len(table.byClient) != 1 || table.byClient[addr] != table.byToken[token] {
+			t.Fatalf("client forwarding index inconsistent after concurrent rebind: %d entries", len(table.byClient))
+		}
 	}
 }
