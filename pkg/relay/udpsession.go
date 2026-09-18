@@ -151,6 +151,8 @@ func (s *udpRelaySession) legs() (serverAddr netip.AddrPort, serverBound bool, c
 // redeemed exactly once -- a shape this tier does not share, since a
 // UDP-relay session is long-lived and re-bindable.
 type udpSessionTable struct {
+	// Hold mu across changes to session bindings and their indexes; when both
+	// are needed, acquire the table lock before a session's lock.
 	mu       sync.Mutex
 	alloc    *portAllocator
 	byToken  map[string]*udpRelaySession
@@ -197,6 +199,13 @@ func (t *udpSessionTable) Allocate(tenant string) (token, serverAddr string, err
 	sess.touch()
 
 	t.mu.Lock()
+	// Other control connections may have allocated for this tenant while we
+	// reserved a port and generated the token. Commit admission atomically.
+	if t.tenantN[tenant] >= t.limits.MaxUDPRelaySessionsPerServer {
+		t.mu.Unlock()
+		t.alloc.release(port)
+		return "", "", ErrUDPRelayTenantAtCapacity
+	}
 	t.byToken[tok] = sess
 	t.byPort[port] = sess
 	t.tenantN[tenant]++
@@ -212,8 +221,8 @@ func (t *udpSessionTable) Allocate(tenant string) (token, serverAddr string, err
 // rebind is the intended model, not just a first-seen-wins address lock.
 func (t *udpSessionTable) BindServer(token string, from netip.AddrPort) (*udpRelaySession, bool) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	sess, ok := t.byToken[token]
-	t.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
@@ -229,8 +238,8 @@ func (t *udpSessionTable) BindServer(token string, from netip.AddrPort) (*udpRel
 // arriving on the shared client-facing socket. See BindServer on rebinding.
 func (t *udpSessionTable) BindClient(token string, from netip.AddrPort) (*udpRelaySession, bool) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	sess, ok := t.byToken[token]
-	t.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
@@ -240,12 +249,10 @@ func (t *udpSessionTable) BindClient(token string, from netip.AddrPort) (*udpRel
 	sess.mu.Unlock()
 	sess.touch()
 
-	t.mu.Lock()
 	if prevBound && prevAddr != from && t.byClient[prevAddr] == sess {
 		delete(t.byClient, prevAddr)
 	}
 	t.byClient[from] = sess
-	t.mu.Unlock()
 	return sess, true
 }
 
@@ -304,9 +311,9 @@ func (t *udpSessionTable) StatsForTenant(tenant string) []protocol.RelayUDPStats
 // server's explicit RelayUDPRelease for the same session.
 func (t *udpSessionTable) Release(token string) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	sess, ok := t.byToken[token]
 	if !ok {
-		t.mu.Unlock()
 		return
 	}
 	delete(t.byToken, token)
@@ -315,17 +322,14 @@ func (t *udpSessionTable) Release(token string) {
 	if t.tenantN[sess.tenant] <= 0 {
 		delete(t.tenantN, sess.tenant)
 	}
-	t.mu.Unlock()
-
 	sess.mu.Lock()
 	clientAddr, clientBound := sess.clientAddr, sess.clientBound
+	sess.clientBound, sess.serverBound = false, false
 	sess.mu.Unlock()
 	if clientBound {
-		t.mu.Lock()
 		if t.byClient[clientAddr] == sess {
 			delete(t.byClient, clientAddr)
 		}
-		t.mu.Unlock()
 	}
 
 	t.alloc.release(sess.serverPort)
