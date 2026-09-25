@@ -738,3 +738,76 @@ func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 		t.Fatal("timed out waiting for the client to receive the server's reply")
 	}
 }
+
+// A vanished Wi-Fi path need not close TCP: small writes can still succeed
+// while no replies arrive. An idle carrier must recover without payload traffic.
+func TestClientBindRedialsSilentCarrier(t *testing.T) {
+	var attempts atomic.Int32
+	release := make(chan struct{})
+	received := make(chan []byte, 1)
+	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		if attempts.Add(1) == 1 {
+			// Keep TCP open without reading, so even native pings receive no pong.
+			<-release
+			return
+		}
+		for {
+			_, data, err := ws.Read(r.Context())
+			if err != nil {
+				return
+			}
+			select {
+			case received <- data:
+			default:
+			}
+		}
+	}))
+	defer h.Close()
+	defer close(release)
+	// The control client's request timeout must bound only the handshake,
+	// not kill a healthy upgraded connection after that timeout expires.
+	httpClient := h.Client()
+	httpClient.Timeout = 200 * time.Millisecond
+	client := NewClient("ws"+strings.TrimPrefix(h.URL, "http"), httpClient, nil)
+	client.pingInterval, client.pingTimeout = 20*time.Millisecond, 100*time.Millisecond
+	client.SetRedialBackoff(time.Millisecond, 5*time.Millisecond, time.Second)
+	connected := make(chan struct{}, 8)
+	client.OnPeerConnected = func(string, conn.Endpoint) { connected <- struct{}{} }
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	<-connected
+	ep, err := client.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("silent carrier never redialed without payload traffic")
+	}
+	data := make([]byte, 16)
+	if err := client.Send([][]byte{data}, ep); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, data) {
+			t.Fatalf("recovered payload = %x", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement carrier did not deliver payload")
+	}
+	// A healthy idle connection answers pings and must not be churned.
+	select {
+	case <-connected:
+		t.Fatal("healthy idle carrier was unnecessarily replaced")
+	case <-time.After(250 * time.Millisecond):
+	}
+}

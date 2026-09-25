@@ -523,7 +523,11 @@ func proxyFunc(o Options) (func(*http.Request) (*urlpkg.URL, error), error) {
 // resilientHTTPClient creates an http.Client configured with custom TLS, proxy, and dialer.
 func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlpkg.URL, error), dialContext func(context.Context, string, string) (net.Conn, error)) *http.Client {
 	transport := &http.Transport{Proxy: proxy, TLSClientConfig: tlsConfig, DialContext: dialContext}
-	return &http.Client{Transport: transport}
+	// Bound the complete request, including response-body reads. A vanished
+	// network can leave TCP open indefinitely and otherwise stall renewLoop
+	// before it ever reaches its retry path. WebSocket Dial uses this timeout
+	// only for its handshake, not the lifetime of the upgraded connection.
+	return &http.Client{Transport: transport, Timeout: 15 * time.Second}
 }
 
 // filterIPVersion drops every address not of the family named by ipVersion

@@ -164,3 +164,7 @@ transport state, reconnect attempt/error/retry timing, session expiry,
 latency, reconnection count, and non-secret security state (negotiated
 transport capabilities, explicit insecure-TLS use, and listener bind
 address). The GUI does not parse client logs for any connection state.
+
+Established profiles use the shared [network recovery behavior](CLIENT.md#recovery-after-network-changes),
+including bounded control requests and idle WebSocket heartbeat detection.
+Initial connection failures still require another Connect attempt.

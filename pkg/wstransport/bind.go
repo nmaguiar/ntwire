@@ -38,6 +38,8 @@ type Bind struct {
 	// writing a complete WireGuard batch. A timeout tears down the carrier so
 	// the existing redial path can replace it.
 	writeTimeout time.Duration
+	// Client-side native WebSocket ping/pong detects silent carrier loss.
+	pingInterval, pingTimeout time.Duration
 	// noRedial disables the automatic reconnect entirely -- see DisableRedial.
 	noRedial bool
 
@@ -200,10 +202,12 @@ const (
 	redialMaxDefault    = 30 * time.Second
 	dialTimeoutDefault  = 10 * time.Second
 	writeTimeoutDefault = 5 * time.Second
+	pingIntervalDefault = 15 * time.Second
+	pingTimeoutDefault  = 10 * time.Second
 )
 
 func NewClient(url string, client *http.Client, header http.Header) *Bind {
-	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault, writeTimeout: writeTimeoutDefault}
+	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault, writeTimeout: writeTimeoutDefault, pingInterval: pingIntervalDefault, pingTimeout: pingTimeoutDefault}
 }
 
 // SetHeader replaces the headers used for the client's WebSocket dial (both
@@ -350,6 +354,12 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 }
 
 func (b *Bind) read(p *peer) {
+	// Tie the heartbeat to this exact carrier, including redial replacements.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if b.url != "" {
+		go b.keepalive(ctx, p)
+	}
 	defer func() {
 		removed := b.remove(p)
 		// A new connection with the same stable peer id may already have
@@ -389,6 +399,40 @@ func (b *Bind) read(p *peer) {
 		case <-b.done:
 			return
 		case b.packets <- packet{copyData, p.endpoint}:
+		}
+	}
+}
+
+// keepalive detects silent network loss even when no WireGuard packets are
+// flowing and small writes still fit in the kernel's TCP buffers. Use native
+// WebSocket control frames rather than multipath payload probes. The reader
+// processes pongs concurrently; a missed pong closes only this carrier, and
+// read's existing lifecycle path marks it unavailable and schedules redial.
+func (b *Bind) keepalive(ctx context.Context, p *peer) {
+	interval, timeout := b.pingInterval, b.pingTimeout
+	if interval <= 0 {
+		interval = pingIntervalDefault
+	}
+	if timeout <= 0 {
+		timeout = pingTimeoutDefault
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := p.ws.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				slog.Debug("WireGuard WebSocket heartbeat failed", "peer", p.id, "error", err)
+				_ = p.ws.CloseNow()
+			}
+			return
 		}
 	}
 }

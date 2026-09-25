@@ -1351,3 +1351,44 @@ func TestForwardSocksUDPAssociateCountsCONNECTTraffic(t *testing.T) {
 		t.Fatalf("stats = %#v, want nonzero bytes in both directions", stats)
 	}
 }
+
+func TestControlHTTPClientBoundsStalledResponses(t *testing.T) {
+	for _, flushHeaders := range []bool{false, true} {
+		t.Run(fmt.Sprintf("headers_flushed_%v", flushHeaders), func(t *testing.T) {
+			h := resilientHTTPClient(nil, nil, nil)
+			if h.Timeout <= 0 || h.Timeout > 30*time.Second {
+				t.Fatalf("control requests must have a bounded timeout, got %v", h.Timeout)
+			}
+			h.Timeout = 50 * time.Millisecond
+			defer h.CloseIdleConnections()
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				if attempts.Add(1) == 1 {
+					if flushHeaders {
+						w.WriteHeader(http.StatusOK)
+						w.(http.Flusher).Flush()
+					}
+					<-r.Context().Done()
+					return
+				}
+				_ = json.NewEncoder(w).Encode(protocol.AuthResponse{Token: "recovered", TTLSeconds: 900})
+			}))
+			defer srv.Close()
+			c := &Connection{http: h, base: srv.URL, token: "original"}
+			started := time.Now()
+			if err := c.renew(); err == nil {
+				t.Fatal("stalled renewal succeeded")
+			}
+			if time.Since(started) > time.Second {
+				t.Fatal("stalled renewal did not return promptly")
+			}
+			if err := c.renew(); err != nil {
+				t.Fatalf("renewal after network recovery: %v", err)
+			}
+			if c.token != "recovered" {
+				t.Fatal("recovered renewal did not update token")
+			}
+		})
+	}
+}
