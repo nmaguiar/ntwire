@@ -74,6 +74,28 @@ native write. `ntwire logout` clears the local credential. See
 [OIDC-SETUP.md](OIDC-SETUP.md) for provider registration and
 [SECURITY.md](SECURITY.md) for the token model.
 
+## Recovery after network changes
+
+Both `ntwire` and `ntwire-gui` use the same recovery engine for established
+connections. Switching Wi-Fi networks or moving between Ethernet and Wi-Fi
+can interrupt traffic while the operating system installs the new route.
+Control-plane requests time out after 15 seconds, including stalled response
+bodies, so renewal can enter its automatic retry loop. Retries back off from
+1 second to a maximum of 1 minute while keeping local tunnel listeners open.
+
+Client WebSocket carriers send native ping frames every 15 seconds and allow
+10 seconds for a pong. An unresponsive carrier is closed and automatically
+redialed, even when the tunnel is idle. Redial retries use jittered backoff
+capped at 30 seconds. These are detection and retry intervals, not a guarantee
+of uninterrupted application sessions or a fixed total recovery time.
+Multipath can select another available path; explicit `direct-udp` connections
+have no WebSocket fallback if the new network blocks UDP.
+
+An initial connection failure is different: the CLI exits and the GUI profile
+requires another Connect attempt. Expired or revoked login credentials may
+also require user action. Local listeners explicitly bound to an address of
+the old interface remain bound to that address; prefer loopback for local use.
+
 ## Related guides
 
 - [CONNECTING.md](CONNECTING.md) — connecting to a direct server or relay.

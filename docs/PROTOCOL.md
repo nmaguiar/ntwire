@@ -244,6 +244,9 @@ the same shape:
 ```
 
 `token` is a bearer credential and authenticates the WebSocket endpoint.
+Client carriers use native WebSocket ping/pong control frames (15-second ping
+interval, 10-second pong timeout) to detect silent network loss and redial.
+These are not multipath payload probes and require no new capability.
 Each binary WebSocket message is one WireGuard datagram. `target_hint` comes from server configuration;
 it is not a request to dial arbitrary targets. `local_port` and `local_host` are the
 server's preferred loopback port and address for the client's local listener
