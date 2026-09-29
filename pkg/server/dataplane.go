@@ -203,6 +203,8 @@ func (s *Server) StartDataPlane() error {
 		// it here anyway would only add a phantom candidate this bind
 		// probes forever for no one to answer.
 		ws.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) {
+			s.operationMu.Lock()
+			defer s.operationMu.Unlock()
 			s.observe("websocket_connected", "")
 			s.log.Info("transport event", "event", "websocket_connected", "transport", "websocket", "relay", true)
 			if sess, ok := s.sessions.FindWireGuardPublicKey(id); ok && sess.Multipath {
@@ -283,6 +285,8 @@ func (s *Server) asnRefreshURL() (string, bool) {
 // tenant-dedicated relay endpoint. The opaque token was issued over the
 // authenticated control connection; no WireGuard key ever reaches the relay.
 func (s *Server) EnableNativeWireGuardRelay(addr, token string) {
+	s.relayLifecycleMu.Lock()
+	defer s.relayLifecycleMu.Unlock()
 	s.nativeRelayMu.Lock()
 	if s.nativeRelayStop != nil {
 		close(s.nativeRelayStop)
@@ -1044,6 +1048,9 @@ func (s *Server) dropSession(v Session) {
 	if u := s.udpr.Load(); u != nil && v.WireGuardPublicKey != "" {
 		u.release(v.WireGuardPublicKey)
 	}
+	if s.data != nil && s.data.multipath != nil && v.WireGuardPublicKey != "" {
+		s.data.multipath.RemovePeer(v.WireGuardPublicKey)
+	}
 }
 
 // reapLoop takes d explicitly (rather than reading s.data on each iteration)
@@ -1078,6 +1085,18 @@ func (s *Server) reapSessions() {
 	}
 }
 func (s *Server) Close() {
+	s.relayLifecycleMu.Lock()
+	defer s.relayLifecycleMu.Unlock()
+	if u := s.udpr.Swap(nil); u != nil {
+		u.stopAll()
+	}
+	s.mu.Lock()
+	direct := s.direct
+	s.direct = nil
+	s.mu.Unlock()
+	if direct != nil {
+		close(direct.stop)
+	}
 	if s.data == nil {
 		return
 	}

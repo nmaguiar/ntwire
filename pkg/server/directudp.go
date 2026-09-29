@@ -51,6 +51,8 @@ type directUDP struct {
 // its real egress IP into the relay's logs -- precisely what choosing relay
 // mode without this flag is meant to avoid.
 func (s *Server) EnableDirectUpgrade(relayReflectAddr string) {
+	s.relayLifecycleMu.Lock()
+	defer s.relayLifecycleMu.Unlock()
 	s.mu.Lock()
 	prev := s.direct
 	s.direct = nil
