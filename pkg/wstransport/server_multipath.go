@@ -110,14 +110,31 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, pathMTU bool) {
 	m.mu.Lock()
 	p := m.peer(peerID)
-	m.bySource[ep.DstToString()] = p
 	forced := m.forced
-	m.mu.Unlock()
-
 	p.mu.Lock()
+	old := p.paths[name]
 	p.paths[name] = ep
+	if old != nil && old.DstToString() != ep.DstToString() {
+		// Another candidate may still use the old endpoint, or its address
+		// may already have been reassigned to another peer.
+		used := false
+		for _, path := range p.paths {
+			if path.DstToString() == old.DstToString() {
+				used = true
+				break
+			}
+		}
+		if !used && m.bySource[old.DstToString()] == p {
+			delete(m.bySource, old.DstToString())
+		}
+		delete(p.probes, name)
+		delete(p.mtuProbes, name)
+		delete(p.mtuDone, name)
+	}
+	m.bySource[ep.DstToString()] = p
 	p.pathMTU = pathMTU
 	p.mu.Unlock()
+	m.mu.Unlock()
 	p.scheduler.SetForced(forced)
 
 	p.scheduler.Register(name, kind)

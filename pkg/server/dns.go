@@ -50,6 +50,7 @@ func (s *Server) startDNS(d *dataPlane) error {
 // dnsLoop reads incoming UDP DNS queries and responds to them.
 func (s *Server) dnsLoop(d *dataPlane) {
 	buf := make([]byte, maxDNSPacketSize)
+	var retryDelay time.Duration
 	for {
 		n, fromAddr, err := d.dnsConn.ReadFrom(buf)
 		if err != nil {
@@ -57,10 +58,26 @@ func (s *Server) dnsLoop(d *dataPlane) {
 			case <-d.stop:
 				return
 			default:
-				s.log.Debug("DNS read error", "error", err)
+			}
+			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+			if retryDelay == 0 {
+				retryDelay = 10 * time.Millisecond
+			} else {
+				retryDelay = min(2*retryDelay, time.Second)
+			}
+			s.log.Warn("DNS read error; retrying", "error", err, "retry_in", retryDelay)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-d.stop:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
 		}
+		retryDelay = 0
 		reqData := make([]byte, n)
 		copy(reqData, buf[:n])
 		go s.handleDNS(d, reqData, fromAddr)
