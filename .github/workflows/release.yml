@@ -14,6 +14,7 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with: {go-version: stable}
       - run: go test ./...
+      - run: sh packaging/darwin/add-checksum_test.sh
 
   binaries:
     needs: test
@@ -69,8 +70,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # GoReleaser's manifest predates this native macOS archive.
+          gh release download "${GITHUB_REF_NAME}" --pattern checksums.txt --dir dist
+          sh packaging/darwin/add-checksum.sh \
+            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" \
+            dist/checksums.txt
           gh release upload "${GITHUB_REF_NAME}" \
-            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" --clobber
+            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" \
+            dist/checksums.txt --clobber
 
   helm-chart:
     # Package the same chart that operators can inspect in the source tree.
