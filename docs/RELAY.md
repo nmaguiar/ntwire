@@ -138,6 +138,27 @@ bounded single-flight worker, and invalid or oversized frames are ignored. A
 server without v3 uses the original WSS → UDP-relay → direct-UDP endpoint
 upgrade ladder.
 
+### Allocation and replacement lifecycle
+
+Concurrent `/v1/udp-relay` requests for the same WireGuard peer share one
+allocation attempt. Different peers can allocate independently. Allocation
+has a five-second deadline; canceling a waiting request does not cancel the
+request that owns the attempt. If the owning request is canceled, its shared
+attempt fails and a later request can retry.
+
+Session teardown cancels pending allocation before removing peer endpoints.
+A relay reconnect stops the old tier and cancels its pending attempts. A late
+allocation reply is released without installing an endpoint or starting a
+keepalive loop. Existing allocations on the disconnected relay are reclaimed
+by that relay's idle timeout. Requests to a stopped tier return an empty
+allocation response rather than starting another allocation.
+
+Replacing a server candidate's endpoint removes its old source mapping when
+no other candidate uses it and clears outstanding health/MTU probe state for
+that candidate. Session cleanup removes all its multipath source mappings.
+See [the protocol reference](PROTOCOL.md) for the distinction
+between diagnostic MTU discovery and automatic packet-size adaptation.
+
 ### UDP relay diagnostics and socket capacity
 
 For every active UDP-relay allocation, the relay keeps cumulative opaque

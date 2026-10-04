@@ -265,6 +265,14 @@ by `/v1/info`; if a provider requires it for a public client, configure it in
 that client's `NTWIRE_OIDC_CLIENT_SECRET` environment variable. See the
 Google/Entra/Keycloak registration notes in [OIDC-SETUP.md](OIDC-SETUP.md).
 
+## DNS read recovery
+
+The in-tunnel DNS listener retries read errors with exponential backoff from
+10 milliseconds to one second. A successful read resets the delay. Closing
+the socket or stopping the data plane ends the loop; shutdown interrupts a
+pending retry. This recovery does not change upstream DNS forwarding timeouts
+or the authorization checks on DNS queries.
+
 ## SOCKS proxy tunnels
 
 Setting a tunnel's `target: socks` turns it into an embedded SOCKS4/SOCKS5

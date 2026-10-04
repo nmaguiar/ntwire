@@ -290,8 +290,12 @@ is bound to the opaque session token, not the ID token's own expiry. `POST
 /v1/disconnect` needs the same header, has no body, and returns `204 No
 Content` after deletion.
 
-The server reaps expired sessions in the background and removes their
-WireGuard peers.
+The server rejects expired tokens immediately and reaps expired sessions in
+the background, removing their WireGuard peers, WebSocket connections,
+multipath state, relay allocations, and tunnel counters. Lookup and session
+count operations retain expired records until cleanup consumes them.
+Authentication also reaps expired sessions before installing a replacement
+peer, so delayed cleanup cannot remove the replacement's WireGuard key.
 
 ## Grant matching and the SSH/OIDC namespace
 
@@ -547,7 +551,16 @@ UDP payload size, and zero padding so the complete control datagram is exactly
 size, so the exchange cannot amplify traffic. Both ends probe UDP candidates
 independently only after the ordinary UDP health probe succeeds and cache the largest matching
 ack as diagnostic `datagram_mtu` path status. No packet sizing is changed by
-this version of the feature: WireGuard retains the safe 1420-byte tunnel MTU.
+this version of the feature: WireGuard continues to use a 1420-byte tunnel
+MTU. This is diagnostic probing, not automatic path-MTU
+adaptation, and does not guarantee that a path supports every tunnel packet.
+
+MTU discovery currently has no timeout/retry for an unanswered size probe.
+A lost probe or acknowledgement can therefore leave discovery incomplete for
+that candidate even while ordinary health probes succeed. Replacing a server
+candidate with a different endpoint clears its outstanding probes and MTU
+completion state; refreshing the same endpoint retains that state. Automatic
+MTU adaptation and loss-tolerant MTU discovery remain unimplemented.
 
 Frame `11` is reserved for the retired receive-triggered payload-acknowledgement
 experiment and current peers neither emit nor accept it. Direct and relay E2E

@@ -110,14 +110,29 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, pathMTU bool) {
 	m.mu.Lock()
 	p := m.peer(peerID)
-	m.bySource[ep.DstToString()] = p
-	forced := m.forced
-	m.mu.Unlock()
-
 	p.mu.Lock()
+	if old := p.paths[name]; old != nil && old.DstToString() != ep.DstToString() {
+		// A replaced carrier must no longer classify traffic as this peer.
+		shared := false
+		for otherName, other := range p.paths {
+			if otherName != name && other.DstToString() == old.DstToString() {
+				shared = true
+				break
+			}
+		}
+		if !shared && m.bySource[old.DstToString()] == p {
+			delete(m.bySource, old.DstToString())
+		}
+		delete(p.probes, name)
+		delete(p.mtuProbes, name)
+		delete(p.mtuDone, name)
+	}
 	p.paths[name] = ep
 	p.pathMTU = pathMTU
+	m.bySource[ep.DstToString()] = p
+	forced := m.forced
 	p.mu.Unlock()
+	m.mu.Unlock()
 	p.scheduler.SetForced(forced)
 
 	p.scheduler.Register(name, kind)
@@ -275,7 +290,10 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 			return
 		}
 	case FramePathMTUProbe, FramePathMTUAck:
-		if !p.pathMTU {
+		p.mu.RLock()
+		enabled := p.pathMTU
+		p.mu.RUnlock()
+		if !enabled {
 			return
 		}
 	default:
@@ -433,13 +451,13 @@ func (m *ServerMultipathBind) sendProbe(p *serverMultipathPeer, name string, now
 }
 
 func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, target uint16) {
-	if !p.pathMTU || target == 0 {
+	if target == 0 {
 		return
 	}
 	p.mu.RLock()
-	ep := p.paths[name]
+	ep, enabled := p.paths[name], p.pathMTU
 	p.mu.RUnlock()
-	if ep == nil {
+	if ep == nil || !enabled {
 		return
 	}
 	var nonce [pathProbeSize]byte
