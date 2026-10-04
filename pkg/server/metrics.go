@@ -48,6 +48,8 @@ func (s *Server) revokeSession(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	old, ok := s.sessions.DeleteByID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)

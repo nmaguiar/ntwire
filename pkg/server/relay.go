@@ -487,11 +487,12 @@ func (a *RelayAgent) handleOpen(ctx context.Context, open protocol.RelayOpen) {
 	q.Set("conn_id", open.ConnID)
 	u.RawQuery = q.Encode()
 
-	// A WebSocket keeps using the context supplied to its HTTP upgrade after
-	// Dial returns. A short-lived dial context would therefore tear down this
-	// long-lived data connection as soon as handleOpen returned, breaking the
-	// WebSocket WireGuard transport used by relayed clients.
-	ws, _, err := websocket.Dial(context.Background(), u.String(), &websocket.DialOptions{HTTPClient: a.client})
+	// Bound the HTTP upgrade, including a relay that accepts TCP but never
+	// sends its upgrade response. The established carrier uses the independent
+	// NetConn context below; its lifetime must not inherit this dial deadline.
+	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(dialCtx, u.String(), &websocket.DialOptions{HTTPClient: a.client})
 	if err != nil {
 		a.log.Warn("relay data dial failed", "error", err)
 		return

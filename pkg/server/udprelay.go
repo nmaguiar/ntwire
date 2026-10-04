@@ -105,6 +105,8 @@ func relayUDPStatsSummaryFrom(stats protocol.RelayUDPStats) relayUDPStatsSummary
 // /v1/udp-relay call, the same as it would after any other transient relay
 // hiccup.
 func (s *Server) EnableUDPRelay(agent *RelayAgent, relayAddr string) {
+	s.relayLifecycleMu.Lock()
+	defer s.relayLifecycleMu.Unlock()
 	prev := s.udpr.Swap(nil)
 	if prev != nil {
 		prev.stopAll()
@@ -289,7 +291,7 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 		return protocol.UDPRelayResponse{}
 	}
 
-	st := &udpRelaySessionState{token: token, serverAddr: serverAddr, stop: make(chan struct{})}
+	st := &udpRelaySessionState{token: token, serverAddr: serverAddr, stop: make(chan struct{}), clientStats: clientStats}
 	u.sessions[clientPubKey] = st
 	pending.response = protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: token}
 	u.mu.Unlock()

@@ -66,7 +66,9 @@ func newTestUDPRelay(t *testing.T, fa *fakeUDPAllocator) *udpRelay {
 	}
 	t.Cleanup(func() { _ = bind.Close() })
 
-	return &udpRelay{bind: bind, stack: stack, agent: fa, relayAddr: "127.0.0.1:1", log: slog.Default(), sessions: map[string]*udpRelaySessionState{}}
+	u := &udpRelay{bind: bind, stack: stack, agent: fa, relayAddr: "127.0.0.1:1", log: slog.Default(), sessions: map[string]*udpRelaySessionState{}}
+	t.Cleanup(u.stopAll)
+	return u
 }
 
 func TestUDPRelayRecordStats_IgnoresUnknownToken(t *testing.T) {

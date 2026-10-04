@@ -54,6 +54,11 @@ func (s *Server) dnsLoop(d *dataPlane) {
 	for {
 		n, fromAddr, err := d.dnsConn.ReadFrom(buf)
 		if err != nil {
+			select {
+			case <-d.stop:
+				return
+			default:
+			}
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}

@@ -54,24 +54,25 @@ type Server struct {
 	// authorization, session allocation, and data-plane peer ownership.
 	// Sessions has its own map lock, but that alone cannot make a reload and a
 	// concurrent renewal atomic as a policy decision.
-	operationMu     sync.Mutex
-	log             *slog.Logger
-	data            *dataPlane
-	rates           *authlimit.SourceLimiter
-	adminRates      *authlimit.SourceLimiter
-	tunnelStats     sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
-	oidc            *oidcauth.Verifiers
-	tlsManager      *TLSManager
-	auditLog        *slog.Logger
-	lifecycle       *lifecycleCounters
-	direct          *directUDP
-	udpr            atomic.Pointer[udpRelay]
-	nativeRelayMu   sync.Mutex
-	nativeRelayStop chan struct{}
-	policies        map[string]*compiledPolicy
-	asn             *socks.ASNIndex
-	dnsForwardSlots chan struct{}
-	dnsForward      func([]byte, []string) ([]byte, error)
+	operationMu      sync.Mutex
+	relayLifecycleMu sync.Mutex // serializes relay replacement and shutdown
+	log              *slog.Logger
+	data             *dataPlane
+	rates            *authlimit.SourceLimiter
+	adminRates       *authlimit.SourceLimiter
+	tunnelStats      sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
+	oidc             *oidcauth.Verifiers
+	tlsManager       *TLSManager
+	auditLog         *slog.Logger
+	lifecycle        *lifecycleCounters
+	direct           *directUDP
+	udpr             atomic.Pointer[udpRelay]
+	nativeRelayMu    sync.Mutex
+	nativeRelayStop  chan struct{}
+	policies         map[string]*compiledPolicy
+	asn              *socks.ASNIndex
+	dnsForwardSlots  chan struct{}
+	dnsForward       func([]byte, []string) ([]byte, error)
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -851,6 +852,8 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 // direct and WSS candidates usable in both directions for ordinary servers;
 // relay-mode direct upgrades keep using /v1/punch as before.
 func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request) {
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	sess, ok := s.sessions.Get(token)
 	if !ok {
@@ -889,6 +892,10 @@ func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request)
 // enabled listen.udp_relay -- postUDPRelay on the client side treats it
 // exactly like a 404 from /v1/punch, not an error worth logging.
 func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
+	// Keep session validation and allocation in the same lifecycle operation
+	// as renewal/revocation, so a late request cannot resurrect a dropped peer.
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	sess, ok := s.sessions.Get(token)
 	if !ok {
