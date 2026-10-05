@@ -110,29 +110,27 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, pathMTU bool) {
 	m.mu.Lock()
 	p := m.peer(peerID)
-	forced := m.forced
 	p.mu.Lock()
-	old := p.paths[name]
-	p.paths[name] = ep
-	if old != nil && old.DstToString() != ep.DstToString() {
-		// Another candidate may still use the old endpoint, or its address
-		// may already have been reassigned to another peer.
-		used := false
-		for _, path := range p.paths {
-			if path.DstToString() == old.DstToString() {
-				used = true
+	if old := p.paths[name]; old != nil && old.DstToString() != ep.DstToString() {
+		// A replaced carrier must no longer classify traffic as this peer.
+		shared := false
+		for otherName, other := range p.paths {
+			if otherName != name && other.DstToString() == old.DstToString() {
+				shared = true
 				break
 			}
 		}
-		if !used && m.bySource[old.DstToString()] == p {
+		if !shared && m.bySource[old.DstToString()] == p {
 			delete(m.bySource, old.DstToString())
 		}
 		delete(p.probes, name)
 		delete(p.mtuProbes, name)
 		delete(p.mtuDone, name)
 	}
-	m.bySource[ep.DstToString()] = p
+	p.paths[name] = ep
 	p.pathMTU = pathMTU
+	m.bySource[ep.DstToString()] = p
+	forced := m.forced
 	p.mu.Unlock()
 	m.mu.Unlock()
 	p.scheduler.SetForced(forced)
@@ -292,7 +290,10 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 			return
 		}
 	case FramePathMTUProbe, FramePathMTUAck:
-		if !p.pathMTU {
+		p.mu.RLock()
+		enabled := p.pathMTU
+		p.mu.RUnlock()
+		if !enabled {
 			return
 		}
 	default:
@@ -450,13 +451,13 @@ func (m *ServerMultipathBind) sendProbe(p *serverMultipathPeer, name string, now
 }
 
 func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, target uint16) {
-	if !p.pathMTU || target == 0 {
+	if target == 0 {
 		return
 	}
 	p.mu.RLock()
-	ep := p.paths[name]
+	ep, enabled := p.paths[name], p.pathMTU
 	p.mu.RUnlock()
-	if ep == nil {
+	if ep == nil || !enabled {
 		return
 	}
 	var nonce [pathProbeSize]byte

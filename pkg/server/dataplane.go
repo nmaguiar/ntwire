@@ -1036,20 +1036,22 @@ func (s *Server) addPeer(key, ip string) error {
 	return s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: ip + mask})
 }
 func (s *Server) dropSession(v Session) {
+	// Cancel and serialize relay allocations before removing their endpoints.
+	if u := s.udpr.Load(); u != nil && v.WireGuardPublicKey != "" {
+		u.release(v.WireGuardPublicKey)
+	}
+
 	for _, tunnel := range v.Tunnels {
 		s.tunnelStats.Delete(statsKey(v.TunnelIP, tunnel.Name))
 	}
 	if s.data != nil && v.WireGuardPublicKey != "" {
 		_ = s.data.stack.RemovePeer(v.WireGuardPublicKey)
 	}
-	if s.data != nil && s.data.ws != nil && v.WireGuardPublicKey != "" {
-		s.data.ws.WebSocket.CloseSession(v.WireGuardPublicKey)
-	}
-	if u := s.udpr.Load(); u != nil && v.WireGuardPublicKey != "" {
-		u.release(v.WireGuardPublicKey)
-	}
 	if s.data != nil && s.data.multipath != nil && v.WireGuardPublicKey != "" {
 		s.data.multipath.RemovePeer(v.WireGuardPublicKey)
+	}
+	if s.data != nil && s.data.ws != nil && v.WireGuardPublicKey != "" {
+		s.data.ws.WebSocket.CloseSession(v.WireGuardPublicKey)
 	}
 }
 
@@ -1077,6 +1079,11 @@ func (s *Server) reapSessions() {
 	// renewal deliberately preserved.
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	s.reapSessionsLocked()
+}
+
+// reapSessionsLocked requires operationMu, including when called before reconnect.
+func (s *Server) reapSessionsLocked() {
 	for _, v := range s.sessions.Reap() {
 		s.dropSession(v)
 		s.log.Debug("session expired", "session", v.ID, "identity", v.Identity)

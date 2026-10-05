@@ -26,6 +26,9 @@ type Session struct {
 	ClientInfo protocol.ClientInfo
 	Expires    time.Time
 }
+
+// Expired sessions remain until Reap transfers them to the resource cleanup owner.
+// Lookups must reject them without discarding the cleanup record.
 type Sessions struct {
 	mu      sync.Mutex
 	byToken map[string]Session
@@ -77,9 +80,8 @@ func (s *Sessions) FindWireGuardPublicKey(key string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	for token, v := range s.byToken {
+	for _, v := range s.byToken {
 		if now.After(v.Expires) {
-			delete(s.byToken, token)
 			continue
 		}
 		if key != "" && v.WireGuardPublicKey == key {
@@ -93,7 +95,6 @@ func (s *Sessions) Get(t string) (Session, bool) {
 	defer s.mu.Unlock()
 	v, ok := s.byToken[t]
 	if !ok || time.Now().After(v.Expires) {
-		delete(s.byToken, t)
 		return Session{}, false
 	}
 	return v, true
@@ -105,9 +106,8 @@ func (s *Sessions) FindID(id string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	for token, v := range s.byToken {
+	for _, v := range s.byToken {
 		if now.After(v.Expires) {
-			delete(s.byToken, token)
 			continue
 		}
 		if v.ID == id {
@@ -126,13 +126,12 @@ func (s *Sessions) DeleteByID(id string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	for token, v := range s.byToken {
+	for _, v := range s.byToken {
 		if now.After(v.Expires) {
-			delete(s.byToken, token)
 			continue
 		}
 		if v.ID == id {
-			delete(s.byToken, token)
+			delete(s.byToken, v.Token)
 			return v, true
 		}
 	}
@@ -146,9 +145,8 @@ func (s *Sessions) CountIdentity(method, identity string) int {
 	defer s.mu.Unlock()
 	n := 0
 	now := time.Now()
-	for k, v := range s.byToken {
+	for _, v := range s.byToken {
 		if now.After(v.Expires) {
-			delete(s.byToken, k)
 			continue
 		}
 		if v.Method == method && v.Identity == identity {

@@ -67,7 +67,7 @@ func (s *Server) dnsLoop(d *dataPlane) {
 			} else {
 				retryDelay = min(2*retryDelay, time.Second)
 			}
-			s.log.Warn("DNS read error; retrying", "error", err, "retry_in", retryDelay)
+			s.log.Debug("DNS read error", "error", err, "retry_delay", retryDelay)
 			timer := time.NewTimer(retryDelay)
 			select {
 			case <-d.stop:

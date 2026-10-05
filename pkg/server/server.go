@@ -671,6 +671,9 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		write(w, 200, protocol.AuthResponse{Tunnels: v, Identity: req.Identity, Method: req.Method, PortalEnabled: s.Config.Portal.Enabled})
 		return true
 	}
+	// Authentication holds operationMu. Retire expired peers before reusing
+	// a WireGuard key, so the reaper cannot later remove its replacement.
+	s.reapSessionsLocked()
 	tunnelIP := ""
 	serverKey := ""
 	serverTunnelIP := ""
@@ -683,6 +686,8 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			tunnelIP = old.TunnelIP
 			s.sessions.Delete(old.Token)
 		} else {
+			// A session may have expired since the first reap above.
+			s.reapSessionsLocked()
 			tunnelIP, err = s.allocateIP()
 			if err != nil {
 				fail(w, 503, protocol.ErrorNoCapacity, err.Error())

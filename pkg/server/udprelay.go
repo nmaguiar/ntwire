@@ -52,8 +52,9 @@ type udpRelay struct {
 }
 
 type udpRelayAllocation struct {
-	done   chan struct{}
-	cancel context.CancelFunc
+	done     chan struct{}
+	cancel   context.CancelFunc
+	response protocol.UDPRelayResponse
 }
 
 type udpRelaySessionState struct {
@@ -131,10 +132,10 @@ func (u *udpRelay) stopAll() {
 	u.mu.Lock()
 	sessions := u.sessions
 	u.sessions = nil
-	for key, pending := range u.pending {
+	for _, pending := range u.pending {
 		pending.cancel()
-		delete(u.pending, key)
 	}
+	u.pending = nil
 	u.mu.Unlock()
 	for _, st := range sessions {
 		close(st.stop)
@@ -226,27 +227,27 @@ func (s *Server) udpRelayStatsFor(clientPubKey string) (relayUDPStatsSummary, bo
 func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipath, pathMTU bool, clientStats *protocol.ClientUDPRelayStats) protocol.UDPRelayResponse {
 	u.recordClientStats(clientPubKey, clientStats)
 	u.mu.Lock()
-	if u.sessions == nil {
+	if st, ok := u.sessions[clientPubKey]; ok {
+		u.mu.Unlock()
+		resp := protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: st.token}
+		if hop, ok := u.statsFor(clientPubKey); ok {
+			resp.Stats = &hop
+		}
+		return resp
+	}
+
+	if u.sessions == nil || ctx.Err() != nil {
 		u.mu.Unlock()
 		return protocol.UDPRelayResponse{}
-	}
-	if st := u.sessions[clientPubKey]; st != nil {
-		u.mu.Unlock()
-		return u.sessionResponse(clientPubKey, st)
 	}
 	if pending := u.pending[clientPubKey]; pending != nil {
 		u.mu.Unlock()
 		select {
-		case <-pending.done:
-			u.mu.Lock()
-			st := u.sessions[clientPubKey]
-			u.mu.Unlock()
-			if st != nil {
-				return u.sessionResponse(clientPubKey, st)
-			}
 		case <-ctx.Done():
+			return protocol.UDPRelayResponse{}
+		case <-pending.done:
+			return pending.response
 		}
-		return protocol.UDPRelayResponse{}
 	}
 	actx, cancel := context.WithTimeout(ctx, udpRelayAllocateTimeout)
 	pending := &udpRelayAllocation{done: make(chan struct{}), cancel: cancel}
@@ -255,8 +256,8 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 	}
 	u.pending[clientPubKey] = pending
 	u.mu.Unlock()
+	defer cancel()
 	defer func() {
-		cancel()
 		u.mu.Lock()
 		if u.pending[clientPubKey] == pending {
 			delete(u.pending, clientPubKey)
@@ -264,19 +265,18 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 		close(pending.done)
 		u.mu.Unlock()
 	}()
-
 	token, serverAddr, err := u.agent.AllocateUDPSession(actx)
-	if err != nil || token == "" || serverAddr == "" {
-		return protocol.UDPRelayResponse{}
-	}
-	// Fence endpoint installation and publication against release/stopAll.
-	// A canceled allocation may still have received a token from the relay.
+	// Serialize publication and endpoint changes with release/stopAll. A late
+	// allocation must not change the endpoint of a replacement session.
 	u.mu.Lock()
-	if u.sessions == nil || u.pending[clientPubKey] != pending || actx.Err() != nil {
+	if err != nil || token == "" || serverAddr == "" || actx.Err() != nil || u.sessions == nil || u.pending[clientPubKey] != pending {
 		u.mu.Unlock()
-		u.agent.ReleaseUDPSession(token)
+		if token != "" {
+			u.agent.ReleaseUDPSession(token)
+		}
 		return protocol.UDPRelayResponse{}
 	}
+
 	if multipath && u.multipath != nil {
 		ep, e := u.bind.ParseEndpoint(serverAddr)
 		if e != nil {
@@ -290,8 +290,10 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 		u.agent.ReleaseUDPSession(token)
 		return protocol.UDPRelayResponse{}
 	}
+
 	st := &udpRelaySessionState{token: token, serverAddr: serverAddr, stop: make(chan struct{}), clientStats: clientStats}
 	u.sessions[clientPubKey] = st
+	pending.response = protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: token}
 	u.mu.Unlock()
 
 	if err := u.bind.SendControl(wstransport.FrameRelayBind, []byte(token), serverAddr); err != nil {
@@ -300,14 +302,6 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 	go u.keepaliveLoop(st)
 
 	return protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: token}
-}
-
-func (u *udpRelay) sessionResponse(key string, st *udpRelaySessionState) protocol.UDPRelayResponse {
-	resp := protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: st.token}
-	if hop, ok := u.statsFor(key); ok {
-		resp.Stats = &hop
-	}
-	return resp
 }
 
 func (u *udpRelay) keepaliveLoop(st *udpRelaySessionState) {
