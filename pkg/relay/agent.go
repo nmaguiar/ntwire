@@ -381,7 +381,7 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	nativeAddr, nativeToken := "", ""
 	if native != nil {
 		nativeAddr, nativeToken = native.advertise, native.issue(name)
-		defer native.remove(name)
+		defer native.remove(name, nativeToken)
 	}
 	// reflect_addr records this tenant's wss-vs-direct-UDP posture at
 	// registration time: "" means every client of this tenant rides the wss

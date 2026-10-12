@@ -47,15 +47,17 @@ func (n *nativeWGRelay) issue(tenant string) string {
 	n.mu.Unlock()
 	return token
 }
-func (n *nativeWGRelay) remove(tenant string) {
+func (n *nativeWGRelay) remove(tenant, token string) {
 	n.mu.Lock()
-	for k, v := range n.tokens {
-		if v == tenant {
-			delete(n.tokens, k)
-		}
+	defer n.mu.Unlock()
+	// An old control connection may finish after its replacement registers.
+	// Only the registration that owns the current token may remove its UDP
+	// association; periodic association packets cannot restore a revoked token.
+	if n.tokens[token] != tenant {
+		return
 	}
+	delete(n.tokens, token)
 	delete(n.servers, tenant)
-	n.mu.Unlock()
 }
 
 func validWGPacket(b []byte) (typ uint32, receiver uint32, ok bool) {
