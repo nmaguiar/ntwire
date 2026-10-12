@@ -83,3 +83,44 @@ func TestNativeWGHostnameListenAndWildcardAdvertisement(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeWGRelay_StaleRegistrationCleanupPreservesReplacement(t *testing.T) {
+	relayConn := mustListenUDPForTest(t)
+	defer relayConn.Close()
+	serverConn := mustListenUDPForTest(t)
+	defer serverConn.Close()
+	clientConn := mustListenUDPForTest(t)
+	defer clientConn.Close()
+	n := newNativeWGRelay(relayConn, relayConn.LocalAddr().String())
+	oldToken := n.issue("home")
+	newToken := n.issue("home")
+	serverAddr := serverConn.LocalAddr().(*net.UDPAddr).AddrPort()
+	associate := func(token string) {
+		n.handle(wstransport.EncodeControlFrame(wstransport.FrameNativeWireGuardAssociate, []byte(token)), serverAddr)
+	}
+	associate(newToken)
+	n.remove("home", oldToken) // delayed cleanup of the old registration
+	associate(newToken)        // periodic association must remain valid too
+	if n.tokens[newToken] != "home" || n.servers["home"] != serverAddr {
+		t.Fatal("old registration cleanup removed the replacement association")
+	}
+	init := make([]byte, 148)
+	binary.LittleEndian.PutUint32(init, 1)
+	binary.LittleEndian.PutUint32(init[4:8], 77)
+	n.handle(init, clientConn.LocalAddr().(*net.UDPAddr).AddrPort())
+	if _, ok := readWithTimeout(t, serverConn, time.Second); !ok {
+		t.Fatal("client handshake was not forwarded after stale cleanup")
+	}
+	response := make([]byte, 92)
+	binary.LittleEndian.PutUint32(response, 2)
+	binary.LittleEndian.PutUint32(response[8:12], 77)
+	n.handle(response, serverAddr)
+	if _, ok := readWithTimeout(t, clientConn, time.Second); !ok {
+		t.Fatal("client received no handshake response after stale cleanup")
+	}
+	n.remove("home", newToken)
+	associate(newToken)
+	if len(n.tokens) != 0 || len(n.servers) != 0 {
+		t.Fatal("current registration cleanup retained an association or accepted its revoked token")
+	}
+}
