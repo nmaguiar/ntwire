@@ -10,6 +10,7 @@ body{margin:0;min-height:100vh;font:15px/1.5 system-ui,-apple-system,Segoe UI,sa
 main{width:min(64rem,calc(100% - 2rem));margin:0 auto;padding:2.5rem 0}
 h1{font-size:1.9rem;margin:0 0 .25rem}.brand-lockup{display:flex;align-items:center;gap:.55rem}.brand-mark{flex:none;width:1.9rem;height:1.9rem;filter:drop-shadow(0 .12rem .25rem color-mix(in srgb,var(--brand) 18%,transparent))}.brand-lockup h1{margin:0}.brand-nt{color:#008bff}
 .lede{color:var(--muted);margin:0 0 1.5rem}
+.build-version{color:var(--muted);font-size:.75rem;text-align:right;overflow-wrap:anywhere}
 .panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.25rem;margin-bottom:1.25rem}
 .row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
 .row + .row{margin-top:.6rem}
@@ -115,6 +116,7 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
     </div>
   </section>
 </div>
+  <footer id="build-version" class="build-version" hidden></footer>
 </main>
 
 <div id="modal-root"></div>
@@ -1050,6 +1052,11 @@ function connectEvents() {
 }
 
 (async function init() {
+  api('GET', '/api/version').then(info => {
+    const label = document.getElementById('build-version');
+    label.textContent = 'ntwire-gui ' + info.version;
+    label.hidden = false;
+  }).catch(() => {});
   try {
     await refreshSchema();
     await refreshProfiles();

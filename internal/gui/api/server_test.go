@@ -17,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
@@ -128,6 +129,28 @@ func TestRequestsWithoutTokenAre404(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404 (matching pkg/client's startWebUI convention of not confirming endpoint existence)", resp.StatusCode)
+	}
+}
+
+func TestVersion(t *testing.T) {
+	s := newTestServer(t)
+	resp := s.get(t, "/api/version")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("version status = %d, want 200", resp.StatusCode)
+	}
+	got := decode[map[string]string](t, resp)
+	if got["version"] != buildinfo.String() {
+		t.Errorf("version = %q, want %q", got["version"], buildinfo.String())
+	}
+	for _, query := range []string{"", "?token=wrong"} {
+		resp, err := http.Get(fmt.Sprintf("http://%s/api/version%s", s.Addr(), query))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("unauthorized version status = %d, want 404", resp.StatusCode)
+		}
 	}
 }
 

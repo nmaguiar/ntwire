@@ -23,6 +23,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
 	"github.com/nmaguiar/ntwire/internal/gui/webui"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
+	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 )
 
 // Server is the loopback HTTP+SSE API in front of a Manager.
@@ -102,6 +103,9 @@ func (s *Server) routes() {
 	// page uses.
 	s.mux.Handle("GET /", s.requireToken(http.FileServer(http.FS(s.fsys)).ServeHTTP))
 	s.mux.HandleFunc("GET /api/schema", s.requireToken(s.handleSchema))
+	s.mux.HandleFunc("GET /api/version", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.String()})
+	}))
 	s.mux.HandleFunc("GET /api/profiles", s.requireToken(s.handleListProfiles))
 	s.mux.HandleFunc("POST /api/profiles", s.requireToken(s.handleCreateProfile))
 	s.mux.HandleFunc("PUT /api/profiles/{id}", s.requireToken(s.handleUpdateProfile))
