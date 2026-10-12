@@ -49,6 +49,12 @@ right-click -> Open bypasses it; Windows SmartScreen similarly warns on
 an unsigned `.exe`. Both are deferred follow-up work pending a paid
 developer account.
 
+The installers verify archives against the release's `checksums.txt`. The
+macOS GUI job merges its separately built archive's SHA-256 into that manifest
+after GoReleaser publishes the other binaries. If the GUI entry is missing,
+the installer refuses to proceed; the release manifest must be repaired before
+retrying. Keep checksum verification enabled.
+
 Container images for all three components are also published to Docker Hub as
 `nmaguiar/ntwire-server`, `nmaguiar/ntwire-client`, and `nmaguiar/ntwire-relay`
 (with each tagged release published as both `<version>` and `latest`; `build`

@@ -18,6 +18,7 @@ jobs:
         with:
           go-version: stable
       - run: go test ./...
+      - run: sh scripts/add-release-checksum_test.sh
 
   e2e:
     needs: test
