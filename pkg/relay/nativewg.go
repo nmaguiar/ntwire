@@ -17,12 +17,14 @@ import (
 // visible routing metadata; the bounded, expiring map only associates them
 // with a source address long enough to return the server's response.
 type nativeWGRelay struct {
-	conn      net.PacketConn
-	advertise string // routable address sent to the registered server
-	mu        sync.Mutex
-	tokens    map[string]string // token -> tenant
-	servers   map[string]netip.AddrPort
-	indices   map[uint32]nativeWGRoute
+	conn       net.PacketConn
+	advertise  string // routable address sent to the registered server
+	mu         sync.Mutex
+	tokens     map[string]string // token -> tenant
+	servers    map[string]netip.AddrPort
+	indices    map[uint32]nativeWGRoute
+	indexOrder []uint32
+	nextIndex  int
 }
 type nativeWGRoute struct {
 	client  netip.AddrPort
@@ -145,15 +147,18 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 		return
 	}
 	if typ == 1 {
-		n.indices[receiver] = nativeWGRoute{client: from, expires: time.Now().Add(3 * time.Minute)}
-		if len(n.indices) > 4096 {
-			for k, v := range n.indices {
-				if time.Now().After(v.expires) {
-					delete(n.indices, k)
-					break
-				}
+		// A bounded FIFO avoids an attacker-triggered full-map scan for every
+		// fresh initiation. Refreshing an existing index needs no new slot.
+		if _, exists := n.indices[receiver]; !exists {
+			if len(n.indexOrder) == 4096 {
+				delete(n.indices, n.indexOrder[n.nextIndex])
+				n.indexOrder[n.nextIndex] = receiver
+				n.nextIndex = (n.nextIndex + 1) % len(n.indexOrder)
+			} else {
+				n.indexOrder = append(n.indexOrder, receiver)
 			}
 		}
+		n.indices[receiver] = nativeWGRoute{client: from, expires: time.Now().Add(3 * time.Minute)}
 	}
 	_, _ = n.conn.WriteTo(b, net.UDPAddrFromAddrPort(server))
 }

@@ -1,8 +1,10 @@
 package pac
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -37,7 +39,7 @@ func Generate(host string, port int, domainFilters []string, ipFilters []string)
 	if host == "" || host == "127.0.0.1" || host == "localhost" {
 		proxyString = fmt.Sprintf("SOCKS5 127.0.0.1:%d; SOCKS 127.0.0.1:%d; SOCKS localhost:%d; DIRECT", port, port, port)
 	} else {
-		proxyString = fmt.Sprintf("SOCKS5 %s:%d; SOCKS %s:%d; DIRECT", host, port, host, port)
+		proxyString = fmt.Sprintf("SOCKS5 %s; SOCKS %s; DIRECT", net.JoinHostPort(host, strconv.Itoa(port)), net.JoinHostPort(host, strconv.Itoa(port)))
 	}
 
 	var extraDomains strings.Builder
@@ -47,7 +49,7 @@ func Generate(host string, port int, domainFilters []string, ipFilters []string)
 			continue
 		}
 		d = strings.TrimPrefix(d, ".")
-		extraDomains.WriteString(fmt.Sprintf(" ||\n        shExpMatch(host, \"*.%s\") ||\n        shExpMatch(host, \"%s\")", d, d))
+		extraDomains.WriteString(fmt.Sprintf(" ||\n        shExpMatch(host, %s) ||\n        shExpMatch(host, %s)", jsString("*."+d), jsString(d)))
 	}
 
 	var extraIPs strings.Builder
@@ -66,7 +68,7 @@ func Generate(host string, port int, domainFilters []string, ipFilters []string)
 
 	return fmt.Sprintf(`function FindProxyForURL(url, host)
 {
-    var proxy = "%s";
+    var proxy = %s;
 
     if (shExpMatch(host, "*.svc") ||
         shExpMatch(host, "*.svc.cluster.local") ||
@@ -95,7 +97,7 @@ func Generate(host string, port int, domainFilters []string, ipFilters []string)
 
     return "DIRECT";
 }
-`, proxyString, extraDomains.String(), extraIPs.String())
+`, jsString(proxyString), extraDomains.String(), extraIPs.String())
 }
 
 // Path returns the canonical URL path for a PAC endpoint given a target name.
@@ -134,4 +136,9 @@ func URLForPlatform(baseURL, targetName string, isIOS bool) string {
 		return p
 	}
 	return baseURL + p
+}
+
+func jsString(value string) string {
+	b, _ := json.Marshal(value)
+	return string(b)
 }

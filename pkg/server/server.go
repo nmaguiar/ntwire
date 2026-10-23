@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/nmaguiar/ntwire/pkg/authlimit"
 	"github.com/nmaguiar/ntwire/pkg/oidcauth"
@@ -11,6 +12,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.org/x/crypto/ssh"
 	"log/slog"
@@ -492,8 +494,6 @@ func (s *Server) multipathAlternateAvailable() bool {
 	return s.advertisedUDPEndpoint() != ""
 }
 func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
 	succeeded := false
 	defer func() {
 		if !succeeded {
@@ -505,11 +505,14 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
 	}
+
 	var a protocol.AuthRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
+	if err := decodeControlBody(w, r, 1<<20, &a); err != nil {
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	// SSH authentication used to omit this check even though OIDC and relay
 	// registration enforce it. Reject an incompatible signed envelope before
 	// nonce use or authorization, rather than failing later unpredictably.
@@ -569,8 +572,6 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 // signature. There is no nonce cache: the ID token's own exp/iat bound
 // replay, and allowSource rate-limits repeated attempts per source IP.
 func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
 	succeeded := false
 	defer func() {
 		if !succeeded {
@@ -582,11 +583,14 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusTooManyRequests, protocol.ErrorRateLimited, "too many authentication attempts")
 		return
 	}
+
 	var a protocol.OIDCAuthRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&a); err != nil {
+	if err := decodeControlBody(w, r, 1<<20, &a); err != nil {
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
 		return
 	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	if a.Version != protocol.Version {
 		fail(w, 400, protocol.ErrorInvalidRequest, "unsupported protocol version")
 		return
@@ -682,7 +686,26 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			fail(w, 400, protocol.ErrorInvalidRequest, "wireguard_public_key is required")
 			return false
 		}
+		canonical, keyErr := wgnet.CanonicalPublicKey(req.WireGuardPublicKey)
+		if keyErr != nil {
+			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "invalid wireguard key")
+			return false
+		}
+		req.WireGuardPublicKey = canonical
+		if s.Config.NativeWireGuard.Enabled {
+			for _, peer := range s.Config.NativeWireGuard.Peers {
+				key, _ := wgnet.CanonicalPublicKey(peer.PublicKey)
+				if key == canonical {
+					fail(w, 403, protocol.ErrorNotAllowed, "wireguard key belongs to a native peer")
+					return false
+				}
+			}
+		}
 		if old, ok := s.sessions.FindWireGuardPublicKey(req.WireGuardPublicKey); ok {
+			if old.Method != req.Method || old.Identity != req.Identity || old.Issuer != req.Issuer {
+				fail(w, 403, protocol.ErrorNotAllowed, "wireguard key belongs to another principal")
+				return false
+			}
 			tunnelIP = old.TunnelIP
 			s.sessions.Delete(old.Token)
 		} else {
@@ -852,6 +875,15 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 // direct and WSS candidates usable in both directions for ordinary servers;
 // relay-mode direct upgrades keep using /v1/punch as before.
 func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.sessions.Get(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	var body protocol.TransportPathRequest
+	if decodeControlBody(w, r, 1<<16, &body) != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
+		return
+	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -864,17 +896,13 @@ func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "multipath transport is not active", http.StatusConflict)
 		return
 	}
-	var body protocol.TransportPathRequest
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body) != nil {
-		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
-		return
-	}
+
 	if _, err := netip.ParseAddrPort(body.Address); err != nil {
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
 		return
 	}
 	ep, err := s.data.ws.UDP.ParseEndpoint(body.Address)
-	if err != nil {
+	if err != nil || ep == nil {
 		fail(w, 400, protocol.ErrorInvalidRequest, "invalid UDP address")
 		return
 	}
@@ -892,10 +920,17 @@ func (s *Server) registerDirectTransport(w http.ResponseWriter, r *http.Request)
 // enabled listen.udp_relay -- postUDPRelay on the client side treats it
 // exactly like a 404 from /v1/punch, not an error worth logging.
 func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
-	// Keep session validation and allocation in the same lifecycle operation
-	// as renewal/revocation, so a late request cannot resurrect a dropped peer.
+	if _, ok := s.sessions.Get(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	var body protocol.UDPRelayRequest
+	_ = decodeControlBody(w, r, 4096, &body)
+
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
+	// Keep session validation and allocation in the same lifecycle operation
+	// as renewal/revocation, so a late request cannot resurrect a dropped peer.
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	sess, ok := s.sessions.Get(token)
 	if !ok {
@@ -910,12 +945,19 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 	// A malformed or empty body just means no client-observed stats this
 	// call -- the same "missing telemetry is normal" tolerance every other
 	// best-effort counter in this codebase gets, not a request error.
-	var body protocol.UDPRelayRequest
-	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body)
 	write(w, 200, u.sessionFor(r.Context(), sess.WireGuardPublicKey, sess.Multipath, sess.PathMTU, body.Stats))
 }
 
 func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.sessions.Get(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	var body protocol.RenewRequest
+	if decodeControlBody(w, r, 1<<20, &body) != nil {
+		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
+		return
+	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 	t := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -924,11 +966,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
-	var body protocol.RenewRequest
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body) != nil {
-		fail(w, 400, protocol.ErrorInvalidRequest, "invalid request")
-		return
-	}
+
 	grants := make([]TunnelConfig, 0)
 	for _, p := range old.Tunnels {
 		for _, c := range s.Config.Tunnels {
@@ -1195,6 +1233,23 @@ func (s *Server) Reload(c Config) {
 			s.log.Warn("TLS certificate reload failed, keeping previous certificate", "error", err)
 		}
 	}
+	// Retire conflicting dynamic identities before installing native AllowedIPs.
+	// Dropping after installation could remove the replacement peer itself.
+	if c.NativeWireGuard.Enabled {
+		for _, session := range s.sessions.All() {
+			for _, peer := range c.NativeWireGuard.Peers {
+				key, _ := wgnet.CanonicalPublicKey(peer.PublicKey)
+				sessionKey, _ := wgnet.CanonicalPublicKey(session.WireGuardPublicKey)
+				ip, _ := netip.ParseAddr(peer.TunnelIP)
+				sessionIP, _ := netip.ParseAddr(session.TunnelIP)
+				if (key != "" && key == sessionKey) || (ip.IsValid() && ip.Unmap() == sessionIP.Unmap()) {
+					s.sessions.Delete(session.Token)
+					s.dropSession(session)
+					break
+				}
+			}
+		}
+	}
 	s.reloadTunnels(c.Tunnels)
 	if oldNativeEnabled != c.NativeWireGuard.Enabled || !reflect.DeepEqual(oldNative, c.NativeWireGuard.Peers) {
 		if !oldNativeEnabled {
@@ -1301,4 +1356,15 @@ func write(w http.ResponseWriter, status int, v any) {
 }
 func fail(w http.ResponseWriter, status int, code, msg string) {
 	write(w, status, protocol.Error{Error: msg, Code: code})
+}
+
+// decodeControlBody never runs under operationMu. A byte cap alone cannot
+// bound a peer that stops sending halfway through its request body.
+func decodeControlBody(w http.ResponseWriter, r *http.Request, limit int64, value any) error {
+	controller := http.NewResponseController(w)
+	if err := controller.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	defer controller.SetReadDeadline(time.Time{})
+	return json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(value)
 }

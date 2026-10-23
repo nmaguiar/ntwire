@@ -18,6 +18,8 @@ import (
 // most recently minted ID token, so reconnect() can survive ID-token expiry
 // without reopening the browser.
 type CacheEntry struct {
+	IssuerURL    string    `json:"issuer_url,omitempty"`
+	ClientID     string    `json:"client_id,omitempty"`
 	RefreshToken string    `json:"refresh_token,omitempty"`
 	IDToken      string    `json:"id_token,omitempty"`
 	Expiry       time.Time `json:"expiry,omitempty"`

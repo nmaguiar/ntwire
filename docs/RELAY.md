@@ -567,3 +567,12 @@ kubectl run ntwire-relay --image=nmaguiar/ntwire-relay:build --port=8444
 kubectl get pods -l app=ntwire-relay
 kubectl logs -f deployment/ntwire-relay
 ```
+
+### Shared relay PAC tenant selection
+
+When fetching PAC from the relay's agents HTTPS listener, select the tenant with
+`?tenant=home`, for example `/proxy-ios-egress.pac?tenant=home`. Unscoped legacy
+PAC URLs work only when there is one configured tenant and one advertised target
+namespace. Multi-tenant unscoped requests fail closed with 404. Target names are
+unique within a tenant, and generated JavaScript encodes all string values.
+The normal tenant public passthrough URL still serves that origin server's PAC.

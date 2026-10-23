@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,7 @@ type agentServer struct {
 	udpRelayAddr string
 	sessions     *udpSessionTable // nil until Relay.Start wires it (or forever, if listen.udp_relay is unset)
 	native       map[string]*nativeWGRelay
+	socksOwners  map[string]*Agent
 	socksTargets map[string][]protocol.SocksTarget
 }
 
@@ -121,7 +123,7 @@ func newAgentServer(registry *Registry, domain string, limits Limits, log *slog.
 	if log == nil {
 		log = slog.Default()
 	}
-	return &agentServer{registry: registry, domain: domain, limits: limits, log: log, rate: newRateLimiter(limits.MaxRegistrationsPerMinute), socksTargets: make(map[string][]protocol.SocksTarget)}
+	return &agentServer{registry: registry, domain: domain, limits: limits, log: log, rate: newRateLimiter(limits.MaxRegistrationsPerMinute), socksTargets: make(map[string][]protocol.SocksTarget), socksOwners: make(map[string]*Agent)}
 }
 
 func (a *agentServer) Handler() http.Handler {
@@ -146,27 +148,43 @@ func (a *agentServer) Handler() http.Handler {
 	})
 }
 
-func (a *agentServer) allSocksTargets() []protocol.SocksTarget {
+// Legacy unscoped URLs are safe only for a single configured tenant. Shared
+// deployments must select their namespace explicitly with ?tenant=<name>.
+func (a *agentServer) pacTargets(tenant string) ([]protocol.SocksTarget, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var out []protocol.SocksTarget
-	for _, targets := range a.socksTargets {
-		out = append(out, targets...)
-	}
-	return out
-}
-
-func (a *agentServer) findSocksTarget(name string) (protocol.SocksTarget, bool) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for _, targets := range a.socksTargets {
-		for _, t := range targets {
-			if t.Name == name {
-				return t, true
-			}
+	if tenant == "" {
+		a.registry.mu.Lock()
+		configured := len(a.registry.byFingerprint)
+		a.registry.mu.Unlock()
+		if configured > 1 || len(a.socksTargets) != 1 {
+			return nil, false
+		}
+		for name := range a.socksTargets {
+			tenant = name
 		}
 	}
-	return protocol.SocksTarget{}, false
+	targets, ok := a.socksTargets[tenant]
+	return targets, ok
+}
+
+func validateSocksTargets(targets []protocol.SocksTarget) bool {
+	names := map[string]bool{}
+	for i := range targets {
+		t := &targets[i]
+		if t.Name == "" || names[t.Name] || t.LocalPort < 0 || t.LocalPort > 65535 || t.VirtualPort < 0 || t.VirtualPort > 65535 {
+			return false
+		}
+		names[t.Name] = true
+		if t.TunnelIP != "" {
+			ip, err := netip.ParseAddr(t.TunnelIP)
+			if err != nil || ip.IsUnspecified() {
+				return false
+			}
+			t.TunnelIP = ip.String()
+		}
+	}
+	return true
 }
 
 func (a *agentServer) handleNamedPAC(w http.ResponseWriter, r *http.Request) {
@@ -203,8 +221,8 @@ func (a *agentServer) servePAC(w http.ResponseWriter, r *http.Request, targetNam
 		isIOS = true
 	}
 
-	targets := a.allSocksTargets()
-	if len(targets) == 0 {
+	targets, scoped := a.pacTargets(r.URL.Query().Get("tenant"))
+	if !scoped || len(targets) == 0 {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("no socks egress tunnels configured\n"))
@@ -215,7 +233,14 @@ func (a *agentServer) servePAC(w http.ResponseWriter, r *http.Request, targetNam
 	if targetName == "" {
 		target = targets[0]
 	} else {
-		found, ok := a.findSocksTarget(targetName)
+		var found protocol.SocksTarget
+		ok := false
+		for _, candidate := range targets {
+			if candidate.Name == targetName {
+				found, ok = candidate, true
+				break
+			}
+		}
 		if !ok {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusNotFound)
@@ -337,6 +362,10 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var writeMu sync.Mutex
+	if !validateSocksTargets(req.SocksTargets) {
+		ws.Close(websocket.StatusPolicyViolation, "invalid SOCKS target metadata")
+		return
+	}
 	var closeOnce sync.Once
 	agent := &Agent{Name: name, Fingerprint: fingerprint}
 	agent.Push = func(open protocol.RelayOpen) error {
@@ -366,13 +395,19 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	defer a.registry.DeregisterAgent(name, agent)
 	releasePending()
 	a.mu.Lock()
-	if len(req.SocksTargets) > 0 {
+	a.registry.mu.Lock()
+	if current := a.registry.tenants[name]; current != nil && current.agent == agent {
 		a.socksTargets[name] = req.SocksTargets
+		a.socksOwners[name] = agent
 	}
+	a.registry.mu.Unlock()
 	a.mu.Unlock()
 	defer func() {
 		a.mu.Lock()
-		delete(a.socksTargets, name)
+		if a.socksOwners[name] == agent {
+			delete(a.socksTargets, name)
+			delete(a.socksOwners, name)
+		}
 		a.mu.Unlock()
 	}()
 	reflectAddr := a.getReflectAddr()

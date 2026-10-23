@@ -204,3 +204,11 @@ normally by allowing a loopback wildcard port. Register a **public** client
 if required, OAuth 2.0 Device Authorization Grant. `--no-browser` (or a host
 without a browser) uses the device flow, which prints a URL and code to enter
 on another device.
+
+### Cached credential recipient binding
+
+Cached refresh credentials are bound to the exact issuer URL and OAuth client ID,
+in addition to server URL and provider name. A changed binding or an older cache
+entry without binding metadata requires a fresh login; existing credentials are
+never silently assigned to newly advertised metadata. Native keychain storage and
+file fallback use the same binding checks.

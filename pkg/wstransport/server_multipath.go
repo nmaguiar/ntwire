@@ -222,6 +222,9 @@ func (m *ServerMultipathBind) wrap(fn conn.ReceiveFunc) conn.ReceiveFunc {
 			m.mu.RLock()
 			out := 0
 			for i := 0; i < n; i++ {
+				if sizes[i] <= 0 || eps[i] == nil {
+					continue
+				}
 				b := bufs[i][:sizes[i]]
 				if typ, payload, ok := DecodeControlFrame(b); ok {
 					if p := m.bySource[eps[i].DstToString()]; p != nil {

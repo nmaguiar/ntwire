@@ -640,3 +640,29 @@ The in-tunnel WireGuard web portal:
   * `Referrer-Policy: no-referrer`
   * `Strict-Transport-Security: max-age=31536000; includeSubDomains`
   * `Cache-Control: no-store, no-cache, must-revalidate`
+
+## Security boundary enforcement
+
+Control request bodies have a per-request read deadline and are decoded before
+session lifecycle locking. WebSocket streams retain their independent lifetime.
+Data-plane lookups reject expired records even before cleanup runs.
+
+A dynamic WireGuard key is owned by its authenticated method, identity and OIDC
+issuer. Reconnect cannot claim another owner's key or a configured native key.
+Reload retires conflicting dynamic key/IP reservations before installing native
+peers, and policy attachment changes rebuild affected TCP, UDP and SOCKS runtimes.
+MASQUE uses the same destination authorization and exact-IP dialing as fixed tunnels.
+
+Native relay handshake routing state has a hard 4096-entry FIFO bound with
+constant-cost admission. Discovered Kubernetes routes share per-route pending/live
+limits and retain accounting until outstanding connections are released.
+
+Reusable GUI credentials stay out of browser-launch arguments. Browser fallback
+uses a private temporary document (0700 directory, 0600 file), removed after the
+startup window. The settings page retains query-token authentication and setup
+parameters, issues no authentication cookies, and rejects foreign-origin writes.
+
+Instruction templates allow field substitution, bounded `if`/`with` branches and
+simple comparisons/boolean operations. Loops, template calls, variable declarations
+and formatting functions are displayed literally. Output is capped during writing,
+and rendering runs after releasing the connection lock.

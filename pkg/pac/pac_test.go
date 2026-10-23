@@ -120,3 +120,14 @@ func TestPACPathForPlatform(t *testing.T) {
 		}
 	}
 }
+
+func TestPACQuotesHostAndDomainAsJavaScriptData(t *testing.T) {
+	hostile := `x"; return "PROXY attacker:80"; //`
+	content := Generate(hostile, 1080, []string{hostile, "line\nfeed"}, nil)
+	if strings.Contains(content, `return "PROXY attacker:80"`) {
+		t.Fatal("executable attacker return escaped its literal")
+	}
+	if !strings.Contains(content, `\"PROXY attacker:80\"`) || !strings.Contains(content, `line\nfeed`) {
+		t.Fatal("host/domain were not encoded as data")
+	}
+}

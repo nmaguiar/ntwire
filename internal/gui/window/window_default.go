@@ -2,15 +2,52 @@
 
 package window
 
-import "github.com/nmaguiar/ntwire/pkg/browseropen"
+import (
+	"fmt"
+	"html"
+	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"time"
+)
 
-// Run is the fallback used by every build that doesn't opt into the
-// native webview (see window_gui.go's `gui` build tag): it just opens url
-// in the default browser and returns immediately. There is no window to
-// keep this process alive for, so unlike the gui-tagged Run, this one
-// does not block -- the core process's Spawner still won't launch a
-// second child while this one is running, briefly, but a plain browser
-// tab needs no process of its own to stay open once opened.
-func Run(url string) error {
-	return browseropen.Open(url)
+var launchBootstrapFile = func(path string) error {
+	var command string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		command, args = "open", []string{path}
+	case "windows":
+		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", path}
+	default:
+		command, args = "xdg-open", []string{path}
+	}
+	return exec.Command(command, args...).Run()
+}
+
+// Run gives the browser a private local document, never a reusable credential
+// in argv. Other OS accounts can see the filename but cannot read the 0700
+// directory or 0600 document. Keep it briefly for asynchronous browser startup.
+func Run(target string) error {
+	parsed, err := url.Parse(target)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("invalid browser bootstrap URL")
+	}
+	dir, err := os.MkdirTemp("", "ntwire-browser-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "settings.html")
+	page := fmt.Sprintf(`<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=%s"><title>Opening ntwire settings</title>`, html.EscapeString(target))
+	if err := os.WriteFile(path, []byte(page), 0600); err != nil {
+		return err
+	}
+	if err := launchBootstrapFile(path); err != nil {
+		return err
+	}
+	time.Sleep(30 * time.Second)
+	return nil
 }

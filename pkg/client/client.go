@@ -2845,9 +2845,13 @@ func (c *Connection) DashboardURL() string {
 
 func (c *Connection) webInstructions() WebInstructionsList {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	granted := c.grantedByName()
-	out := WebInstructionsList{Tunnels: make([]WebInstructions, 0, len(c.tunnels))}
+	type renderJob struct {
+		wi   WebInstructions
+		data instructions.Data
+		text string
+	}
+	jobs := make([]renderJob, 0, len(c.tunnels))
 	for _, t := range c.tunnels {
 		g := granted[t.name]
 		wi := WebInstructions{Name: t.name}
@@ -2885,7 +2889,13 @@ func (c *Connection) webInstructions() WebInstructionsList {
 			data.PACURL = pac.URLForPlatform(c.base, t.name, false)
 			data.PACURLiOS = pac.URLForPlatform(c.base, t.name, true)
 		}
-		wi.Blocks = instructions.Render(g.Instructions, data)
+		jobs = append(jobs, renderJob{wi: wi, data: data, text: g.Instructions})
+	}
+	c.mu.Unlock()
+	out := WebInstructionsList{Tunnels: make([]WebInstructions, 0, len(jobs))}
+	for _, job := range jobs {
+		wi := job.wi
+		wi.Blocks = instructions.Render(job.text, job.data)
 		if wi.DocsURL == "" && len(wi.Blocks) == 0 {
 			continue
 		}
