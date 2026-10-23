@@ -138,10 +138,7 @@ func (b *UDPBind) recordBufferStatus(socket string, pc *net.UDPConn) {
 func makeUDPReceive(pc interface {
 	ReadBatch([]ipv6.Message, int) (int, error)
 }, udp *net.UDPConn) conn.ReceiveFunc {
-	msgs := make([]ipv6.Message, conn.IdealBatchSize)
-	for i := range msgs {
-		msgs[i].Buffers = make(net.Buffers, 1)
-	}
+	batch := makeUDPBatchReceive(pc)
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		if len(bufs) == 0 || len(bufs) > conn.IdealBatchSize || len(sizes) < len(bufs) || len(eps) < len(bufs) {
 			return 0, fmt.Errorf("invalid WireGuard UDP receive batch")
@@ -155,6 +152,23 @@ func makeUDPReceive(pc interface {
 			eps[0] = udpEndpoint{addr: addr.AddrPort()}
 			return 1, nil
 		}
+		return batch(bufs, sizes, eps)
+	}
+}
+
+// Keep batch decoding independent of the platform so its endpoint contract can
+// also be exercised on hosts that use ReadMsgUDP in production.
+func makeUDPBatchReceive(pc interface {
+	ReadBatch([]ipv6.Message, int) (int, error)
+}) conn.ReceiveFunc {
+	msgs := make([]ipv6.Message, conn.IdealBatchSize)
+	for i := range msgs {
+		msgs[i].Buffers = make(net.Buffers, 1)
+	}
+	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		if len(bufs) == 0 || len(bufs) > len(msgs) || len(sizes) < len(bufs) || len(eps) < len(bufs) {
+			return 0, fmt.Errorf("invalid WireGuard UDP receive batch")
+		}
 		for i := range bufs {
 			msgs[i].Buffers[0] = bufs[i]
 		}
@@ -164,9 +178,7 @@ func makeUDPReceive(pc interface {
 		}
 		for i := 0; i < n; i++ {
 			sizes[i] = msgs[i].N
-			if msgs[i].N > 0 {
-				eps[i] = udpEndpoint{addr: msgs[i].Addr.(*net.UDPAddr).AddrPort()}
-			}
+			eps[i] = udpEndpoint{addr: msgs[i].Addr.(*net.UDPAddr).AddrPort()}
 		}
 		return n, nil
 	}

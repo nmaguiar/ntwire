@@ -621,3 +621,15 @@ registering the candidate for that session's WireGuard public key. The server
 and client probe it before either scheduler selects it; WSS stays active as a
 candidate throughout. The endpoint returns `409 Conflict` when multipath was
 not negotiated.
+
+### Peer ownership and relay PAC metadata
+
+WireGuard public keys are compared by their canonical decoded 32-byte value.
+A live dynamic peer may be replaced only by the same authentication method,
+identity and OIDC issuer; keys configured for native peers cannot be claimed by
+dynamic authentication. Rejected claims preserve the existing session.
+
+Relay registration SOCKS target names must be nonempty and unique within that
+tenant, ports must be in range, and a supplied tunnel IP must be a concrete IP.
+Shared relay PAC requests select their namespace with `tenant`; ambiguous legacy
+requests return 404. Existing PAC platform aliases remain available.

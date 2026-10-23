@@ -23,12 +23,14 @@ type ForIssuerOptions struct {
 // interactive login (which also refreshes the cache) on any cache miss or
 // refresh failure.
 func TokensForIssuer(ctx context.Context, cache *Cache, serverURL string, issuer protocol.OIDCIssuerInfo, opts ForIssuerOptions) (Tokens, error) {
-	if e, ok := cache.Get(serverURL, issuer.Name); ok && e.RefreshToken != "" {
+	// Never release an old credential to mutable server-advertised metadata.
+	// Legacy unbound entries require a new login rather than implicit migration.
+	if e, ok := cache.Get(serverURL, issuer.Name); ok && e.RefreshToken != "" && e.IssuerURL == issuer.Issuer && e.ClientID == issuer.ClientID {
 		if tok, err := Refresh(ctx, issuer.Issuer, issuer.ClientID, opts.ClientSecret, e.RefreshToken, issuer.Scopes); err == nil {
 			if tok.RefreshToken == "" {
 				tok.RefreshToken = e.RefreshToken
 			}
-			_ = cache.Put(serverURL, issuer.Name, CacheEntry{RefreshToken: tok.RefreshToken, IDToken: tok.IDToken, Expiry: tok.Expiry})
+			_ = cache.Put(serverURL, issuer.Name, CacheEntry{IssuerURL: issuer.Issuer, ClientID: issuer.ClientID, RefreshToken: tok.RefreshToken, IDToken: tok.IDToken, Expiry: tok.Expiry})
 			return tok, nil
 		}
 	}
@@ -39,7 +41,7 @@ func TokensForIssuer(ctx context.Context, cache *Cache, serverURL string, issuer
 	if err != nil {
 		return Tokens{}, err
 	}
-	if err := cache.Put(serverURL, issuer.Name, CacheEntry{RefreshToken: tok.RefreshToken, IDToken: tok.IDToken, Expiry: tok.Expiry}); err != nil {
+	if err := cache.Put(serverURL, issuer.Name, CacheEntry{IssuerURL: issuer.Issuer, ClientID: issuer.ClientID, RefreshToken: tok.RefreshToken, IDToken: tok.IDToken, Expiry: tok.Expiry}); err != nil {
 		return Tokens{}, err
 	}
 	return tok, nil

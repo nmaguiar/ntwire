@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"sync"
 	"time"
 )
@@ -61,6 +62,9 @@ type CreateParams struct {
 }
 
 func (s *Sessions) Create(p CreateParams) Session {
+	if key, err := wgnet.CanonicalPublicKey(p.WireGuardPublicKey); err == nil {
+		p.WireGuardPublicKey = key
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v := Session{
@@ -77,6 +81,9 @@ func (s *Sessions) Create(p CreateParams) Session {
 // FindWireGuardPublicKey returns the live session using a WireGuard peer.
 // A reconnect replaces that session while retaining its tunnel address.
 func (s *Sessions) FindWireGuardPublicKey(key string) (Session, bool) {
+	if canonical, err := wgnet.CanonicalPublicKey(key); err == nil {
+		key = canonical
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -84,7 +91,11 @@ func (s *Sessions) FindWireGuardPublicKey(key string) (Session, bool) {
 		if now.After(v.Expires) {
 			continue
 		}
-		if key != "" && v.WireGuardPublicKey == key {
+		existing := v.WireGuardPublicKey
+		if canonical, err := wgnet.CanonicalPublicKey(existing); err == nil {
+			existing = canonical
+		}
+		if key != "" && existing == key {
 			return v, true
 		}
 	}

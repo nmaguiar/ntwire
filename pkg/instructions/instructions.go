@@ -11,8 +11,11 @@ package instructions
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"strings"
 	"text/template"
+	"text/template/parse"
 
 	"github.com/nmaguiar/ntwire/pkg/portal"
 )
@@ -113,8 +116,11 @@ func expand(text string, data Data) string {
 	if err != nil {
 		return text
 	}
-	var out bytes.Buffer
-	if err := t.Execute(&out, data); err != nil {
+	if !safeTemplate(t.Tree.Root, 0) {
+		return text
+	}
+	out := &boundedOutput{}
+	if err := t.Execute(out, data); err != nil && !errors.Is(err, errOutputLimit) {
 		return text
 	}
 	return out.String()
@@ -130,4 +136,73 @@ func SafeURL(raw string) bool {
 	}
 	l := strings.ToLower(s)
 	return strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://")
+}
+
+var errOutputLimit = errors.New("instruction output limit")
+
+type boundedOutput struct{ bytes.Buffer }
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	remaining := maxSize - b.Len()
+	if len(p) > remaining {
+		n, _ := b.Buffer.Write(p[:remaining])
+		return n, errOutputLimit
+	}
+	return b.Buffer.Write(p)
+}
+
+var _ io.Writer = (*boundedOutput)(nil)
+
+// Templates are declarative presentation, not a general computation engine.
+// Reject loops, allocation-producing functions and recursive definitions before
+// execution, including constructs that could consume CPU without writing output.
+func safeTemplate(n parse.Node, depth int) bool {
+	if depth > 32 {
+		return false
+	}
+	switch v := n.(type) {
+	case *parse.ListNode:
+		if v == nil {
+			return true
+		}
+		for _, child := range v.Nodes {
+			if !safeTemplate(child, depth+1) {
+				return false
+			}
+		}
+		return true
+	case *parse.TextNode, *parse.FieldNode, *parse.DotNode, *parse.StringNode, *parse.NumberNode, *parse.BoolNode, *parse.NilNode:
+		return true
+	case *parse.ActionNode:
+		return safeTemplate(v.Pipe, depth+1)
+	case *parse.IfNode:
+		return safeTemplate(v.Pipe, depth+1) && safeTemplate(v.List, depth+1) && safeTemplate(v.ElseList, depth+1)
+	case *parse.WithNode:
+		return safeTemplate(v.Pipe, depth+1) && safeTemplate(v.List, depth+1) && safeTemplate(v.ElseList, depth+1)
+	case *parse.PipeNode:
+		if len(v.Decl) != 0 {
+			return false
+		}
+		for _, command := range v.Cmds {
+			if !safeTemplate(command, depth+1) {
+				return false
+			}
+		}
+		return true
+	case *parse.CommandNode:
+		for _, arg := range v.Args {
+			if !safeTemplate(arg, depth+1) {
+				return false
+			}
+		}
+		return true
+	case *parse.IdentifierNode:
+		switch v.Ident {
+		case "eq", "ne", "lt", "le", "gt", "ge", "and", "or", "not", "len":
+			return true
+		}
+		return false
+
+	}
+	return false
 }

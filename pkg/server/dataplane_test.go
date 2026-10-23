@@ -398,6 +398,7 @@ func echoUpstream(t *testing.T) netip.AddrPort {
 // passes the same gate a real connection would.
 func newSocksProxyCall(t *testing.T, s *Server, tunnel TunnelConfig, tunnelIP string) net.Conn {
 	t.Helper()
+	s.Config.Tunnels = append(s.Config.Tunnels, tunnel)
 	tl := &tunnelListener{config: tunnel, socks: s.newSocksRuntime(tunnel)}
 	if tl.socks == nil {
 		t.Fatal("newSocksRuntime returned nil")
@@ -555,6 +556,7 @@ func TestProxySocksUpstreamSocks5hPreservesHostname(t *testing.T) {
 		Name: "egress", Target: "socks", VirtualPort: 11083, Allow: []string{"*"},
 		Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true, Upstream: "socks5h://" + upstream.Addr().String()},
 	}
+	s.Config.Tunnels = append(s.Config.Tunnels, tunnel)
 	runtime := s.newSocksRuntime(tunnel)
 	if runtime == nil {
 		t.Fatal("newSocksRuntime returned nil")
@@ -630,6 +632,7 @@ func TestProxySocksRejectsUnauthorizedTunnelIP(t *testing.T) {
 		Name: "egress", Target: "socks", VirtualPort: 11082, Allow: []string{"*"},
 		Socks: &SocksConfig{AllowAll: true, AllowLocalEgress: true},
 	}
+	s.Config.Tunnels = append(s.Config.Tunnels, tunnel)
 	tl := &tunnelListener{config: tunnel, socks: s.newSocksRuntime(tunnel)}
 	// Deliberately do not register a session for this tunnel IP: the
 	// allowedIP gate (shared with the fixed-target path) must still apply

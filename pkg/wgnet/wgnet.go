@@ -136,6 +136,16 @@ func ValidatePublicKey(publicKey string) error {
 	return nil
 }
 
+// CanonicalPublicKey returns the unique base64 representation used for peer
+// ownership. DecodeString accepts line breaks, which must not create aliases.
+func CanonicalPublicKey(key string) (string, error) {
+	raw, err := decodeKey(key)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
 // PublicKeyFromPrivate derives the base64-encoded WireGuard public key from
 // a base64-encoded private key.
 func PublicKeyFromPrivate(privateKey string) (string, error) {

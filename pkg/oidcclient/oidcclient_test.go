@@ -440,3 +440,41 @@ func TestTokensForIssuerUsesCacheThenRefreshesThenLogsIn(t *testing.T) {
 		t.Fatalf("second = %+v", second)
 	}
 }
+
+func TestTokensForIssuerNeverSendsMismatchedOrLegacyRefreshToken(t *testing.T) {
+	for _, variant := range []string{"issuer", "client", "legacy"} {
+		t.Run(variant, func(t *testing.T) {
+			var refreshCalls int
+			var provider *httptest.Server
+			provider = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/openid-configuration" {
+					json.NewEncoder(w).Encode(map[string]any{"issuer": provider.URL, "authorization_endpoint": provider.URL + "/auth", "token_endpoint": provider.URL + "/token", "jwks_uri": provider.URL + "/keys"})
+					return
+				}
+				if r.URL.Path == "/token" {
+					refreshCalls++
+				}
+				http.Error(w, "no login", 400)
+			}))
+			defer provider.Close()
+			cache, _ := openCache(t.TempDir()+"/cache", nil)
+			entry := CacheEntry{RefreshToken: "must-not-leave-cache", IssuerURL: provider.URL, ClientID: "client"}
+			switch variant {
+			case "issuer":
+				entry.IssuerURL = "https://original.example"
+			case "client":
+				entry.ClientID = "original-client"
+			case "legacy":
+				entry.IssuerURL = ""
+				entry.ClientID = ""
+			}
+			if err := cache.Put("https://server", "test", entry); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = TokensForIssuer(context.Background(), cache, "https://server", protocol.OIDCIssuerInfo{Name: "test", Issuer: provider.URL, ClientID: "client"}, ForIssuerOptions{NoBrowser: true})
+			if refreshCalls != 0 {
+				t.Fatal("cached credential was sent to a different or unbound recipient")
+			}
+		})
+	}
+}

@@ -92,7 +92,9 @@ func (s *Server) destinationAllowed(ctx context.Context, principal DataPlanePrin
 		if name == "" {
 			continue
 		}
+		s.mu.Lock()
 		p, ok := s.policies[name]
+		s.mu.Unlock()
 		if !ok {
 			return false
 		}

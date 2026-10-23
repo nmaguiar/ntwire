@@ -88,8 +88,10 @@ func TestRenderCapsSize(t *testing.T) {
 	}
 	// A template can expand far past its own length, so the cap has to apply
 	// to the result as well as the source.
-	bomb := `{{define "x"}}` + strings.Repeat("a", 900) + `{{end}}` + strings.Repeat(`{{template "x"}}`, 200)
-	if b := Render(bomb, data()); len(b[0].Spans[0].Text) != maxSize {
+	d := data()
+	d.Description = strings.Repeat("a", 900)
+	src := strings.Repeat(`{{.Description}}`, 200)
+	if b := Render(src, d); len(b[0].Spans[0].Text) != maxSize {
 		t.Fatalf("output cap: got %d bytes, want %d", len(b[0].Spans[0].Text), maxSize)
 	}
 }
@@ -168,5 +170,23 @@ func TestUnsafeLinksStayLiteral(t *testing.T) {
 		if !SafeURL(raw) {
 			t.Errorf("SafeURL(%q) = false", raw)
 		}
+	}
+}
+
+func TestRenderRejectsComputationalTemplates(t *testing.T) {
+	for _, src := range []string{
+		`{{range 1000000000}}x{{end}}`,
+		`{{range 1000000000}}{{end}}`,
+		`{{printf "%1000000000s" "x"}}`,
+		`{{define "x"}}{{template "x"}}{{end}}{{template "x"}}`,
+		`{{define "x"}}hello{{end}}{{template "x"}}`,
+		`{{.Name | printf "%1000000000s"}}`,
+	} {
+		if got := expand(src, data()); got != src {
+			t.Fatalf("unsafe template was evaluated: %q", src)
+		}
+	}
+	if got := expand(`{{if eq .Name "reports"}}{{.Client.OS}}:{{.LocalPort}}{{else}}bad{{end}}`, data()); got != ":58080" {
+		t.Fatalf("declarative control = %q", got)
 	}
 }

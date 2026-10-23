@@ -1144,6 +1144,12 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			return c, fmt.Errorf("duplicate native WireGuard peer name %q", peer.Name)
 		}
 		seenPeerNames[peer.Name] = true
+		canonical, err := wgnet.CanonicalPublicKey(peer.PublicKey)
+		if err != nil {
+			return c, fmt.Errorf("%s.public_key: %w", where, err)
+		}
+		peer.PublicKey = canonical
+		c.NativeWireGuard.Peers[i].PublicKey = canonical
 		if seenPeerKeys[peer.PublicKey] {
 			return c, fmt.Errorf("duplicate native WireGuard public key")
 		}
@@ -1162,6 +1168,7 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 			return c, fmt.Errorf("duplicate native WireGuard tunnel IP %q", ip)
 		}
 		seenPeerIPs[ip.String()] = true
+		c.NativeWireGuard.Peers[i].TunnelIP = ip.String()
 		if peer.DestinationPolicy != "" {
 			if _, ok := c.DestinationPolicies[peer.DestinationPolicy]; !ok {
 				return c, fmt.Errorf("%s.destination_policy references unknown policy %q", where, peer.DestinationPolicy)

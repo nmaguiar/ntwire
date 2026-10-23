@@ -112,7 +112,10 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 		ASNLookup: s.asn,
 		Authorize: func(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) bool {
 			principal, ok := principalFromContext(ctx)
-			return ok && s.destinationAllowed(ctx, principal, t, hostname, ip, port, protocol)
+			// Accepted SOCKS sockets can outlive their listener across reload.
+			// Resolve the attachment for every new destination command.
+			current, exists := s.tunnelConfig(t.Name)
+			return ok && exists && current.IsSocks() && s.destinationAllowed(ctx, principal, current, hostname, ip, port, protocol)
 		},
 		DNSTimeout:         sc.DNSTimeout,
 		AllowBind:          sc.AllowBind,
@@ -467,7 +470,7 @@ func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
 	var toOpen []TunnelConfig
 	for name, tl := range d.listeners {
 		nt, ok := wanted[name]
-		if !ok || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target || nt.Protocol != tl.config.Protocol || nt.UDPIdleTimeout != tl.config.UDPIdleTimeout ||
+		if !ok || nt.DestinationPolicy != tl.config.DestinationPolicy || nt.VirtualPort != tl.config.VirtualPort || nt.Target != tl.config.Target || nt.Protocol != tl.config.Protocol || nt.UDPIdleTimeout != tl.config.UDPIdleTimeout ||
 			socksConfigChanged(nt.Socks, tl.config.Socks) {
 			toClose = append(toClose, tl)
 			delete(d.listeners, name)
@@ -914,8 +917,10 @@ func principalFromContext(ctx context.Context) (DataPlanePrincipal, bool) {
 }
 
 func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, v := range s.sessions.All() {
-		if v.TunnelIP == ip {
+		if time.Now().Before(v.Expires) && v.TunnelIP == ip {
 			addr, _ := netip.ParseAddr(ip)
 			grants := map[string]bool{}
 			for _, t := range v.Tunnels {
@@ -952,10 +957,17 @@ func (s *Server) dialFixedTarget(principal DataPlanePrincipal, t TunnelConfig) (
 	return s.dialTarget(principal, t, t.Target)
 }
 
+func (s *Server) dialFixedTargetContext(ctx context.Context, principal DataPlanePrincipal, t TunnelConfig) (net.Conn, error) {
+	return s.dialTargetContext(ctx, principal, t, t.Target)
+}
+
 // dialTarget resolves once, evaluates the selected address, then dials that
 // exact TCP target. Transparent SOCKS uses it to protect the configured
 // upstream endpoint while leaving destinations inside SOCKS opaque.
 func (s *Server) dialTarget(principal DataPlanePrincipal, t TunnelConfig, target string) (net.Conn, error) {
+	return s.dialTargetContext(context.Background(), principal, t, target)
+}
+func (s *Server) dialTargetContext(ctx context.Context, principal DataPlanePrincipal, t TunnelConfig, target string) (net.Conn, error) {
 	host, portText, err := net.SplitHostPort(target)
 	if err != nil {
 		return nil, err
@@ -966,20 +978,20 @@ func (s *Server) dialTarget(principal DataPlanePrincipal, t TunnelConfig, target
 	}
 	port := uint16(port64)
 	if ip, err := netip.ParseAddr(host); err == nil {
-		if !s.destinationAllowed(context.Background(), principal, t, "", ip, port, "tcp") {
+		if !s.destinationAllowed(ctx, principal, t, "", ip, port, "tcp") {
 			return nil, fmt.Errorf("destination policy denied")
 		}
-		return net.DialTimeout("tcp", netip.AddrPortFrom(ip.Unmap(), port).String(), 10*time.Second)
+		return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", netip.AddrPortFrom(ip.Unmap(), port).String())
 	}
-	addrs, err := net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}
 	for _, ip := range addrs {
-		if !s.destinationAllowed(context.Background(), principal, t, host, ip, port, "tcp") {
+		if !s.destinationAllowed(ctx, principal, t, host, ip, port, "tcp") {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", netip.AddrPortFrom(ip.Unmap(), port).String(), 10*time.Second)
+		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", netip.AddrPortFrom(ip.Unmap(), port).String())
 		if err == nil {
 			return conn, nil
 		}

@@ -621,3 +621,35 @@ func TestBrowserProfilesListAndClean(t *testing.T) {
 		t.Errorf("lockedDir should still exist on disk, stat err = %v", err)
 	}
 }
+
+func TestBrowserBootstrapPreservesSetupAndQueryAuthentication(t *testing.T) {
+	s := newTestServer(t)
+	resp, err := http.Get(s.URL() + "&setup=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Request.URL.Query().Get("setup") != "1" || len(resp.Cookies()) != 0 {
+		t.Fatalf("bootstrap lost setup or issued cookies: %d %s", resp.StatusCode, resp.Request.URL)
+	}
+	req, _ := http.NewRequest("PUT", "http://"+s.Addr()+"/api/settings?token="+s.Token(), strings.NewReader(`{}`))
+	req.Header.Set("Origin", "https://evil.example")
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 403 {
+		t.Fatal("foreign-origin write allowed")
+	}
+	req, _ = http.NewRequest("GET", "http://"+s.Addr()+"/api/version", nil)
+	req.AddCookie(&http.Cookie{Name: "ntwire_gui", Value: s.Token()})
+	response, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != 404 {
+		t.Fatal("host-wide cookie authenticates API")
+	}
+}

@@ -92,6 +92,12 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 			http.NotFound(w, r)
 			return
 		}
+		if origin := r.Header.Get("Origin"); r.Method != http.MethodGet && r.Method != http.MethodHead && origin != "" && origin != "http://"+r.Host {
+			http.Error(w, "foreign origin", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cache-Control", "no-store")
 		next(w, r)
 	}
 }

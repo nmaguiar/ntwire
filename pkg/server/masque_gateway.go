@@ -73,7 +73,7 @@ func (g *MASQUEGateway) connect(w http.ResponseWriter, r *http.Request) {
 	}
 	g.server.observe("masque_connect", session.Method)
 	g.server.audit("masque_connect", session, "allowed", 0)
-	out, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(r.Context(), "tcp", tunnel.Target)
+	out, err := g.server.dialFixedTargetContext(r.Context(), DataPlanePrincipal{Method: session.Method, Identity: session.Identity}, tunnel)
 	if err != nil {
 		http.Error(w, "relay target unavailable", http.StatusBadGateway)
 		return

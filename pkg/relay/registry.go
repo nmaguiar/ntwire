@@ -119,25 +119,27 @@ type Handoff struct {
 // listener (registration, RelayOpen push, data-conn redemption) and the
 // public listener (minting conn_ids and awaiting their redemption).
 type Registry struct {
-	mu            sync.Mutex
-	byFingerprint map[string]Registration
-	tenants       map[string]*tenantState
-	pending       map[string]*pendingConn
-	nonces        *authlimit.NonceCache
-	kubernetes    map[string]ServerEndpoint
-	conflicts     map[string]map[string]ServerEndpoint
-	limits        Limits
+	mu              sync.Mutex
+	byFingerprint   map[string]Registration
+	tenants         map[string]*tenantState
+	pending         map[string]*pendingConn
+	nonces          *authlimit.NonceCache
+	kubernetes      map[string]ServerEndpoint
+	conflicts       map[string]map[string]ServerEndpoint
+	limits          Limits
+	discoveredUsage map[string]*tenantState
 }
 
 func NewRegistry(registrations []Registration, limits Limits) *Registry {
 	r := &Registry{
-		byFingerprint: map[string]Registration{},
-		tenants:       map[string]*tenantState{},
-		pending:       map[string]*pendingConn{},
-		nonces:        authlimit.NewNonceCache(5*time.Minute, maxNonces),
-		kubernetes:    map[string]ServerEndpoint{},
-		conflicts:     map[string]map[string]ServerEndpoint{},
-		limits:        limits,
+		byFingerprint:   map[string]Registration{},
+		tenants:         map[string]*tenantState{},
+		pending:         map[string]*pendingConn{},
+		nonces:          authlimit.NewNonceCache(5*time.Minute, maxNonces),
+		kubernetes:      map[string]ServerEndpoint{},
+		conflicts:       map[string]map[string]ServerEndpoint{},
+		limits:          limits,
+		discoveredUsage: map[string]*tenantState{},
 	}
 	for _, reg := range registrations {
 		r.byFingerprint[sshkey.Fingerprint(reg.PublicKey)] = reg
@@ -376,12 +378,37 @@ func (r *Registry) OpenSNI(ctx context.Context, tenant, hostname, clientAddr, sn
 		return c, tenant, err
 	}
 	if found {
+		// A separate namespace prevents discovered hostname counters from
+		// colliding with authenticated outbound tenant names.
+		key := "kubernetes:" + ep.Hostname
+		r.mu.Lock()
+		usage := r.discoveredUsage[key]
+		if usage == nil {
+			usage = &tenantState{}
+			r.discoveredUsage[key] = usage
+		}
+		if (r.limits.MaxPendingPerServer > 0 && usage.pending >= r.limits.MaxPendingPerServer) ||
+			(r.limits.MaxConnsPerServer > 0 && usage.pending+usage.live >= r.limits.MaxConnsPerServer) {
+			r.mu.Unlock()
+			return nil, key, ErrTenantAtCapacity
+		}
+		usage.pending++
+		r.mu.Unlock()
 		var d net.Dialer
 		c, err := d.DialContext(ctx, "tcp", ep.Address)
-		if err != nil {
-			return nil, ep.Hostname, fmt.Errorf("dial Kubernetes service %s/%s: %w", ep.Namespace, ep.Service, err)
+		r.mu.Lock()
+		usage.pending--
+		if err == nil {
+			usage.live++
 		}
-		return c, ep.Hostname, nil
+		if usage.live+usage.pending == 0 {
+			delete(r.discoveredUsage, key)
+		}
+		r.mu.Unlock()
+		if err != nil {
+			return nil, key, fmt.Errorf("dial Kubernetes service %s/%s: %w", ep.Namespace, ep.Service, err)
+		}
+		return c, key, nil
 	}
 	if tenant == "" {
 		return nil, "", ErrTenantUnknown
@@ -403,7 +430,16 @@ func drainPending(ch chan net.Conn) {
 func (r *Registry) Release(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if t := r.tenants[name]; t != nil {
+	if usage := r.discoveredUsage[name]; usage != nil {
+		if usage.live > 0 {
+			usage.live--
+		}
+		if usage.live+usage.pending == 0 {
+			delete(r.discoveredUsage, name)
+		}
+		return
+	}
+	if t := r.tenants[name]; t != nil && t.live > 0 {
 		t.live--
 	}
 }
