@@ -187,3 +187,8 @@ explicit administrator authorization action. See [Client updates](UPDATES.md)
 for the preferences, screenshot, signing setup, recovery, and platform acceptance
 checklist. Production updating remains unavailable until a public key and release
 signing secret have been provisioned.
+
+For supported key formats, invalid-key warnings, and safe conversion examples,
+see [Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).
+The key picker validates the selected file before importing it. Encrypted keys
+are checked fully after you enter their passphrase.

@@ -20,6 +20,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
 
 // fakeConnector never touches the network; every Connect call succeeds
@@ -414,7 +415,15 @@ func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write([]byte("selected private key")); err != nil {
+	source := filepath.Join(t.TempDir(), "source")
+	if _, err := sshkey.GenerateIdentityFile(source); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(original); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -436,7 +445,7 @@ func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
 	}
 	result := decode[map[string]string](t, resp)
 	key, err := os.ReadFile(result["path"])
-	if err != nil || string(key) != "selected private key" {
+	if err != nil || !bytes.Equal(key, original) {
 		t.Fatalf("imported key = %q, %v", key, err)
 	}
 }

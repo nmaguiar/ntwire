@@ -170,6 +170,46 @@ func TestConnectWithUnknownCertificateThenRejectFails(t *testing.T) {
 	}
 }
 
+func TestConnectWithForcedSSOIgnoresIdentity(t *testing.T) {
+	for _, kind := range []string{"missing", "invalid", "encrypted"} {
+		t.Run(kind, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "identity")
+			switch kind {
+			case "invalid":
+				if err := os.WriteFile(keyPath, []byte("invalid private key"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "encrypted":
+				writeRealEncryptedKey(t, keyPath, "s3cret")
+			}
+			options := make(chan client.Options, 1)
+			fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
+				options <- opts
+				return &fakeHandle{}, nil
+			}}
+			m, _ := newTestManager(t, fc)
+			p, err := m.AddProfile(config.Profile{Name: "sso", Server: "https://home.example:8443", SSO: true, IdentityFile: keyPath})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := m.Connect(p.ID); err != nil {
+				t.Fatal(err)
+			}
+			snap := waitForState(t, m, p.ID, StateConnected, 5*time.Second)
+			if snap.Prompt != nil {
+				t.Fatalf("unexpected prompt: %+v", snap.Prompt)
+			}
+			opts := <-options
+			if !opts.SSO || opts.KeyPassphrase != "" {
+				t.Fatalf("SSO = %v, passphrase supplied = %v", opts.SSO, opts.KeyPassphrase != "")
+			}
+			if fc.callCount() != 1 {
+				t.Errorf("connector called %d times, want 1", fc.callCount())
+			}
+		})
+	}
+}
+
 func TestConnectWithEncryptedKeyPromptsForPassphrase(t *testing.T) {
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "id")
@@ -487,7 +527,15 @@ func TestGenerateIdentityWritesKeyAndReturnsFingerprint(t *testing.T) {
 
 func TestImportIdentityCopiesToPrivateGUIStorage(t *testing.T) {
 	m, guiPath := newTestManager(t, &fakeConnector{})
-	path, err := m.ImportIdentity("id_ed25519", bytes.NewBufferString("private key bytes"))
+	source := filepath.Join(t.TempDir(), "source")
+	if _, err := sshkey.GenerateIdentityFile(source); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := m.ImportIdentity("id_ed25519", bytes.NewReader(original))
 	if err != nil {
 		t.Fatalf("ImportIdentity() error = %v", err)
 	}
@@ -495,7 +543,7 @@ func TestImportIdentityCopiesToPrivateGUIStorage(t *testing.T) {
 		t.Fatalf("ImportIdentity() path = %q, want it below %q", path, filepath.Dir(guiPath))
 	}
 	b, err := os.ReadFile(path)
-	if err != nil || string(b) != "private key bytes" {
+	if err != nil || !bytes.Equal(b, original) {
 		t.Fatalf("imported key = %q, %v", b, err)
 	}
 	info, err := os.Stat(path)
@@ -602,5 +650,19 @@ func TestConnectWithEncryptedPPKPromptsForPassphrase(t *testing.T) {
 	waitForState(t, m, p.ID, StateConnected, 5*time.Second)
 	if gotPassphrase != "s3cret" {
 		t.Errorf("client.Options.KeyPassphrase = %q, want %q", gotPassphrase, "s3cret")
+	}
+}
+
+func TestImportIdentityRejectsInvalidKey(t *testing.T) {
+	m, guiPath := newTestManager(t, &fakeConnector{})
+	if _, err := m.ImportIdentity("invalid", strings.NewReader("not a private key")); err == nil || !strings.Contains(err.Error(), "conversion") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(filepath.Dir(guiPath), "identities"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatal("invalid key left in storage")
 	}
 }
