@@ -10,6 +10,8 @@
 package window
 
 import (
+	"errors"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -20,8 +22,10 @@ import (
 // separate, non-trivial problem), but at minimum a second click on
 // "Settings…" must not spawn a second window process.
 type Spawner struct {
-	mu   sync.Mutex
-	done chan struct{} // non-nil and open while a child is running
+	closed  bool
+	process *os.Process
+	mu      sync.Mutex
+	done    chan struct{} // non-nil and open while a child is running
 }
 
 // commandContext lets tests substitute a fake child process; production
@@ -36,6 +40,9 @@ func (s *Spawner) Open(command string, args []string, extraEnv []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if s.closed {
+		return errors.New("settings window is closing")
+	}
 	if s.running() {
 		return nil
 	}
@@ -46,6 +53,7 @@ func (s *Spawner) Open(command string, args []string, extraEnv []string) error {
 		return err
 	}
 
+	s.process = cmd.Process
 	done := make(chan struct{})
 	s.done = done
 	go func() {
@@ -75,4 +83,18 @@ func (s *Spawner) Running() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.running()
+}
+
+// Close releases the settings executable before a complete bundle replacement.
+func (s *Spawner) Close() {
+	s.mu.Lock()
+	s.closed = true
+	if !s.running() {
+		s.mu.Unlock()
+		return
+	}
+	p, done := s.process, s.done
+	s.mu.Unlock()
+	_ = p.Kill()
+	<-done
 }

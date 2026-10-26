@@ -33,3 +33,13 @@ log/artifact link. Classify results precisely:
 Do not include private keys, bearer tokens, OIDC tokens, generated credentials,
 or unredacted configuration in the record. Docker E2E diagnostics can contain
 deployment detail; review them before attaching them to a ticket or release.
+
+## Signed client update manifest
+
+Provision `NTWIRE_UPDATE_SIGNING_KEY` (Actions secret) and
+`NTWIRE_UPDATE_PUBLIC_KEY` (Actions variable) before enabling production client
+updates. The final manifest job depends on all client archives, including the
+native macOS GUI bundle; existing checksums remain unchanged. See
+[UPDATES.md](UPDATES.md#release-signing-setup) for key generation, rotation and the
+required per-OS manual acceptance checks. An unprovisioned release remains
+installable through existing installers but unavailable to the self-updaters.

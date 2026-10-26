@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ntwire settings</title>
 <style>
+[hidden]{display:none!important}
 :root{color-scheme:light dark;--bg:#f7f9fc;--panel:#fff;--panel-2:#eef4ff;--text:#162033;--muted:#607089;--brand:#246bfe;--brand-strong:#174fc5;--accent:#10a37f;--danger:#c2410c;--danger-strong:#9a3412;--border:#d9e2f1;--shadow:0 20px 60px rgba(22,32,51,.12)}
 @media (prefers-color-scheme:dark){:root{--bg:#0b1120;--panel:#111a2e;--panel-2:#15223a;--text:#edf4ff;--muted:#9fb0ca;--brand:#79a7ff;--brand-strong:#a9c5ff;--accent:#4ade80;--danger:#fb923c;--danger-strong:#fdba74;--border:#263753;--shadow:0 20px 60px rgba(0,0,0,.35)}}
 *{box-sizing:border-box}
@@ -83,6 +84,22 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   </section>
 
   <div id="regular-settings">
+  <section class="panel" id="updates-panel">
+    <h2>Application updates</h2>
+    <p id="update-version">Loading update status…</p>
+    <label class="toggle"><input type="checkbox" id="update-checks">Check for updates automatically</label>
+    <label class="toggle"><input type="checkbox" id="update-automatic">Download and verify updates automatically; install when I quit</label>
+    <p class="help">Updates apply to this app only. Quitting disconnects tunnels. The app will be ready on your next launch.</p>
+    <p id="update-status" role="status"></p>
+    <progress id="update-progress" class="hidden" max="1" value="0"></progress>
+    <pre id="update-notes" style="white-space:pre-wrap;max-height:14rem;overflow:auto"></pre>
+    <div class="row">
+      <button class="secondary" id="update-check-btn">Check now</button>
+      <button id="update-download-btn" hidden>Download update</button>
+      <button id="update-install-btn" hidden>Quit and install</button>
+      <button id="update-admin-btn" hidden>Authorize administrator install and quit…</button>
+    </div>
+  </section>
   <section class="panel">
     <h2>👤 Profiles</h2>
     <div id="profiles" class="empty">Loading…</div>
@@ -122,6 +139,47 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 <div id="modal-root"></div>
 
 <script>
+let updateStatus = null;
+async function refreshUpdates() {
+  try {
+    const data = await api('GET', '/api/updates');
+    const s = data.status; updateStatus = s;
+    document.getElementById('update-checks').checked = !data.preferences.disabled;
+    document.getElementById('update-automatic').checked = data.preferences.automatic;
+    document.getElementById('update-version').textContent = 'Current: ' + s.current + (s.latest ? ' · Latest: ' + s.latest : '');
+    document.getElementById('update-status').textContent = s.installation_error || s.error || s.limitation || (s.busy ? s.busy + '…' : s.ready ? (s.needs_admin ? 'Ready. Administrator authorization is required to install.' : 'Ready to install when you quit.') : s.available ? 'An update is available.' : s.last_check && !s.last_check.startsWith('0001') ? 'Up to date. Last checked: ' + new Date(s.last_check).toLocaleString() : 'No successful check yet.');
+    document.getElementById('update-notes').textContent = s.notes || '';
+    const progress = document.getElementById('update-progress');
+    progress.classList.toggle('hidden', s.busy !== 'downloading');
+    progress.max = s.total || 1; progress.value = s.downloaded;
+    document.getElementById('update-check-btn').disabled = !!s.busy;
+    document.getElementById('update-download-btn').hidden = !s.available || s.ready || !!s.limitation;
+    document.getElementById('update-download-btn').disabled = !!s.busy;
+    document.getElementById('update-install-btn').hidden = !s.ready || s.needs_admin;
+    document.getElementById('update-admin-btn').hidden = !s.ready || !s.needs_admin;
+  } catch (e) { document.getElementById('update-status').textContent = e.message; }
+}
+async function updateAction(path, body) {
+  try { await api('POST', '/api/updates/' + path, body || {}); await refreshUpdates(); }
+  catch (e) { document.getElementById('update-status').textContent = e.message; }
+}
+document.getElementById('update-check-btn').onclick = () => updateAction('check');
+document.getElementById('update-download-btn').onclick = () => updateAction('download');
+async function quitInstall(elevate) {
+  if (!confirm('Quit and install the update? Any active tunnels will disconnect. The app will not restart automatically.' + (elevate ? ' Your operating system will ask for administrator authorization.' : ''))) return;
+  await updateAction('install', {confirmed: true, elevate});
+}
+document.getElementById('update-install-btn').onclick = () => quitInstall(false);
+document.getElementById('update-admin-btn').onclick = () => quitInstall(true);
+async function saveUpdatePreferences() {
+  try { await api('PUT', '/api/updates/preferences', {disabled: !document.getElementById('update-checks').checked, automatic: document.getElementById('update-automatic').checked}); await refreshUpdates(); }
+  catch(e) { document.getElementById('update-status').textContent = e.message; }
+}
+document.getElementById('update-checks').onchange = saveUpdatePreferences;
+document.getElementById('update-automatic').onchange = saveUpdatePreferences;
+setInterval(refreshUpdates, 3000);
+// Defer until the page's API helper and query-token binding are initialized.
+setTimeout(refreshUpdates, 0);
 const token = new URLSearchParams(location.search).get('token');
 const messageEl = document.getElementById('message');
 const profilesEl = document.getElementById('profiles');

@@ -31,11 +31,12 @@ func ClientCommand() Command {
 				IsFilePath: o.Widget == clientopts.WidgetPath,
 			})
 		}
-		subcmds = append(subcmds, Command{
-			Name:    sc.name,
-			Summary: sc.summary,
-			Flags:   flags,
-		})
+		subcmds = append(subcmds,
+			Command{Name: "update", Summary: "check for or install a signed stable client update", Flags: []Flag{{Name: "check", Usage: "check without downloading"}, {Name: "yes", Usage: "install without confirmation"}}}, Command{
+				Name:    sc.name,
+				Summary: sc.summary,
+				Flags:   flags,
+			})
 	}
 
 	subcmds = append(subcmds,
@@ -51,7 +52,7 @@ func ClientCommand() Command {
 		Command{
 			Name:       "help",
 			Summary:    "show help for a command",
-			ArgChoices: []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"},
+			ArgChoices: []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
 		},
 	)
 

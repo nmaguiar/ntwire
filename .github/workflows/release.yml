@@ -33,7 +33,7 @@ jobs:
           distribution: goreleaser
           version: "~> v2"
           args: release --clean
-        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}", NTWIRE_UPDATE_PUBLIC_KEY: "${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}"}
   # ntwire-gui's darwin build is not part of the `binaries` job above:
   # internal/gui/tray needs Cocoa cgo there, which the ubuntu-hosted
   # goreleaser job has no macOS SDK to cross-compile against (see
@@ -57,9 +57,10 @@ jobs:
       - name: Build
         env:
           GOARCH: ${{ matrix.arch }}
+          NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
         run: |
           mkdir -p dist
-          go build -ldflags "-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version=${GITHUB_REF_NAME#v}" \
+          go build -ldflags "-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version=${GITHUB_REF_NAME#v} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey=${NTWIRE_UPDATE_PUBLIC_KEY}" \
             -o dist/ntwire-gui ./cmd/ntwire-gui
       - name: Assemble .app bundle
         run: |
@@ -78,6 +79,31 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" --clobber
           gh release upload "${GITHUB_REF_NAME}" dist/checksums.txt --clobber
+
+  update-manifest:
+    needs: [binaries, gui-darwin]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: {go-version: stable}
+      - name: Finalize signed client update manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NTWIRE_UPDATE_SIGNING_KEY: ${{ secrets.NTWIRE_UPDATE_SIGNING_KEY }}
+          NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
+        run: |
+          if [ -z "$NTWIRE_UPDATE_SIGNING_KEY" ] || [ -z "$NTWIRE_UPDATE_PUBLIC_KEY" ]; then
+            echo "::notice::Update signing is not provisioned; this release is unavailable to self-updaters."
+            exit 0
+          fi
+          mkdir -p update-assets
+          gh release download "$GITHUB_REF_NAME" --pattern 'ntwire_*.tar.gz' --pattern 'ntwire_*.zip' --pattern 'ntwire-gui_*.tar.gz' --pattern 'ntwire-gui_*.zip' --dir update-assets
+          go run ./scripts/update-manifest -version "${GITHUB_REF_NAME#v}" -dir update-assets
+          # Upload the signature last. No updater accepts a missing/mismatched pair.
+          gh release upload "$GITHUB_REF_NAME" update-assets/update-manifest.json --clobber
+          gh release upload "$GITHUB_REF_NAME" update-assets/update-manifest.sig --clobber
 
   helm-chart:
     # Package the same chart that operators can inspect in the source tree.

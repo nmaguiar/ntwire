@@ -110,3 +110,10 @@ Select an OpenSSH/PEM key or a PuTTY PPK v2/v3 private key with `-i`,
 regardless of the filename extension. Encrypted PPK keys use the existing
 passphrase prompt; the CLI requires a terminal. Default identity discovery
 is unchanged; select PPK files explicitly. No conversion file is created.
+
+## Updating the client
+
+Use `ntwire update --check` to check a signed stable release, `ntwire update` for
+an interactive installation, or `ntwire update --yes` for unattended installation.
+The CLI never checks automatically or prompts for elevation. See
+[Client updates](UPDATES.md) for supported locations, verification and recovery.

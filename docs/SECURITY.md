@@ -666,3 +666,24 @@ Instruction templates allow field substitution, bounded `if`/`with` branches and
 simple comparisons/boolean operations. Loops, template calls, variable declarations
 and formatting functions are displayed literally. Output is capped during writing,
 and rendering runs after releasing the connection lock.
+
+## Client self-updates
+
+The CLI and GUI trust only an embedded Ed25519 update-verification public key.
+Stable release discovery is over HTTPS; installation requires a valid signed,
+complete client manifest and the exact archive size/SHA-256. Missing trust keys,
+invalid signatures, incomplete releases, unsupported platforms, equal/older
+versions and development-build installation fail closed. Extraction rejects
+traversal, links, special files, duplicate/case-colliding paths and unexpected
+content, with bounded compressed and expanded sizes.
+
+A separate helper waits for the GUI process to exit after it closes its windows
+and tunnels. It re-verifies signed release evidence and a private destination-side
+archive snapshot before replacing the standalone binary or complete macOS bundle.
+Replacement is serialized and retains a previous installation for rollback;
+forced termination during activation may require manual recovery. Background work
+never requests elevation. Explicit elevated helpers run only after OS consent;
+cache files and release metadata are not a source of trust. See
+[UPDATES.md](UPDATES.md) for signing-secret provisioning, key rotation, recovery,
+and native release acceptance. Update signatures do not provide Apple Developer
+ID notarization or Windows Authenticode signing.

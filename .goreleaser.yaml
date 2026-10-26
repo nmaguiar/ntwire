@@ -5,7 +5,7 @@ builds:
     binary: ntwire
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey={{ .Env.NTWIRE_UPDATE_PUBLIC_KEY }}"]
   - id: ntwire-server
     main: ./cmd/ntwire-server
     binary: ntwire-server
@@ -32,7 +32,7 @@ builds:
     binary: ntwire-gui
     goos: [linux]
     goarch: [amd64, arm64]
-    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+    ldflags: ["-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey={{ .Env.NTWIRE_UPDATE_PUBLIC_KEY }}"]
   # A GUI-subsystem executable does not allocate a command prompt when the
   # tray application starts from Explorer or at login. Keep this separate
   # from the Linux build so the Windows-specific linker flag is explicit.
@@ -41,7 +41,7 @@ builds:
     binary: ntwire-gui
     goos: [windows]
     goarch: [amd64, arm64]
-    ldflags: ["-s -w -H=windowsgui -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }}"]
+    ldflags: ["-s -w -H=windowsgui -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version={{ .Version }} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey={{ .Env.NTWIRE_UPDATE_PUBLIC_KEY }}"]
 # Pin the checksum manifest's name and algorithm: web/get*.sh and web/get*.bat
 # look for exactly "checksums.txt" and refuse to install without it, so this is
 # part of the install path's contract rather than a GoReleaser default that

@@ -40,6 +40,9 @@ func pickRegularIcon(s icons.State) []byte {
 // parked awaiting a trust or passphrase decision, which only the settings
 // window can render and answer. A nil openSettings disables "Settings…"
 // instead of silently doing nothing.
+// UpdateStatus supplies the updater tray indicator before Run starts.
+var UpdateStatus func() string
+
 func Run(mgr *manager.Manager, openSettings, openSetup func()) {
 	systray.Run(func() { onReady(mgr, openSettings, openSetup) }, func() {})
 }
@@ -48,7 +51,17 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 	systray.SetTemplateIcon(icons.TemplatePNG(icons.StateNone), pickRegularIcon(icons.StateNone))
 	systray.SetTooltip("ntwire")
 
+	lastUpdateTitle := "Check for updates…"
 	m := newMenu(mgr, openSettings, openSetup)
+	updateItem := systray.AddMenuItem("Check for updates…", "Open update settings")
+	go func() {
+		for range updateItem.ClickedCh {
+			if openSettings != nil {
+				openSettings()
+			}
+		}
+	}()
+
 	m.render(mgr.Snapshots())
 
 	updates, unsubscribe := mgr.Subscribe()
@@ -69,6 +82,13 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 				}
 				dirty = true
 			case <-ticker.C:
+				if UpdateStatus != nil {
+					title := UpdateStatus()
+					if title != lastUpdateTitle {
+						updateItem.SetTitle(title)
+						lastUpdateTitle = title
+					}
+				}
 				if dirty {
 					m.render(mgr.Snapshots())
 					dirty = false

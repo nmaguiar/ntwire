@@ -45,16 +45,19 @@ import (
 	"syscall"
 	"time"
 
+	"fyne.io/systray"
 	"github.com/nmaguiar/ntwire/internal/gui/api"
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
 	"github.com/nmaguiar/ntwire/internal/gui/singleinstance"
 	"github.com/nmaguiar/ntwire/internal/gui/tray"
+	"github.com/nmaguiar/ntwire/internal/gui/updates"
 	"github.com/nmaguiar/ntwire/internal/gui/window"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"github.com/nmaguiar/ntwire/pkg/updater"
 )
 
 const windowTokenEnvVar = "NTWIRE_GUI_TOKEN"
@@ -71,7 +74,16 @@ func init() {
 	runtime.LockOSThread()
 }
 
+var settingsSpawner window.Spawner
+
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--internal-update" {
+		if err := updater.RunHelper(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "completion" {
 		runCompletion(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
@@ -141,7 +153,13 @@ func main() {
 	// anything else -- in particular, before connecting any profile.
 	if !*headless {
 		if existing := findExistingInstance(guiConfigPath); existing != nil {
-			openWindowFor(existing.URL, existing.Token)
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Post(existing.URL+"/api/window?token="+existing.Token, "application/json", nil)
+			if err != nil {
+				slog.Error("could not open existing settings window", "error", err)
+			} else {
+				resp.Body.Close()
+			}
 			return
 		}
 	}
@@ -159,6 +177,40 @@ func main() {
 		os.Exit(1)
 	}
 	mgr.SetSettingsURL(srv.URL())
+	srv.SetOpenSettings(openSettingsFunc(srv))
+	updateController := updates.New(buildinfo.String(), guiConfigPath, func() updates.Preferences {
+		p := mgr.Settings()
+		return updates.Preferences{Disabled: p.UpdateChecksDisabled, Automatic: p.AutomaticUpdates}
+	})
+	defer func() {
+		updateController.Close()
+		mgr.Close()
+		settingsSpawner.Close()
+		if updateController.Status().Ready {
+			if err := updateController.FinishOnExit(); err != nil {
+				slog.Warn("update remains staged; open Settings for installation options", "error", err)
+			}
+		}
+	}()
+	updateController.Start()
+	if !*headless {
+		srv.SetUpdater(updateController, func() { mgr.Close(); settingsSpawner.Close(); systray.Quit() })
+	} else {
+		srv.SetUpdater(updateController, nil)
+	}
+	tray.UpdateStatus = func() string {
+		s := updateController.Status()
+		if s.Ready {
+			if s.NeedsAdmin {
+				return "Update ready: administrator authorization required"
+			}
+			return "Update ready to install on quit"
+		}
+		if s.Available {
+			return "Update available: " + s.Latest
+		}
+		return "Check for updates…"
+	}
 
 	if *headless {
 		runHeadless(srv)
@@ -239,9 +291,9 @@ func openWindowFor(origin, token string) {
 		slog.Error("could not resolve ntwire-gui's own path to open the settings window", "error", err)
 		return
 	}
-	var spawner window.Spawner
+
 	env := []string{windowTokenEnvVar + "=" + token}
-	if err := spawner.Open(self, []string{"--window", origin}, env); err != nil {
+	if err := settingsSpawner.Open(self, []string{"--window", origin}, env); err != nil {
 		slog.Error("failed to open the settings window", "error", err)
 	}
 }

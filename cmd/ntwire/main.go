@@ -16,6 +16,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
+	"github.com/nmaguiar/ntwire/pkg/updater"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 	"golang.org/x/term"
 	"io"
@@ -31,6 +32,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 3 && os.Args[1] == "--internal-update" {
+		if err := updater.RunHelper(os.Args[2]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	noColor := noColorFrom(os.Args[1:])
 	u := ui.New(os.Stdout, os.Stderr, noColor)
 	if len(os.Args) < 2 {
@@ -38,6 +46,8 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
+	case "update":
+		updateCmd(os.Args[2:], u)
 	case "version":
 		fmt.Println(buildinfo.String())
 	case "keygen":
@@ -63,6 +73,8 @@ func main() {
 	case "help":
 		if len(os.Args) > 2 {
 			switch os.Args[2] {
+			case "update":
+				updateCmd([]string{"-h"}, u)
 			case "keygen":
 				keygen([]string{"-h"}, u)
 			case "connect":
@@ -122,6 +134,7 @@ func usage(u *ui.UI) {
 			{Name: "browser", Summary: "open a browser configured for a SOCKS tunnel"},
 			{Name: "logout", Summary: "clear cached SSO tokens"},
 			{Name: "completion", Summary: "generate shell completion script"},
+			{Name: "update", Summary: "check for or install a signed stable client update"},
 			{Name: "version", Summary: "print the build version"},
 		},
 		Examples: []string{

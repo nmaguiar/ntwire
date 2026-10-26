@@ -523,3 +523,11 @@ terminating and re-originating TLS rather than passing it through:
 - [SECURITY.md](SECURITY.md) — TLS trust model for a deployed server
 - [LETSENCRYPT.md](LETSENCRYPT.md) — obtaining a CA-trusted certificate for `ntwire-server` or `ntwire-relay`
 - [LOGGING.md](LOGGING.md) — text vs. JSON logs, and the container default
+
+## Client update policy
+
+Standalone `ntwire` and `ntwire-gui` support independently signed stable updates;
+the GUI defaults to daily checks and notifications only. Managed deployments can
+set `settings.update_checks_disabled: true` in `gui.yaml`. Package-managed clients
+should use their package manager. Server/relay binaries and containers continue
+to use operator-managed deployment upgrades. See [UPDATES.md](UPDATES.md).

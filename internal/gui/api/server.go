@@ -21,6 +21,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
+	"github.com/nmaguiar/ntwire/internal/gui/updates"
 	"github.com/nmaguiar/ntwire/internal/gui/webui"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
@@ -28,12 +29,15 @@ import (
 
 // Server is the loopback HTTP+SSE API in front of a Manager.
 type Server struct {
-	mgr   *manager.Manager
-	token string
-	mux   *http.ServeMux
-	srv   *http.Server
-	ln    net.Listener
-	fsys  fs.FS
+	openSettings func()
+	updates      *updates.Controller
+	quit         func()
+	mgr          *manager.Manager
+	token        string
+	mux          *http.ServeMux
+	srv          *http.Server
+	ln           net.Listener
+	fsys         fs.FS
 }
 
 // New binds a 127.0.0.1 loopback listener on an OS-assigned port and
@@ -102,7 +106,20 @@ func (s *Server) requireToken(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// SetOpenSettings handles second launches in the owning core process so all
+// window children are tracked and released before an update.
+func (s *Server) SetOpenSettings(open func()) { s.openSettings = open }
 func (s *Server) routes() {
+	s.mux.HandleFunc("POST /api/window", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		if s.openSettings == nil {
+			http.Error(w, "window unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		s.openSettings()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	s.updateRoutes()
 	// The settings UI itself. Token-gated like every other route -- the
 	// page's own script reads its token back out of location.search for
 	// subsequent /api/* fetches, the same convention pkg/client's status

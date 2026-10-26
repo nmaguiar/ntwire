@@ -131,3 +131,19 @@ func TestOpenPassesExtraEnv(t *testing.T) {
 	}
 	t.Fatal("child never wrote the marker file within the deadline -- extra env did not reach it")
 }
+
+func TestCloseWaitsForChildAndRejectsNewWindows(t *testing.T) {
+	var s Spawner
+	cmd := helperCommand()
+	if e := s.Open(cmd.Path, cmd.Args[1:], []string{"GO_WANT_HELPER_PROCESS=1"}); e != nil {
+		t.Fatal(e)
+	}
+	s.Close()
+	if s.Running() {
+		t.Fatal("window still running after Close")
+	}
+	if e := s.Open(cmd.Path, cmd.Args[1:], nil); e == nil {
+		t.Fatal("opened a new window during shutdown")
+	}
+	s.Close()
+}

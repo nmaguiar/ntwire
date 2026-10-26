@@ -50,9 +50,11 @@ type Profile struct {
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any
 // one server profile's connection settings.
 type Settings struct {
-	StartAtLogin      bool `yaml:"start_at_login"`
-	Notifications     bool `yaml:"notifications"`
-	ImportedCLIConfig bool `yaml:"imported_cli_config"`
+	UpdateChecksDisabled bool `yaml:"update_checks_disabled"`
+	AutomaticUpdates     bool `yaml:"automatic_updates"`
+	StartAtLogin         bool `yaml:"start_at_login"`
+	Notifications        bool `yaml:"notifications"`
+	ImportedCLIConfig    bool `yaml:"imported_cli_config"`
 }
 
 // Config is the full contents of ~/.ntwire/gui.yaml.

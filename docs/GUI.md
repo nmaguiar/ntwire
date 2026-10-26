@@ -176,3 +176,14 @@ Select an OpenSSH/PEM key or a PuTTY PPK v2/v3 private key with `-i`,
 regardless of the filename extension. Encrypted PPK keys use the existing
 passphrase prompt; the CLI requires a terminal. Default identity discovery
 is unchanged; select PPK files explicitly. No conversion file is created.
+
+## Application updates
+
+Settings checks stable releases asynchronously once per day by default. Updates
+are notifications only until you choose a download or enable automatic updates.
+Verified downloads install after an orderly quit, without relaunching; **Quit and
+install** warns about disconnecting tunnels. Protected installations require an
+explicit administrator authorization action. See [Client updates](UPDATES.md)
+for the preferences, screenshot, signing setup, recovery, and platform acceptance
+checklist. Production updating remains unavailable until a public key and release
+signing secret have been provisioned.

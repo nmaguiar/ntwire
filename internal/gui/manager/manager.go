@@ -68,6 +68,7 @@ func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
 // fans out state changes to subscribers (the tray, the settings window's
 // SSE stream). All exported methods are safe for concurrent use.
 type Manager struct {
+	persistMu  sync.Mutex
 	connector  Connector
 	configPath string
 
@@ -288,6 +289,8 @@ func (m *Manager) RemoveProfile(id string) error {
 }
 
 func (m *Manager) persist() error {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
 	m.mu.Lock()
 	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
 	m.mu.Unlock()
@@ -993,4 +996,13 @@ func (m *Manager) handleEvent(id string, e client.Event) {
 	}
 	m.mu.Unlock()
 	m.publish(id)
+}
+
+// SetUpdatePreferences changes only updater preferences under the settings lock.
+func (m *Manager) SetUpdatePreferences(disabled, automatic bool) error {
+	m.mu.Lock()
+	m.settings.UpdateChecksDisabled = disabled
+	m.settings.AutomaticUpdates = automatic
+	m.mu.Unlock()
+	return m.persist()
 }
