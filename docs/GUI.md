@@ -168,3 +168,11 @@ address). The GUI does not parse client logs for any connection state.
 Established profiles use the shared [network recovery behavior](CLIENT.md#recovery-after-network-changes),
 including bounded control requests and idle WebSocket heartbeat detection.
 Initial connection failures still require another Connect attempt.
+
+## PuTTY private keys
+
+Select an OpenSSH/PEM key or a PuTTY PPK v2/v3 private key with `-i`,
+`identity_file`, or the GUI key picker. Format detection uses file contents,
+regardless of the filename extension. Encrypted PPK keys use the existing
+passphrase prompt; the CLI requires a terminal. Default identity discovery
+is unchanged; select PPK files explicitly. No conversion file is created.

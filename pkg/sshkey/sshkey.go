@@ -2,6 +2,7 @@
 package sshkey
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,8 +14,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/kayrus/putty"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -29,6 +32,9 @@ func Fingerprint(k ssh.PublicKey) string                        { return ssh.Fin
 // non-empty. An encrypted key with an empty passphrase yields
 // *ssh.PassphraseMissingError, which NeedsPassphrase checks for.
 func parsePrivateKey(b, passphrase []byte) (ssh.Signer, error) {
+	if bytes.HasPrefix(b, []byte("PuTTY-User-Key-File-")) {
+		return parsePPK(b, passphrase)
+	}
 	if len(passphrase) > 0 {
 		return ssh.ParsePrivateKeyWithPassphrase(b, passphrase)
 	}
@@ -42,7 +48,7 @@ func NeedsPassphrase(path string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	_, err = ssh.ParsePrivateKey(b)
+	_, err = parsePrivateKey(b, nil)
 	var missing *ssh.PassphraseMissingError
 	if errors.As(err, &missing) {
 		return true, nil
@@ -143,4 +149,70 @@ func GenerateEd25519() (crypto.Signer, []byte, error) {
 func Digest(b []byte) string {
 	h := sha256.Sum256(b)
 	return base64.RawStdEncoding.EncodeToString(h[:])
+}
+
+// parsePPK keeps parser diagnostics (which may contain file contents) private.
+// ParseRawPrivateKey verifies the MAC before decoding private key material.
+func parsePPK(b, passphrase []byte) (ssh.Signer, error) {
+	header, _, _ := bytes.Cut(b, []byte(": "))
+	if string(header) != "PuTTY-User-Key-File-2" && string(header) != "PuTTY-User-Key-File-3" {
+		return nil, fmt.Errorf("unsupported PuTTY private key version (expected PPK v2 or v3)")
+	}
+	// Reject numeric overflow before the parser narrows Argon2 parameters.
+	for _, line := range strings.Split(string(b), "\n") {
+		name, value, ok := strings.Cut(strings.TrimSuffix(line, "\r"), ": ")
+		if !ok {
+			continue
+		}
+		bits := 32
+		switch name {
+		case "Argon2-Parallelism":
+			bits = 8
+		case "Argon2-Memory", "Argon2-Passes":
+		default:
+			continue
+		}
+		n, err := strconv.ParseUint(value, 10, bits)
+		if err != nil || n == 0 {
+			return nil, fmt.Errorf("invalid PuTTY Argon2 parameters")
+		}
+	}
+	key, err := putty.New(b)
+	if err != nil {
+		return nil, fmt.Errorf("malformed PuTTY private key")
+	}
+	if key.KeyDerivation != "" && key.Encryption == "none" {
+		return nil, fmt.Errorf("unexpected PuTTY key derivation for unencrypted key")
+	}
+	macLen := 20
+	if key.Version == 3 {
+		macLen = 32
+	}
+	if len(key.PublicKey) == 0 || len(key.PrivateKey) == 0 || len(key.PrivateMac) != macLen || key.Encryption == "" {
+		return nil, fmt.Errorf("incomplete PuTTY private key")
+	}
+	if key.Encryption != "none" {
+		if len(key.PrivateKey)%16 != 0 {
+			return nil, fmt.Errorf("malformed encrypted PuTTY private key")
+		}
+		if len(passphrase) == 0 {
+			return nil, &ssh.PassphraseMissingError{}
+		}
+	} else {
+		// Unencrypted PPK MACs always use an empty passphrase.
+		passphrase = nil
+	}
+	public, err := ssh.ParsePublicKey(key.PublicKey)
+	if err != nil || public.Type() != key.Algo {
+		return nil, fmt.Errorf("malformed PuTTY public key")
+	}
+	raw, err := key.ParseRawPrivateKey(passphrase)
+	if err != nil {
+		return nil, fmt.Errorf("invalid PuTTY private key or incorrect passphrase (integrity check or key parsing failed)")
+	}
+	signer, err := ssh.NewSignerFromKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("unsupported PuTTY private key type")
+	}
+	return signer, nil
 }

@@ -8,7 +8,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nmaguiar/ntwire/internal/testutil"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
@@ -537,5 +539,27 @@ func TestUsage(t *testing.T) {
 	}
 	if !strings.Contains(out, "COMMANDS") {
 		t.Errorf("expected usage to include COMMANDS section, got:\n%s", out)
+	}
+}
+
+func TestResolveKeyPassphrasePPKWithoutTerminal(t *testing.T) {
+	signer, _, err := sshkey.GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "identity")
+	if err := os.WriteFile(path, testutil.PPK(t, signer, 3, true), 0600); err != nil {
+		t.Fatal(err)
+	}
+	input, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer input.Close()
+	previous := os.Stdin
+	os.Stdin = input
+	defer func() { os.Stdin = previous }()
+	if _, err := resolveKeyPassphrase(path, nil); err == nil || !strings.Contains(err.Error(), "no terminal") {
+		t.Fatalf("expected non-interactive failure, got %v", err)
 	}
 }

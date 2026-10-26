@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
+	"github.com/nmaguiar/ntwire/internal/testutil"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -565,5 +566,41 @@ func writeRealEncryptedKey(t *testing.T, path, passphrase string) {
 	}
 	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestConnectWithEncryptedPPKPromptsForPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id")
+	signer, _, err := sshkey.GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, testutil.PPK(t, signer, 3, true), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotPassphrase string
+	fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
+		gotPassphrase = opts.KeyPassphrase
+		return &fakeHandle{}, nil
+	}}
+	m, _ := newTestManager(t, fc)
+	p, _ := m.AddProfile(config.Profile{Name: "home-lab", Server: "https://home.example:8443", IdentityFile: keyPath})
+
+	if err := m.Connect(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap := waitForState(t, m, p.ID, StateAwaitingPassphrase, 5*time.Second)
+	if snap.Prompt == nil || snap.Prompt.Kind != PromptPassphrase || snap.Prompt.KeyPath != keyPath {
+		t.Fatalf("Prompt = %+v, want a passphrase prompt for %q", snap.Prompt, keyPath)
+	}
+
+	if err := m.AnswerPassphrase(p.ID, "s3cret", false); err != nil {
+		t.Fatalf("AnswerPassphrase() error = %v", err)
+	}
+	waitForState(t, m, p.ID, StateConnected, 5*time.Second)
+	if gotPassphrase != "s3cret" {
+		t.Errorf("client.Options.KeyPassphrase = %q, want %q", gotPassphrase, "s3cret")
 	}
 }

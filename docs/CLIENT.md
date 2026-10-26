@@ -102,3 +102,11 @@ the old interface remain bound to that address; prefer loopback for local use.
 - [CONFIGURATION.md](CONFIGURATION.md) — client proxy/transport settings and server-issued tunnel instructions.
 - [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) — official WireGuard clients.
 - [IOS.md](IOS.md) — archived native iOS/iPadOS client status.
+
+## PuTTY private keys
+
+Select an OpenSSH/PEM key or a PuTTY PPK v2/v3 private key with `-i`,
+`identity_file`, or the GUI key picker. Format detection uses file contents,
+regardless of the filename extension. Encrypted PPK keys use the existing
+passphrase prompt; the CLI requires a terminal. Default identity discovery
+is unchanged; select PPK files explicitly. No conversion file is created.

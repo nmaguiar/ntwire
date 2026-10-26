@@ -10,6 +10,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-jose/go-jose/v4 v4.1.4
+	github.com/kayrus/putty v1.0.5
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
 	github.com/zalando/go-keyring v0.2.8
