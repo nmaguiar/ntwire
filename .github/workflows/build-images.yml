@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main" ]
+    paths-ignore: [".github/security/**"]
   pull_request:
     branches: [ "main" ]
   schedule:
@@ -13,6 +14,10 @@ on:
 # GitHub token itself needs no more than read access to the repository.
 permissions:
   contents: read
+
+concurrency:
+  group: docker-images-and-security-reports
+  cancel-in-progress: false
 
 jobs:
 
@@ -45,12 +50,24 @@ jobs:
 
     - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
       name: Build and push
+      id: image
       with:
         context: .
         file: ${{ matrix.dockerfile }}
         platforms: linux/amd64
         push: true
         tags: nmaguiar/${{ matrix.image }}:build-x64
+
+    - name: Save image digest
+      run: |
+        mkdir -p digests
+        printf '%s' '${{ steps.image.outputs.digest }}' > digests/${{ matrix.image }}-amd64
+
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: digest-${{ matrix.image }}-amd64
+        path: digests/
+        if-no-files-found: error
 
   build-arm:
     name: Build arm64 (${{ matrix.image }})
@@ -81,12 +98,24 @@ jobs:
 
     - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
       name: Build and push
+      id: image
       with:
         context: .
         file: ${{ matrix.dockerfile }}
         platforms: linux/arm64
         push: true
         tags: nmaguiar/${{ matrix.image }}:build-arm
+
+    - name: Save image digest
+      run: |
+        mkdir -p digests
+        printf '%s' '${{ steps.image.outputs.digest }}' > digests/${{ matrix.image }}-arm64
+
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: digest-${{ matrix.image }}-arm64
+        path: digests/
+        if-no-files-found: error
 
   build:
     name: Manifest (${{ matrix.image }})
@@ -106,6 +135,128 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        pattern: digest-${{ matrix.image }}-*
+        path: digests
+        merge-multiple: true
+
     - name: Create and push multi-arch manifest
       run: |
-        docker buildx imagetools create --tag nmaguiar/${{ matrix.image }}:build nmaguiar/${{ matrix.image }}:build-x64 nmaguiar/${{ matrix.image }}:build-arm
+        docker buildx imagetools create --tag nmaguiar/${{ matrix.image }}:build nmaguiar/${{ matrix.image }}@$(cat digests/${{ matrix.image }}-amd64) nmaguiar/${{ matrix.image }}@$(cat digests/${{ matrix.image }}-arm64)
+
+  scan-images:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    needs: [build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [ntwire-client, ntwire-server, ntwire-relay]
+        arch: [amd64, arm64]
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: digest-${{ matrix.image }}-${{ matrix.arch }}
+        path: digests
+    - name: Scan published digest
+      env:
+        IMAGE: ${{ matrix.image }}
+        ARCH: ${{ matrix.arch }}
+      run: |
+        digest=$(cat "digests/$IMAGE-$ARCH")
+        [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+        image="nmaguiar/$IMAGE@$digest"
+        docker run --rm -v "$PWD:/work" aquasec/trivy:0.76.1 image --platform "linux/$ARCH" --scanners vuln --format json --output /work/scan.json "$image"
+        python3 scripts/security/report.py --kind image --input scan.json --target "image-$IMAGE-linux-$ARCH" --platform "linux/$ARCH" --identity "$image" --commit "$GITHUB_SHA" --output reports
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: report-image-${{ matrix.image }}-${{ matrix.arch }}
+        path: reports/
+        if-no-files-found: error
+
+  scan-binaries:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    needs: [build]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: linux, arch: amd64, binary: ntwire, runner: ubuntu-latest}
+          - {os: linux, arch: amd64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: linux, arch: amd64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: linux, arch: amd64, binary: ntwire-gui, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, binary: ntwire, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: linux, arch: arm64, binary: ntwire-gui, runner: ubuntu-latest}
+          - {os: windows, arch: amd64, binary: ntwire, runner: ubuntu-latest}
+          - {os: windows, arch: amd64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: windows, arch: amd64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: windows, arch: amd64, binary: ntwire-gui, runner: ubuntu-latest}
+          - {os: windows, arch: arm64, binary: ntwire, runner: ubuntu-latest}
+          - {os: windows, arch: arm64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: windows, arch: arm64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: windows, arch: arm64, binary: ntwire-gui, runner: ubuntu-latest}
+          - {os: darwin, arch: amd64, binary: ntwire, runner: ubuntu-latest}
+          - {os: darwin, arch: amd64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: darwin, arch: amd64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: darwin, arch: arm64, binary: ntwire, runner: ubuntu-latest}
+          - {os: darwin, arch: arm64, binary: ntwire-server, runner: ubuntu-latest}
+          - {os: darwin, arch: arm64, binary: ntwire-relay, runner: ubuntu-latest}
+          - {os: darwin, arch: arm64, binary: ntwire-gui, runner: macos-latest}
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version: stable
+    - name: Build and scan executable
+      env:
+        GOOS: ${{ matrix.os }}
+        GOARCH: ${{ matrix.arch }}
+        BINARY: ${{ matrix.binary }}
+      run: |
+        env -u GOOS -u GOARCH go install golang.org/x/vuln/cmd/govulncheck@latest
+        suffix=""
+        flags="-s -w"
+        if [ "$GOOS" = windows ]; then suffix=.exe; fi
+        if [ "$GOOS" = windows ] && [ "$BINARY" = ntwire-gui ]; then flags="$flags -H=windowsgui"; fi
+        go build -ldflags "$flags" -o "artifact$suffix" "./cmd/$BINARY"
+        digest=$(shasum -a 256 "artifact$suffix" | cut -d ' ' -f 1)
+        "$(go env GOPATH)/bin/govulncheck" -mode binary -format json "artifact$suffix" > scan.json
+        python3 scripts/security/report.py --kind binary --input scan.json --target "binary-$BINARY-$GOOS-$GOARCH" --platform "$GOOS/$GOARCH" --identity "sha256:$digest" --commit "$GITHUB_SHA" --output reports
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: report-binary-${{ matrix.binary }}-${{ matrix.os }}-${{ matrix.arch }}
+        path: reports/
+        if-no-files-found: error
+
+  publish-reports:
+    needs: [scan-images, scan-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ github.event.repository.default_branch }}
+        fetch-depth: 0
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        pattern: report-*
+        path: .github/security
+        merge-multiple: true
+    - name: Validate and publish complete reports
+      env:
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: |
+        python3 scripts/security/verify_reports.py .github/security "$GITHUB_SHA"
+        git merge-base --is-ancestor "$GITHUB_SHA" HEAD
+        git add .github/security
+        if git diff --cached --quiet; then exit 0; fi
+        git config user.name 'github-actions[bot]'
+        git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+        git commit -m 'chore(security): update weekly vulnerability reports'
+        git push origin "HEAD:refs/heads/$DEFAULT_BRANCH"

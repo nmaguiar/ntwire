@@ -10,6 +10,49 @@ It needs neither a host network interface nor elevated privileges. See
 [Security](docs/SECURITY.md) for the trust model and the implications of
 binding a local tunnel beyond loopback.
 
+## Weekly security scans
+
+The weekly image build scans the published image digests with Trivy and freshly built release variants with govulncheck. Each badge links to a report with the source commit, artifact identity, scan time, severity counts, and scanner output. Go findings are counted as unknown severity. Findings do not block publication; failed scans do. Reports appear after the first successful scheduled or manual run.
+
+### Container images
+
+| Target | Report |
+| --- | --- |
+| ntwire-client-linux-amd64 | [![Scan status](.github/security/image-ntwire-client-linux-amd64.svg)](.github/security/image-ntwire-client-linux-amd64.md) |
+| ntwire-client-linux-arm64 | [![Scan status](.github/security/image-ntwire-client-linux-arm64.svg)](.github/security/image-ntwire-client-linux-arm64.md) |
+| ntwire-relay-linux-amd64 | [![Scan status](.github/security/image-ntwire-relay-linux-amd64.svg)](.github/security/image-ntwire-relay-linux-amd64.md) |
+| ntwire-relay-linux-arm64 | [![Scan status](.github/security/image-ntwire-relay-linux-arm64.svg)](.github/security/image-ntwire-relay-linux-arm64.md) |
+| ntwire-server-linux-amd64 | [![Scan status](.github/security/image-ntwire-server-linux-amd64.svg)](.github/security/image-ntwire-server-linux-amd64.md) |
+| ntwire-server-linux-arm64 | [![Scan status](.github/security/image-ntwire-server-linux-arm64.svg)](.github/security/image-ntwire-server-linux-arm64.md) |
+
+### Executables
+
+| Target | Report |
+| --- | --- |
+| ntwire-darwin-amd64 | [![Scan status](.github/security/binary-ntwire-darwin-amd64.svg)](.github/security/binary-ntwire-darwin-amd64.md) |
+| ntwire-darwin-arm64 | [![Scan status](.github/security/binary-ntwire-darwin-arm64.svg)](.github/security/binary-ntwire-darwin-arm64.md) |
+| ntwire-gui-darwin-arm64 | [![Scan status](.github/security/binary-ntwire-gui-darwin-arm64.svg)](.github/security/binary-ntwire-gui-darwin-arm64.md) |
+| ntwire-gui-linux-amd64 | [![Scan status](.github/security/binary-ntwire-gui-linux-amd64.svg)](.github/security/binary-ntwire-gui-linux-amd64.md) |
+| ntwire-gui-linux-arm64 | [![Scan status](.github/security/binary-ntwire-gui-linux-arm64.svg)](.github/security/binary-ntwire-gui-linux-arm64.md) |
+| ntwire-gui-windows-amd64 | [![Scan status](.github/security/binary-ntwire-gui-windows-amd64.svg)](.github/security/binary-ntwire-gui-windows-amd64.md) |
+| ntwire-gui-windows-arm64 | [![Scan status](.github/security/binary-ntwire-gui-windows-arm64.svg)](.github/security/binary-ntwire-gui-windows-arm64.md) |
+| ntwire-linux-amd64 | [![Scan status](.github/security/binary-ntwire-linux-amd64.svg)](.github/security/binary-ntwire-linux-amd64.md) |
+| ntwire-linux-arm64 | [![Scan status](.github/security/binary-ntwire-linux-arm64.svg)](.github/security/binary-ntwire-linux-arm64.md) |
+| ntwire-relay-darwin-amd64 | [![Scan status](.github/security/binary-ntwire-relay-darwin-amd64.svg)](.github/security/binary-ntwire-relay-darwin-amd64.md) |
+| ntwire-relay-darwin-arm64 | [![Scan status](.github/security/binary-ntwire-relay-darwin-arm64.svg)](.github/security/binary-ntwire-relay-darwin-arm64.md) |
+| ntwire-relay-linux-amd64 | [![Scan status](.github/security/binary-ntwire-relay-linux-amd64.svg)](.github/security/binary-ntwire-relay-linux-amd64.md) |
+| ntwire-relay-linux-arm64 | [![Scan status](.github/security/binary-ntwire-relay-linux-arm64.svg)](.github/security/binary-ntwire-relay-linux-arm64.md) |
+| ntwire-relay-windows-amd64 | [![Scan status](.github/security/binary-ntwire-relay-windows-amd64.svg)](.github/security/binary-ntwire-relay-windows-amd64.md) |
+| ntwire-relay-windows-arm64 | [![Scan status](.github/security/binary-ntwire-relay-windows-arm64.svg)](.github/security/binary-ntwire-relay-windows-arm64.md) |
+| ntwire-server-darwin-amd64 | [![Scan status](.github/security/binary-ntwire-server-darwin-amd64.svg)](.github/security/binary-ntwire-server-darwin-amd64.md) |
+| ntwire-server-darwin-arm64 | [![Scan status](.github/security/binary-ntwire-server-darwin-arm64.svg)](.github/security/binary-ntwire-server-darwin-arm64.md) |
+| ntwire-server-linux-amd64 | [![Scan status](.github/security/binary-ntwire-server-linux-amd64.svg)](.github/security/binary-ntwire-server-linux-amd64.md) |
+| ntwire-server-linux-arm64 | [![Scan status](.github/security/binary-ntwire-server-linux-arm64.svg)](.github/security/binary-ntwire-server-linux-arm64.md) |
+| ntwire-server-windows-amd64 | [![Scan status](.github/security/binary-ntwire-server-windows-amd64.svg)](.github/security/binary-ntwire-server-windows-amd64.md) |
+| ntwire-server-windows-arm64 | [![Scan status](.github/security/binary-ntwire-server-windows-arm64.svg)](.github/security/binary-ntwire-server-windows-arm64.md) |
+| ntwire-windows-amd64 | [![Scan status](.github/security/binary-ntwire-windows-amd64.svg)](.github/security/binary-ntwire-windows-amd64.md) |
+| ntwire-windows-arm64 | [![Scan status](.github/security/binary-ntwire-windows-arm64.svg)](.github/security/binary-ntwire-windows-arm64.md) |
+
 ## Quick start
 
 Requirements: Go 1.26 or later.

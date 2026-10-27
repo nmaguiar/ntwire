@@ -19,6 +19,7 @@ jobs:
           go-version: stable
       - run: go test ./...
       - run: sh scripts/add-release-checksum_test.sh
+      - run: python3 -m unittest discover -s scripts/security -p 'test_*.py'
 
   e2e:
     needs: test
