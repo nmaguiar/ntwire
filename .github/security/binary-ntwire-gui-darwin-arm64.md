@@ -1,8 +1,8 @@
 # binary-ntwire-gui-darwin-arm64 — darwin/arm64
 
-- Scanned: 2026-10-27 02:35 UTC
-- Source commit: `66fde4fc6548754d54f45f2e95bd53b8d8a942da`
-- Artifact: `sha256:19f896179a4864db7613f9969be7c0e76693d6cabaa28f7416d7702aba3ca06c`
+- Scanned: 2026-10-27 05:38 UTC
+- Source commit: `527453128a2747065fb8b0518ef00b746182da95`
+- Artifact: `sha256:2c27c91b4996f392a703589021f79715d5d28e30b7674ecaeb28c67b4f1bf437`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261027022619-66fde4fc6548"
+        "version": "v0.0.80"
       },
       {
         "path": "fyne.io/systray",
