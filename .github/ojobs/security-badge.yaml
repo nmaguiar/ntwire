@@ -1,0 +1,31 @@
+# Generate a Badgen badge from the counts of the scan used by the report.
+todo:
+- Create badge
+
+ojob:
+  opacks:
+  - openaf: 20230520
+  - Badgen: 20230603
+  templateArgs: true
+
+include:
+- badgen.yaml
+
+jobs:
+- name: Create badge
+  check:
+    in:
+      input: isString
+      file: isString
+      label: isString
+  exec: |
+    var counts = io.readFileJSON(args.input)
+    ;["CRITICAL", "HIGH", "MEDIUM", "LOW"].forEach(level => {
+      if (typeof counts[level] !== "number" || counts[level] < 0) throw "Invalid severity count: " + level
+    })
+    args.status = "(CRIT: " + counts.CRITICAL + ", HIGH: " + counts.HIGH + ", MED: " + counts.MEDIUM + ", LOW: " + counts.LOW + ")"
+    if (counts.UNKNOWN > 0) args.status = args.status.slice(0, -1) + ", UNKNOWN: " + counts.UNKNOWN + ")"
+    args.color = counts.CRITICAL > 0 ? "red" : counts.HIGH > 0 ? "orange" : counts.MEDIUM > 0 || counts.UNKNOWN > 0 ? "yellow" : counts.LOW > 0 ? "yellowgreen" : "green"
+    args.labelColor = "grey3"
+    args.icon = "nattrmon.svg"
+    $job("Badgen generate file", args)

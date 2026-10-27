@@ -36,10 +36,23 @@ class ReportTest(unittest.TestCase):
                 kind = 'image' if name.startswith('image-') else 'binary'
                 raw = json.dumps({'SchemaVersion': 2, 'Results': []} if kind == 'image' else {'config': {'protocol_version': 'v1.0.0'}})
                 render(kind, raw, name, 'linux/amd64', 'sha256:123', commit, path)
+                if kind == 'image':
+                    counts = json.loads((path / (name + '.counts.json')).read_text())
+                    self.assertEqual(counts, dict.fromkeys(('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'), 0))
+                    (path / (name + '.counts.json')).unlink()
+                    (path / (name + '.svg')).write_text('<svg />')
             verify(path, commit)
             (path / (next(iter(targets())) + '.svg')).unlink()
             with self.assertRaises(ValueError):
                 verify(path, commit)
+
+    def test_image_counts_match_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            vulnerabilities = [{'VulnerabilityID': f'CVE-{i}', 'Severity': severity} for i, severity in enumerate(('CRITICAL', 'HIGH', 'HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'))]
+            render('image', json.dumps({'SchemaVersion': 2, 'Results': [{'Vulnerabilities': vulnerabilities}]}), 'image-test', 'linux/amd64', 'image', 'a' * 40, path)
+            self.assertEqual(json.loads((path / 'image-test.counts.json').read_text()), {'CRITICAL': 1, 'HIGH': 2, 'MEDIUM': 1, 'LOW': 1, 'UNKNOWN': 1})
+            self.assertIn('CRITICAL: 1 | HIGH: 2 | MEDIUM: 1 | LOW: 1 | UNKNOWN: 1', (path / 'image-test.md').read_text())
 
 if __name__ == '__main__':
     unittest.main()

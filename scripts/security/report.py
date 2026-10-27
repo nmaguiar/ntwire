@@ -59,6 +59,9 @@ def render(kind, raw, target, platform, identity, commit, output):
     lines += ['', '<details><summary>Full scanner output</summary>', '', '```json', raw.strip(), '```', '</details>']
     output.mkdir(parents=True, exist_ok=True)
     (output / (target + '.md')).write_text('\n'.join(lines) + '\n')
+    if kind == 'image':
+        (output / (target + '.counts.json')).write_text(json.dumps(counts))
+        return
     label = f'{len(findings)} findings'
     color = '#d73a49' if counts['CRITICAL'] or counts['HIGH'] else ('#dfb317' if findings else '#4c1')
     svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="180" height="20" role="img" aria-label="{html.escape(target)}: {label}"><rect width="180" height="20" rx="3" fill="#555"/><path fill="{color}" d="M100 0h77a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3h-77z"/><g fill="#fff" text-anchor="middle" font-family="Verdana,sans-serif" font-size="10"><text x="50" y="14">security scan</text><text x="140" y="14">{label}</text></g></svg>\n'

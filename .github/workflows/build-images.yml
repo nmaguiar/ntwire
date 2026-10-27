@@ -171,6 +171,14 @@ jobs:
         image="nmaguiar/$IMAGE@$digest"
         docker run --rm -v "$PWD:/work" aquasec/trivy:0.76.1 image --platform "linux/$ARCH" --scanners vuln --format json --output /work/scan.json "$image"
         python3 scripts/security/report.py --kind image --input scan.json --target "image-$IMAGE-linux-$ARCH" --platform "linux/$ARCH" --identity "$image" --commit "$GITHUB_SHA" --output reports
+    - name: Generate severity badge
+      uses: openaf/ojob-action@v7
+      with:
+        ojob: .github/ojobs/security-badge.yaml
+        args: 'input=reports/image-${{ matrix.image }}-linux-${{ matrix.arch }}.counts.json file=reports/image-${{ matrix.image }}-linux-${{ matrix.arch }}.svg label=${{ matrix.image }}-linux-${{ matrix.arch }}'
+        dist: nightly
+    - name: Remove intermediate counts
+      run: rm reports/*.counts.json
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: report-image-${{ matrix.image }}-${{ matrix.arch }}
