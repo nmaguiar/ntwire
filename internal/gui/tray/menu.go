@@ -105,6 +105,7 @@ type menu struct {
 	iconSetOnce bool
 
 	startAtLogin *systray.MenuItem
+	update       *systray.MenuItem
 	quit         *systray.MenuItem
 }
 
@@ -208,6 +209,7 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 			_ = mgr.SetSettings(settings)
 		}
 	}
+	m.update = systray.AddMenuItem("Check for updates…", "Open update settings")
 	m.quit = systray.AddMenuItem("Quit", "Disconnect every profile and exit")
 
 	go m.watchStartAtLogin()

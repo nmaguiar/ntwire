@@ -59,6 +59,10 @@ func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
 		}
 		return "", fmt.Errorf("gui: close imported identity: %w", closeErr)
 	}
+	if _, err := sshkey.NeedsPassphrase(path); err != nil {
+		_ = os.Remove(path)
+		return "", sshkey.IdentityError(name, err)
+	}
 	return path, nil
 }
 
@@ -322,6 +326,15 @@ func (m *Manager) Snapshots() []Snapshot {
 
 func snapshotOf(s *session) Snapshot {
 	snap := Snapshot{Profile: s.profile, State: s.state, Prompt: s.prompt}
+	if s.profile.SSO {
+		snap.IdentitySource = "sso"
+	} else if s.profile.IdentityFile != "" {
+		snap.IdentityPath = s.profile.IdentityFilePath()
+		snap.IdentitySource = "explicit"
+	} else if path := client.DefaultIdentityFile(); path != "" {
+		snap.IdentityPath = path
+		snap.IdentitySource = "automatic"
+	}
 	if s.err != nil {
 		snap.Err = s.err.Error()
 	}
@@ -597,6 +610,11 @@ func (m *Manager) GenerateIdentity(path string) (fingerprint, publicKey string, 
 	return fingerprint, string(pub), nil
 }
 
+// NewIdentityPath returns a unique GUI-owned destination for a new identity.
+func (m *Manager) NewIdentityPath() string {
+	return filepath.Join(filepath.Dir(m.configPath), "identities", config.NewID()+"-ntwire")
+}
+
 // Logout clears a profile's cached SSO tokens, the GUI equivalent of
 // `ntwire logout`, so its next SSO login reopens the browser (or device
 // flow) instead of silently refreshing.
@@ -778,9 +796,14 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 		keyPath = client.DefaultIdentityFile()
 	}
 
-	passphrase, ok := m.resolvePassphrase(id, keyPath)
-	if !ok {
-		return // setFailed or cancellation already handled
+	var passphrase string
+	// Forced SSO ignores the SSH identity, including stale or encrypted files.
+	if !p.SSO {
+		var ok bool
+		passphrase, ok = m.resolvePassphrase(id, keyPath)
+		if !ok {
+			return // setFailed or cancellation already handled
+		}
 	}
 
 	m.mu.Lock()
@@ -855,7 +878,11 @@ func (m *Manager) resolvePassphrase(id, keyPath string) (string, bool) {
 		return "", true
 	}
 	needs, err := sshkey.NeedsPassphrase(keyPath)
-	if err != nil || !needs {
+	if err != nil {
+		m.setFailed(id, sshkey.IdentityError(keyPath, err))
+		return "", false
+	}
+	if !needs {
 		return "", true
 	}
 
@@ -896,6 +923,10 @@ func (m *Manager) resolvePassphrase(id, keyPath string) (string, bool) {
 		return "", false
 	}
 
+	if _, err := sshkey.PublicFromPrivateWithPassphrase(keyPath, []byte(ans.passphrase)); err != nil {
+		m.setFailed(id, fmt.Errorf("invalid or unsupported SSH private key or incorrect passphrase; see docs/CLIENT.md#private-key-formats-and-conversion"))
+		return "", false
+	}
 	m.mu.Lock()
 	if s := m.sessions[id]; s != nil {
 		s.state = StateConnecting

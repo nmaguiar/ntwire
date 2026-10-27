@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +22,8 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"golang.org/x/crypto/ssh"
 )
 
 // fakeConnector never touches the network; every Connect call succeeds
@@ -404,6 +408,55 @@ func TestKeygenCreatesIdentity(t *testing.T) {
 	if !strings.HasPrefix(out["public_key"], "ssh-ed25519 ") {
 		t.Errorf("public_key = %q, want an ssh-ed25519 OpenSSH line", out["public_key"])
 	}
+	if out["path"] != path || out["public_key_path"] != path+".pub" {
+		t.Fatalf("keygen paths = %+v", out)
+	}
+}
+
+func TestKeygenDefaultDestination(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := manager.New(fakeConnector{}, filepath.Join(dir, "gui.yaml"), filepath.Join(dir, "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{mgr: mgr}
+	var paths []string
+	for range 2 {
+		w := httptest.NewRecorder()
+		s.handleKeygen(w, httptest.NewRequest(http.MethodPost, "/api/keygen", strings.NewReader(`{}`)))
+		if w.Code != http.StatusOK {
+			t.Fatalf("keygen status = %d: %s", w.Code, w.Body.String())
+		}
+		var result map[string]string
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		path := result["path"]
+		if filepath.Dir(path) != filepath.Join(dir, "identities") || result["public_key_path"] != path+".pub" {
+			t.Fatalf("keygen paths = %+v", result)
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatalf("private key mode: %v, %v", info, err)
+		}
+		public, err := os.ReadFile(result["public_key_path"])
+		if err != nil || string(public) != result["public_key"] || result["fingerprint"] == "" {
+			t.Fatalf("public key response = %+v, file error = %v", result, err)
+		}
+		if _, err := sshkey.PublicFromPrivateWithPassphrase(path, nil); err != nil {
+			t.Fatalf("generated private key: %v", err)
+		}
+		paths = append(paths, path)
+	}
+	if paths[0] == paths[1] {
+		t.Fatal("repeated generation reused the same destination")
+	}
+	w := httptest.NewRecorder()
+	body, _ := json.Marshal(map[string]string{"path": paths[0]})
+	s.handleKeygen(w, httptest.NewRequest(http.MethodPost, "/api/keygen", bytes.NewReader(body)))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("existing key status = %d, want 400", w.Code)
+	}
 }
 
 func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
@@ -414,7 +467,15 @@ func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := part.Write([]byte("selected private key")); err != nil {
+	source := filepath.Join(t.TempDir(), "source")
+	if _, err := sshkey.GenerateIdentityFile(source); err != nil {
+		t.Fatal(err)
+	}
+	original, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(original); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -434,10 +495,82 @@ func TestImportIdentityCopiesBrowserSelectedKey(t *testing.T) {
 		message, _ := io.ReadAll(resp.Body)
 		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, message)
 	}
-	result := decode[map[string]string](t, resp)
-	key, err := os.ReadFile(result["path"])
-	if err != nil || string(key) != "selected private key" {
+	result := decode[struct {
+		Path      string `json:"path"`
+		Encrypted bool   `json:"encrypted"`
+	}](t, resp)
+	if result.Encrypted {
+		t.Fatal("unencrypted key reported encrypted")
+	}
+	key, err := os.ReadFile(result.Path)
+	if err != nil || !bytes.Equal(key, original) {
 		t.Fatalf("imported key = %q, %v", key, err)
+	}
+}
+
+func TestImportIdentityReportsEncryptedAndRejectsInvalid(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := manager.New(fakeConnector{}, filepath.Join(dir, "gui.yaml"), filepath.Join(dir, "missing.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{mgr: mgr}
+	signer, _, err := sshkey.GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(signer, "", []byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		data   []byte
+		status int
+	}{
+		{"encrypted", pem.EncodeToMemory(block), http.StatusOK},
+		{"invalid", []byte("not a private key"), http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			part, err := mw.CreateFormFile("file", "key")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = part.Write(tc.data); err != nil {
+				t.Fatal(err)
+			}
+			if err = mw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/identities/import", &body)
+			req.Header.Set("Content-Type", mw.FormDataContentType())
+			w := httptest.NewRecorder()
+			s.handleImportIdentity(w, req)
+			if w.Code != tc.status {
+				t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+			}
+			if tc.status == http.StatusOK {
+				var result struct {
+					Path      string `json:"path"`
+					Encrypted bool   `json:"encrypted"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+					t.Fatal(err)
+				}
+				if !result.Encrypted {
+					t.Fatal("encrypted key reported unencrypted")
+				}
+				if data, err := os.ReadFile(result.Path); err != nil || !bytes.Equal(data, tc.data) {
+					t.Fatalf("copied key mismatch: %v", err)
+				}
+			}
+		})
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, "identities"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("invalid import left a file: %v, %v", entries, err)
 	}
 }
 

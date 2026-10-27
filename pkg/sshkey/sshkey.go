@@ -8,6 +8,8 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -18,7 +20,20 @@ import (
 	"strings"
 
 	"github.com/kayrus/putty"
+	"github.com/youmark/pkcs8"
 	"golang.org/x/crypto/ssh"
+)
+
+var (
+	oidPBES2  = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 13}
+	oidPBKDF2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 12}
+	oidScrypt = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11591, 4, 11}
+)
+
+const (
+	maxPBKDF2Iterations = 1_000_000
+	maxScryptMemory     = 256 << 20
+	maxScryptWork       = 4_194_304
 )
 
 func ParsePublic(b []byte) (ssh.PublicKey, string, error) {
@@ -35,10 +50,92 @@ func parsePrivateKey(b, passphrase []byte) (ssh.Signer, error) {
 	if bytes.HasPrefix(b, []byte("PuTTY-User-Key-File-")) {
 		return parsePPK(b, passphrase)
 	}
+	if block, _ := pem.Decode(b); block != nil && block.Type == "ENCRYPTED PRIVATE KEY" {
+		var info struct {
+			Algorithm pkix.AlgorithmIdentifier
+			Data      []byte
+		}
+		rest, err := asn1.Unmarshal(block.Bytes, &info)
+		if err != nil || len(rest) != 0 || len(info.Data) == 0 || len(info.Algorithm.Algorithm) == 0 {
+			return nil, errors.New("malformed encrypted PKCS#8 private key")
+		}
+		if err := validateEncryptedPKCS8Parameters(info.Algorithm); err != nil {
+			return nil, err
+		}
+		if len(passphrase) == 0 {
+			return nil, &ssh.PassphraseMissingError{}
+		}
+		key, err := decryptPKCS8(block.Bytes, passphrase)
+		if err != nil {
+			return nil, errors.New("invalid or unsupported encrypted PKCS#8 private key, or incorrect passphrase")
+		}
+		return ssh.NewSignerFromKey(key)
+	}
 	if len(passphrase) > 0 {
 		return ssh.ParsePrivateKeyWithPassphrase(b, passphrase)
 	}
 	return ssh.ParsePrivateKey(b)
+}
+
+// validateEncryptedPKCS8Parameters rejects password KDF settings that could
+// consume excessive client CPU or memory before the dependency derives a key.
+func validateEncryptedPKCS8Parameters(algorithm pkix.AlgorithmIdentifier) error {
+	if !algorithm.Algorithm.Equal(oidPBES2) {
+		return nil
+	}
+	var params struct {
+		KDF        pkix.AlgorithmIdentifier
+		Encryption pkix.AlgorithmIdentifier
+	}
+	rest, err := asn1.Unmarshal(algorithm.Parameters.FullBytes, &params)
+	if err != nil || len(rest) != 0 {
+		return errors.New("malformed encrypted PKCS#8 private key")
+	}
+	switch {
+	case params.KDF.Algorithm.Equal(oidPBKDF2):
+		var p struct {
+			Salt       []byte
+			Iterations int
+		}
+		rest, err := asn1.Unmarshal(params.KDF.Parameters.FullBytes, &p)
+		if err != nil || len(rest) != 0 || p.Iterations <= 0 || p.Iterations > maxPBKDF2Iterations {
+			return errors.New("encrypted PKCS#8 private key uses unsafe PBKDF2 parameters")
+		}
+	case params.KDF.Algorithm.Equal(oidScrypt):
+		var p struct {
+			Salt        []byte
+			Cost        int
+			BlockSize   int
+			Parallelism int
+		}
+		rest, err := asn1.Unmarshal(params.KDF.Parameters.FullBytes, &p)
+		if err != nil || len(rest) != 0 || !safeScryptParameters(p.Cost, p.BlockSize, p.Parallelism) {
+			return errors.New("encrypted PKCS#8 private key uses unsafe scrypt parameters")
+		}
+	}
+	return nil
+}
+
+func safeScryptParameters(cost, blockSize, parallelism int) bool {
+	if cost <= 1 || cost&(cost-1) != 0 || blockSize <= 0 || parallelism <= 0 {
+		return false
+	}
+	// scrypt uses about 128*N*r bytes and work proportional to N*r*p.
+	if cost > maxScryptMemory/128/blockSize {
+		return false
+	}
+	return cost <= maxScryptWork/blockSize/parallelism
+}
+
+// The dependency may panic on malformed cipher parameters; reject such input.
+func decryptPKCS8(der, passphrase []byte) (key any, err error) {
+	defer func() {
+		if recover() != nil {
+			key = nil
+			err = errors.New("malformed encrypted key")
+		}
+	}()
+	return pkcs8.ParsePKCS8PrivateKey(der, passphrase)
 }
 
 // NeedsPassphrase reports whether the key at path is encrypted. It returns
@@ -54,6 +151,15 @@ func NeedsPassphrase(path string) (bool, error) {
 		return true, nil
 	}
 	return false, err
+}
+
+// IdentityError describes an unreadable or invalid identity without exposing its contents.
+func IdentityError(path string, err error) error {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("cannot read SSH private key %q: %w", path, err)
+	}
+	return fmt.Errorf("invalid or unsupported SSH private key %q; see docs/CLIENT.md#private-key-formats-and-conversion for supported formats and conversion guidance", path)
 }
 
 func SignFile(path string, message []byte) (string, error) {

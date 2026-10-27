@@ -117,3 +117,54 @@ Use `ntwire update --check` to check a signed stable release, `ntwire update` fo
 an interactive installation, or `ntwire update --yes` for unattended installation.
 The CLI never checks automatically or prompts for elevation. See
 [Client updates](UPDATES.md) for supported locations, verification and recovery.
+
+## Private-key formats and conversion
+
+SSH identities are detected by content, regardless of filename. ntwire accepts
+OpenSSH private keys, traditional PEM, unencrypted PKCS#8 PEM, encrypted
+PKCS#8 PEM (`ENCRYPTED PRIVATE KEY`), and PuTTY PPK v2/v3. Encrypted PKCS#8
+uses PKCS#5 v2 PBES2 with PBKDF2 or scrypt and AES-CBC or 3DES-CBC; legacy
+PKCS#5 v1 schemes are unsupported. To keep imported files from exhausting
+client resources, PBKDF2 is limited to 1,000,000 iterations and scrypt is
+limited to 256 MiB of memory and 4,194,304 `N*r*p` work units. RSA, ECDSA and
+Ed25519 keys are supported. Encrypted keys require a passphrase. Raw DER,
+PKCS#12, SSH-agent identities and hardware-backed keys are not directly
+supported.
+
+Keep the original file. Run these commands in a private directory, choose a
+new output name that does not already exist, and enter passwords interactively.
+The shell's `umask` protects newly created files; the examples do not print
+private key material. OpenSSL may require its legacy provider for old PKCS#12
+files.
+
+```sh
+umask 077
+# Extract the private key, choosing a new output encryption password:
+openssl pkcs12 -in identity.p12 -nocerts -out identity-from-p12.pem
+# Convert a DER PKCS#8 private key to encrypted PEM:
+openssl pkey -inform DER -in identity.der -aes256 -out identity-from-der.pem
+```
+
+For an SSH2/RFC 4716 private-key export accepted by your version of OpenSSH,
+import it to a new file and then protect the resulting key with a passphrase:
+
+```sh
+umask 077
+ssh-keygen -i -m RFC4716 -f ssh2-private-key > identity-from-ssh2
+ssh-keygen -p -f identity-from-ssh2
+```
+
+OpenSSH's SSH2 import supports only certain private-key encodings and key types;
+if it rejects your export, use the exporting application's private-key conversion
+feature or ask the administrator for a supported private key. RFC 4716 commonly
+contains public keys: a public key or certificate alone cannot be converted into
+its private key.
+
+Verify the identity against the administrator-authorized public key before use.
+For an OpenSSH private key, `ssh-keygen -y -f identity-from-ssh2` produces its
+public key; compare its `ssh-keygen -lf` fingerprint with the authorized key's
+fingerprint. For PKCS#8, use a tool that can derive an SSH public key from the
+specific key type, or ask the administrator to compare the derived public key.
+For PEM keys OpenSSL can extract the public component with
+`openssl pkey -in identity-from-p12.pem -pubout -out public.pem`; share only
+public material, never the private key or passphrase.

@@ -1095,7 +1095,7 @@ func resolveKeyPassphrase(keyPath string, u *ui.UI) (string, error) {
 	}
 	needs, err := sshkey.NeedsPassphrase(keyPath)
 	if err != nil {
-		return "", err
+		return "", sshkey.IdentityError(keyPath, err)
 	}
 	if !needs {
 		return "", nil

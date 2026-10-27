@@ -53,9 +53,8 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 
 	lastUpdateTitle := "Check for updates…"
 	m := newMenu(mgr, openSettings, openSetup)
-	updateItem := systray.AddMenuItem("Check for updates…", "Open update settings")
 	go func() {
-		for range updateItem.ClickedCh {
+		for range m.update.ClickedCh {
 			if openSettings != nil {
 				openSettings()
 			}
@@ -85,7 +84,7 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 				if UpdateStatus != nil {
 					title := UpdateStatus()
 					if title != lastUpdateTitle {
-						updateItem.SetTitle(title)
+						m.update.SetTitle(title)
 						lastUpdateTitle = title
 					}
 				}

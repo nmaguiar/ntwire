@@ -187,3 +187,28 @@ explicit administrator authorization action. See [Client updates](UPDATES.md)
 for the preferences, screenshot, signing setup, recovery, and platform acceptance
 checklist. Production updating remains unavailable until a public key and release
 signing secret have been provisioned.
+
+## SSH identities in the settings window
+
+Selecting a private key with the file picker copies it into the GUI's
+`identities` directory next to its configuration file (normally
+`~/.ntwire/identities/`). The original remains in place. The GUI displays the
+copy's path and checks its format; encrypted keys are checked fully when you
+enter the passphrase during connection. Alternatively, enter a path to use an
+existing key in place. Save the profile after changing its identity.
+
+Generate an identity from setup, a profile, or the Profiles panel. The GUI
+shows the private and public key paths, fingerprint, and public key. Generated
+private keys are unencrypted: keep them private and give only the public key to
+your administrator for server authorization. Setup selects the generated key
+for its connection; profile edits must be saved. Generating from the Profiles
+panel lets you choose a profile or start a new one. A connected profile uses
+changes on its next connection.
+
+Expand a profile's SSH identity details to see the path selected for its next
+connection, including automatic discovery, or whether forced SSO ignores SSH
+keys. A key recognized locally still needs authorization on the server. Errors
+identify unreadable or unsupported keys and let you retry or select another
+key; an incorrect passphrase and damaged encrypted key may produce the same
+error. For supported formats and conversion examples, see
+[Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).

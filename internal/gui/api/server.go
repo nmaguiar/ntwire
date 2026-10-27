@@ -15,8 +15,6 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
@@ -25,6 +23,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/webui"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
+	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
 
 // Server is the loopback HTTP+SSE API in front of a Manager.
@@ -354,28 +353,14 @@ func (s *Server) handleKeygen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Path == "" {
-		body.Path = ""
-		// GenerateIdentity intentionally accepts an explicit destination. The
-		// page no longer asks a browser user to type one, so reserve a private
-		// GUI-owned path by importing an empty filename only for its directory.
-		// The random name also makes repeated key generation non-destructive.
-		path, err := s.mgr.ImportIdentity("ntwire", strings.NewReader(""))
-		if err != nil {
-			writeError(w, http.StatusBadRequest, err)
-			return
-		}
-		if err := os.Remove(path); err != nil {
-			writeError(w, http.StatusInternalServerError, err)
-			return
-		}
-		body.Path = path
+		body.Path = s.mgr.NewIdentityPath()
 	}
 	fingerprint, publicKey, err := s.mgr.GenerateIdentity(body.Path)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"fingerprint": fingerprint, "public_key": publicKey})
+	writeJSON(w, http.StatusOK, map[string]string{"fingerprint": fingerprint, "public_key": publicKey, "path": body.Path, "public_key_path": body.Path + ".pub"})
 }
 
 // handleImportIdentity accepts a key selected using the browser's standard
@@ -398,7 +383,12 @@ func (s *Server) handleImportIdentity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"path": path})
+	encrypted, err := sshkey.NeedsPassphrase(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, sshkey.IdentityError(path, err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "encrypted": encrypted})
 }
 
 func (s *Server) handleAnswerTrust(w http.ResponseWriter, r *http.Request) {
