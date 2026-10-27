@@ -596,6 +596,9 @@ func raceDialAddrs(ctx context.Context, dialFn func(context.Context, string) (ne
 
 func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
+	if err == nil && net.ParseIP(host) != nil && !matchesIPVersion(address, ipVersion) {
+		return nil, fmt.Errorf("%s is not IPv%s", host, ipVersion)
+	}
 	if err != nil || net.ParseIP(host) != nil {
 		return (&net.Dialer{}).DialContext(ctx, network, address)
 	}
@@ -614,6 +617,9 @@ func raceResolvedDial(ctx context.Context, network, address, ipVersion string) (
 
 func raceSOCKSResolvedDial(ctx context.Context, socksDialer proxy.Dialer, network, address, ipVersion string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(address)
+	if err == nil && net.ParseIP(host) != nil && !matchesIPVersion(address, ipVersion) {
+		return nil, fmt.Errorf("%s is not IPv%s", host, ipVersion)
+	}
 	if err != nil || net.ParseIP(host) != nil {
 		if cd, ok := socksDialer.(proxy.ContextDialer); ok {
 			return cd.DialContext(ctx, network, address)

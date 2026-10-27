@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -990,10 +991,15 @@ func TestProxy_SOCKS5_IPVersion4(t *testing.T) {
 
 // 15. --ip-version 6 behaves correctly with SOCKS5/local DNS.
 func TestProxy_SOCKS5_IPVersion6(t *testing.T) {
+	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer targetServer.Close()
+
 	socksServer := startTestSOCKS5Server(t, "", "")
 	defer socksServer.Close()
 
-	client, err := httpClient("http://127.0.0.1:8080", Options{
+	client, err := httpClient(targetServer.URL, Options{
 		HTTPSProxy: "socks5://" + socksServer.Addr(),
 		IPVersion:  "6",
 	})
@@ -1001,10 +1007,31 @@ func TestProxy_SOCKS5_IPVersion6(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 127.0.0.1 is an IPv4 literal, so IPVersion 6 must reject it or fail to connect
-	_, err = client.Get("http://127.0.0.1:8080/test")
+	// Reject the literal before asking the proxy to connect, regardless of
+	// whether the target would otherwise be reachable.
+	_, err = client.Get(targetServer.URL + "/test")
 	if err == nil {
 		t.Fatal("expected request to IPv4 target with IPVersion 6 to fail")
+	}
+	if got := socksServer.RequestCount(); got != 0 {
+		t.Fatalf("expected no SOCKS requests for mismatched address family, got %d", got)
+	}
+}
+
+func TestRaceResolvedDial_RejectsMismatchedLiteral(t *testing.T) {
+	for _, tc := range []struct{ address, version string }{
+		{"127.0.0.1:8080", "6"},
+		{"[::1]:8080", "4"},
+	} {
+		t.Run(tc.address, func(t *testing.T) {
+			conn, err := raceResolvedDial(context.Background(), "tcp", tc.address, tc.version)
+			if conn != nil {
+				conn.Close()
+			}
+			if err == nil || !strings.Contains(err.Error(), "is not IPv"+tc.version) {
+				t.Fatalf("expected address family error, got %v", err)
+			}
+		})
 	}
 }
 

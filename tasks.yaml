@@ -5,6 +5,7 @@
 #   ojob tasks.yaml op=client
 #   ojob tasks.yaml op=docker dockerTag=dev
 #   ojob tasks.yaml op=tidy
+#   ojob tasks.yaml op=upgrade
 
 help:
   text: Build, test, package, and maintain ntwire.
@@ -30,6 +31,7 @@ help:
     - release
     - deps
     - tidy
+    - upgrade
     - format
     - docker
     - docker-client
@@ -55,7 +57,7 @@ init:
 
 todo:
 - (ask):
-    op: option.['all'|'build'|'client'|'server'|'relay'|'gui'|'test'|'race'|'fuzz'|'check'|'release'|'deps'|'tidy'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
+    op: option.['all'|'build'|'client'|'server'|'relay'|'gui'|'test'|'race'|'fuzz'|'check'|'release'|'deps'|'tidy'|'upgrade'|'format'|'docker'|'docker-client'|'docker-server'|'docker-relay'|'compose-up'|'compose-down'|'compose-logs'|'e2e'|'clean']
   ((question)): "Operation to perform:"
 - (optionOn): op
   ((lowerCase)): true
@@ -86,6 +88,8 @@ todo:
     - Verify dependencies
     tidy:
     - Tidy dependencies
+    upgrade:
+    - Upgrade dependencies
     format:
     - Format
     docker:
@@ -129,6 +133,25 @@ jobs:
     GO_BUILD_CACHE="{{goCache}}"
     test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
     mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go mod tidy
+
+- name: Upgrade dependencies
+  lang: shell
+  exec: |
+    GO_BUILD_CACHE="{{goCache}}"
+    test -n "$GO_BUILD_CACHE" || GO_BUILD_CACHE="{{init.goCache}}"
+    mkdir -p "$GO_BUILD_CACHE"
+    GOCACHE="$GO_BUILD_CACHE" go get -u ./... || exit $?
+    # These dependencies expose APIs tied to their parent modules' revisions.
+    # A blanket upgrade can select incompatible newer transitive revisions.
+    for pair in 'golang.zx2c4.com/wireguard gvisor.dev/gvisor' 'k8s.io/apimachinery k8s.io/kube-openapi'; do
+      set -- $pair
+      MODULE_FILE=$(GOCACHE="$GO_BUILD_CACHE" go list -m -json "$1" | sed -n 's/^[[:space:]]*"GoMod": "\([^"]*\)".*/\1/p')
+      test -n "$MODULE_FILE" || { echo "Unable to locate go.mod for $1" >&2; exit 1; }
+      REVISION=$(awk -v module="$2" '$1 == module { print $2; exit }' "$MODULE_FILE")
+      test -n "$REVISION" || { echo "Unable to find $2 in $MODULE_FILE" >&2; exit 1; }
+      go mod edit -require="$2@$REVISION" || exit $?
+    done
     GOCACHE="$GO_BUILD_CACHE" go mod tidy
 
 - name: Check formatting
