@@ -13,19 +13,27 @@ include:
 
 jobs:
 - name: Create badge
-  check:
-    in:
-      input: isString
-      file: isString
-      label: isString
   exec: |
-    var counts = io.readFileJSON(args.input)
-    ;["CRITICAL", "HIGH", "MEDIUM", "LOW"].forEach(level => {
-      if (typeof counts[level] !== "number" || counts[level] < 0) throw "Invalid severity count: " + level
+    var entries = []
+    if (isString(args.directory)) {
+      entries = io.listFiles(args.directory).files.filter(f => /^binary-.*\.counts\.json$/.test(f.filename)).map(f => {
+        var name = f.filename.replace(/\.counts\.json$/, "")
+        return { input: args.directory + "/" + f.filename, file: args.directory + "/" + name + ".svg", label: name.replace(/^binary-/, "") }
+      })
+      if (entries.length === 0) throw "No binary counts found"
+    } else {
+      if (!isString(args.input) || !isString(args.file) || !isString(args.label)) throw "Missing badge input, file or label"
+      entries = [args]
+    }
+    entries.forEach(entry => {
+      var counts = io.readFileJSON(entry.input)
+      ;["CRITICAL", "HIGH", "MEDIUM", "LOW"].forEach(level => {
+        if (typeof counts[level] !== "number" || counts[level] < 0) throw "Invalid severity count: " + level
     })
-    args.status = "(CRIT: " + counts.CRITICAL + ", HIGH: " + counts.HIGH + ", MED: " + counts.MEDIUM + ", LOW: " + counts.LOW + ")"
-    if (counts.UNKNOWN > 0) args.status = args.status.slice(0, -1) + ", UNKNOWN: " + counts.UNKNOWN + ")"
-    args.color = counts.CRITICAL > 0 ? "red" : counts.HIGH > 0 ? "orange" : counts.MEDIUM > 0 || counts.UNKNOWN > 0 ? "yellow" : counts.LOW > 0 ? "yellowgreen" : "green"
-    args.labelColor = "grey3"
-    args.icon = "nattrmon.svg"
-    $job("Badgen generate file", args)
+    entry.status = "(CRIT: " + counts.CRITICAL + ", HIGH: " + counts.HIGH + ", MED: " + counts.MEDIUM + ", LOW: " + counts.LOW + ")"
+    if (counts.UNKNOWN > 0) entry.status = entry.status.slice(0, -1) + ", UNKNOWN: " + counts.UNKNOWN + ")"
+    entry.color = counts.CRITICAL > 0 ? "red" : counts.HIGH > 0 ? "orange" : counts.MEDIUM > 0 || counts.UNKNOWN > 0 ? "yellow" : counts.LOW > 0 ? "yellowgreen" : "green"
+    entry.labelColor = "grey3"
+    entry.icon = "nattrmon.svg"
+    $job("Badgen generate file", entry)
+    })

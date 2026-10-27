@@ -12,7 +12,7 @@ binding a local tunnel beyond loopback.
 
 ## Weekly security scans
 
-The weekly image build scans the published image digests with Trivy and freshly built release variants with govulncheck. Image badges show critical, high, medium, and low counts; binary badges show the total findings. Each badge links to a report with the source commit, artifact identity, scan time, severity counts, and scanner output. Go findings are counted as unknown severity. Findings do not block publication; failed scans do. Reports appear after the first successful scheduled or manual run.
+The weekly image build scans the published image digests with Trivy and freshly built release variants with govulncheck. Badges show counts by severity; govulncheck findings are counted as unknown because they are not assigned a severity here. Each badge links to a report with the source commit, artifact identity, scan time, severity counts, and scanner output. Findings do not block publication; failed scans do. Reports appear after the first successful scheduled or manual run.
 
 ### Container images
 
