@@ -326,6 +326,15 @@ func (m *Manager) Snapshots() []Snapshot {
 
 func snapshotOf(s *session) Snapshot {
 	snap := Snapshot{Profile: s.profile, State: s.state, Prompt: s.prompt}
+	if s.profile.SSO {
+		snap.IdentitySource = "sso"
+	} else if s.profile.IdentityFile != "" {
+		snap.IdentityPath = s.profile.IdentityFilePath()
+		snap.IdentitySource = "explicit"
+	} else if path := client.DefaultIdentityFile(); path != "" {
+		snap.IdentityPath = path
+		snap.IdentitySource = "automatic"
+	}
 	if s.err != nil {
 		snap.Err = s.err.Error()
 	}
@@ -599,6 +608,11 @@ func (m *Manager) GenerateIdentity(path string) (fingerprint, publicKey string, 
 		return fingerprint, "", err
 	}
 	return fingerprint, string(pub), nil
+}
+
+// NewIdentityPath returns a unique GUI-owned destination for a new identity.
+func (m *Manager) NewIdentityPath() string {
+	return filepath.Join(filepath.Dir(m.configPath), "identities", config.NewID()+"-ntwire")
 }
 
 // Logout clears a profile's cached SSO tokens, the GUI equivalent of

@@ -555,6 +555,47 @@ func TestImportIdentityCopiesToPrivateGUIStorage(t *testing.T) {
 	}
 }
 
+func TestSnapshotIdentitySelection(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	m, _ := newTestManager(t, &fakeConnector{})
+	p, err := m.AddProfile(config.Profile{Name: "identity", Server: "https://example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := m.Snapshot(p.ID)
+	if snap.IdentityPath != "" || snap.IdentitySource != "" {
+		t.Fatalf("unexpected identity: %+v", snap)
+	}
+	defaultPath := filepath.Join(home, ".ntwire", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(defaultPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(defaultPath, []byte("key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = m.Snapshot(p.ID)
+	if snap.IdentityPath != defaultPath || snap.IdentitySource != "automatic" {
+		t.Fatalf("automatic identity: %+v", snap)
+	}
+	p.IdentityFile = "~/chosen"
+	if err := m.UpdateProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = m.Snapshot(p.ID)
+	if snap.IdentityPath != filepath.Join(home, "chosen") || snap.IdentitySource != "explicit" {
+		t.Fatalf("explicit identity: %+v", snap)
+	}
+	p.SSO = true
+	if err := m.UpdateProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ = m.Snapshot(p.ID)
+	if snap.IdentityPath != "" || snap.IdentitySource != "sso" {
+		t.Fatalf("SSO identity: %+v", snap)
+	}
+}
+
 func TestLogoutForUnknownProfileFails(t *testing.T) {
 	m, _ := newTestManager(t, &fakeConnector{})
 	if err := m.Logout("no-such-id"); err == nil {

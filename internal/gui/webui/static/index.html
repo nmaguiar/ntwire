@@ -47,7 +47,10 @@ legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-
 .msg-close{display:inline-flex;align-items:center;justify-content:center;width:1.2rem;height:1.2rem;padding:0;margin-left:.35rem;border:1px solid transparent;border-radius:6px;background:transparent;color:inherit;opacity:.75;font-size:.85rem;cursor:pointer;line-height:1}
 .msg-close:hover,.msg-close:focus-visible{opacity:1;background:color-mix(in srgb,currentColor 15%,transparent);border-color:color-mix(in srgb,currentColor 30%,transparent)}
 .overlay{position:fixed;inset:0;background:rgba(10,14,24,.55);display:flex;align-items:center;justify-content:center;padding:1rem;z-index:50}
-.modal{background:var(--panel);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.5rem;max-width:32rem;width:100%}
+.modal{max-height:calc(100vh - 2rem);overflow:auto;background:var(--panel);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.5rem;max-width:32rem;width:100%}
+.identity-status{overflow-wrap:anywhere;font-size:.85rem;margin:.5rem 0;color:var(--muted)}
+.identity-status.error{color:var(--danger)}
+.identity-details{overflow-wrap:anywhere;font-size:.85rem;color:var(--muted)}
 .modal h3{margin:0 0 .5rem}
 .modal.danger{border-color:var(--danger)}
 .modal .fingerprint{font:600 .9rem ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--panel-2);border:1px solid var(--border);border-radius:8px;padding:.4rem .55rem;word-break:break-all}
@@ -78,8 +81,10 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
     </form>
     <div class="hidden" id="setup-key">
       <p>Your server does not offer single sign-on. Choose the SSH private key your administrator authorized for this connection.</p>
+      <p class="help">Choosing a key copies it into ntwire's private storage. Your original file stays where it is.</p>
       <label>SSH private key<input type="file" id="setup-identity-file" accept=".ppk,.pem,.key,.pub,id_*,*/*"></label>
-      <div class="row"><button id="setup-identity-btn" type="button">Choose key and connect</button></div>
+      <p id="setup-identity-status" class="identity-status" role="status"></p>
+      <div class="row"><button id="setup-identity-btn" type="button">Use key and connect</button><button class="secondary" id="setup-keygen-btn" type="button">Generate new identity…</button></div>
     </div>
   </section>
 
@@ -136,6 +141,7 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   <footer id="build-version" class="build-version" hidden></footer>
 </main>
 
+<div id="identity-modal-root"></div>
 <div id="modal-root"></div>
 
 <script>
@@ -197,6 +203,10 @@ const setupForm = document.getElementById('setup-form');
 const setupKey = document.getElementById('setup-key');
 const setupIdentityFile = document.getElementById('setup-identity-file');
 const setupIdentityBtn = document.getElementById('setup-identity-btn');
+const setupIdentityStatus = document.getElementById('setup-identity-status');
+const setupKeygenBtn = document.getElementById('setup-keygen-btn');
+const identityModalRoot = document.getElementById('identity-modal-root');
+let setupIdentityPath = '';
 const setupCancelBtn = document.getElementById('setup-cancel-btn');
 const setupMode = new URLSearchParams(location.search).get('setup') === '1';
 
@@ -215,9 +225,20 @@ async function api(method, path, body) {
     headers: body !== undefined ? {'Content-Type': 'application/json'} : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+  if (!r.ok) throw new Error(await responseError(r));
   const ct = r.headers.get('content-type') || '';
   return ct.includes('application/json') ? r.json() : null;
+}
+
+async function responseError(response) {
+  const body = await response.text().catch(() => '');
+  try { return JSON.parse(body).error || body || response.statusText; }
+  catch (_) { return body || response.statusText; }
+}
+
+function identityStatus(el, message, error = false) {
+  el.textContent = message;
+  el.classList.toggle('error', error);
 }
 
 async function importIdentity(file) {
@@ -225,7 +246,7 @@ async function importIdentity(file) {
   const data = new FormData();
   data.append('file', file, file.name);
   const r = await fetch(q('/api/identities/import'), {method: 'POST', body: data});
-  if (!r.ok) throw new Error(await r.text().catch(() => r.statusText));
+  if (!r.ok) throw new Error(await responseError(r));
   return r.json();
 }
 
@@ -322,7 +343,10 @@ function renderSetup() {
       setupKey.classList.remove('hidden');
       setupIdentityFile.focus();
     } else {
-      setMessage(snap.error || 'Could not connect. Check the address and try again.');
+      if (!setupKey.classList.contains('hidden')) {
+        clearMessage();
+        identityStatus(setupIdentityStatus, (snap.error || 'Could not connect. Check the key and try again.') + ' You can try again or choose another key.', true);
+      } else setMessage(snap.error || 'Could not connect. Check the address and try again.');
     }
   }
 }
@@ -339,18 +363,42 @@ setupForm.addEventListener('submit', async event => {
   } catch (e) { setMessage(e.message); }
 });
 
+async function setSetupIdentity(path) {
+  const snap = profiles.get(setupProfileID);
+  if (!snap) throw new Error('The connection setup expired. Please start again.');
+  await api('PUT', `/api/profiles/${setupProfileID}`, {...snap.profile, IdentityFile: path});
+  setupIdentityPath = path;
+  snap.profile.IdentityFile = path;
+}
+
+setupIdentityFile.addEventListener('change', () => {
+  if (setupIdentityFile.files.length) identityStatus(setupIdentityStatus, 'Ready to copy ' + setupIdentityFile.files[0].name + '.');
+});
+
 setupIdentityBtn.addEventListener('click', async () => {
+  setupIdentityBtn.disabled = true;
+  setupKeygenBtn.disabled = true;
   try {
-    const imported = await importIdentity(setupIdentityFile.files[0]);
-    const snap = profiles.get(setupProfileID);
-    if (!snap) throw new Error('The connection setup expired. Please start again.');
-    await api('PUT', `/api/profiles/${setupProfileID}`, {
-      Name: snap.profile.Name, Server: snap.profile.Server, IdentityFile: imported.path,
-    });
+    if (setupIdentityFile.files.length) {
+      identityStatus(setupIdentityStatus, 'Copying and checking your key…');
+      const imported = await importIdentity(setupIdentityFile.files[0]);
+      await setSetupIdentity(imported.path);
+      setupIdentityFile.value = '';
+      identityStatus(setupIdentityStatus, `Copied to ${imported.path}. ${imported.encrypted ? 'The encrypted key will be fully checked after you enter its passphrase.' : 'The key was recognized locally; the server must also authorize its public key.'}`);
+    } else if (!setupIdentityPath) {
+      throw new Error('Choose a private key or generate an identity first.');
+    }
     await api('POST', `/api/profiles/${setupProfileID}/connect`);
     setMessage('Connecting with your key…', 'info', 0);
-  } catch (e) { setMessage(e.message); }
+  } catch (e) { identityStatus(setupIdentityStatus, e.message, true); }
+  finally { setupIdentityBtn.disabled = false; setupKeygenBtn.disabled = false; }
 });
+
+setupKeygenBtn.addEventListener('click', () => generateIdentity(setupKeygenBtn, setupIdentityStatus, async result => {
+  await setSetupIdentity(result.path);
+  setupIdentityFile.value = '';
+  identityStatus(setupIdentityStatus, `Identity saved for this connection: ${result.path}. Give its public key to your administrator before connecting.`);
+}));
 
 setupCancelBtn.addEventListener('click', () => {
   setupPanel.classList.add('hidden');
@@ -470,6 +518,22 @@ function renderProfileRow(snap) {
   }
 
   block.append(infoRow, actions);
+  const identity = document.createElement('details');
+  identity.className = 'identity-details';
+  const summary = document.createElement('summary');
+  summary.textContent = 'SSH identity for next connection';
+  const desc = document.createElement('p');
+  if (snap.identity_source === 'sso') desc.textContent = 'Forced SSO is enabled; the SSH identity is ignored.';
+  else if (snap.identity_path) desc.textContent = `${snap.identity_source === 'automatic' ? 'Automatically discovered' : 'Selected'}: ${snap.identity_path}`;
+  else desc.textContent = 'No SSH identity selected or automatically discovered. SSO may be used if the server offers it.';
+  identity.append(summary, desc);
+  if (snap.state === 'failed') {
+    const guidance = document.createElement('p');
+    guidance.textContent = 'Check the error above, then retry or edit the profile to choose another key. A recognized key must also be authorized by the server.';
+    identity.open = true;
+    identity.append(guidance);
+  }
+  block.append(identity);
 
   // Line 3: local target ports for a running connection, collapsed by
   // default -- most visits to this page don't need it.
@@ -570,6 +634,7 @@ function fieldControl(f, value, profile) {
   }
   const label = document.createElement('label');
   label.append(f.label);
+  let container = label;
   let input;
   if (f.widget === 'portmap') {
     // The Ports field pairs with a same-named Hosts field that has no
@@ -590,31 +655,49 @@ function fieldControl(f, value, profile) {
     if (value !== undefined && value !== null) input.value = value;
   }
   label.append(input);
-  if (f.widget === 'path') {
-    // A browser intentionally hides a selected file's source path. For
-    // identity files the setup flow imports the selected file into ntwire's
-    // private directory; the advanced editor keeps a text path for output
-    // paths and existing machine-local configuration.
+  if (f.field === 'IdentityFile') {
+    const help = document.createElement('p');
+    help.className = 'help';
+    help.textContent = "Choosing a key copies it into ntwire's private storage. Your original file stays where it is. Type a path to use a key in place.";
     const picker = document.createElement('input');
     picker.type = 'file';
-    picker.className = 'secondary';
-    picker.title = 'Choose a file';
+    picker.accept = '.ppk,.pem,.key,.pub,id_*,*/*';
+    picker.title = 'Choose an SSH private key to copy';
+    const pickerLabel = document.createElement('label');
+    pickerLabel.append('Choose a private key to copy', picker);
+    const status = document.createElement('p');
+    status.className = 'identity-status';
+    status.setAttribute('role', 'status');
+    const generate = document.createElement('button');
+    generate.type = 'button';
+    generate.className = 'secondary';
+    generate.textContent = 'Generate new identity…';
     picker.addEventListener('change', async () => {
+      if (!picker.files.length) return;
+      picker.disabled = true;
+      generate.disabled = true;
+      identityStatus(status, 'Copying and checking your key…');
       try {
         const imported = await importIdentity(picker.files[0]);
         input.value = imported.path;
-        setMessage('Selected file imported for this profile.', 'ok');
-      } catch (e) { setMessage(e.message); }
+        identityStatus(status, `Copied to ${imported.path}. ${imported.encrypted ? 'The encrypted key will be fully checked after you enter its passphrase. ' : 'The key was recognized locally; the server must also authorize its public key. '}Save the profile to use it.`);
+      } catch (e) { identityStatus(status, e.message, true); }
+      finally { picker.value = ''; picker.disabled = false; generate.disabled = false; }
     });
-    label.append(picker);
+    generate.addEventListener('click', () => generateIdentity(generate, status, async result => {
+      input.value = result.path;
+      identityStatus(status, `Identity created at ${result.path}. Save the profile to use it.`);
+    }));
+    container = document.createElement('div');
+    container.append(label, help, pickerLabel, generate, status);
   }
   if (f.help) {
     const help = document.createElement('p');
     help.className = 'help';
     help.textContent = f.help;
-    label.append(help);
+    container.append(help);
   }
-  return label;
+  return container;
 }
 
 function oidcClientSecretControl(profile) {
@@ -782,11 +865,122 @@ form.addEventListener('submit', async (e) => {
 document.getElementById('add-profile-btn').addEventListener('click', () => openForm(null));
 document.getElementById('cancel-form-btn').addEventListener('click', closeForm);
 
-document.getElementById('keygen-btn').addEventListener('click', async () => {
+// Key generation has its own dialog root so connection prompts remain independent.
+async function generateIdentity(button, status, assign) {
+  button.disabled = true;
+  identityStatus(status, 'Generating identity…');
   try {
     const result = await api('POST', '/api/keygen', {});
-    alert(`Identity created.\nFingerprint: ${result.fingerprint}\n\nPublic key (give this to your administrator):\n${result.public_key}`);
-  } catch (e) { setMessage(e.message); }
+    identityStatus(status, `Identity created at ${result.path}.`);
+    let assignmentError = '';
+    if (assign) {
+      try { await assign(result); } catch (e) { assignmentError = e.message; }
+    }
+    showIdentityResult(result, assignmentError ? assign : null, !!assign, assignmentError);
+  } catch (e) { identityStatus(status, e.message, true); }
+  finally { button.disabled = false; }
+}
+
+function showIdentityResult(result, assign, hasContext, assignmentError) {
+  const modal = document.createElement('div');
+  modal.className = 'modal';
+  modal.setAttribute('role', 'dialog');
+  modal.setAttribute('aria-modal', 'true');
+  modal.setAttribute('aria-labelledby', 'identity-result-title');
+  const title = document.createElement('h3');
+  title.id = 'identity-result-title';
+  title.textContent = 'Identity created';
+  const details = document.createElement('p');
+  details.className = 'identity-details';
+  details.textContent = `Private key: ${result.path}\nPublic key: ${result.public_key_path}\nFingerprint: ${result.fingerprint}`;
+  details.style.whiteSpace = 'pre-wrap';
+  const guidance = document.createElement('p');
+  guidance.textContent = 'The private key is unencrypted. Keep it private. Give the public key below to your administrator for authorization before connecting.';
+  const label = document.createElement('label');
+  label.textContent = 'Public key';
+  const publicKey = document.createElement('textarea');
+  publicKey.readOnly = true;
+  publicKey.value = result.public_key;
+  label.append(publicKey);
+  const feedback = document.createElement('p');
+  feedback.className = 'identity-status';
+  feedback.setAttribute('role', 'status');
+  if (assignmentError) identityStatus(feedback, 'Identity created, but could not be selected: ' + assignmentError, true);
+  else if (hasContext) identityStatus(feedback, 'Identity selected.');
+  const actions = document.createElement('div');
+  actions.className = 'row';
+  const copy = document.createElement('button');
+  copy.type = 'button';
+  copy.className = 'secondary';
+  copy.textContent = 'Copy public key';
+  copy.addEventListener('click', async () => {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(result.public_key);
+      identityStatus(feedback, 'Public key copied.');
+    } catch (_) {
+      publicKey.focus(); publicKey.select();
+      identityStatus(feedback, 'Could not copy automatically. The public key is selected so you can copy it.', true);
+    }
+  });
+  actions.append(copy);
+  if (assign) {
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.textContent = 'Use this identity';
+    use.addEventListener('click', async () => {
+      use.disabled = true;
+      try { await assign(result); identityStatus(feedback, 'Identity selected.'); use.disabled = true; }
+      catch (e) { identityStatus(feedback, e.message, true); use.disabled = false; }
+    });
+    actions.append(use);
+  } else if (!hasContext) {
+    const chooser = document.createElement('select');
+    chooser.setAttribute('aria-label', 'Profile for generated identity');
+    const fresh = document.createElement('option');
+    fresh.value = ''; fresh.textContent = 'New profile'; chooser.append(fresh);
+    for (const snap of [...profiles.values()].sort((a, b) => a.profile.Name.localeCompare(b.profile.Name))) {
+      const option = document.createElement('option');
+      option.value = snap.profile.ID; option.textContent = snap.profile.Name; chooser.append(option);
+    }
+    const use = document.createElement('button');
+    use.type = 'button'; use.textContent = 'Use in profile';
+    use.addEventListener('click', () => {
+      const selected = chooser.value ? profiles.get(chooser.value) : null;
+      if (chooser.value && !selected) { identityStatus(feedback, 'That profile is no longer available.', true); return; }
+      openForm(selected ? selected.profile : null);
+      const field = form.elements.IdentityFile;
+      if (!field) { identityStatus(feedback, 'Could not open the identity field.', true); return; }
+      field.value = result.path;
+      identityStatus(feedback, 'Identity selected in the profile form. Save the profile to use it.');
+      setMessage('Identity selected in the profile form. Save the profile to use it.', 'info');
+      use.disabled = true;
+    });
+    modal.append(chooser);
+    actions.append(use);
+  }
+  const close = document.createElement('button');
+  close.type = 'button'; close.className = 'secondary'; close.textContent = 'Close';
+  close.addEventListener('click', () => identityModalRoot.replaceChildren());
+  actions.append(close);
+  modal.prepend(title, details, guidance, label);
+  modal.append(feedback, actions);
+  modal.addEventListener('keydown', event => { if (event.key === 'Escape') close.click(); });
+  identityModalRoot.replaceChildren(overlay(modal));
+  queueMicrotask(() => copy.focus());
+}
+
+const globalKeygenStatus = document.createElement('p');
+globalKeygenStatus.className = 'identity-status';
+globalKeygenStatus.setAttribute('role', 'status');
+const globalKeygenButton = document.getElementById('keygen-btn');
+globalKeygenButton.parentElement.after(globalKeygenStatus);
+globalKeygenButton.addEventListener('click', () => {
+  const field = !formPanel.classList.contains('hidden') && form.elements.IdentityFile;
+  generateIdentity(globalKeygenButton, globalKeygenStatus, field ? async result => {
+    field.value = result.path;
+    identityStatus(globalKeygenStatus, `Identity created at ${result.path}. Save the profile to use it.`);
+  } : null);
 });
 
 // --- prompts (trust / passphrase) -----------------------------------------
