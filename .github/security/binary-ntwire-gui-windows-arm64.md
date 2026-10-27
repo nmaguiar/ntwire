@@ -1,8 +1,8 @@
 # binary-ntwire-gui-windows-arm64 — windows/arm64
 
-- Scanned: 2026-10-27 05:38 UTC
-- Source commit: `527453128a2747065fb8b0518ef00b746182da95`
-- Artifact: `sha256:6b23e8611ffdec5aa268dbe8e4037ed6eb0fd633bc00f03ca17086fdf99db8b8`
+- Scanned: 2026-10-27 20:41 UTC
+- Source commit: `ef38d2e37856b679ddcdfac65243c991a8a98e95`
+- Artifact: `sha256:1953e8ff9193c9d317621ed0a2cbcec23834f06d1e4b29dc15460ea345c50479`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.80"
+        "version": "v0.0.81"
       },
       {
         "path": "fyne.io/systray",
