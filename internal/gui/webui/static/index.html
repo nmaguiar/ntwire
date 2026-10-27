@@ -89,22 +89,6 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   </section>
 
   <div id="regular-settings">
-  <section class="panel" id="updates-panel">
-    <h2>Application updates</h2>
-    <p id="update-version">Loading update status…</p>
-    <label class="toggle"><input type="checkbox" id="update-checks">Check for updates automatically</label>
-    <label class="toggle"><input type="checkbox" id="update-automatic">Download and verify updates automatically; install when I quit</label>
-    <p class="help">Updates apply to this app only. Quitting disconnects tunnels. The app will be ready on your next launch.</p>
-    <p id="update-status" role="status"></p>
-    <progress id="update-progress" class="hidden" max="1" value="0"></progress>
-    <pre id="update-notes" style="white-space:pre-wrap;max-height:14rem;overflow:auto"></pre>
-    <div class="row">
-      <button class="secondary" id="update-check-btn">Check now</button>
-      <button id="update-download-btn" hidden>Download update</button>
-      <button id="update-install-btn" hidden>Quit and install</button>
-      <button id="update-admin-btn" hidden>Authorize administrator install and quit…</button>
-    </div>
-  </section>
   <section class="panel">
     <h2>👤 Profiles</h2>
     <div id="profiles" class="empty">Loading…</div>
@@ -126,6 +110,23 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
         <button type="button" class="secondary" id="cancel-form-btn">Cancel</button>
       </div>
     </form>
+  </section>
+
+  <section class="panel" id="updates-panel">
+    <h2>🔄 Application updates</h2>
+    <p id="update-version">Loading update status…</p>
+    <label class="toggle"><input type="checkbox" id="update-checks">Check for updates automatically</label>
+    <label class="toggle"><input type="checkbox" id="update-automatic">Download and verify updates automatically; install when I quit</label>
+    <p class="help">Updates apply to this app only. Quitting disconnects tunnels. The app will be ready on your next launch.</p>
+    <p id="update-status" role="status"></p>
+    <progress id="update-progress" class="hidden" max="1" value="0"></progress>
+    <pre id="update-notes" style="white-space:pre-wrap;max-height:14rem;overflow:auto"></pre>
+    <div class="row">
+      <button class="secondary" id="update-check-btn">Check now</button>
+      <button id="update-download-btn" hidden>Download update</button>
+      <button id="update-install-btn" hidden>Quit and install</button>
+      <button id="update-admin-btn" hidden>Authorize administrator install and quit…</button>
+    </div>
   </section>
 
   <section class="panel">
