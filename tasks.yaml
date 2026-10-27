@@ -297,7 +297,7 @@ jobs:
 - name: Clean build output
   lang: shell
   exec: |
-    rm -rf bin
+    rm -rf bin scripts/security/__pycache__
 
 - name: Check
   to:

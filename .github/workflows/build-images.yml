@@ -238,12 +238,36 @@ jobs:
         python3 scripts/security/report.py --kind binary --input scan.json --target "binary-$BINARY-$GOOS-$GOARCH" --platform "$GOOS/$GOARCH" --identity "sha256:$digest" --commit "$GITHUB_SHA" --output reports
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: report-binary-${{ matrix.binary }}-${{ matrix.os }}-${{ matrix.arch }}
+        name: binary-scan-${{ matrix.binary }}-${{ matrix.os }}-${{ matrix.arch }}
+        path: reports/
+        if-no-files-found: error
+
+  badge-binaries:
+    needs: [scan-binaries]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        pattern: binary-scan-*
+        path: reports
+        merge-multiple: true
+    - name: Generate severity badges
+      uses: openaf/ojob-action@v7
+      with:
+        ojob: .github/ojobs/security-badge.yaml
+        args: 'directory=reports'
+        dist: nightly
+    - name: Remove intermediate counts
+      run: rm reports/*.counts.json
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: report-binaries
         path: reports/
         if-no-files-found: error
 
   publish-reports:
-    needs: [scan-images, scan-binaries]
+    needs: [scan-images, badge-binaries]
     runs-on: ubuntu-latest
     permissions:
       contents: write
