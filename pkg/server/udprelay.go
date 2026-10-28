@@ -66,7 +66,9 @@ type udpRelaySessionState struct {
 	// UDPRelayRequest.Stats, echoed back to the client (see statsFor) as
 	// UDPRelayHopStats.ClientObserved -- see protocol.ClientUDPRelayStats'
 	// doc comment for why this closes the hop-telemetry loop.
-	clientStats *protocol.ClientUDPRelayStats
+	clientStats    *protocol.ClientUDPRelayStats
+	allocatedAt    time.Time
+	missingReports int
 }
 
 // relayUDPStatsSummary is an alias for the wire-level
@@ -142,19 +144,34 @@ func (u *udpRelay) stopAll() {
 	}
 }
 
-// recordStats associates a relay-reported snapshot only with a token this
-// server allocated. Reports are cumulative and best effort, so retaining the
-// latest snapshot is enough for diagnostics and cannot turn a missed control
-// message into an apparent packet loss event.
+// recordStats associates a relay snapshot only with tokens this server
+// allocated. Missing reports are harmless; repeated complete snapshots can
+// identify an allocation the relay has reclaimed.
 func (u *udpRelay) recordStats(report protocol.RelayUDPStatsReport) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	seen := make(map[string]bool, len(report.Sessions))
 	for _, sample := range report.Sessions {
+		seen[sample.Token] = true
 		for _, st := range u.sessions {
 			if st.token == sample.Token {
 				st.stats = sample
+				st.missingReports = 0
 				break
 			}
+		}
+	}
+	// Allow for snapshots taken before allocation was published and require
+	// two consecutive reports before forgetting an absent allocation.
+	for key, st := range u.sessions {
+		if seen[st.token] || st.allocatedAt.IsZero() || time.Since(st.allocatedAt) < 90*time.Second {
+			continue
+		}
+		st.missingReports++
+		if st.missingReports >= 2 {
+			delete(u.sessions, key)
+			close(st.stop)
+			u.log.Warn("UDP relay allocation missing from relay reports; will allocate again on retry")
 		}
 	}
 }
@@ -199,6 +216,14 @@ func (u *udpRelay) recordClientStats(clientPubKey string, stats *protocol.Client
 // never resurrect or alter a data-plane session.
 func (s *Server) RecordUDPRelayStats(report protocol.RelayUDPStatsReport) {
 	if u := s.udpr.Load(); u != nil {
+		u.recordStats(report)
+	}
+}
+
+// RecordUDPRelayStatsFrom accepts snapshots only from the currently selected
+// relay, so standby relays cannot invalidate its allocations.
+func (s *Server) RecordUDPRelayStatsFrom(agent *RelayAgent, report protocol.RelayUDPStatsReport) {
+	if u := s.udpr.Load(); u != nil && u.agent == agent {
 		u.recordStats(report)
 	}
 }
@@ -291,7 +316,7 @@ func (u *udpRelay) sessionFor(ctx context.Context, clientPubKey string, multipat
 		return protocol.UDPRelayResponse{}
 	}
 
-	st := &udpRelaySessionState{token: token, serverAddr: serverAddr, stop: make(chan struct{}), clientStats: clientStats}
+	st := &udpRelaySessionState{token: token, serverAddr: serverAddr, stop: make(chan struct{}), clientStats: clientStats, allocatedAt: time.Now()}
 	u.sessions[clientPubKey] = st
 	pending.response = protocol.UDPRelayResponse{RelayAddr: u.relayAddr, Token: token}
 	u.mu.Unlock()

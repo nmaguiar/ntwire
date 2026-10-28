@@ -3,11 +3,74 @@ package relay
 import (
 	"bytes"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
+
+type discardPacketConn struct{ net.PacketConn }
+
+func (discardPacketConn) WriteTo(b []byte, _ net.Addr) (int, error) { return len(b), nil }
+
+func TestDatagramRelay_KnownKeepalivesBypassNewBindLimit(t *testing.T) {
+	table := newConcurrentSessionTable(2, 2)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := netip.MustParseAddrPort("192.0.2.1:1000")
+	if _, ok := table.BindClient(token, addr); !ok {
+		t.Fatal("bind failed")
+	}
+	d := newDatagramRelay(table, discardPacketConn{}, 1, nil)
+	bind := wstransport.EncodeControlFrame(wstransport.FrameRelayBind, []byte(token))
+	for i := 0; i < 70; i++ {
+		d.handleClientDatagram(bind, addr)
+	}
+	other, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherAddr := netip.MustParseAddrPort("192.0.2.1:1001")
+	d.handleClientDatagram(wstransport.EncodeControlFrame(wstransport.FrameRelayBind, []byte(other)), otherAddr)
+	if _, ok := table.LookupByClientAddr(otherAddr); !ok {
+		t.Fatal("known keepalives consumed new-bind allowance")
+	}
+	d.handleClientDatagram(bind, netip.MustParseAddrPort("192.0.2.1:1002"))
+	if _, ok := table.LookupByClientAddr(netip.MustParseAddrPort("192.0.2.1:1002")); ok {
+		t.Fatal("new address bypassed rate limit")
+	}
+}
+
+type retryPacketConn struct {
+	net.PacketConn
+	reads int
+}
+
+func (c *retryPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	c.reads++
+	if c.reads == 1 {
+		return 0, nil, &net.OpError{Op: "read", Err: temporaryReadError{}}
+	}
+	return 0, nil, net.ErrClosed
+}
+
+type temporaryReadError struct{}
+
+func (temporaryReadError) Error() string   { return "temporary" }
+func (temporaryReadError) Timeout() bool   { return false }
+func (temporaryReadError) Temporary() bool { return true }
+
+func TestDatagramRelay_RetriesTemporaryReadError(t *testing.T) {
+	pc := &retryPacketConn{}
+	d := newDatagramRelay(nil, pc, 1, nil)
+	d.serveClientLeg()
+	if pc.reads != 2 {
+		t.Fatalf("reads = %d, want retry followed by closed socket", pc.reads)
+	}
+}
 
 func mustListenUDPForTest(t *testing.T) net.PacketConn {
 	t.Helper()

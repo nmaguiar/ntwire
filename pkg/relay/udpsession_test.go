@@ -231,6 +231,35 @@ func TestSweepLeavesActiveSessionsAlone(t *testing.T) {
 	}
 }
 
+func TestSweepActivityDoesNotReviveReleasedSession(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := table.byToken[token]
+	table.Release(token)
+	sess.touch()
+	if got := sess.lastActivity.Load(); got != -1 {
+		t.Fatalf("released session revived: %d", got)
+	}
+}
+
+func TestDisablePortReclaimsSessionAndPreventsReuse(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.disablePort(1)
+	if _, ok := table.byToken[token]; ok {
+		t.Fatal("session on failed port survived")
+	}
+	if _, _, err := table.Allocate("tenant"); !errors.Is(err, ErrPoolExhausted) {
+		t.Fatalf("allocation on failed port: %v", err)
+	}
+}
+
 // These table tests need socket identities, but no network I/O.
 type sessionTestPacketConn struct {
 	net.PacketConn

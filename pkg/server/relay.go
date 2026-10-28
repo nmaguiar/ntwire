@@ -346,7 +346,7 @@ func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte) {
 	}
 	if json.Unmarshal(data, &msg) == nil && msg.Type == "udp_stats" {
 		var report protocol.RelayUDPStatsReport
-		if json.Unmarshal(data, &report) == nil && len(report.Sessions) > 0 && a.OnUDPStats != nil {
+		if json.Unmarshal(data, &report) == nil && a.OnUDPStats != nil {
 			a.OnUDPStats(report)
 		}
 		return

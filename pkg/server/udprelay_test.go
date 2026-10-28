@@ -85,6 +85,81 @@ func TestUDPRelayRecordStats_IgnoresUnknownToken(t *testing.T) {
 	}
 }
 
+func TestUDPRelayRecordStats_ReclaimsMissingAllocation(t *testing.T) {
+	st := &udpRelaySessionState{token: "old", stop: make(chan struct{}), allocatedAt: time.Now().Add(-2 * time.Minute)}
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{"peer": st}, log: slog.Default()}
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	if u.sessions["peer"] == nil {
+		t.Fatal("one missing report removed allocation")
+	}
+	u.recordStats(protocol.RelayUDPStatsReport{Sessions: []protocol.RelayUDPStats{{Token: "old"}}})
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	if u.sessions["peer"] == nil {
+		t.Fatal("present report did not reset missing count")
+	}
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	if u.sessions["peer"] != nil {
+		t.Fatal("missing allocation was not removed")
+	}
+	select {
+	case <-st.stop:
+	default:
+		t.Fatal("keepalive was not stopped")
+	}
+}
+
+func TestUDPRelayRecordStats_RecentAllocationSurvives(t *testing.T) {
+	st := &udpRelaySessionState{token: "new", stop: make(chan struct{}), allocatedAt: time.Now()}
+	u := &udpRelay{sessions: map[string]*udpRelaySessionState{"peer": st}, log: slog.Default()}
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	if u.sessions["peer"] == nil {
+		t.Fatal("recent allocation removed by old snapshots")
+	}
+}
+
+func TestUDPRelayRecordStatsFrom_IgnoresStandby(t *testing.T) {
+	selected, standby := &RelayAgent{}, &RelayAgent{}
+	st := &udpRelaySessionState{token: "old", stop: make(chan struct{}), allocatedAt: time.Now().Add(-2 * time.Minute)}
+	u := &udpRelay{agent: selected, sessions: map[string]*udpRelaySessionState{"peer": st}, log: slog.Default()}
+	s := &Server{}
+	s.udpr.Store(u)
+	s.RecordUDPRelayStatsFrom(standby, protocol.RelayUDPStatsReport{})
+	s.RecordUDPRelayStatsFrom(standby, protocol.RelayUDPStatsReport{})
+	if u.sessions["peer"] == nil {
+		t.Fatal("standby removed selected relay allocation")
+	}
+}
+
+func TestUDPRelayRecordStats_ReallocatesAfterExpiry(t *testing.T) {
+	fa := &fakeUDPAllocator{token: "old", serverAddr: "127.0.0.1:1234"}
+	u := newTestUDPRelay(t, fa)
+	peer, err := wgnet.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.stack.AddPeer(wgnet.Endpoint{PublicKey: peer.Public, Address: "100.70.0.2/32"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := u.sessionFor(context.Background(), peer.Public, false, false, nil); got.Token != "old" {
+		t.Fatalf("first allocation: %+v", got)
+	}
+	u.mu.Lock()
+	u.sessions[peer.Public].allocatedAt = time.Now().Add(-2 * time.Minute)
+	u.mu.Unlock()
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	u.recordStats(protocol.RelayUDPStatsReport{})
+	fa.mu.Lock()
+	fa.token = "new"
+	fa.mu.Unlock()
+	if got := u.sessionFor(context.Background(), peer.Public, false, false, nil); got.Token != "new" {
+		t.Fatalf("replacement allocation: %+v", got)
+	}
+	if got := fa.allocations(); got != 2 {
+		t.Fatalf("allocation count = %d, want 2", got)
+	}
+}
+
 func TestUDPRelayStatsForReturnsTokenFreeSnapshot(t *testing.T) {
 	u := &udpRelay{sessions: map[string]*udpRelaySessionState{
 		"client": {token: "secret-token", stats: protocol.RelayUDPStats{

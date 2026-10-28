@@ -479,6 +479,12 @@ backstop if it never arrives):
 {"type": "udp_release", "token": "base64url-random-value"}
 ```
 
+Newer relays send complete tenant-scoped `udp_stats` snapshots every 30
+seconds, including an empty list when no allocations remain. A server can
+discard an older cached allocation after it is absent from two consecutive
+snapshots and allocate again on the client's next retry. Older relays may
+omit empty snapshots; an absent report alone is not evidence of expiry.
+
 `POST /v1/udp-relay` (Bearer token, same session as `/v1/wg`) is the
 client-facing endpoint that triggers this allocation — empty request body
 (`UDPRelayRequest`), keyed server-side by the client's WireGuard public key

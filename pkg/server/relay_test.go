@@ -199,6 +199,15 @@ func TestRelayAgentHandleControlMessage_DeliversUDPStats(t *testing.T) {
 	}
 }
 
+func TestRelayAgentHandleControlMessage_DeliversEmptyUDPStats(t *testing.T) {
+	called := false
+	a := &RelayAgent{OnUDPStats: func(report protocol.RelayUDPStatsReport) { called = true }}
+	a.handleControlMessage(context.Background(), []byte(`{"type":"udp_stats","sessions":[]}`))
+	if !called {
+		t.Fatal("empty relay snapshot was ignored")
+	}
+}
+
 func TestRelayConn_DoesNotForwardHTTPHijackDeadline(t *testing.T) {
 	underlying := &fakeNetConn{}
 	c := &relayConn{Conn: underlying}

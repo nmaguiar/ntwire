@@ -167,8 +167,14 @@ and client egress. Every 30 seconds it sends a best-effort, tenant-scoped
 snapshot to the registered server over the existing authenticated
 `/v1/relay/control` WebSocket. The report contains allocation tokens and
 counters only; it never contains WireGuard payloads or peer addresses. It is
-diagnostic telemetry, not a delivery acknowledgement: reconnects can skip a
+also identifies allocations reclaimed by the relay: two consecutive complete
+snapshots missing an older allocation let the server discard its cached token
+and allocate again on the next client retry. Older relays may omit empty
+snapshots. Reports are not delivery acknowledgements: reconnects can skip a
 report and duplicate/reordered WireGuard packets remain possible.
+Bind keepalives from an already authenticated client address do not consume
+the per-source new-bind rate limit; initial binds and address changes remain
+rate limited.
 
 When `admin.web_ui_token` enables the server dashboard, its protected JSON
 endpoint exposes these counters as each tunnel's optional `relay_udp` field.

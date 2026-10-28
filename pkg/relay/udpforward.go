@@ -1,9 +1,11 @@
 package relay
 
 import (
+	"errors"
 	"log/slog"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
@@ -48,6 +50,9 @@ func (d *datagramRelay) serveClientLeg() {
 	for {
 		n, addr, err := d.clientConn.ReadFrom(buf)
 		if err != nil {
+			if d.retryRead(err, "client", 0) {
+				continue
+			}
 			return
 		}
 		if from, ok := addrPort(addr); ok {
@@ -64,12 +69,32 @@ func (d *datagramRelay) serveServerLeg(pc net.PacketConn, port uint16) {
 	for {
 		n, addr, err := pc.ReadFrom(buf)
 		if err != nil {
+			if d.retryRead(err, "server", port) {
+				continue
+			}
+			if !errors.Is(err, net.ErrClosed) {
+				d.sessions.disablePort(port)
+			}
 			return
 		}
 		if from, ok := addrPort(addr); ok {
 			d.handleServerDatagram(port, buf[:n], from)
 		}
 	}
+}
+
+func (d *datagramRelay) retryRead(err error, leg string, port uint16) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Temporary() {
+		d.log.Warn("udp relay read temporarily failed", "leg", leg, "port", port, "error", err)
+		time.Sleep(100 * time.Millisecond)
+		return true
+	}
+	d.log.Error("udp relay reader stopped", "leg", leg, "port", port, "error", err)
+	return false
 }
 
 func addrPort(addr net.Addr) (netip.AddrPort, bool) {
@@ -90,7 +115,7 @@ func (d *datagramRelay) handleClientDatagram(b []byte, from netip.AddrPort) {
 	if typ, payload, ok := wstransport.DecodeControlFrame(b); ok {
 		switch typ {
 		case wstransport.FrameRelayBind:
-			if !d.rate.Allow(from.Addr().String()) {
+			if !d.sessions.knownClientBind(string(payload), from) && !d.rate.Allow(from.Addr().String()) {
 				d.log.Debug("udp relay: client bind rate limit exceeded", "peer", from)
 				return
 			}

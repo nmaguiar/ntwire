@@ -10,6 +10,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/completion"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/pac"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
@@ -303,7 +304,7 @@ func main() {
 			s.EnableUDPRelay(agent, addr)
 		}
 		for _, agent := range pool.Agents() {
-			agent.OnUDPStats = s.RecordUDPRelayStats
+			agent.OnUDPStats = func(report protocol.RelayUDPStatsReport) { s.RecordUDPRelayStatsFrom(agent, report) }
 		}
 		pool.OnNativeWireGuard = s.EnableNativeWireGuardRelay
 		go pool.Run(context.Background())
