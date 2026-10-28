@@ -461,21 +461,17 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				return
 			}
-			// UDP forwarding statistics are diagnostic-only and ride this
-			// already authenticated control connection. A failed report must
-			// never affect the data path or agent liveness; the next tick is a
-			// cumulative snapshot again.
+			// Send complete snapshots, including empty ones, so the server can
+			// eventually recover allocations removed by the idle sweep.
 			if sessions := a.getUDPSessions(); sessions != nil {
 				stats := sessions.StatsForTenant(name)
-				if len(stats) > 0 {
-					report, _ := json.Marshal(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: stats})
-					if len(report) > 0 {
-						rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
-						writeMu.Lock()
-						_ = ws.Write(rctx, websocket.MessageText, report)
-						writeMu.Unlock()
-						rcancel()
-					}
+				report, _ := json.Marshal(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: stats})
+				if len(report) > 0 {
+					rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+					writeMu.Lock()
+					_ = ws.Write(rctx, websocket.MessageText, report)
+					writeMu.Unlock()
+					rcancel()
 				}
 			}
 		case <-readErr:

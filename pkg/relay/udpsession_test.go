@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"sync"
 	"testing"
 	"time"
 )
@@ -228,6 +229,78 @@ func TestSweepLeavesActiveSessionsAlone(t *testing.T) {
 
 	if _, ok := table.LookupByClientAddr(clientAddr); !ok {
 		t.Fatal("sweepOnce() reclaimed a freshly active session")
+	}
+}
+
+func TestSweepActivityDoesNotReviveReleasedSession(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := table.byToken[token]
+	table.Release(token)
+	sess.touch()
+	if got := sess.lastActivity.Load(); got != -1 {
+		t.Fatalf("released session revived: %d", got)
+	}
+}
+
+func TestDisablePortReclaimsSessionAndPreventsReuse(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	table.disablePort(1)
+	if _, ok := table.byToken[token]; ok {
+		t.Fatal("session on failed port survived")
+	}
+	if _, _, err := table.Allocate("tenant"); !errors.Is(err, ErrPoolExhausted) {
+		t.Fatalf("allocation on failed port: %v", err)
+	}
+}
+
+type closeTrackingPacketConn struct {
+	net.PacketConn
+	closed bool
+}
+
+func (c *closeTrackingPacketConn) Close() error { c.closed = true; return nil }
+
+func TestDisablePortPreservesSocketForRelayShutdown(t *testing.T) {
+	pc := &closeTrackingPacketConn{}
+	pool := map[uint16]net.PacketConn{1: pc}
+	table := newUDPSessionTable(newPortAllocator(pool), Limits{MaxUDPRelaySessionsPerServer: 1})
+	table.disablePort(1)
+	if pool[1] != pc {
+		t.Fatal("disabled socket was removed from relay ownership")
+	}
+	r := &Relay{udpRelayPool: pool}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !pc.closed {
+		t.Fatal("relay shutdown did not close disabled socket")
+	}
+}
+
+func TestDisablePortConcurrentAllocation(t *testing.T) {
+	for round := 0; round < 1000; round++ {
+		table := newConcurrentSessionTable(1, 1)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); <-start; _, _, _ = table.Allocate("tenant") }()
+		go func() { defer wg.Done(); <-start; table.disablePort(1) }()
+		close(start)
+		wg.Wait()
+		if len(table.byToken) != 0 || len(table.byPort) != 0 {
+			t.Fatal("allocation survived retirement of its port")
+		}
+		if _, _, err := table.Allocate("tenant"); !errors.Is(err, ErrPoolExhausted) {
+			t.Fatalf("allocation after port retirement: %v", err)
+		}
 	}
 }
 

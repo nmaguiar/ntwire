@@ -40,8 +40,8 @@ type portAllocator struct {
 	inUse map[uint16]bool
 }
 
-// newPortAllocator takes ownership of conns (keyed by port); the caller must
-// not use them directly afterward except to Close the whole pool on shutdown.
+// newPortAllocator shares the immutable socket map with the relay, which
+// retains ownership and closes every socket on shutdown.
 func newPortAllocator(conns map[uint16]net.PacketConn) *portAllocator {
 	free := make([]uint16, 0, len(conns))
 	for port := range conns {
@@ -71,6 +71,18 @@ func (p *portAllocator) release(port uint16) {
 	}
 	delete(p.inUse, port)
 	p.free = append(p.free, port)
+}
+
+func (p *portAllocator) disable(port uint16) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.inUse, port)
+	for i, free := range p.free {
+		if free == port {
+			p.free = append(p.free[:i], p.free[i+1:]...)
+			break
+		}
+	}
 }
 
 // udpRelaySession is one live TURN-style pairing: a dedicated server-leg
@@ -107,10 +119,13 @@ type udpRelaySession struct {
 	clientBytesForwarded   atomic.Uint64
 }
 
-func (s *udpRelaySession) touch() { s.lastActivity.Store(time.Now().UnixNano()) }
-
-func (s *udpRelaySession) idleFor() time.Duration {
-	return time.Since(time.Unix(0, s.lastActivity.Load()))
+func (s *udpRelaySession) touch() {
+	for {
+		old := s.lastActivity.Load()
+		if old < 0 || s.lastActivity.CompareAndSwap(old, time.Now().UnixNano()) {
+			return
+		}
+	}
 }
 
 func (s *udpRelaySession) clientReceived(n int) {
@@ -180,12 +195,13 @@ func newUDPSessionTable(alloc *portAllocator, limits Limits) *udpSessionTable {
 // connection.
 func (t *udpSessionTable) Allocate(tenant string) (token, serverAddr string, err error) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	if t.tenantN[tenant] >= t.limits.MaxUDPRelaySessionsPerServer {
-		t.mu.Unlock()
 		return "", "", ErrUDPRelayTenantAtCapacity
 	}
-	t.mu.Unlock()
 
+	// Reserve and publish under the table lock, which also serializes port
+	// disabling. No session can appear after its reader has been retired.
 	port, conn, ok := t.alloc.allocate()
 	if !ok {
 		return "", "", ErrPoolExhausted
@@ -198,18 +214,9 @@ func (t *udpSessionTable) Allocate(tenant string) (token, serverAddr string, err
 	sess := &udpRelaySession{token: tok, tenant: tenant, serverPort: port, serverConn: conn}
 	sess.touch()
 
-	t.mu.Lock()
-	// Other control connections may have allocated for this tenant while we
-	// reserved a port and generated the token. Commit admission atomically.
-	if t.tenantN[tenant] >= t.limits.MaxUDPRelaySessionsPerServer {
-		t.mu.Unlock()
-		t.alloc.release(port)
-		return "", "", ErrUDPRelayTenantAtCapacity
-	}
 	t.byToken[tok] = sess
 	t.byPort[port] = sess
 	t.tenantN[tenant]++
-	t.mu.Unlock()
 
 	return tok, conn.LocalAddr().String(), nil
 }
@@ -254,6 +261,20 @@ func (t *udpSessionTable) BindClient(token string, from netip.AddrPort) (*udpRel
 	}
 	t.byClient[from] = sess
 	return sess, true
+}
+
+// knownClientBind recognizes a keepalive from the already authenticated
+// address. New addresses still pass through the public bind rate limiter.
+func (t *udpSessionTable) knownClientBind(token string, from netip.AddrPort) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.byToken[token]
+	if s == nil || t.byClient[from] != s {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.clientBound && s.clientAddr == from
 }
 
 // LookupByClientAddr finds the session, if any, whose client leg is
@@ -312,10 +333,15 @@ func (t *udpSessionTable) StatsForTenant(tenant string) []protocol.RelayUDPStats
 func (t *udpSessionTable) Release(token string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.releaseLocked(token)
+}
+
+func (t *udpSessionTable) releaseLocked(token string) {
 	sess, ok := t.byToken[token]
 	if !ok {
 		return
 	}
+	sess.lastActivity.Store(-1)
 	delete(t.byToken, token)
 	delete(t.byPort, sess.serverPort)
 	t.tenantN[sess.tenant]--
@@ -333,6 +359,18 @@ func (t *udpSessionTable) Release(token string) {
 	}
 
 	t.alloc.release(sess.serverPort)
+}
+
+// disablePort prevents reuse after the corresponding read loop stops.
+func (t *udpSessionTable) disablePort(port uint16) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	// Remove the port from the allocator before releasing its session, so
+	// releaseLocked cannot return a failed port to the free list.
+	t.alloc.disable(port)
+	if sess := t.byPort[port]; sess != nil {
+		t.releaseLocked(sess.token)
+	}
 }
 
 // runIdleSweep reclaims any session with no bind/keepalive/forwarded traffic
@@ -360,14 +398,11 @@ func (t *udpSessionTable) runIdleSweep(stop <-chan struct{}, idleTimeout time.Du
 
 func (t *udpSessionTable) sweepOnce(idleTimeout time.Duration) {
 	t.mu.Lock()
-	var stale []string
+	defer t.mu.Unlock()
 	for tok, sess := range t.byToken {
-		if sess.idleFor() > idleTimeout {
-			stale = append(stale, tok)
+		last := sess.lastActivity.Load()
+		if last >= 0 && time.Since(time.Unix(0, last)) > idleTimeout && sess.lastActivity.CompareAndSwap(last, -1) {
+			t.releaseLocked(tok)
 		}
-	}
-	t.mu.Unlock()
-	for _, tok := range stale {
-		t.Release(tok)
 	}
 }

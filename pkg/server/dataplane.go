@@ -796,7 +796,7 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	go io.Copy(countingWriter{w: out, counter: &stats.toTarget}, in)
+	go copyToTarget(out, in, &stats.toTarget)
 	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
 	s.log.Debug("tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
@@ -849,7 +849,7 @@ func (s *Server) proxyTransparentSocks(t TunnelConfig, principal DataPlanePrinci
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	go io.Copy(countingWriter{w: out, counter: &stats.toTarget}, in)
+	go copyToTarget(out, in, &stats.toTarget)
 	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
 	s.log.Debug("transparent SOCKS tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
@@ -858,6 +858,19 @@ func (s *Server) proxyTransparentSocks(t TunnelConfig, principal DataPlanePrinci
 type countingWriter struct {
 	w       io.Writer
 	counter *atomic.Uint64
+}
+
+// Propagate client EOF to the target while preserving its ability to send a
+// response. On copy failure, close both ends to unblock the reverse copy.
+func copyToTarget(out, in net.Conn, counter *atomic.Uint64) {
+	_, err := io.Copy(countingWriter{w: out, counter: counter}, in)
+	if err == nil {
+		if cw, ok := out.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
+			return
+		}
+	}
+	_ = out.Close()
+	_ = in.Close()
 }
 
 func (w countingWriter) Write(p []byte) (int, error) {
