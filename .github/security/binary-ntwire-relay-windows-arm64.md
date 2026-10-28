@@ -1,17 +1,19 @@
 # binary-ntwire-relay-windows-arm64 — windows/arm64
 
-- Scanned: 2026-10-27 20:42 UTC
-- Source commit: `ef38d2e37856b679ddcdfac65243c991a8a98e95`
-- Artifact: `sha256:33b9dd1eed01103db0557e82eb0104306523ee9c32264f86800838c8e7a5b694`
+- Scanned: 2026-10-28 01:12 UTC
+- Source commit: `9e308b468901156446ed852bed84ae12f2522fac`
+- Artifact: `sha256:39107102b5f28671c0c230c85bda3225e987c5ec81371b0104e1ba46236fde3a`
 - Scanner: govulncheck (binary mode)
 
-CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
+CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 3
 
 Go vulnerability reports do not assign severity here; findings are counted as unknown. Binary analysis can include unreachable code.
 
 | Advisory | Severity | Package | Installed | Fixed |
 | --- | --- | --- | --- | --- |
 | [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) | UNKNOWN |  |  |  |
+| [GO-2026-6860](https://pkg.go.dev/vuln/GO-2026-6860) | UNKNOWN |  |  |  |
+| [GO-2026-6866](https://pkg.go.dev/vuln/GO-2026-6866) | UNKNOWN |  |  |  |
 
 <details><summary>Full scanner output</summary>
 
@@ -22,7 +24,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "scanner_name": "govulncheck",
     "scanner_version": "v1.9.0",
     "db": "https://vuln.go.dev",
-    "db_last_modified": "2026-10-21T00:27:29Z",
+    "db_last_modified": "2026-10-27T21:16:18Z",
     "scan_level": "symbol",
     "scan_mode": "binary"
   }
@@ -38,7 +40,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.81"
+        "version": "v0.0.82"
       },
       {
         "path": "github.com/coder/websocket",
@@ -8554,6 +8556,147 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     ],
     "database_specific": {
       "url": "https://pkg.go.dev/vuln/GO-2026-6617",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6860",
+    "modified": "2026-10-27T21:16:18Z",
+    "published": "2026-10-27T21:16:18Z",
+    "aliases": [
+      "CVE-2026-78661"
+    ],
+    "summary": "Avoid quadratic complexity when coalescing text nodes in html in golang.org/x/net",
+    "details": "When coalescing adjacent text nodes in addText and fosterParent, appending to an existing TextNode's Data via string concatenation (n.Data += text) reallocated and copied the accumulated string on every token. Inputs containing many short text runs separated by ignored end tags (such as \"a\u003c/x\u003e\") caused O(n^2) allocations and byte copies.\n\nAccumulate coalesced text in per-node byte slices during parsing and materialize Data strings once at the end of parse.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/net",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.62.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/net/html",
+              "symbols": [
+                "Parse",
+                "ParseFragment",
+                "ParseFragmentWithOptions",
+                "ParseWithOptions",
+                "parser.addText",
+                "parser.fosterParent",
+                "parser.parse"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/849365"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/82224"
+      },
+      {
+        "type": "WEB",
+        "url": "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Markus Magnuson"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-6860",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6866",
+    "modified": "2026-10-27T21:16:18Z",
+    "published": "2026-10-27T21:16:18Z",
+    "aliases": [
+      "CVE-2026-97045"
+    ],
+    "summary": "Check all ancestor namespace transitions when rendering raw text in html in golang.org/x/net",
+    "details": "In childTextNodesAreLiteral, walking up the tree previously stopped at the nearest foreign ancestor once an HTML integration point was found. However, that integration point may itself be a descendant of an element that was foster-parented into a foreign namespace (such as \u003cmglyph\u003e or \u003cmalignmark\u003e fostered under \u003cmtext\u003e), causing a parser to resolve the subtree in a different foreign namespace upon re-parsing the rendered output.\n\nContinue walking the full ancestor chain and verify that every transition from a non-empty namespace occurs at an HTML integration point before emitting literal text.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/net",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.62.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/net/html",
+              "symbols": [
+                "Render",
+                "childTextNodesAreLiteral"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/855121"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/82622"
+      },
+      {
+        "type": "WEB",
+        "url": "https://groups.google.com/g/golang-announce/c/sqrs2vTx_Xs"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Ali Sherif (https://www.linkedin.com/in/ali-sherif-13812b276)"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-6866",
       "review_status": "REVIEWED"
     }
   }
@@ -29309,24 +29452,24 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 }
 {
   "finding": {
-    "osv": "GO-2026-5932",
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
     "trace": [
       {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/elgamal"
+        "module": "golang.org/x/net",
+        "version": "v0.61.0"
       }
     ]
   }
 }
 {
   "finding": {
-    "osv": "GO-2026-5932",
+    "osv": "GO-2026-6866",
+    "fixed_version": "v0.62.0",
     "trace": [
       {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k"
+        "module": "golang.org/x/net",
+        "version": "v0.61.0"
       }
     ]
   }
@@ -29398,6 +29541,70 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/elgamal"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6866",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp",
+        "function": "org/x/crypto/openpgp/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/elgamal",
         "function": "org/x/crypto/openpgp/elgamal/*",
         "receiver": "golang"
@@ -29421,14 +29628,42 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 }
 {
   "finding": {
-    "osv": "GO-2026-5932",
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
     "trace": [
       {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp",
-        "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "Parse"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "ParseFragmentWithOptions"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "ParseWithOptions"
       }
     ]
   }
@@ -29485,6 +29720,34 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "package": "golang.org/x/crypto/openpgp/errors",
         "function": "org/x/crypto/openpgp/errors/*",
         "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "ParseFragment"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6866",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "Render"
       }
     ]
   }
