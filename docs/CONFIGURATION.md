@@ -137,7 +137,7 @@ auth:
 admin:
   web_ui_token: ""                       # optional secret, min 32 chars: enables the server dashboard on listen.metrics at http://server:9090/?token=... (exchanged once for a cookie); leave empty to disable it
 network:
-  tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; for IPv6 use /64 or no shorter than /112
+  tunnel_cidr: 100.64.0.0/16             # private IPv4 range or an IPv6 prefix peer addresses are allocated from (pick one; a deployment is single-family); default shown; host bits are masked; at least four addresses are required
   advertised_endpoint: ""                # host:port returned to clients as udp_endpoint, for when it differs from listen.wireguard (e.g. NAT/port-forward); host may be a hostname, resolved fresh on every client connect/renew
   wireguard_private_key_file: ""         # optional persistent server WireGuard key; needed for stable official-client profiles
 
@@ -552,7 +552,11 @@ requests built to include one; prefer fingerprints for SSH grants.
 
 The server watches the configuration file's directory (and, when set, the
 authorized-keys directory). Writing, replacing, or renaming the file reloads
-runtime configuration; sending `SIGHUP` does the same. The listener address
+runtime configuration; sending `SIGHUP` does the same. Atomic projected-volume
+symlink swaps are detected even on watcher backends that omit those events.
+Reload bursts are debounced, invalid configurations leave the last valid one
+active, and changing `auth.authorized_keys_dir` moves the key watch to the new
+directory. The listener address
 and tunnel CIDR stay unchanged until restart. Existing sessions are
 re-evaluated against their authentication method — SSH sessions against
 authorized keys, OIDC sessions against the configured issuers — and current
@@ -568,9 +572,10 @@ connection already in flight keeps proxying to its original target until it
 closes; only new connections observe the new one. Changing a tunnel's
 `virtual_port` also recycles the server-side listener immediately, but an
 already-connected client resolved that port once at connect time and will not
-pick up the new one until it reconnects (`ntwire connect` again, or
-`ntwire logout` for an SSO session that should stop auto-reauthenticating);
-new connections after the reload use the new port right away. When
+pick up the new one until it reauthenticates or is restarted. Automatic
+reauthentication reconciles tunnel targets and grants while preserving local
+listener addresses for retained tunnels. New client connections after the
+reload use the new port right away. When
 `tls.cert_file`/`tls.key_file` are set, the files are re-read from disk on
 every reload, so a renewed certificate is served without a restart — an
 in-memory self-signed certificate is never regenerated this way, since that
@@ -679,3 +684,20 @@ templates section in [PORTAL.md](PORTAL.md) for the complete template API.
 - [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md) — the `native_wireguard:` block
 - [DESTINATION-POLICIES.md](DESTINATION-POLICIES.md) — the `destination_policies:` block and per-tunnel `destination_policy`
 - [IOS.md](IOS.md) — the `masque:` block and the archived iOS client it serves
+
+## Reconnection and tunnel addresses
+
+After session expiry or a server restart, the client reauthenticates with the
+same WireGuard identity. If its assigned address, server key, advertised
+endpoints, or transport capabilities change, it replaces the data plane and
+registers fresh transport candidates. Compatible local listeners retain their
+addresses; applications can open new connections without restarting ntwire.
+Streams using the replaced data plane are closed and must reconnect. UDP flows
+are recreated for the new address and target. An unchanged network keeps its
+existing data plane across reauthentication.
+
+Tunnel prefixes are normalized to their network address. Dynamic allocation
+reserves the network address, the server address (network plus one), native-peer
+addresses, active-session addresses, and the IPv4 broadcast address. Allocation
+wraps within the configured IPv4 or IPv6 prefix; exhausted pools reject new
+sessions rather than issuing a reserved or duplicate address.

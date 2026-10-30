@@ -111,6 +111,13 @@ func resolveDirectUpgradeTiming(o *DirectUpgradeTiming) directUpgradeTiming {
 // endpoint, never a reconnect.
 func (c *Connection) directUpgradeLoop() {
 	c.mu.Lock()
+	stop := c.dataStop
+	c.mu.Unlock()
+	c.directUpgradeLoopFor(stop)
+}
+
+func (c *Connection) directUpgradeLoopFor(stop chan struct{}) {
+	c.mu.Lock()
 	hybrid := c.hybrid
 	c.mu.Unlock()
 	if hybrid == nil {
@@ -146,151 +153,163 @@ func (c *Connection) directUpgradeLoop() {
 	wait := c.upgradeTiming.initialDelay
 	for {
 		select {
+		case <-stop:
+			stopRelayKeepalive()
+			return
 		case <-c.stop:
 			stopRelayKeepalive()
 			return
 		case <-time.After(wait):
 		}
 
-		switch state {
-		case transportStateWSSRelay:
-			var relayReason, relayToken string
-			relayCandidate, relayToken, relayReason = c.tryUDPRelayUpgrade(bind)
-			if relayCandidate != "" {
-				relayStop = make(chan struct{})
-				go c.udpRelayKeepaliveLoop(bind, relayToken, relayCandidate, relayStop)
-				state = nextTransportState(state, transportUDPRelayEstablished, false)
-				c.transitionTransportCandidate(state, "UDP relay path established")
-				nextDirectAttempt = time.Time{}
-				wait = c.upgradeTiming.healthCheckInterval
-				lastReason = ""
-				continue
-			}
-			if relayReason != udpRelayUnavailableReason {
+		c.transportMu.RLock()
+		if !c.transportGenerationCurrent(stop) {
+			c.transportMu.RUnlock()
+			stopRelayKeepalive()
+			return
+		}
+		func() {
+			defer c.transportMu.RUnlock()
+			switch state {
+			case transportStateWSSRelay:
+				var relayReason, relayToken string
+				relayCandidate, relayToken, relayReason = c.tryUDPRelayUpgrade(bind)
+				if relayCandidate != "" {
+					relayStop = make(chan struct{})
+					go c.udpRelayKeepaliveLoop(bind, relayToken, relayCandidate, relayStop)
+					state = nextTransportState(state, transportUDPRelayEstablished, false)
+					c.transitionTransportCandidate(state, "UDP relay path established")
+					nextDirectAttempt = time.Time{}
+					wait = c.upgradeTiming.healthCheckInterval
+					lastReason = ""
+					return
+				}
+				if relayReason != udpRelayUnavailableReason {
+					wait = c.upgradeTiming.retryInterval
+					c.logUpgradeReason(&lastReason, relayReason, "UDP relay path not established; staying on WebSocket relay")
+					return
+				}
+				// The relay offers no UDP-relay tier at all (not merely a
+				// failed attempt at this one) -- fall through to the existing
+				// full-escape attempt on this same tick. Without this, a relay
+				// that offers listen.reflect but not listen.udp_relay -- every
+				// relay running before this tier existed -- would silently
+				// lose the full-escape feature, since this rung would never
+				// become available for it to wait on.
+				var directReason string
+				directCandidate, directReason = c.tryDirectUpgrade(bind, wstransport.WSSentinel)
+				if directCandidate != "" {
+					state = nextTransportState(state, transportDirectEstablished, false)
+					c.transitionTransportCandidate(state, "direct UDP path established")
+					wait = c.upgradeTiming.healthCheckInterval
+					lastReason = ""
+					return
+				}
 				wait = c.upgradeTiming.retryInterval
-				c.logUpgradeReason(&lastReason, relayReason, "UDP relay path not established; staying on WebSocket relay")
-				continue
-			}
-			// The relay offers no UDP-relay tier at all (not merely a
-			// failed attempt at this one) -- fall through to the existing
-			// full-escape attempt on this same tick. Without this, a relay
-			// that offers listen.reflect but not listen.udp_relay -- every
-			// relay running before this tier existed -- would silently
-			// lose the full-escape feature, since this rung would never
-			// become available for it to wait on.
-			var directReason string
-			directCandidate, directReason = c.tryDirectUpgrade(bind, wstransport.WSSentinel)
-			if directCandidate != "" {
-				state = nextTransportState(state, transportDirectEstablished, false)
-				c.transitionTransportCandidate(state, "direct UDP path established")
-				wait = c.upgradeTiming.healthCheckInterval
-				lastReason = ""
-				continue
-			}
-			wait = c.upgradeTiming.retryInterval
-			c.logUpgradeReason(&lastReason, directReason, "direct UDP upgrade not established; staying on WebSocket relay")
+				c.logUpgradeReason(&lastReason, directReason, "direct UDP upgrade not established; staying on WebSocket relay")
 
-		case transportStateUDPRelay:
-			healthy, reason := c.pathHealthy(relayCandidate, string(wstransport.PathUDPRelay))
-			if !healthy {
-				c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
-				c.mu.Lock()
-				multipath := c.multipath != nil
-				c.mu.Unlock()
-				if multipath {
-					// Multipath keeps the WireGuard peer on its stable logical
-					// endpoint and the scheduler continues using the still-healthy
-					// WSS candidate. WSSentinel is a legacy Hybrid endpoint and
-					// cannot be installed on a MultipathBind; trying to do so here
-					// used to turn a harmless per-path failure into a failed
-					// "revert" loop.
+			case transportStateUDPRelay:
+				healthy, reason := c.pathHealthy(relayCandidate, string(wstransport.PathUDPRelay))
+				if !healthy {
+					c.logUpgradeReason(&lastReason, reason, "UDP relay path is no longer usable; reverting to WebSocket fallback", "candidate", relayCandidate)
+					c.mu.Lock()
+					multipath := c.multipath != nil
+					c.mu.Unlock()
+					if multipath {
+						// Multipath keeps the WireGuard peer on its stable logical
+						// endpoint and the scheduler continues using the still-healthy
+						// WSS candidate. WSSentinel is a legacy Hybrid endpoint and
+						// cannot be installed on a MultipathBind; trying to do so here
+						// used to turn a harmless per-path failure into a failed
+						// "revert" loop.
+						state = nextTransportState(state, transportUDPRelayLost, false)
+						c.transitionTransportCandidate(state, "UDP relay path lost")
+						stopRelayKeepalive()
+						relayCandidate = ""
+						wait = c.upgradeTiming.retryInterval
+						return
+					}
+					if err := c.setEndpoint(wstransport.WSSentinel); err != nil {
+						c.log.Warn("reverting to WebSocket fallback failed; will retry", "server", c.DisplayName(), "error", err)
+						wait = c.upgradeTiming.healthCheckInterval
+						return
+					}
 					state = nextTransportState(state, transportUDPRelayLost, false)
 					c.transitionTransportCandidate(state, "UDP relay path lost")
 					stopRelayKeepalive()
 					relayCandidate = ""
 					wait = c.upgradeTiming.retryInterval
-					continue
+					return
 				}
-				if err := c.setEndpoint(wstransport.WSSentinel); err != nil {
-					c.log.Warn("reverting to WebSocket fallback failed; will retry", "server", c.DisplayName(), "error", err)
+				if nextDirectAttempt.After(time.Now()) {
 					wait = c.upgradeTiming.healthCheckInterval
-					continue
+					lastReason = ""
+					return
 				}
-				state = nextTransportState(state, transportUDPRelayLost, false)
-				c.transitionTransportCandidate(state, "UDP relay path lost")
-				stopRelayKeepalive()
-				relayCandidate = ""
-				wait = c.upgradeTiming.retryInterval
-				continue
-			}
-			if nextDirectAttempt.After(time.Now()) {
+				nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+				var directReason string
+				directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
+				if directCandidate != "" {
+					state = nextTransportState(state, transportDirectEstablished, true)
+					c.transitionTransportCandidate(state, "direct UDP path established")
+				}
+				_ = directReason // staying on the already-healthy relay rung isn't itself news; nothing to log
 				wait = c.upgradeTiming.healthCheckInterval
 				lastReason = ""
-				continue
-			}
-			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
-			var directReason string
-			directCandidate, directReason = c.tryDirectUpgrade(bind, relayCandidate)
-			if directCandidate != "" {
-				state = nextTransportState(state, transportDirectEstablished, true)
-				c.transitionTransportCandidate(state, "direct UDP path established")
-			}
-			_ = directReason // staying on the already-healthy relay rung isn't itself news; nothing to log
-			wait = c.upgradeTiming.healthCheckInterval
-			lastReason = ""
 
-		case transportStateDirect, transportStateDirectViaRelayReflector:
-			healthy, reason := c.pathHealthy(directCandidate, string(wstransport.PathDirect))
-			if healthy {
-				wait = c.upgradeTiming.healthCheckInterval
-				lastReason = ""
-				continue
-			}
-			c.mu.Lock()
-			multipathBind := c.multipath
-			c.mu.Unlock()
-			if multipathBind != nil {
-				relayHealthy := relayCandidate != "" && multipathPathHealthy(multipathBind, string(wstransport.PathUDPRelay))
-				nextState := nextTransportState(state, transportDirectLost, relayHealthy)
-				c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; multipath active", "candidate", directCandidate)
+			case transportStateDirect, transportStateDirectViaRelayReflector:
+				healthy, reason := c.pathHealthy(directCandidate, string(wstransport.PathDirect))
+				if healthy {
+					wait = c.upgradeTiming.healthCheckInterval
+					lastReason = ""
+					return
+				}
+				c.mu.Lock()
+				multipathBind := c.multipath
+				c.mu.Unlock()
+				if multipathBind != nil {
+					relayHealthy := relayCandidate != "" && multipathPathHealthy(multipathBind, string(wstransport.PathUDPRelay))
+					nextState := nextTransportState(state, transportDirectLost, relayHealthy)
+					c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; multipath active", "candidate", directCandidate)
+					state = nextState
+					c.transitionTransportCandidate(state, "direct UDP path lost")
+					directCandidate = ""
+					nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+					wait = c.upgradeTiming.healthCheckInterval
+					return
+				}
+				// Revert exactly one rung: back to the UDP-relay path if it's
+				// still warm (its keepalive kept running underneath the whole
+				// time this connection rode the direct path), else all the way
+				// to the WebSocket fallback.
+				nextState := nextTransportState(state, transportDirectLost, relayCandidate != "")
+				fallback := wstransport.WSSentinel
+				if nextState == transportStateUDPRelay {
+					fallback = relayCandidate
+				}
+				c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting", "candidate", directCandidate, "fallback", fallback)
+				if err := c.setEndpoint(fallback); err != nil {
+					// directCandidate deliberately stays set: this branch is the
+					// only place anything re-seeds the peer's endpoint away from
+					// the now-confirmed-dead direct address, so leaving it blank
+					// here would strand the data plane there until a fresh
+					// upgrade attempt happened to succeed. Keeping it set
+					// re-enters this same branch next tick and retries the
+					// revert instead of wandering off to try a new upgrade.
+					c.log.Warn("reverting direct UDP path failed; will retry", "server", c.DisplayName(), "error", err)
+					wait = c.upgradeTiming.healthCheckInterval
+					return
+				}
 				state = nextState
 				c.transitionTransportCandidate(state, "direct UDP path lost")
 				directCandidate = ""
 				nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
+				// The relay was only known to be warm before the direct path took
+				// over. Check it again promptly after stepping down; direct upgrade
+				// retries remain independently paced by nextDirectAttempt.
 				wait = c.upgradeTiming.healthCheckInterval
-				continue
 			}
-			// Revert exactly one rung: back to the UDP-relay path if it's
-			// still warm (its keepalive kept running underneath the whole
-			// time this connection rode the direct path), else all the way
-			// to the WebSocket fallback.
-			nextState := nextTransportState(state, transportDirectLost, relayCandidate != "")
-			fallback := wstransport.WSSentinel
-			if nextState == transportStateUDPRelay {
-				fallback = relayCandidate
-			}
-			c.logUpgradeReason(&lastReason, reason, "direct UDP path is no longer usable; reverting", "candidate", directCandidate, "fallback", fallback)
-			if err := c.setEndpoint(fallback); err != nil {
-				// directCandidate deliberately stays set: this branch is the
-				// only place anything re-seeds the peer's endpoint away from
-				// the now-confirmed-dead direct address, so leaving it blank
-				// here would strand the data plane there until a fresh
-				// upgrade attempt happened to succeed. Keeping it set
-				// re-enters this same branch next tick and retries the
-				// revert instead of wandering off to try a new upgrade.
-				c.log.Warn("reverting direct UDP path failed; will retry", "server", c.DisplayName(), "error", err)
-				wait = c.upgradeTiming.healthCheckInterval
-				continue
-			}
-			state = nextState
-			c.transitionTransportCandidate(state, "direct UDP path lost")
-			directCandidate = ""
-			nextDirectAttempt = time.Now().Add(c.upgradeTiming.retryInterval)
-			// The relay was only known to be warm before the direct path took
-			// over. Check it again promptly after stepping down; direct upgrade
-			// retries remain independently paced by nextDirectAttempt.
-			wait = c.upgradeTiming.healthCheckInterval
-		}
+		}()
 	}
 }
 

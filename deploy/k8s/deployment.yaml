@@ -18,4 +18,4 @@ spec:
           args: [--config, /etc/ntwire/ntwire.yaml]
           securityContext: {runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false}
           ports: [{containerPort: 8443, name: https}, {containerPort: 51820, name: wireguard, protocol: UDP}]
-          volumeMounts: [{name: config, mountPath: /etc/ntwire/ntwire.yaml, subPath: ntwire.yaml, readOnly: true}, {name: keys, mountPath: /etc/ntwire/keys, readOnly: true}]
+          volumeMounts: [{name: config, mountPath: /etc/ntwire, readOnly: true}, {name: keys, mountPath: /etc/ntwire/keys, readOnly: true}]

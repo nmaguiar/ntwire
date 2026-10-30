@@ -21,13 +21,15 @@ import (
 // unconditionally), so it is already a warm standby, not a cold one that
 // needs separately keeping alive.
 type RelayPool struct {
-	listener  *relayListener
-	members   []*relayPoolMember
-	log       *slog.Logger
-	mu        sync.Mutex
-	closed    bool
-	domain    string
-	preferred *relayPoolMember
+	listener    *relayListener
+	members     []*relayPoolMember
+	log         *slog.Logger
+	mu          sync.Mutex
+	callbacksMu sync.Mutex // serializes publication, without holding mu in callbacks
+	revision    uint64
+	closed      bool
+	domain      string
+	preferred   *relayPoolMember
 
 	// Callbacks run after the preferred healthy member changes. They are
 	// intentionally optional so a pool also works for WebSocket-only relays.
@@ -136,6 +138,10 @@ func (p *RelayPool) Run(ctx context.Context) {
 
 func (p *RelayPool) update(member *relayPoolMember, registered bool, response protocol.RelayRegisterResponse) {
 	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
 	if registered && response.Domain != "" && p.domain != "" && response.Domain != p.domain {
 		registered = false
 		p.log.Warn("relay pool member rejected: client domain differs from pool", "expected_domain", p.domain, "got_domain", response.Domain)
@@ -158,23 +164,36 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		reflectAddr, udpAddr = preferred.response.ReflectAddr, preferred.response.UDPRelayAddr
 	}
 	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
+	var agent *RelayAgent
+	var nativeAddr, nativeToken string
+	if preferred != nil {
+		agent = preferred.agent
+		nativeAddr, nativeToken = preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken
+	}
+	if changed {
+		p.revision++
+	}
+	revision := p.revision
 	p.mu.Unlock()
-	if changed && onReflect != nil {
+	if !changed {
+		return
+	}
+	p.callbacksMu.Lock()
+	defer p.callbacksMu.Unlock()
+	p.mu.Lock()
+	current := !p.closed && p.revision == revision
+	p.mu.Unlock()
+	if !current {
+		return
+	}
+	if onReflect != nil {
 		onReflect(reflectAddr)
 	}
-	if changed && onUDP != nil {
-		var agent *RelayAgent
-		if preferred != nil {
-			agent = preferred.agent
-		}
+	if onUDP != nil {
 		onUDP(agent, udpAddr)
 	}
-	if changed && onNative != nil {
-		if preferred == nil {
-			onNative("", "")
-		} else {
-			onNative(preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken)
-		}
+	if onNative != nil {
+		onNative(nativeAddr, nativeToken)
 	}
 }
 
@@ -216,13 +235,30 @@ func (p *RelayPool) Healthy() bool {
 }
 
 func (p *RelayPool) Close() error {
+	p.callbacksMu.Lock()
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		p.callbacksMu.Unlock()
 		return nil
 	}
 	p.closed = true
+	p.preferred = nil
+	for _, member := range p.members {
+		member.registered = false
+	}
+	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
 	p.mu.Unlock()
+	if onReflect != nil {
+		onReflect("")
+	}
+	if onUDP != nil {
+		onUDP(nil, "")
+	}
+	if onNative != nil {
+		onNative("", "")
+	}
+	p.callbacksMu.Unlock()
 	var first error
 	for _, m := range p.members {
 		if err := m.agent.Close(); err != nil && first == nil {

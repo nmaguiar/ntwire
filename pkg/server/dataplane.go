@@ -27,7 +27,7 @@ type dataPlane struct {
 	stack     *wgnet.Stack
 	serverIP  netip.Addr
 	mu        sync.Mutex
-	next      uint32
+	nextIP    netip.Addr
 	listeners map[string]*tunnelListener // keyed by tunnel name
 	dnsConn   net.PacketConn
 	portalSrv *http.Server
@@ -173,7 +173,7 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	serverIP := prefix.Addr().Next()
+	serverIP := prefix.Masked().Addr().Next()
 	port, err := portOf(s.Config.Listen.WireGuard)
 	if err != nil {
 		return err
@@ -241,7 +241,7 @@ func (s *Server) StartDataPlane() error {
 	if err != nil {
 		return err
 	}
-	d := &dataPlane{stack: st, serverIP: serverIP, next: 2, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
+	d := &dataPlane{stack: st, serverIP: serverIP, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
 	if url, ok := s.asnRefreshURL(); ok {
 		go s.asn.Refresh(url, 0, s.log, d.stopASN)
@@ -1014,33 +1014,38 @@ func (s *Server) dialTargetContext(ctx context.Context, principal DataPlanePrinc
 func (s *Server) allocateIP() (string, error) {
 	s.data.mu.Lock()
 	defer s.data.mu.Unlock()
-	p, _ := netip.ParsePrefix(s.Config.Network.TunnelCIDR)
-	base := p.Addr().As16()
-	is4 := p.Addr().Is4()
-	for tries := uint32(0); tries < 65534; tries++ {
-		n := s.data.next
-		s.data.next++
-		bits := base
-		bits[14] = byte(n >> 8)
-		bits[15] = byte(n)
-		ip := netip.AddrFrom16(bits)
-		if is4 {
-			ip = ip.Unmap()
+	p, err := netip.ParsePrefix(s.Config.Network.TunnelCIDR)
+	if err != nil {
+		return "", err
+	}
+	p = p.Masked()
+	used := map[netip.Addr]bool{p.Addr(): true, p.Addr().Next(): true, s.data.serverIP: true}
+	if p.Addr().Is4() {
+		last := p.Addr().As4()
+		for bit := p.Bits(); bit < 32; bit++ {
+			last[bit/8] |= 1 << (7 - bit%8)
 		}
-		used := false
-		for _, peer := range s.Config.NativeWireGuard.Peers {
-			if peer.TunnelIP == ip.String() {
-				used = true
-				break
-			}
+		used[netip.AddrFrom4(last)] = true
+	}
+	for _, peer := range s.Config.NativeWireGuard.Peers {
+		if ip, err := netip.ParseAddr(peer.TunnelIP); err == nil {
+			used[ip.Unmap()] = true
 		}
-		for _, x := range s.sessions.All() {
-			if x.TunnelIP == ip.String() {
-				used = true
-				break
-			}
+	}
+	for _, session := range s.sessions.All() {
+		if ip, err := netip.ParseAddr(session.TunnelIP); err == nil {
+			used[ip.Unmap()] = true
 		}
-		if !used && p.Contains(ip) {
+	}
+	// At most len(used) consecutive candidates can be occupied. This bounds
+	// the scan even for IPv6, without restricting allocation to a 16-bit pool.
+	for tries := 0; tries <= len(used); tries++ {
+		ip := s.data.nextIP
+		if !ip.IsValid() || !p.Contains(ip) {
+			ip = p.Addr()
+		}
+		s.data.nextIP = ip.Next()
+		if !used[ip] {
 			return ip.String(), nil
 		}
 	}
@@ -1122,14 +1127,18 @@ func (s *Server) Close() {
 	if u := s.udpr.Swap(nil); u != nil {
 		u.stopAll()
 	}
+	s.operationMu.Lock()
 	s.mu.Lock()
 	direct := s.direct
 	s.direct = nil
+	d := s.data
+	s.data = nil
 	s.mu.Unlock()
+	s.operationMu.Unlock()
 	if direct != nil {
 		close(direct.stop)
 	}
-	if s.data == nil {
+	if d == nil {
 		return
 	}
 	s.nativeRelayMu.Lock()
@@ -1138,22 +1147,21 @@ func (s *Server) Close() {
 		s.nativeRelayStop = nil
 	}
 	s.nativeRelayMu.Unlock()
-	close(s.data.stop)
-	close(s.data.stopASN)
-	s.data.mu.Lock()
-	for _, tl := range s.data.listeners {
+	close(d.stop)
+	close(d.stopASN)
+	d.mu.Lock()
+	for _, tl := range d.listeners {
 		s.closeTunnelListener(tl)
 	}
-	s.data.mu.Unlock()
-	if s.data.dnsConn != nil {
-		_ = s.data.dnsConn.Close()
+	d.mu.Unlock()
+	if d.dnsConn != nil {
+		_ = d.dnsConn.Close()
 	}
-	if s.data.portalSrv != nil {
-		_ = s.data.portalSrv.Close()
+	if d.portalSrv != nil {
+		_ = d.portalSrv.Close()
 	}
-	if s.data.portalLn != nil {
-		_ = s.data.portalLn.Close()
+	if d.portalLn != nil {
+		_ = d.portalLn.Close()
 	}
-	_ = s.data.stack.Close()
-	s.data = nil
+	_ = d.stack.Close()
 }
