@@ -164,7 +164,7 @@ func (s *Server) ServerTunnelIP() string {
 	if err != nil {
 		return "100.64.0.1"
 	}
-	return prefix.Addr().Next().String()
+	return prefix.Masked().Addr().Next().String()
 }
 
 func (s *Server) socksTunnels() []TunnelConfig {
@@ -808,7 +808,10 @@ func (s *Server) advertisedUDPEndpoint() string {
 	return net.JoinHostPort(ip.String(), port)
 }
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
-	if s.data == nil || s.data.ws == nil {
+	s.mu.Lock()
+	data := s.data
+	s.mu.Unlock()
+	if data == nil || data.ws == nil {
 		http.Error(w, "data plane unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -824,7 +827,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	// client opened once at Connect time keeps working after renewal instead
 	// of being torn down (see dropSession / renew).
 	s.log.Debug("WebSocket fallback connected", "session", v.ID, "wireguard_public_key", v.WireGuardPublicKey)
-	if err := s.data.ws.WebSocket.ServeHTTP(w, r, v.WireGuardPublicKey); err != nil {
+	if err := data.ws.WebSocket.ServeHTTP(w, r, v.WireGuardPublicKey); err != nil {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
 	}
 }

@@ -918,6 +918,11 @@ type Connection struct {
 	LocalAddresses []string
 	token, base    string
 	mu             sync.Mutex
+	networkMu      sync.Mutex   // reconnect and listener replacement
+	transportMu    sync.RWMutex // carrier setup versus replacement
+	network        *connectionNetwork
+	networkKey     string
+	dataStop       chan struct{}
 	closed         bool
 	info           protocol.ClientInfo
 	http           *http.Client
@@ -952,8 +957,8 @@ type Connection struct {
 	historyMu sync.Mutex
 	history   []WebHistorySample
 
-	// hybrid and serverTunnelIP are set only in WebSocket-fallback mode; see
-	// directupgrade.go's opportunistic direct-UDP upgrade. upgradeTiming is
+	// Carrier pointers and serverTunnelIP belong to the current generation
+	// and are protected by mu. upgradeTiming is
 	// resolved once at connect time and never mutated after, so
 	// directUpgradeLoop's goroutine can read it without locking.
 	hybrid         *wstransport.Hybrid
@@ -1115,6 +1120,7 @@ type localTunnel struct {
 	socks        bool
 	localAddr    string
 	target       string
+	idleTimeout  time.Duration
 	toTunnel     atomic.Uint64
 	fromTunnel   atomic.Uint64
 	connections  atomic.Uint64
@@ -1170,82 +1176,19 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	r := auth.response
-	clientIP, err := netip.ParseAddr(r.TunnelIP)
-	if err != nil {
-		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
-	}
-	// A direct UDP endpoint of the wrong family is treated as if the server
-	// hadn't advertised one at all: selectTransport falls back to WebSocket
-	// rather than dialing a family the caller explicitly excluded. mismatch
-	// only feeds the transportReason banner below -- the actual UDP data
-	// plane (direct or via the WebSocket-fallback's opportunistic upgrade
-	// ladder) is restricted to options.IPVersion structurally, via
-	// pkg/ipfamily, regardless of this check.
-	udpEndpoint, mismatch := r.UDP, ""
-	if r.UDP != "" && !matchesIPVersion(r.UDP, options.IPVersion) {
-		mismatch = fmt.Sprintf("server's direct UDP endpoint (%s) is not IPv%s", r.UDP, options.IPVersion)
-		udpEndpoint = ""
-	}
-	transport, err := normalizeTransportPreference(options.UseWebSocket, options.Transport)
+	network, err := newConnectionNetwork(r, key.Private, h, options)
 	if err != nil {
 		return nil, err
 	}
-	// v3 is the complete and sole multipath contract. A server offering only
-	// retired v1/v2 identifiers is treated as a legacy single-path peer.
-	multipathV3 := r.Multipath && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3)
-	pathMTU := multipathV3 && hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
-	useWS, err := selectTransport(options.UseWebSocket, transport, multipathV3, udpEndpoint, r.WebSocket)
-	if err != nil {
-		return nil, err
-	}
-	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
-	if err != nil {
-		return nil, err
-	}
-	stackConfig := wgnet.Config{PrivateKey: key.Private, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger}
-	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
-	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
-	// self-reflect, prime, and move the peer's endpoint between transports.
-	// A direct-UDP session (useWS false) already has the best available
-	// path and has nothing to upgrade to.
-	var hybrid *wstransport.Hybrid
-	var multipath *wstransport.MultipathBind
-	if useWS {
-		if multipathV3 {
-			// V3 deliberately uses sticky carrier/probe health and never samples
-			// a standby by mirroring ordinary tunnel payload.
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, resolveMultipathOptions(options.Multipath), options.IPVersion, options.Logger)
-			stackConfig.Bind = multipath
-		} else {
-			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)
-			stackConfig.Bind = hybrid
-		}
-	}
-	st, err := wgnet.New(stackConfig)
-	if err != nil {
-		return nil, err
-	}
-	endpoint := r.UDP
-	if useWS {
-		if multipath != nil {
-			endpoint = wstransport.MultipathSentinel
-		} else {
-			endpoint = wstransport.WSSentinel
-		}
-	}
-	if err = st.AddPeer(wgnet.Endpoint{PublicKey: r.ServerPublicKey, Address: allowedIPsForFamily(clientIP) + "@" + endpoint}); err != nil {
-		st.Close()
-		return nil, err
-	}
+	st, hybrid, multipath := network.stack, network.hybrid, network.multipath
+	clientIP, serverIP := network.clientIP, network.serverIP
+	useWS, udpEndpoint, mismatch := network.useWS, network.udpEndpoint, network.mismatch
 	c := &Connection{
-		Response: r, Stack: st, token: r.Token, base: url, info: info, http: h, ports: options.Ports,
+		Response: r, Stack: st, network: network, networkKey: key.Private, dataStop: make(chan struct{}), token: r.Token, base: url, info: info, http: h, ports: options.Ports,
 		hybrid: hybrid, multipath: multipath, serverTunnelIP: serverIP, upgradeTiming: resolveDirectUpgradeTiming(options.DirectUpgradeTiming),
 		stop: make(chan struct{}), statusFile: options.StatusFile, keyPath: keyPath,
 		bindAddr: bindAddr, options: options, method: auth.method, issuer: auth.issuer,
 		log: options.Logger,
-	}
-	if multipath != nil && transport != "" {
-		multipath.SetForced(transport)
 	}
 	if r.TTLSeconds > 0 {
 		c.expiresAt = time.Now().Add(time.Duration(r.TTLSeconds) * time.Second)
@@ -1307,7 +1250,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 				c.log.Warn("UDP tunnel listener fell back from its requested local address", "tunnel", t.Name, "requested", net.JoinHostPort(host, fmt.Sprint(p)), "bound", bound, "error", firstErr)
 			}
 			target := net.JoinHostPort(serverIP.String(), fmt.Sprint(t.VirtualPort))
-			lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, packetConn: pc, protocol: "udp", localAddr: bound, target: target}
+			lt := &localTunnel{name: t.Name, virtualPort: t.VirtualPort, packetConn: pc, protocol: "udp", localAddr: bound, target: target, idleTimeout: t.UDPIdleTimeout}
 			c.tunnels = append(c.tunnels, lt)
 			c.LocalAddresses = append(c.LocalAddresses, bound)
 			c.log.Debug("UDP tunnel listener bound", "tunnel", t.Name, "local_address", bound, "target", target)
@@ -1337,15 +1280,7 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 	}
 	go c.renewLoop()
 	go c.historyLoop()
-	// v3 bootstraps over WSS and registers direct UDP as a probe-qualified standby.
-	// The scheduler retains its healthy incumbent until actual failure, so a
-	// probe-only challenger cannot steal live tunnel traffic.
-	if multipath != nil && shouldBootstrapDirectMultipath(multipathV3, udpEndpoint, options.UseWebSocket) {
-		go c.bootstrapDirectMultipath(udpEndpoint)
-	}
-	if hybrid != nil && udpEndpoint == "" && !options.NoDirectUpgrade && transport != string(wstransport.PathWSS) {
-		go c.directUpgradeLoop()
-	}
+	c.startTransportWorkers(network, c.dataStop)
 	c.startWebUI()
 	if !options.NoWebUI && c.UIURL != "" {
 		if err := browseropen.Open(c.UIURL); err != nil {
@@ -1657,6 +1592,8 @@ func (c *Connection) ReplacePort(name string, port int) (string, error) {
 // is a direct user action: it is strict, with no fallback to another
 // address or port on failure.
 func (c *Connection) ReplaceListener(name, host string, port int) (string, error) {
+	c.networkMu.Lock()
+	defer c.networkMu.Unlock()
 	if name == "" || port < 1 || port > 65535 {
 		return "", fmt.Errorf("invalid tunnel name or local port")
 	}
@@ -1724,7 +1661,7 @@ func (c *Connection) ReplaceListener(name, host string, port int) (string, error
 		if old != nil {
 			_ = old.Close()
 		}
-		go c.forwardUDP(tunnel, pc, tunnel.target, 0)
+		go c.forwardUDP(tunnel, pc, "", 0)
 		_ = c.writeCurrentStatus()
 		return addr, nil
 	}
@@ -1758,7 +1695,7 @@ func (c *Connection) ReplaceListener(name, host string, port int) (string, error
 	addr := tunnel.localAddr
 	c.mu.Unlock()
 	_ = old.Close()
-	go c.forward(tunnel, l, tunnel.target)
+	go c.forward(tunnel, l, "")
 	_ = c.writeCurrentStatus()
 	return addr, nil
 }
@@ -1824,9 +1761,11 @@ func (c *Connection) renewLoop() {
 }
 
 // reconnect creates a replacement control-plane session while retaining the
-// existing WireGuard private key and local listeners. The server therefore
-// recognizes the same peer once it is available again.
+// existing WireGuard private key and compatible local listeners. Changed
+// addressing, server identity, or carriers require a replacement data plane.
 func (c *Connection) reconnect() error {
+	c.networkMu.Lock()
+	defer c.networkMu.Unlock()
 	c.mu.Lock()
 	if c.closed || c.Stack == nil {
 		c.mu.Unlock()
@@ -1842,25 +1781,11 @@ func (c *Connection) reconnect() error {
 	if err != nil {
 		return err
 	}
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return fmt.Errorf("connection is closed")
-	}
-	c.Response = auth.response
-	c.token = auth.response.Token
-	c.method, c.issuer = auth.method, auth.issuer
-	if auth.response.TTLSeconds > 0 {
-		c.expiresAt = time.Now().Add(time.Duration(auth.response.TTLSeconds) * time.Second)
-	} else {
-		c.expiresAt = time.Time{}
+	if err := c.applyReconnectedSession(auth); err != nil {
+		return err
 	}
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	c.reconnections.Store(info.Reconnections)
-	c.mu.Unlock()
-	if c.hybrid != nil {
-		c.hybrid.WebSocket.SetHeader(http.Header{"Authorization": {"Bearer " + auth.response.Token}})
-	}
 	return nil
 }
 
@@ -1910,6 +1835,9 @@ func (c *Connection) renew() error {
 	// renewal commonly omits them. Keep the established values so callers of
 	// State do not see their security-capability state disappear between
 	// renewals merely because the compact renewal response left it out.
+	if out.WebSocket == "" {
+		out.WebSocket = c.Response.WebSocket
+	}
 	if out.TransportCapabilities == nil {
 		out.TransportCapabilities = append([]string(nil), c.Response.TransportCapabilities...)
 	}
@@ -1924,14 +1852,13 @@ func (c *Connection) renew() error {
 		c.expiresAt = time.Time{}
 	}
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
+	hybrid := c.hybrid
 	c.mu.Unlock()
-	// hybrid is set once at connect and never reassigned (see the doc comment
-	// on the var declaration in Connect), so reading it without c.mu is safe.
 	// A dropped WebSocket carrier redials with whatever header was last set
 	// here; without this, a redial after any renewal presents the token the
 	// server just invalidated and 401s forever (see Bind.SetHeader).
-	if c.hybrid != nil {
-		c.hybrid.WebSocket.SetHeader(http.Header{"Authorization": {"Bearer " + out.Token}})
+	if hybrid != nil {
+		hybrid.WebSocket.SetHeader(http.Header{"Authorization": {"Bearer " + out.Token}})
 	}
 	return nil
 }
@@ -2457,6 +2384,8 @@ func multipathDescription(primary string) string {
 // primary. If it is unavailable or becomes unhealthy, ntwire automatically falls
 // back to the best available healthy transport.
 func (c *Connection) SetTransport(target string) error {
+	c.networkMu.Lock()
+	defer c.networkMu.Unlock()
 	normalized, err := wstransport.ValidateTransportName(target)
 	if err != nil {
 		return err
@@ -2975,17 +2904,20 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 		}
 		go func() {
 			defer in.Close()
-			if tunnel.socks {
-				c.forwardSocksUDPAssociate(tunnel, in, target)
+			c.mu.Lock()
+			stack, destination, socks, stop := c.Stack, target, tunnel.socks, c.dataStop
+			if tunnel.target != "" {
+				destination = tunnel.target
+			}
+			c.mu.Unlock()
+			if socks {
+				c.forwardSocksUDPAssociateOn(tunnel, in, destination, stack, stop)
 				return
 			}
-			c.mu.Lock()
-			stack := c.Stack
-			c.mu.Unlock()
 			if stack == nil {
 				return
 			}
-			out, e := stack.DialContext(context.Background(), "tcp", target)
+			out, e := stack.DialContext(context.Background(), "tcp", destination)
 			if e != nil {
 				now := time.Now().Unix()
 				last := tunnel.lastDialWarn.Load()
@@ -2997,6 +2929,7 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 				return
 			}
 			defer out.Close()
+			defer c.watchForward(stop, in, out)()
 			tunnel.connections.Add(1)
 			tunnel.active.Add(1)
 			defer tunnel.active.Add(-1)
@@ -3010,9 +2943,9 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			copies.Add(1)
 			go func() {
 				defer copies.Done()
-				_, _ = io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, in)
+				copyClientStream(out, in, &tunnel.toTunnel)
 			}()
-			_, _ = io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
+			copyClientStream(in, out, &tunnel.fromTunnel)
 			copies.Wait()
 			if c.log != nil {
 				c.log.Debug("tunnel connection closed", "tunnel", tunnel.name, "remote", remote,
@@ -3029,7 +2962,11 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 	if idle <= 0 {
 		idle = 2 * time.Minute
 	}
-	type flow struct{ conn net.Conn }
+	type flow struct {
+		conn   net.Conn
+		stack  *wgnet.Stack
+		target string
+	}
 	flows := map[string]flow{}
 	var mu sync.Mutex
 	defer func() {
@@ -3045,34 +2982,51 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 		if err != nil {
 			return
 		}
+		c.mu.Lock()
+		stack, destination, timeout := c.Stack, target, idle
+		if tunnel.target != "" {
+			destination = tunnel.target
+		}
+		if tunnel.idleTimeout > 0 {
+			timeout = tunnel.idleTimeout
+		}
+		c.mu.Unlock()
+		if stack == nil {
+			continue
+		}
 		key := src.String()
 		mu.Lock()
 		f, ok := flows[key]
+		if ok && (f.stack != stack || f.target != destination) {
+			_ = f.conn.Close()
+			delete(flows, key)
+			ok = false
+		}
 		mu.Unlock()
 		if !ok {
-			c.mu.Lock()
-			stack := c.Stack
-			c.mu.Unlock()
-			if stack == nil {
-				continue
-			}
-			out, e := stack.DialContext(context.Background(), "udp", target)
+			out, e := stack.DialContext(context.Background(), "udp", destination)
 			if e != nil {
 				continue
 			}
-			f = flow{conn: out}
+			f = flow{conn: out, stack: stack, target: destination}
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
 			tunnel.connections.Add(1)
 			tunnel.active.Add(1)
-			go func(key string, src net.Addr, out net.Conn) {
+			go func(key string, src net.Addr, out net.Conn, timeout time.Duration) {
 				defer tunnel.active.Add(-1)
 				defer out.Close()
-				defer func() { mu.Lock(); delete(flows, key); mu.Unlock() }()
+				defer func() {
+					mu.Lock()
+					if flows[key].conn == out {
+						delete(flows, key)
+					}
+					mu.Unlock()
+				}()
 				b := make([]byte, 65535)
 				for {
-					_ = out.SetReadDeadline(time.Now().Add(idle))
+					_ = out.SetReadDeadline(time.Now().Add(timeout))
 					n, e := out.Read(b)
 					if e != nil {
 						return
@@ -3082,7 +3036,7 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 					}
 					tunnel.fromTunnel.Add(uint64(n))
 				}
-			}(key, src, out)
+			}(key, src, out, timeout)
 		}
 		if n, e := f.conn.Write(buf[:n]); e == nil {
 			tunnel.toTunnel.Add(uint64(n))
@@ -3095,8 +3049,15 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 // Applications must never be told the server's virtual-only UDP address.
 func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, target string) {
 	c.mu.Lock()
-	stack := c.Stack
+	stack, stop := c.Stack, c.dataStop
+	if tunnel.target != "" {
+		target = tunnel.target
+	}
 	c.mu.Unlock()
+	c.forwardSocksUDPAssociateOn(tunnel, in, target, stack, stop)
+}
+
+func (c *Connection) forwardSocksUDPAssociateOn(tunnel *localTunnel, in net.Conn, target string, stack *wgnet.Stack, stop chan struct{}) {
 	if stack == nil {
 		return
 	}
@@ -3105,6 +3066,7 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 		return
 	}
 	defer out.Close()
+	defer c.watchForward(stop, in, out)()
 	tunnel.connections.Add(1)
 	tunnel.active.Add(1)
 	defer tunnel.active.Add(-1)
@@ -3271,6 +3233,10 @@ func (c *Connection) Close() {
 		return
 	}
 	c.closed = true
+	if c.dataStop != nil {
+		close(c.dataStop)
+		c.dataStop = nil
+	}
 	h, token, base := c.http, c.token, c.base
 	tunnels, ui, stack := c.tunnels, c.ui, c.Stack
 	c.tunnels, c.ui, c.Stack = nil, nil, nil

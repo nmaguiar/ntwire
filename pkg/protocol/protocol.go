@@ -519,6 +519,9 @@ type RelayUDPStats struct {
 // their existing authenticated /v1/relay/control WebSocket. An absent report
 // is always safe to ignore: older relays do not send it and reports may be
 // dropped while the control connection is reconnecting.
+// Newer relays send a complete snapshot even when no sessions remain; two
+// consecutive snapshots missing an older allocation let the server recover
+// it. Older relays may omit empty reports, so absence of a report is ignored.
 type RelayUDPStatsReport struct {
 	Type     string          `json:"type"` // "udp_stats"
 	Sessions []RelayUDPStats `json:"sessions"`

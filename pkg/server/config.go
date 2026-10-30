@@ -417,7 +417,7 @@ auth:
     #   require_verified_email: true       # reject tokens lacking email_verified=true; default: true
 
 network:
-  tunnel_cidr               : 100.64.0.0/16 # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; for IPv6 use /64 or no shorter than /112
+  tunnel_cidr               : 100.64.0.0/16 # private IPv4 range or an IPv6 prefix (pick one; a deployment is single-family) used to allocate peer tunnel addresses; default shown; host bits are masked; at least four addresses are required
   advertised_endpoint       : ""            # UDP host:port returned to clients when it differs from listen.wireguard, such as behind NAT; host may be a hostname (resolved fresh on every client connect/renew) or a literal IP; must be empty when relay.enabled is true
   wireguard_private_key_file: ""            # optional persistent server WireGuard private key; use for native official WireGuard clients
   # dns                       :
@@ -909,9 +909,14 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	if c.Network.TunnelCIDR == "" {
 		c.Network.TunnelCIDR = "100.64.0.0/16"
 	}
-	if _, _, e = net.ParseCIDR(c.Network.TunnelCIDR); e != nil {
-		return c, fmt.Errorf("network.tunnel_cidr: %w", e)
+	tunnelPrefix, err := netip.ParsePrefix(c.Network.TunnelCIDR)
+	if err != nil {
+		return c, fmt.Errorf("network.tunnel_cidr: %w", err)
 	}
+	if tunnelPrefix.Addr().Is4In6() || tunnelPrefix.Addr().BitLen()-tunnelPrefix.Bits() < 2 {
+		return c, fmt.Errorf("network.tunnel_cidr must have room for the network, server, and client addresses")
+	}
+	c.Network.TunnelCIDR = tunnelPrefix.Masked().String()
 	if c.Network.DNS.Domain != "" {
 		dom := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(c.Network.DNS.Domain)), ".")
 		if dom == "" || strings.ContainsAny(dom, "/: @") {
