@@ -1,8 +1,8 @@
 # image-ntwire-client-linux-amd64 — linux/amd64
 
-- Scanned: 2026-10-30 02:57 UTC
-- Source commit: `fff9694526ee296b16a7682093dd0852ad5fb0bf`
-- Artifact: `nmaguiar/ntwire-client@sha256:7c2e31e6482c89b25305f9f3098741622e54fc8b227063db6cc60fa17c17acbe`
+- Scanned: 2026-10-31 02:46 UTC
+- Source commit: `d7cf1266fc39739842611a78ee1340a5fdf99b0d`
+- Artifact: `nmaguiar/ntwire-client@sha256:d1407cb3df3417205ede83e1072c2ee2fef0b5b34f68df130f118f25ec2b3c71`
 - Scanner: Trivy
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
@@ -25,10 +25,10 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
   "Trivy": {
     "Version": "0.76.1"
   },
-  "ReportID": "01a18abd-ea75-73ac-a4ca-c4a60927fd1f",
-  "CreatedAt": "2026-10-30T02:57:44.565242143Z",
-  "ArtifactID": "sha256:ae83bf233c76bbde29c6e8cd0947558564465e3fb77ce1bbe28d9292f3b953f6",
-  "ArtifactName": "nmaguiar/ntwire-client@sha256:7c2e31e6482c89b25305f9f3098741622e54fc8b227063db6cc60fa17c17acbe",
+  "ReportID": "01a18fd9-bd4b-722f-b8b1-f2deebd08cbb",
+  "CreatedAt": "2026-10-31T02:46:14.091144737Z",
+  "ArtifactID": "sha256:f5707f62de477299b681fcc27d796a2faff827042daa872f3c30982aea1f4c96",
+  "ArtifactName": "nmaguiar/ntwire-client@sha256:d1407cb3df3417205ede83e1072c2ee2fef0b5b34f68df130f118f25ec2b3c71",
   "ArtifactType": "container_image",
   "Metadata": {
     "Size": 19998720,
@@ -36,7 +36,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
       "Family": "debian",
       "Name": "12.15"
     },
-    "ImageID": "sha256:3fa1305fdb5c86aaa1bf31e78633f407f2d47633913c4a9a12d6a097f5c10819",
+    "ImageID": "sha256:2862dfe91a92cfe00f5e6003f7360a29e11ea8e4693bd8b91b2a85a4a8f4a2e6",
     "DiffIDs": [
       "sha256:7223ea1323e8c1159ec17f07d35acc27bdd1cc2bc3ed425b44ef21dac9915db0",
       "sha256:8fa10c0194df9b7c054c90dbe482585f768a54428fc90a5b78a0066a123b1bba",
@@ -50,16 +50,16 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
       "sha256:ad51d0769d16ba578106a177987dfe3d2e02c1668c852b795b2f6b024068242a",
       "sha256:6e7fbcf090d09b73a4aa85f9dce690d0ace73877c150b7c56955487b6e7a822a",
       "sha256:5904c32f457c96a16c8c68f5ccdf518c8138cd9e5971de9ce6d564fc481af222",
-      "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0",
-      "sha256:5f18d4d1f508670388b78eaa739c4eb299ee34d8414e6f1ce6c41952a566d53a"
+      "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8",
+      "sha256:40b56b7ddb1b05bd3d6a7c6fcc9f9eb16b935603ed802f6ba96aec13d5939f3e"
     ],
     "RepoDigests": [
-      "nmaguiar/ntwire-client@sha256:7c2e31e6482c89b25305f9f3098741622e54fc8b227063db6cc60fa17c17acbe"
+      "nmaguiar/ntwire-client@sha256:d1407cb3df3417205ede83e1072c2ee2fef0b5b34f68df130f118f25ec2b3c71"
     ],
-    "Reference": "nmaguiar/ntwire-client@sha256:7c2e31e6482c89b25305f9f3098741622e54fc8b227063db6cc60fa17c17acbe",
+    "Reference": "nmaguiar/ntwire-client@sha256:d1407cb3df3417205ede83e1072c2ee2fef0b5b34f68df130f118f25ec2b3c71",
     "ImageConfig": {
       "architecture": "amd64",
-      "created": "2026-10-30T02:55:58.417556225Z",
+      "created": "2026-10-31T02:44:36.244753883Z",
       "history": [
         {
           "created": "1970-01-01T00:00:00Z",
@@ -110,41 +110,41 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "created_by": "bazel build //common:cacerts_debian12_amd64_tar"
         },
         {
-          "created": "2026-10-30T02:55:58.408736929Z",
+          "created": "2026-10-31T02:44:36.235078372Z",
           "created_by": "ENV HOME=/home/nonroot",
           "comment": "buildkit.dockerfile.v0",
           "empty_layer": true
         },
         {
-          "created": "2026-10-30T02:55:58.408736929Z",
+          "created": "2026-10-31T02:44:36.235078372Z",
           "created_by": "COPY /out/ntwire /ntwire # buildkit",
           "comment": "buildkit.dockerfile.v0"
         },
         {
-          "created": "2026-10-30T02:55:58.417556225Z",
+          "created": "2026-10-31T02:44:36.244753883Z",
           "created_by": "COPY --chown=nonroot:nonroot /out/state /home/nonroot/.ntwire # buildkit",
           "comment": "buildkit.dockerfile.v0"
         },
         {
-          "created": "2026-10-30T02:55:58.417556225Z",
+          "created": "2026-10-31T02:44:36.244753883Z",
           "created_by": "USER nonroot:nonroot",
           "comment": "buildkit.dockerfile.v0",
           "empty_layer": true
         },
         {
-          "created": "2026-10-30T02:55:58.417556225Z",
+          "created": "2026-10-31T02:44:36.244753883Z",
           "created_by": "VOLUME [/home/nonroot/.ntwire]",
           "comment": "buildkit.dockerfile.v0",
           "empty_layer": true
         },
         {
-          "created": "2026-10-30T02:55:58.417556225Z",
+          "created": "2026-10-31T02:44:36.244753883Z",
           "created_by": "ENV NTWIRE_LOG_FORMAT=json",
           "comment": "buildkit.dockerfile.v0",
           "empty_layer": true
         },
         {
-          "created": "2026-10-30T02:55:58.417556225Z",
+          "created": "2026-10-31T02:44:36.244753883Z",
           "created_by": "ENTRYPOINT [\"/ntwire\"]",
           "comment": "buildkit.dockerfile.v0",
           "empty_layer": true
@@ -166,8 +166,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "sha256:ad51d0769d16ba578106a177987dfe3d2e02c1668c852b795b2f6b024068242a",
           "sha256:6e7fbcf090d09b73a4aa85f9dce690d0ace73877c150b7c56955487b6e7a822a",
           "sha256:5904c32f457c96a16c8c68f5ccdf518c8138cd9e5971de9ce6d564fc481af222",
-          "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0",
-          "sha256:5f18d4d1f508670388b78eaa739c4eb299ee34d8414e6f1ce6c41952a566d53a"
+          "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8",
+          "sha256:40b56b7ddb1b05bd3d6a7c6fcc9f9eb16b935603ed802f6ba96aec13d5939f3e"
         ]
       },
       "config": {
@@ -250,19 +250,19 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
       },
       {
         "Size": 16816128,
-        "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-        "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+        "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+        "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
       },
       {
         "Size": 2560,
-        "Digest": "sha256:953e24a1f0c864f1f93dacc082369f2bbb96b3f518d6ea5916d076c82dfe9e79",
-        "DiffID": "sha256:5f18d4d1f508670388b78eaa739c4eb299ee34d8414e6f1ce6c41952a566d53a"
+        "Digest": "sha256:b5c870d46db801f69c05bc7a2e842c9f79ca0f2cdfd440eee8324e2260be738b",
+        "DiffID": "sha256:40b56b7ddb1b05bd3d6a7c6fcc9f9eb16b935603ed802f6ba96aec13d5939f3e"
       }
     ]
   },
   "Results": [
     {
-      "Target": "nmaguiar/ntwire-client@sha256:7c2e31e6482c89b25305f9f3098741622e54fc8b227063db6cc60fa17c17acbe (debian 12.15)",
+      "Target": "nmaguiar/ntwire-client@sha256:d1407cb3df3417205ede83e1072c2ee2fef0b5b34f68df130f118f25ec2b3c71 (debian 12.15)",
       "Class": "os-pkgs",
       "Type": "debian",
       "Packages": [
@@ -1530,7 +1530,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "Debian Security Tracker",
             "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
           },
-          "Fingerprint": "sha256:89988c3330c9c4ba9eea7567efd9a8c24714fdef0f3402532387b3eb342c05ed",
+          "Fingerprint": "sha256:e22a1ec4e687ef1110383534b82bbe0990f70f108f27e2628fd821b6c2ef089b",
           "Title": "ca-certificates - security update",
           "Description": "Description Not Available",
           "Severity": "UNKNOWN"
@@ -1558,7 +1558,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "Debian Security Tracker",
             "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
           },
-          "Fingerprint": "sha256:302a0c34c2580c3c1842195a66ba1d4bb710fbb0663c6bdd3a02c9cac7a515d4",
+          "Fingerprint": "sha256:bf991c057d825b337a6a5de4e80888222582dac76d807b6bf9ecf74147faefa0",
           "Title": "tzdata - new timezone database",
           "Description": "Description Not Available",
           "Severity": "UNKNOWN"
@@ -1586,7 +1586,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "Debian Security Tracker",
             "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
           },
-          "Fingerprint": "sha256:14228cdfceec57fc86ac6a91ab713320726b00a69cfbca4142678c1d0c90335e",
+          "Fingerprint": "sha256:5f0219db18be0b59b9f7c2e9ca7913cc473f5865020ed2247b587fc966c31da0",
           "Title": "tzdata - new timezone database",
           "Description": "Description Not Available",
           "Severity": "UNKNOWN"
@@ -1614,7 +1614,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "Debian Security Tracker",
             "URL": "https://salsa.debian.org/security-tracker-team/security-tracker"
           },
-          "Fingerprint": "sha256:b9292e4fcccc8b03036c5629c90eaa0e205804ae33bf9d067c5c7572e936146f",
+          "Fingerprint": "sha256:e484ce2baff38ffa913d09ba88a945a2ed54ad108a7dea2e4152d8ac912c9bab",
           "Title": "tzdata - new timezone database",
           "Severity": "UNKNOWN"
         }
@@ -1626,13 +1626,13 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
       "Type": "gobinary",
       "Packages": [
         {
-          "ID": "github.com/nmaguiar/ntwire@v0.0.83",
+          "ID": "github.com/nmaguiar/ntwire@v0.0.0-20261030030003-d7cf1266fc39",
           "Name": "github.com/nmaguiar/ntwire",
           "Identifier": {
-            "PURL": "pkg:golang/github.com/nmaguiar/ntwire@v0.0.83",
-            "UID": "8d8f70b5bb8d8ab6"
+            "PURL": "pkg:golang/github.com/nmaguiar/ntwire@v0.0.0-20261030030003-d7cf1266fc39",
+            "UID": "590ad69ac9844585"
           },
-          "Version": "v0.0.83",
+          "Version": "v0.0.0-20261030030003-d7cf1266fc39",
           "Relationship": "root",
           "DependsOn": [
             "github.com/coder/websocket@v1.8.15",
@@ -1655,8 +1655,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "stdlib@v1.27.3"
           ],
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1670,8 +1670,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "Version": "v1.27.3",
           "Relationship": "direct",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1684,8 +1684,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v1.8.15",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1698,8 +1698,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v3.21.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1712,8 +1712,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v4.1.6",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1726,8 +1726,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v5.2.4",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1740,8 +1740,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v1.1.3",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1754,8 +1754,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v1.0.5",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1768,8 +1768,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.0.0-20240726163527-a2c0da244d78",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1782,8 +1782,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.2.8",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1796,8 +1796,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.58.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1810,8 +1810,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.61.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1824,8 +1824,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.37.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1838,8 +1838,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.49.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1852,8 +1852,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.47.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1866,8 +1866,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.16.0",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1880,8 +1880,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.0.0-20261024220952-b3bc704ef0ee",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1894,8 +1894,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v3.0.1",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         },
@@ -1908,8 +1908,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           },
           "Version": "v0.0.0-20250503011706-39ed1f5ac29c",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "AnalyzedBy": "gobinary"
         }
@@ -1926,15 +1926,15 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "InstalledVersion": "v0.58.0",
           "Status": "affected",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "DataSource": {
             "ID": "govulndb",
             "Name": "The Go Vulnerability Database",
             "URL": "https://pkg.go.dev/vuln/"
           },
-          "Fingerprint": "sha256:7ef4d3a7167dae22b93d9cc426e858808d967f24f22d409acc27558248b77198",
+          "Fingerprint": "sha256:e5a709ce27206e35d17d46938611407b648fadc52819d149974c196c769881a4",
           "Title": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design, and has known security issues",
           "Description": "The golang.org/x/crypto/openpgp package is unsafe by design, has numerous known security issues, is not maintained, and should not be used.\n\nIf you are required to interoperate with OpenPGP systems and need a maintained package, consider github.com/ProtonMail/go-crypto/openpgp which is a maintained fork that aims to be a drop-in replacement for this package.",
           "Severity": "UNKNOWN",
@@ -1958,8 +1958,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "FixedVersion": "0.62.0",
           "Status": "fixed",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-78661",
           "DataSource": {
@@ -1967,7 +1967,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "The Go Vulnerability Database",
             "URL": "https://pkg.go.dev/vuln/"
           },
-          "Fingerprint": "sha256:bd25082018c7e284748ef17a06bdca9bc58fa2fff5a02414d8e66524bf8e88bd",
+          "Fingerprint": "sha256:a9e6ee79f8814e39a86dda988c2e5af5850a61558b6c291e3ffee6b79f216e9a",
           "Title": "When coalescing adjacent text nodes in addText and fosterParent, appen ...",
           "Description": "When coalescing adjacent text nodes in addText and fosterParent, appending to an existing TextNode's Data via string concatenation (n.Data += text) reallocated and copied the accumulated string on every token. Inputs containing many short text runs separated by ignored end tags (such as \"a\u003c/x\u003e\") caused O(n^2) allocations and byte copies. Accumulate coalesced text in per-node byte slices during parsing and materialize Data strings once at the end of parse.",
           "Severity": "UNKNOWN",
@@ -1995,8 +1995,8 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
           "FixedVersion": "0.62.0",
           "Status": "fixed",
           "Layer": {
-            "Digest": "sha256:0a4884de7f75d502bbdc1023b28309a4a527c687942f85e44064c33322f244d9",
-            "DiffID": "sha256:e6986d9d2f1e14eae8090b83f18c8674f2ec62fad16daee2935575283e28c2a0"
+            "Digest": "sha256:f68d1ee1c9f55426432e521f207699a458a594d86ac765bacbfc308bfe0298c2",
+            "DiffID": "sha256:bb22ea3cfddbbf0032d189e5ca6b48d4f186a59fa482bf713792468ba8e2dcb8"
           },
           "PrimaryURL": "https://avd.aquasec.com/nvd/cve-2026-97045",
           "DataSource": {
@@ -2004,7 +2004,7 @@ CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 7
             "Name": "The Go Vulnerability Database",
             "URL": "https://pkg.go.dev/vuln/"
           },
-          "Fingerprint": "sha256:6d3ebad73b2b60e04ede3c4299e99ed5ceec91dfa89045b147eadb4be48fd61f",
+          "Fingerprint": "sha256:279a6d87268bf7c18235c8a10a64e7e04ac529ff418528f8be48800004550e2f",
           "Title": "In childTextNodesAreLiteral, walking up the tree previously stopped at ...",
           "Description": "In childTextNodesAreLiteral, walking up the tree previously stopped at the nearest foreign ancestor once an HTML integration point was found. However, that integration point may itself be a descendant of an element that was foster-parented into a foreign namespace (such as \u003cmglyph\u003e or \u003cmalignmark\u003e fostered under \u003cmtext\u003e), causing a parser to resolve the subtree in a different foreign namespace upon re-parsing the rendered output. Continue walking the full ancestor chain and verify that every transition from a non-empty namespace occurs at an HTML integration point before emitting literal text.",
           "Severity": "UNKNOWN",
