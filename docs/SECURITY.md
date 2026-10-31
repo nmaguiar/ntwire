@@ -433,7 +433,9 @@ start otherwise — and the whole metrics listener is rate-limited per source
 address. The client status UI additionally sends `Referrer-Policy:
 no-referrer`, `X-Frame-Options: DENY`, `Cache-Control: no-store`, and a CSP
 whose `connect-src 'self'` bounds where script on that page could send the
-token.
+token. Its `frame-src` permits only the configured numeric loopback Settings
+origin (including its port); without a valid local Settings URL, frames are
+blocked. The Settings URL's access token is never included in this policy.
 
 ## The relay's trust model
 

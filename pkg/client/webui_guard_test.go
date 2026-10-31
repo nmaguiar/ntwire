@@ -13,7 +13,12 @@ import (
 // client that does not follow redirects, so the bootstrap can be inspected.
 func startTestUI(t *testing.T) (*Connection, string, *http.Client) {
 	t.Helper()
-	c := &Connection{}
+	return startTestUIWithOptions(t, Options{})
+}
+
+func startTestUIWithOptions(t *testing.T, options Options) (*Connection, string, *http.Client) {
+	t.Helper()
+	c := &Connection{options: options}
 	c.startWebUI()
 	t.Cleanup(func() {
 		if c.ui != nil {
@@ -26,6 +31,84 @@ func startTestUI(t *testing.T) (*Connection, string, *http.Client) {
 	return c, c.UIURL, &http.Client{
 		Timeout:       3 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+}
+
+func TestStatusUISettingsFramePolicy(t *testing.T) {
+	cases := []struct {
+		name, settingsURL, want string
+	}{
+		{"GUI settings", "http://127.0.0.1:54321/?token=secret&setup=1", "http://127.0.0.1:54321"},
+		{"CLI settings", "http://127.0.0.1:54322/?token=secret", "http://127.0.0.1:54322"},
+		{"HTTPS loopback", "https://127.0.0.1:54323/path?token=secret#settings", "https://127.0.0.1:54323"},
+		{"default port", "http://127.0.0.1/?token=secret", "http://127.0.0.1"},
+		{"IPv6 loopback", "http://[::1]:54321/?token=secret", "http://[::1]:54321"},
+		{"absent", "", "'none'"},
+		{"malformed", "://bad", "'none'"},
+		{"relative", "/settings?token=secret", "'none'"},
+		{"remote", "https://example.com/?token=secret", "'none'"},
+		{"non-loopback", "http://192.168.1.1:54321/", "'none'"},
+		{"DNS host", "http://localhost:54321/", "'none'"},
+		{"userinfo", "http://user:secret@127.0.0.1:54321/", "'none'"},
+		{"unsupported scheme", "ftp://127.0.0.1:54321/", "'none'"},
+		{"port wildcard", "http://127.0.0.1:*/", "'none'"},
+		{"port out of range", "http://127.0.0.1:65536/", "'none'"},
+		{"zero port", "http://127.0.0.1:0/", "'none'"},
+		{"IPv6 zone", "http://[::1%25lo0]:54321/", "'none'"},
+		{"directive injection", "http://127.0.0.1:54321; frame-src */", "'none'"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			uiSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}), tc.settingsURL).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rr.Code != http.StatusNoContent {
+				t.Fatalf("wrapped handler status = %d", rr.Code)
+			}
+			csp := rr.Header().Get("Content-Security-Policy")
+			want := "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src " + tc.want + "; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+			if csp != want {
+				t.Errorf("CSP = %q, want %q", csp, want)
+			}
+			for header, want := range map[string]string{
+				"Referrer-Policy": "no-referrer", "X-Frame-Options": "DENY",
+				"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store",
+			} {
+				if got := rr.Header().Get(header); got != want {
+					t.Errorf("%s = %q, want %q", header, got, want)
+				}
+			}
+			if strings.Contains(csp, "secret") || strings.Contains(csp, "setup=") {
+				t.Error("CSP contains settings credentials or query parameters")
+			}
+		})
+	}
+}
+
+func TestStatusUIAllowsConfiguredSettingsFrame(t *testing.T) {
+	settingsURL := "http://127.0.0.1:54321/?token=secret"
+	_, uiURL, h := startTestUIWithOptions(t, Options{SettingsURL: settingsURL})
+	resp, err := h.Get(uiURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	base, _ := uiToken(t, uiURL)
+	req, _ := http.NewRequest(http.MethodGet, base+"/", nil)
+	for _, cookie := range resp.Cookies() {
+		req.AddCookie(cookie)
+	}
+	resp, err = h.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200", resp.StatusCode)
+	}
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "; frame-src http://127.0.0.1:54321;") || strings.Contains(csp, "secret") {
+		t.Fatalf("dashboard CSP does not allow exactly the configured settings origin: %q", csp)
 	}
 }
 
