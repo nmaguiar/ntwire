@@ -1956,8 +1956,27 @@ func subtleCompare(a, b string) bool {
 // uiSecurityHeaders hardens every local status UI response. This origin holds a
 // token that can rebind a tunnel listener onto a LAN interface and launch
 // browsers, so it must not leak through a Referer, be framed by another page,
-// be cached, or be able to talk to any origin but its own.
-func uiSecurityHeaders(h http.Handler) http.Handler {
+// be cached, or send API requests to any origin but its own. Only the configured
+// local settings origin may be loaded in a child frame.
+func uiSecurityHeaders(h http.Handler, settingsURL string) http.Handler {
+	frameSource := "'none'"
+	if u, err := urlpkg.Parse(settingsURL); err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.User == nil {
+		// Accept numeric loopback addresses only, avoiding DNS dependencies and
+		// ensuring caller-supplied URL text cannot inject CSP directives. Paths,
+		// queries (including the settings token), and fragments are never copied.
+		if ip, err := netip.ParseAddr(u.Hostname()); err == nil && ip.IsLoopback() && ip.Zone() == "" {
+			host := ip.String()
+			if ip.Is6() {
+				host = "[" + host + "]"
+			}
+			port := u.Port()
+			if port == "" {
+				frameSource = u.Scheme + "://" + host
+			} else if n, err := strconv.Atoi(port); err == nil && n > 0 && n <= 65535 {
+				frameSource = u.Scheme + "://" + net.JoinHostPort(ip.String(), port)
+			}
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Frame-Options", "DENY")
@@ -1968,7 +1987,7 @@ func uiSecurityHeaders(h http.Handler) http.Handler {
 		// to inject a nonce. connect-src 'self' is the part that matters here --
 		// it bounds where script on this page could send the token.
 		w.Header().Set("Content-Security-Policy",
-			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
+			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src "+frameSource+"; form-action 'none'; frame-ancestors 'none'; base-uri 'none'")
 		h.ServeHTTP(w, r)
 	})
 }
@@ -2189,7 +2208,7 @@ func (c *Connection) startWebUI() {
 		}
 		http.FileServer(http.FS(fsys)).ServeHTTP(w, r)
 	})
-	ui := &http.Server{Handler: uiSecurityHeaders(mux), ReadHeaderTimeout: 5 * time.Second}
+	ui := &http.Server{Handler: uiSecurityHeaders(mux, c.options.SettingsURL), ReadHeaderTimeout: 5 * time.Second}
 	c.mu.Lock()
 	c.ui = ui
 	c.UIURL = origin + "/?token=" + access
