@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"reflect"
 	"sync"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
@@ -36,6 +37,21 @@ type RelayPool struct {
 	OnReflectAddr     func(string)
 	OnUDPRelayAddr    func(*RelayAgent, string)
 	OnNativeWireGuard func(string, string)
+	// OnNativeWireGuardSet receives the association of every registered
+	// member, not just the preferred one, whenever that set changes.
+	OnNativeWireGuardSet func([]NativeAssociation)
+}
+
+// nativeSet returns every registered member's native association, in member
+// order. Called with p.mu held.
+func (p *RelayPool) nativeSet() []NativeAssociation {
+	var out []NativeAssociation
+	for _, m := range p.members {
+		if m.registered && m.response.NativeWireGuardAddr != "" && m.response.NativeWireGuardToken != "" {
+			out = append(out, NativeAssociation{m.response.NativeWireGuardAddr, m.response.NativeWireGuardToken})
+		}
+	}
+	return out
 }
 
 type relayPoolMember struct {
@@ -150,10 +166,13 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		p.domain = response.Domain
 	}
 	oldResponse := member.response
+	oldSet := p.nativeSet()
 	oldPreferred := p.preferred
 	member.registered, member.response = registered, response
 	preferred := p.choosePreferred(oldPreferred)
 	p.preferred = preferred
+	newSet := p.nativeSet()
+	setChanged := !reflect.DeepEqual(oldSet, newSet)
 	changed := oldPreferred != preferred
 	if preferred == member && registered && (oldResponse.ReflectAddr != response.ReflectAddr || oldResponse.UDPRelayAddr != response.UDPRelayAddr || oldResponse.NativeWireGuardAddr != response.NativeWireGuardAddr || oldResponse.NativeWireGuardToken != response.NativeWireGuardToken) {
 		changed = true
@@ -170,12 +189,13 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		agent = preferred.agent
 		nativeAddr, nativeToken = preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken
 	}
-	if changed {
+	onSet := p.OnNativeWireGuardSet
+	if changed || setChanged {
 		p.revision++
 	}
 	revision := p.revision
 	p.mu.Unlock()
-	if !changed {
+	if !changed && !setChanged {
 		return
 	}
 	p.callbacksMu.Lock()
@@ -186,14 +206,19 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	if !current {
 		return
 	}
-	if onReflect != nil {
-		onReflect(reflectAddr)
+	if changed {
+		if onReflect != nil {
+			onReflect(reflectAddr)
+		}
+		if onUDP != nil {
+			onUDP(agent, udpAddr)
+		}
+		if onNative != nil {
+			onNative(nativeAddr, nativeToken)
+		}
 	}
-	if onUDP != nil {
-		onUDP(agent, udpAddr)
-	}
-	if onNative != nil {
-		onNative(nativeAddr, nativeToken)
+	if setChanged && onSet != nil {
+		onSet(newSet)
 	}
 }
 
@@ -248,7 +273,11 @@ func (p *RelayPool) Close() error {
 		member.registered = false
 	}
 	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
+	onSet := p.OnNativeWireGuardSet
 	p.mu.Unlock()
+	if onSet != nil {
+		onSet(nil)
+	}
 	if onReflect != nil {
 		onReflect("")
 	}

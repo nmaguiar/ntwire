@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -53,7 +54,25 @@ type Bind struct {
 	// OnPeerDisconnected mirrors OnPeerConnected for lifecycle consumers.
 	// Callbacks run outside Bind's mutex and must not retain credentials.
 	OnPeerDisconnected func(string, conn.Endpoint)
+	// OnWriteFailure is called when a peer's writer times out, fails, or its
+	// queue has overflowed repeatedly. Send itself never blocks on the
+	// carrier, so multipath schedulers use this instead of a synchronous
+	// Send error to fail over. It runs outside Bind's mutex.
+	OnWriteFailure func(string, conn.Endpoint)
+
+	// Dropped counts batches discarded because a peer's queue was full.
+	Dropped atomic.Uint64
 }
+
+const (
+	// peerQueueDepth bounds the batches buffered per carrier. WireGuard
+	// treats the carrier as lossy, so overflow is dropped rather than letting
+	// one slow peer block wireguard-go's device-wide goroutines.
+	peerQueueDepth = 256
+	// overflowFailureThreshold consecutive drops are reported as a carrier
+	// failure so a multipath scheduler can move to another path.
+	overflowFailureThreshold = 64
+)
 
 type packet struct {
 	data     []byte
@@ -64,12 +83,11 @@ type peer struct {
 	ws       *websocket.Conn
 	endpoint endpoint
 	done     chan struct{}
-	// coder/websocket permits one reader and one writer, but not concurrent
-	// writes. A channel is used instead of sync.Mutex so waiting to become the
-	// writer is bounded by the same deadline as the write itself. Otherwise one
-	// wedged network write can permanently queue every payload and multipath
-	// control frame behind it without ever forcing a reconnect.
-	writeGate chan struct{}
+	// out is the bounded outbound queue drained by a single writer goroutine
+	// (Bind.writeLoop), which is what serializes writes to ws.
+	out         chan [][]byte
+	overflow    atomic.Int32
+	failureOnce sync.Once
 }
 type endpoint struct {
 	id      string
@@ -135,6 +153,11 @@ func NewMultipathHybridClient(url string, client *http.Client, header http.Heade
 		m.scheduler.ActivateCarrier("wss", time.Now())
 	}
 	h.WebSocket.OnPeerDisconnected = func(_ string, _ conn.Endpoint) {
+		m.scheduler.CarrierFailure("wss")
+	}
+	// Send never reports a stalled carrier synchronously; a wedged or
+	// persistently overflowing WSS writer is reported here instead.
+	h.WebSocket.OnWriteFailure = func(_ string, _ conn.Endpoint) {
 		m.scheduler.CarrierFailure("wss")
 	}
 	// Bind.ParseEndpoint intentionally rejects a client WebSocket before Open
@@ -254,9 +277,49 @@ func (b *Bind) SetRedialBackoff(min, max, dialTimeout time.Duration) {
 func NewServer() *Bind { return &Bind{writeTimeout: writeTimeoutDefault} }
 
 func newPeer(id string, ws *websocket.Conn, ep endpoint) *peer {
-	p := &peer{id: id, ws: ws, endpoint: ep, done: make(chan struct{}), writeGate: make(chan struct{}, 1)}
-	p.writeGate <- struct{}{}
+	p := &peer{id: id, ws: ws, endpoint: ep, done: make(chan struct{}), out: make(chan [][]byte, peerQueueDepth)}
 	return p
+}
+
+// writeLoop is the only writer of p.ws. A stalled write is bounded by
+// writeTimeout; on failure the carrier is closed (which triggers the usual
+// disconnect/redial path) and OnWriteFailure is invoked.
+func (b *Bind) writeLoop(p *peer) {
+	b.mu.Lock()
+	writeTimeout := b.writeTimeout
+	b.mu.Unlock()
+	if writeTimeout <= 0 {
+		writeTimeout = writeTimeoutDefault
+	}
+	for {
+		select {
+		case <-p.done:
+			return
+		case bufs := <-p.out:
+			ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
+			var err error
+			for _, buf := range bufs {
+				if err = p.ws.Write(ctx, websocket.MessageBinary, buf); err != nil {
+					break
+				}
+			}
+			cancel()
+			if err != nil {
+				slog.Warn("WireGuard WebSocket write failed", "peer", p.id, "error", err)
+				p.ws.CloseNow()
+				b.reportWriteFailure(p)
+				return
+			}
+		}
+	}
+}
+
+func (b *Bind) reportWriteFailure(p *peer) {
+	p.failureOnce.Do(func() {
+		if b.OnWriteFailure != nil {
+			b.OnWriteFailure(p.id, p.endpoint)
+		}
+	})
 }
 
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -354,6 +417,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 }
 
 func (b *Bind) read(p *peer) {
+	go b.writeLoop(p)
 	// Tie the heartbeat to this exact carrier, including redial replacements.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -524,7 +588,9 @@ func (b *Bind) CloseSession(id string) {
 	delete(b.peers, id)
 	b.mu.Unlock()
 	if p != nil {
-		_ = p.ws.Close(websocket.StatusPolicyViolation, "session closed")
+		// Close waits for the peer's close handshake; never hold the caller
+		// (often under server locks) behind an unresponsive carrier.
+		go func() { _ = p.ws.Close(websocket.StatusPolicyViolation, "session closed") }()
 	}
 }
 
@@ -557,28 +623,26 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if p == nil {
 		return fmt.Errorf("WebSocket peer is not connected")
 	}
-	b.mu.Lock()
-	writeTimeout := b.writeTimeout
-	b.mu.Unlock()
-	if writeTimeout <= 0 {
-		writeTimeout = writeTimeoutDefault
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-	defer cancel()
-	select {
-	case <-ctx.Done():
-		p.ws.CloseNow()
-		return fmt.Errorf("waiting for WebSocket writer: %w", ctx.Err())
-	case <-p.writeGate:
-	}
-	defer func() { p.writeGate <- struct{}{} }()
+	// wireguard-go reuses bufs after Send returns, so the batch is copied.
+	batch := make([][]byte, 0, len(bufs))
 	for _, buf := range bufs {
-		if !ValidDatagram(buf) {
-			continue
+		if ValidDatagram(buf) {
+			batch = append(batch, append([]byte(nil), buf...))
 		}
-		if err := p.ws.Write(ctx, websocket.MessageBinary, buf); err != nil {
-			p.ws.CloseNow()
-			return err
+	}
+	if len(batch) == 0 {
+		return nil
+	}
+	select {
+	case <-p.done:
+		return fmt.Errorf("WebSocket peer is not connected")
+	case p.out <- batch:
+		p.overflow.Store(0)
+	default:
+		b.Dropped.Add(1)
+		if p.overflow.Add(1) == overflowFailureThreshold {
+			slog.Warn("WireGuard WebSocket carrier is not draining; dropping", "peer", p.id)
+			b.reportWriteFailure(p)
 		}
 	}
 	return nil

@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sync"
@@ -25,14 +27,27 @@ type nativeWGRelay struct {
 	indices    map[uint32]nativeWGRoute
 	indexOrder []uint32
 	nextIndex  int
+	// pairs maps the server's sender index (learned from its type-2
+	// response) to the client's index, so client transport packets, which
+	// carry only the server's index, can refresh the client's route.
+	pairs     map[uint32]uint32
+	pairOrder []uint32
+	nextPair  int
+	log       *slog.Logger
 }
+
+const (
+	nativeWGMaxIndices = 4096
+	nativeWGRouteTTL   = 3 * time.Minute
+)
+
 type nativeWGRoute struct {
 	client  netip.AddrPort
 	expires time.Time
 }
 
 func newNativeWGRelay(c net.PacketConn, advertise string) *nativeWGRelay {
-	return &nativeWGRelay{conn: c, advertise: advertise, tokens: map[string]string{}, servers: map[string]netip.AddrPort{}, indices: map[uint32]nativeWGRoute{}}
+	return &nativeWGRelay{conn: c, advertise: advertise, tokens: map[string]string{}, servers: map[string]netip.AddrPort{}, indices: map[uint32]nativeWGRoute{}, pairs: map[uint32]uint32{}, log: slog.Default()}
 }
 func (n *nativeWGRelay) issue(tenant string) string {
 	b := make([]byte, 32)
@@ -96,6 +111,16 @@ func (n *nativeWGRelay) serve() {
 	for {
 		size, addr, err := n.conn.ReadFrom(buf)
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Temporary() {
+				n.log.Warn("native WireGuard relay read temporarily failed", "error", err)
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+			n.log.Error("native WireGuard relay reader stopped", "error", err)
 			return
 		}
 		from, ok := addrPort(addr)
@@ -132,6 +157,12 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 		if from == server {
 			route, found := n.indices[receiver]
 			if found && time.Now().Before(route.expires) {
+				if typ == 2 {
+					n.recordPair(binary.LittleEndian.Uint32(b[4:8]), receiver)
+				}
+				// Server traffic is activity too: keep the route alive.
+				route.expires = time.Now().Add(nativeWGRouteTTL)
+				n.indices[receiver] = route
 				_, _ = n.conn.WriteTo(b, net.UDPAddrFromAddrPort(route.client))
 			}
 			return
@@ -152,7 +183,7 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 		// A bounded FIFO avoids an attacker-triggered full-map scan for every
 		// fresh initiation. Refreshing an existing index needs no new slot.
 		if _, exists := n.indices[receiver]; !exists {
-			if len(n.indexOrder) == 4096 {
+			if len(n.indexOrder) == nativeWGMaxIndices {
 				delete(n.indices, n.indexOrder[n.nextIndex])
 				n.indexOrder[n.nextIndex] = receiver
 				n.nextIndex = (n.nextIndex + 1) % len(n.indexOrder)
@@ -160,7 +191,34 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 				n.indexOrder = append(n.indexOrder, receiver)
 			}
 		}
-		n.indices[receiver] = nativeWGRoute{client: from, expires: time.Now().Add(3 * time.Minute)}
+		n.indices[receiver] = nativeWGRoute{client: from, expires: time.Now().Add(nativeWGRouteTTL)}
+	} else if clientIdx, ok := n.pairs[receiver]; ok && (typ == 4 || typ == 3) {
+		// Client roaming (NAT rebind, Wi-Fi/cellular switch): a transport
+		// packet addressed to the server's index moves the return route to
+		// its new source and extends its life. The relay cannot verify the
+		// packet; the worst a spoofer who knows the random 32-bit index can
+		// do is misdirect encrypted replies, which WireGuard on the real
+		// client then re-corrects with its next packet.
+		if route, found := n.indices[clientIdx]; found {
+			route.client = from
+			route.expires = time.Now().Add(nativeWGRouteTTL)
+			n.indices[clientIdx] = route
+		}
 	}
 	_, _ = n.conn.WriteTo(b, net.UDPAddrFromAddrPort(server))
+}
+
+// recordPair remembers serverIdx -> clientIdx in a bounded FIFO. Called with
+// n.mu held.
+func (n *nativeWGRelay) recordPair(serverIdx, clientIdx uint32) {
+	if _, exists := n.pairs[serverIdx]; !exists {
+		if len(n.pairOrder) == nativeWGMaxIndices {
+			delete(n.pairs, n.pairOrder[n.nextPair])
+			n.pairOrder[n.nextPair] = serverIdx
+			n.nextPair = (n.nextPair + 1) % len(n.pairOrder)
+		} else {
+			n.pairOrder = append(n.pairOrder, serverIdx)
+		}
+	}
+	n.pairs[serverIdx] = clientIdx
 }

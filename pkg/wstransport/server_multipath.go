@@ -34,6 +34,12 @@ type ServerMultipathBind struct {
 	opts   MultipathOptions
 	forced string
 
+	// reserved holds UDP sources that belong to infrastructure (a relay's
+	// native-WireGuard listener) and must never be claimed as a peer's
+	// candidate path: doing so would retag, and reroute replies for, other
+	// peers' traffic. Guarded by mu.
+	reserved map[string]bool
+
 	stop        chan struct{}
 	lifecycleMu sync.Mutex
 	stopped     bool
@@ -109,6 +115,14 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 // instead. See MultipathBind.RegisterPath.
 func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, ep conn.Endpoint, pathMTU bool) {
 	m.mu.Lock()
+	if kind != PathWSS {
+		src := ep.DstToString()
+		if owner := m.bySource[src]; m.reserved[src] || (owner != nil && owner.id != peerID) {
+			m.mu.Unlock()
+			slog.Warn("multipath path refused: source reserved or owned by another peer", "peer", peerID, "path", name)
+			return
+		}
+	}
 	p := m.peer(peerID)
 	p.mu.Lock()
 	if old := p.paths[name]; old != nil && old.DstToString() != ep.DstToString() {
@@ -181,6 +195,19 @@ func (m *ServerMultipathBind) SetForced(name string) {
 		p.scheduler.SetForced(normalized)
 	}
 }
+
+// ReserveSources replaces the set of UDP source addresses that no peer may
+// register as a candidate path.
+func (m *ServerMultipathBind) ReserveSources(addrs []string) {
+	set := make(map[string]bool, len(addrs))
+	for _, a := range addrs {
+		set[a] = true
+	}
+	m.mu.Lock()
+	m.reserved = set
+	m.mu.Unlock()
+}
+
 func (m *ServerMultipathBind) RemovePeer(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

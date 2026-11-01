@@ -306,7 +306,7 @@ func main() {
 		for _, agent := range pool.Agents() {
 			agent.OnUDPStats = func(report protocol.RelayUDPStatsReport) { s.RecordUDPRelayStatsFrom(agent, report) }
 		}
-		pool.OnNativeWireGuard = s.EnableNativeWireGuardRelay
+		pool.OnNativeWireGuardSet = s.EnableNativeWireGuardRelays
 		go pool.Run(context.Background())
 		defer pool.Close()
 		if c.Relay.DirectClients {

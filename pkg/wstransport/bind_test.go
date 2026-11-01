@@ -69,8 +69,10 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	}
 }
 
-func TestWebSocketBindWriterWaitIsBounded(t *testing.T) {
+func TestWebSocketBindSend_NonReadingPeerNeverBlocks(t *testing.T) {
 	server := NewServer()
+	// The server's receive funcs are never called, so its read loop stalls
+	// and stops draining the TCP connection: the client's writer wedges.
 	if _, _, err := server.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +89,14 @@ func TestWebSocketBindWriterWaitIsBounded(t *testing.T) {
 	defer h.Close()
 
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
-	client.writeTimeout = 25 * time.Millisecond
+	client.writeTimeout = 100 * time.Millisecond
+	failed := make(chan string, 1)
+	client.OnWriteFailure = func(id string, _ conn.Endpoint) {
+		select {
+		case failed <- id:
+		default:
+		}
+	}
 	if _, _, err := client.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -96,22 +105,25 @@ func TestWebSocketBindWriterWaitIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client.mu.Lock()
-	p := client.peers["remote"]
-	client.mu.Unlock()
-	if p == nil {
-		t.Fatal("client WebSocket peer missing")
-	}
-	<-p.writeGate // model a carrier write that has not returned yet
-	defer func() { p.writeGate <- struct{}{} }()
 
+	payload := make([]byte, 30000) // below the WebSocket 32 KiB read limit
 	started := time.Now()
-	err = client.Send([][]byte{make([]byte, 16)}, ep)
-	if err == nil || !strings.Contains(err.Error(), "waiting for WebSocket writer") {
-		t.Fatalf("Send error = %v, want bounded writer wait error", err)
+	for i := 0; i < 5000; i++ {
+		_ = client.Send([][]byte{payload}, ep) // errors after the carrier is torn down are fine
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("Send waited %s for a wedged writer, want bounded return", elapsed)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("5000 Sends took %s against a non-reading peer, want non-blocking", elapsed)
+	}
+	select {
+	case id := <-failed:
+		if id != "remote" {
+			t.Fatalf("OnWriteFailure id = %q", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnWriteFailure was not called for a wedged carrier")
+	}
+	if client.Dropped.Load() == 0 {
+		t.Fatal("expected overflow drops to be counted")
 	}
 }
 

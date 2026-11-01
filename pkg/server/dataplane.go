@@ -220,6 +220,9 @@ func (s *Server) StartDataPlane() error {
 			s.log.Info("transport event", "event", "websocket_disconnected", "transport", "websocket", "relay", true)
 			multipath.DeactivatePath(id, "wss")
 		}
+		ws.WebSocket.OnWriteFailure = func(id string, _ conn.Endpoint) {
+			multipath.DeactivatePath(id, "wss")
+		}
 		ws.UDP.(*wstransport.FilterBind).SetProbeHandler(multipath.HandlePathControl)
 		// Direct clients use this authenticated control-plane registration flow
 		// to associate their reflected source address. Answer the reflection
@@ -284,10 +287,27 @@ func (s *Server) asnRefreshURL() (string, bool) {
 	return "", false
 }
 
+// NativeAssociation is one relay's tenant-dedicated native WireGuard endpoint
+// and the token that authorizes this server to claim it.
+type NativeAssociation struct{ Addr, Token string }
+
 // EnableNativeWireGuardRelay associates the existing server UDP bind with a
-// tenant-dedicated relay endpoint. The opaque token was issued over the
-// authenticated control connection; no WireGuard key ever reaches the relay.
+// single tenant-dedicated relay endpoint; see EnableNativeWireGuardRelays.
 func (s *Server) EnableNativeWireGuardRelay(addr, token string) {
+	if addr == "" || token == "" {
+		s.EnableNativeWireGuardRelays(nil)
+		return
+	}
+	s.EnableNativeWireGuardRelays([]NativeAssociation{{addr, token}})
+}
+
+// EnableNativeWireGuardRelays associates the existing server UDP bind with
+// every given relay endpoint (one per registered relay). The opaque tokens
+// were issued over authenticated control connections; no WireGuard key ever
+// reaches a relay. A hostname endpoint (a wildcard relay listener advertises
+// tenant.domain:port) is resolved on every refresh so a relay address change
+// heals without a restart. Passing nil stops all associations.
+func (s *Server) EnableNativeWireGuardRelays(assocs []NativeAssociation) {
 	s.relayLifecycleMu.Lock()
 	defer s.relayLifecycleMu.Unlock()
 	s.nativeRelayMu.Lock()
@@ -295,7 +315,7 @@ func (s *Server) EnableNativeWireGuardRelay(addr, token string) {
 		close(s.nativeRelayStop)
 		s.nativeRelayStop = nil
 	}
-	if addr == "" || token == "" || s.data == nil || !s.Config.NativeWireGuard.Enabled {
+	if len(assocs) == 0 || s.data == nil || !s.Config.NativeWireGuard.Enabled {
 		s.nativeRelayMu.Unlock()
 		return
 	}
@@ -307,9 +327,39 @@ func (s *Server) EnableNativeWireGuardRelay(addr, token string) {
 	stop := make(chan struct{})
 	s.nativeRelayStop = stop
 	s.nativeRelayMu.Unlock()
+	assocs = append([]NativeAssociation(nil), assocs...)
+	failing := map[string]bool{}
 	send := func() {
-		if err := bind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(token), addr); err != nil {
-			s.log.Debug("native WireGuard relay association failed", "error", err)
+		var reserved []string
+		defer func() {
+			if s.data != nil && s.data.multipath != nil {
+				s.data.multipath.ReserveSources(reserved)
+			}
+		}()
+		for _, a := range assocs {
+			target := a.Addr
+			if _, err := netip.ParseAddrPort(target); err != nil {
+				ua, rerr := net.ResolveUDPAddr("udp", target)
+				if rerr != nil {
+					if !failing[a.Addr] {
+						s.log.Warn("native WireGuard relay endpoint did not resolve", "addr", a.Addr, "error", rerr)
+					}
+					failing[a.Addr] = true
+					continue
+				}
+				target = ua.AddrPort().String()
+			}
+			if ap, perr := netip.ParseAddrPort(target); perr == nil {
+				reserved = append(reserved, netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()).String())
+			}
+			if err := bind.SendControl(wstransport.FrameNativeWireGuardAssociate, []byte(a.Token), target); err != nil {
+				if !failing[a.Addr] {
+					s.log.Warn("native WireGuard relay association failed", "addr", a.Addr, "error", err)
+				}
+				failing[a.Addr] = true
+				continue
+			}
+			delete(failing, a.Addr)
 		}
 	}
 	send()
