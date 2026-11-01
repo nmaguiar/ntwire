@@ -548,3 +548,20 @@ func TestMultipathBindDoesNotSampleStandbyWithRealTraffic(t *testing.T) {
 		t.Fatalf("payload destinations = %v, want one send to sticky wss only", base.dests)
 	}
 }
+
+func TestServerMultipathBind_RegisterPathRefusesReservedAndForeignSources(t *testing.T) {
+	m := NewServerMultipathBind(NewUDPBind(0, nil), MultipathOptions{})
+	defer m.Close()
+	reservedEP := udpEndpoint{addr: netip.MustParseAddrPort("203.0.113.1:51821")}
+	m.ReserveSources([]string{reservedEP.DstToString()})
+	m.RegisterPath("attacker", "direct-udp", PathDirect, reservedEP, false)
+	if m.bySource[reservedEP.DstToString()] != nil {
+		t.Fatal("reserved relay native source was claimed as a peer path")
+	}
+	ep := udpEndpoint{addr: netip.MustParseAddrPort("198.51.100.7:4000")}
+	m.RegisterPath("alice", "direct-udp", PathDirect, ep, false)
+	m.RegisterPath("mallory", "direct-udp", PathDirect, ep, false)
+	if got := m.bySource[ep.DstToString()]; got == nil || got.id != "alice" {
+		t.Fatal("a second peer captured another peer's source address")
+	}
+}

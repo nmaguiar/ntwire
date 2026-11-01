@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"reflect"
 	"sync"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
@@ -21,21 +22,38 @@ import (
 // unconditionally), so it is already a warm standby, not a cold one that
 // needs separately keeping alive.
 type RelayPool struct {
-	listener    *relayListener
-	members     []*relayPoolMember
-	log         *slog.Logger
-	mu          sync.Mutex
-	callbacksMu sync.Mutex // serializes publication, without holding mu in callbacks
-	revision    uint64
-	closed      bool
-	domain      string
-	preferred   *relayPoolMember
+	listener         *relayListener
+	members          []*relayPoolMember
+	log              *slog.Logger
+	mu               sync.Mutex
+	callbacksMu      sync.Mutex // serializes publication, without holding mu in callbacks
+	revision         uint64
+	preferredPending bool
+	nativeSetPending bool
+	closed           bool
+	domain           string
+	preferred        *relayPoolMember
 
 	// Callbacks run after the preferred healthy member changes. They are
 	// intentionally optional so a pool also works for WebSocket-only relays.
 	OnReflectAddr     func(string)
 	OnUDPRelayAddr    func(*RelayAgent, string)
 	OnNativeWireGuard func(string, string)
+	// OnNativeWireGuardSet receives the association of every registered
+	// member, not just the preferred one, whenever that set changes.
+	OnNativeWireGuardSet func([]NativeAssociation)
+}
+
+// nativeSet returns every registered member's native association, in member
+// order. Called with p.mu held.
+func (p *RelayPool) nativeSet() []NativeAssociation {
+	var out []NativeAssociation
+	for _, m := range p.members {
+		if m.registered && m.response.NativeWireGuardAddr != "" && m.response.NativeWireGuardToken != "" {
+			out = append(out, NativeAssociation{m.response.NativeWireGuardAddr, m.response.NativeWireGuardToken})
+		}
+	}
+	return out
 }
 
 type relayPoolMember struct {
@@ -150,10 +168,13 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		p.domain = response.Domain
 	}
 	oldResponse := member.response
+	oldSet := p.nativeSet()
 	oldPreferred := p.preferred
 	member.registered, member.response = registered, response
 	preferred := p.choosePreferred(oldPreferred)
 	p.preferred = preferred
+	newSet := p.nativeSet()
+	setChanged := !reflect.DeepEqual(oldSet, newSet)
 	changed := oldPreferred != preferred
 	if preferred == member && registered && (oldResponse.ReflectAddr != response.ReflectAddr || oldResponse.UDPRelayAddr != response.UDPRelayAddr || oldResponse.NativeWireGuardAddr != response.NativeWireGuardAddr || oldResponse.NativeWireGuardToken != response.NativeWireGuardToken) {
 		changed = true
@@ -170,30 +191,45 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		agent = preferred.agent
 		nativeAddr, nativeToken = preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken
 	}
-	if changed {
+	onSet := p.OnNativeWireGuardSet
+	p.preferredPending = p.preferredPending || changed
+	p.nativeSetPending = p.nativeSetPending || setChanged
+	if changed || setChanged {
 		p.revision++
 	}
 	revision := p.revision
 	p.mu.Unlock()
-	if !changed {
+	if !changed && !setChanged {
 		return
 	}
 	p.callbacksMu.Lock()
 	defer p.callbacksMu.Unlock()
 	p.mu.Lock()
 	current := !p.closed && p.revision == revision
+	if current {
+		// The latest snapshot also publishes changes superseded before they
+		// acquired callbacksMu, including a preferred change followed by a
+		// native-set-only update.
+		changed, setChanged = p.preferredPending, p.nativeSetPending
+		p.preferredPending, p.nativeSetPending = false, false
+	}
 	p.mu.Unlock()
 	if !current {
 		return
 	}
-	if onReflect != nil {
-		onReflect(reflectAddr)
+	if changed {
+		if onReflect != nil {
+			onReflect(reflectAddr)
+		}
+		if onUDP != nil {
+			onUDP(agent, udpAddr)
+		}
+		if onNative != nil {
+			onNative(nativeAddr, nativeToken)
+		}
 	}
-	if onUDP != nil {
-		onUDP(agent, udpAddr)
-	}
-	if onNative != nil {
-		onNative(nativeAddr, nativeToken)
+	if setChanged && onSet != nil {
+		onSet(newSet)
 	}
 }
 
@@ -248,7 +284,11 @@ func (p *RelayPool) Close() error {
 		member.registered = false
 	}
 	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
+	onSet := p.OnNativeWireGuardSet
 	p.mu.Unlock()
+	if onSet != nil {
+		onSet(nil)
+	}
 	if onReflect != nil {
 		onReflect("")
 	}

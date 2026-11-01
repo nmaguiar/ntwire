@@ -416,6 +416,15 @@ AllowedIPs = 100.64.0.0/16
 PersistentKeepalive = 25
 ```
 
+The relay keeps the server→client return route for each client alive from
+live traffic: a client transport packet arriving from a new source address
+(NAT rebind, Wi-Fi/cellular switch) moves the route, and traffic in either
+direction extends its three-minute lifetime. A handshake *initiated by the
+server* cannot be routed (the relay has no client address yet), so keep
+`PersistentKeepalive` set on official clients. The server associates with
+every registered relay in `relay.endpoints`, and resolves a hostname
+endpoint (wildcard listener) on every 15-second refresh.
+
 Because this listener is selected by UDP port rather than by the TLS SNI
 `listen.public` uses for `wss://name.relay.example.com`, one relay port
 serves exactly one tenant — hence the duplicate-listener rejection in the

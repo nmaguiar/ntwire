@@ -639,3 +639,11 @@ Relay registration SOCKS target names must be nonempty and unique within that
 tenant, ports must be in range, and a supplied tunnel IP must be a concrete IP.
 Shared relay PAC requests select their namespace with `tenant`; ambiguous legacy
 requests return 404. Existing PAC platform aliases remain available.
+
+## WSS carrier backpressure
+
+Each WebSocket carrier has a bounded outbound queue and a single writer. When
+a peer stops draining, excess WireGuard datagrams are dropped locally (counted
+in `Bind.Dropped`) instead of blocking the shared WireGuard device. A write
+timeout or sustained overflow closes/fails the carrier and, with multipath,
+moves the primary to another healthy path. No wire format change.
