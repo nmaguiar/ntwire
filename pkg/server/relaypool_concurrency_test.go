@@ -78,3 +78,49 @@ func TestRelayPoolCloseClearsAndRejectsLateCallbacks(t *testing.T) {
 		t.Fatalf("closed pool: applied=%q calls=%d healthy=%v", applied, calls, p.Healthy())
 	}
 }
+
+func TestRelayPoolConcurrentRegistrationPublishesPreferredAndNativeSet(t *testing.T) {
+	p, err := NewRelayPool(RelayConfig{Name: "test", IdentityFile: "unused", Endpoints: []RelayEndpoint{{URL: "wss://a.example:8444"}, {URL: "wss://b.example:8444"}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	var reflectAddr, udpAddr, nativeAddr string
+	var associations []NativeAssociation
+	p.OnReflectAddr = func(addr string) { reflectAddr = addr }
+	p.OnUDPRelayAddr = func(_ *RelayAgent, addr string) { udpAddr = addr }
+	p.OnNativeWireGuard = func(addr, _ string) { nativeAddr = addr }
+	p.OnNativeWireGuardSet = func(set []NativeAssociation) { associations = set }
+
+	// Hold publication until both state updates have completed. B changes
+	// only the native set, while A's preferred callbacks are still pending.
+	p.callbacksMu.Lock()
+	var wg sync.WaitGroup
+	for i, member := range p.members {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.update(member, true, protocol.RelayRegisterResponse{Domain: "example", ReflectAddr: "reflect", UDPRelayAddr: "udp", NativeWireGuardAddr: member.agent.cfg.URL, NativeWireGuardToken: "token"})
+		}()
+		deadline := time.Now().Add(time.Second)
+		for {
+			p.mu.Lock()
+			registered := member.registered
+			p.mu.Unlock()
+			if registered {
+				break
+			}
+			if time.Now().After(deadline) {
+				p.callbacksMu.Unlock()
+				wg.Wait()
+				t.Fatalf("member %d did not register", i)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+	p.callbacksMu.Unlock()
+	wg.Wait()
+	if reflectAddr != "reflect" || udpAddr != "udp" || nativeAddr != p.members[0].agent.cfg.URL || len(associations) != 2 {
+		t.Fatalf("missing publication: reflect=%q udp=%q native=%q set=%v", reflectAddr, udpAddr, nativeAddr, associations)
+	}
+}

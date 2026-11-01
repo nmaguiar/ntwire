@@ -44,6 +44,7 @@ type Bind struct {
 	// noRedial disables the automatic reconnect entirely -- see DisableRedial.
 	noRedial bool
 
+	callbacksMu     sync.Mutex // orders peer replacement and lifecycle publication
 	mu              sync.Mutex
 	open            bool
 	done            chan struct{}
@@ -52,7 +53,8 @@ type Bind struct {
 	header          http.Header
 	OnPeerConnected func(string, conn.Endpoint)
 	// OnPeerDisconnected mirrors OnPeerConnected for lifecycle consumers.
-	// Callbacks run outside Bind's mutex and must not retain credentials.
+	// Callbacks run outside Bind's state mutex and must not retain credentials.
+	// Lifecycle callbacks are serialized with peer replacement.
 	OnPeerDisconnected func(string, conn.Endpoint)
 	// OnWriteFailure is called when a peer's writer times out, fails, or its
 	// queue has overflowed repeatedly. Send itself never blocks on the
@@ -69,8 +71,8 @@ const (
 	// treats the carrier as lossy, so overflow is dropped rather than letting
 	// one slow peer block wireguard-go's device-wide goroutines.
 	peerQueueDepth = 256
-	// overflowFailureThreshold consecutive drops are reported as a carrier
-	// failure so a multipath scheduler can move to another path.
+	// overflowFailureThreshold consecutive drops close the carrier so a
+	// multipath scheduler can fail over and the client can reconnect.
 	overflowFailureThreshold = 64
 )
 
@@ -306,8 +308,8 @@ func (b *Bind) writeLoop(p *peer) {
 			cancel()
 			if err != nil {
 				slog.Warn("WireGuard WebSocket write failed", "peer", p.id, "error", err)
-				p.ws.CloseNow()
 				b.reportWriteFailure(p)
+				p.ws.CloseNow()
 				return
 			}
 		}
@@ -316,6 +318,14 @@ func (b *Bind) writeLoop(p *peer) {
 
 func (b *Bind) reportWriteFailure(p *peer) {
 	p.failureOnce.Do(func() {
+		b.callbacksMu.Lock()
+		defer b.callbacksMu.Unlock()
+		b.mu.Lock()
+		current := b.peers[p.id] == p
+		b.mu.Unlock()
+		if !current {
+			return
+		}
 		if b.OnWriteFailure != nil {
 			b.OnWriteFailure(p.id, p.endpoint)
 		}
@@ -323,6 +333,8 @@ func (b *Bind) reportWriteFailure(p *peer) {
 }
 
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
+	b.callbacksMu.Lock()
+	defer b.callbacksMu.Unlock()
 	b.mu.Lock()
 	if b.open {
 		b.mu.Unlock()
@@ -388,6 +400,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 		return err
 	}
 	p := newPeer(id, ws, endpoint{id: id, address: endpointAddress(r.RemoteAddr)})
+	b.callbacksMu.Lock()
 	b.mu.Lock()
 	if !b.open {
 		// Closed between the readiness check above and here -- b.peers is
@@ -395,6 +408,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 		// redial against Close (see redial) is exactly the case that made
 		// this window wide enough to hit in practice.
 		b.mu.Unlock()
+		b.callbacksMu.Unlock()
 		_ = ws.Close(websocket.StatusServiceRestart, "closing")
 		return errors.New("WebSocket transport is not ready")
 	}
@@ -406,6 +420,7 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	if b.OnPeerConnected != nil {
 		b.OnPeerConnected(id, p.endpoint)
 	}
+	b.callbacksMu.Unlock()
 	slog.Debug("WireGuard WebSocket peer connected", "peer", id, "remote", r.RemoteAddr)
 	go b.read(p)
 	// Keep the HTTP upgrade handler alive for the WebSocket's lifetime. This
@@ -425,6 +440,7 @@ func (b *Bind) read(p *peer) {
 		go b.keepalive(ctx, p)
 	}
 	defer func() {
+		b.callbacksMu.Lock()
 		removed := b.remove(p)
 		// A new connection with the same stable peer id may already have
 		// replaced p. In that case p is stale and must not mark the replacement
@@ -432,6 +448,7 @@ func (b *Bind) read(p *peer) {
 		if removed && b.OnPeerDisconnected != nil {
 			b.OnPeerDisconnected(p.id, p.endpoint)
 		}
+		b.callbacksMu.Unlock()
 		close(p.done)
 		slog.Debug("WireGuard WebSocket peer disconnected", "peer", p.id)
 		// Only a client-side Bind (b.url != "") ever dials out; a server-side
@@ -562,10 +579,12 @@ func (b *Bind) redial() {
 			continue
 		}
 		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(url)})
+		b.callbacksMu.Lock()
 		b.mu.Lock()
 		if !b.open || b.done != done {
 			// Closed, or closed and reopened, while this attempt was dialing.
 			b.mu.Unlock()
+			b.callbacksMu.Unlock()
 			_ = ws.Close(websocket.StatusNormalClosure, "closing")
 			return
 		}
@@ -574,6 +593,7 @@ func (b *Bind) redial() {
 		if b.OnPeerConnected != nil {
 			b.OnPeerConnected(p.id, p.endpoint)
 		}
+		b.callbacksMu.Unlock()
 		slog.Debug("WireGuard WebSocket peer reconnected", "peer", p.id)
 		go b.read(p)
 		return
@@ -642,7 +662,12 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		b.Dropped.Add(1)
 		if p.overflow.Add(1) == overflowFailureThreshold {
 			slog.Warn("WireGuard WebSocket carrier is not draining; dropping", "peer", p.id)
-			b.reportWriteFailure(p)
+			// Closing wakes read's disconnect/redial path even if the
+			// writer subsequently drains. Keep Send independent of callbacks.
+			go func() {
+				b.reportWriteFailure(p)
+				_ = p.ws.CloseNow()
+			}()
 		}
 	}
 	return nil

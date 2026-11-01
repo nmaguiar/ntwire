@@ -22,15 +22,17 @@ import (
 // unconditionally), so it is already a warm standby, not a cold one that
 // needs separately keeping alive.
 type RelayPool struct {
-	listener    *relayListener
-	members     []*relayPoolMember
-	log         *slog.Logger
-	mu          sync.Mutex
-	callbacksMu sync.Mutex // serializes publication, without holding mu in callbacks
-	revision    uint64
-	closed      bool
-	domain      string
-	preferred   *relayPoolMember
+	listener         *relayListener
+	members          []*relayPoolMember
+	log              *slog.Logger
+	mu               sync.Mutex
+	callbacksMu      sync.Mutex // serializes publication, without holding mu in callbacks
+	revision         uint64
+	preferredPending bool
+	nativeSetPending bool
+	closed           bool
+	domain           string
+	preferred        *relayPoolMember
 
 	// Callbacks run after the preferred healthy member changes. They are
 	// intentionally optional so a pool also works for WebSocket-only relays.
@@ -190,6 +192,8 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 		nativeAddr, nativeToken = preferred.response.NativeWireGuardAddr, preferred.response.NativeWireGuardToken
 	}
 	onSet := p.OnNativeWireGuardSet
+	p.preferredPending = p.preferredPending || changed
+	p.nativeSetPending = p.nativeSetPending || setChanged
 	if changed || setChanged {
 		p.revision++
 	}
@@ -202,6 +206,13 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	defer p.callbacksMu.Unlock()
 	p.mu.Lock()
 	current := !p.closed && p.revision == revision
+	if current {
+		// The latest snapshot also publishes changes superseded before they
+		// acquired callbacksMu, including a preferred change followed by a
+		// native-set-only update.
+		changed, setChanged = p.preferredPending, p.nativeSetPending
+		p.preferredPending, p.nativeSetPending = false, false
+	}
 	p.mu.Unlock()
 	if !current {
 		return

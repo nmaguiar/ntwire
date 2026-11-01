@@ -823,3 +823,121 @@ func TestClientBindRedialsSilentCarrier(t *testing.T) {
 	case <-time.After(250 * time.Millisecond):
 	}
 }
+
+func TestWebSocketBindWriteFailure_IgnoresReplacedPeer(t *testing.T) {
+	b := NewServer()
+	old := newPeer("session", nil, endpoint{id: "session"})
+	replacement := newPeer("session", nil, endpoint{id: "session"})
+	b.peers = map[string]*peer{"session": replacement}
+	calls := 0
+	b.OnWriteFailure = func(string, conn.Endpoint) {
+		// Callbacks must remain free to inspect the bind.
+		b.mu.Lock()
+		b.mu.Unlock()
+		calls++
+	}
+	b.reportWriteFailure(old)
+	if calls != 0 {
+		t.Fatal("replaced peer published a write failure")
+	}
+	b.reportWriteFailure(replacement)
+	b.reportWriteFailure(replacement)
+	if calls != 1 {
+		t.Fatalf("current peer failure calls = %d, want 1", calls)
+	}
+}
+
+func TestMultipathWSSQueueOverflow_ReconnectsAndRestoresHealth(t *testing.T) {
+	release := make(chan struct{})
+	received := make(chan []byte, 1)
+	var attempts atomic.Int32
+	h := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer ws.CloseNow()
+		if attempts.Add(1) == 1 {
+			<-release
+			return
+		}
+		for {
+			_, data, err := ws.Read(r.Context())
+			if err != nil {
+				return
+			}
+			select {
+			case received <- data:
+			default:
+			}
+		}
+	}))
+	defer h.Close()
+	defer close(release)
+	hybrid, client := NewMultipathHybridClient("ws"+strings.TrimPrefix(h.URL, "http"), h.Client(), nil, false, MultipathOptions{}, "")
+	// Recovery must come from queue overflow, before write or ping timeout.
+	hybrid.WebSocket.writeTimeout = 10 * time.Second
+	hybrid.WebSocket.pingInterval = time.Minute
+	hybrid.WebSocket.SetRedialBackoff(time.Millisecond, 5*time.Millisecond, time.Second)
+	failed := make(chan struct{}, 1)
+	onFailure := hybrid.WebSocket.OnWriteFailure
+	hybrid.WebSocket.OnWriteFailure = func(id string, ep conn.Endpoint) {
+		onFailure(id, ep)
+		select {
+		case failed <- struct{}{}:
+		default:
+		}
+	}
+	connected := make(chan struct{}, 8)
+	onConnected := hybrid.WebSocket.OnPeerConnected
+	hybrid.WebSocket.OnPeerConnected = func(id string, ep conn.Endpoint) {
+		onConnected(id, ep)
+		connected <- struct{}{}
+	}
+	if _, _, err := client.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	<-connected
+	ep, err := hybrid.WebSocket.ParseEndpoint(WSSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, 30000)
+	// Total drops need not be consecutive when the race detector slows the
+	// sender. Continue until the threshold actually publishes a failure.
+	deadline := time.Now().Add(2 * time.Second)
+fill:
+	for time.Now().Before(deadline) {
+		select {
+		case <-failed:
+			break fill
+		default:
+			_ = hybrid.WebSocket.Send([][]byte{payload}, ep)
+		}
+	}
+	if hybrid.WebSocket.Dropped.Load() < overflowFailureThreshold {
+		t.Fatal("did not fill the carrier queue")
+	}
+	select {
+	case <-connected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("overflow did not trigger reconnection")
+	}
+	logical, err := client.ParseEndpoint(MultipathSentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, 16)
+	if err := client.Send([][]byte{data}, logical); err != nil {
+		t.Fatalf("reconnected WSS candidate is unhealthy: %v", err)
+	}
+	select {
+	case got := <-received:
+		if !bytes.Equal(got, data) {
+			t.Fatalf("recovered payload = %x", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement carrier did not deliver payload")
+	}
+}
