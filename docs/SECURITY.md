@@ -119,6 +119,81 @@ remains outstanding before an iOS data plane can be enabled by default.
   when both share a literal string (see
   [PROTOCOL.md](PROTOCOL.md#grant-matching-and-the-sshoidc-namespace)).
 
+## Inspecting certificates and possible TLS interception
+
+The CLI and GUI trust prompts show the certificate actually presented on the
+client's TLS connection: subject, issuer, validity dates, current SHA-256
+fingerprint, and previous pin when present. The GUI offers expandable details
+for the presented chain, SANs, serial number, and algorithms. The inspection
+command also exposes these fields as JSON:
+
+```sh
+ntwire cert inspect --json https://server.example.com
+```
+
+Inspection uses the connect client's HTTP transport, proxy selection and IP
+selection. Pass the same `--https-proxy`, `--no-system-proxy`, `--ip-version`
+and `--known-servers` values as connect. It does not load a GUI profile or
+connect's saved configuration automatically. It compares TOFU pins, so `--ca`
+and `--insecure` are not supported on this command. Inspection always aborts
+the TLS handshake after observing the certificate, including for a matching
+pin, before sending an application request or ntwire authentication. HTTP
+CONNECT or SOCKS proxy setup may still be required, including proxy credentials
+when explicitly configured. It never writes `known_servers`.
+
+First-time trust and changed certificates require explicit approval; the
+CLI defaults to No and fails closed without a terminal. The GUI defaults to
+Reject. A changed pin may indicate interception, but legitimate certificate
+renewal, rotation, or replacing a TLS-terminating load balancer also changes
+it. Confirm the new fingerprint independently with the administrator before
+trusting it. Compare to the server startup `tls_fingerprint` over a separate
+trusted channel, or compute the exact unpadded base64 fingerprint locally:
+
+```sh
+openssl x509 -in server-cert.pem -outform DER | openssl dgst -sha256 -binary | openssl base64 -A
+```
+
+Prefix the result with `SHA256:` and remove trailing `=` padding. For a
+load balancer that terminates TLS, compare against its certificate instead
+of the origin's certificate. Inspecting twice over the same suspect network
+is not independent verification.
+
+Case-insensitive, whole-name issuer patterns recognize Netskope, Zscaler,
+Palo Alto Networks, Fortinet, Forcepoint, Symantec and Broadcom. These produce
+an informational warning that the issuer resembles an enterprise
+TLS-inspection authority. **Issuer text is untrusted and cannot prove
+interception**: these vendors may also issue certificates for other purposes,
+and an interceptor can omit any recognizable name. Ordinary private enterprise
+CAs, self-signed certificates, and pin changes alone are not classified as
+enterprise TLS interception. No external reputation service is contacted.
+
+Hostname/IP mismatch, expired/not-yet-valid certificates, self-signatures,
+and incomplete metadata are reported separately. Self-signed status requires
+verification of the certificate's own signature. A presented chain is not
+proof that any CA trusts it. The assessment does not change acceptance:
+TOFU continues to authenticate the exact pinned leaf, even if its validity
+or SANs would fail normal PKI checks; `--ca` continues to require normal
+chain, hostname and validity verification. OS CA trust does not silently
+approve a certificate in TOFU mode. `--insecure` disables both checks and
+pinning and cannot provide protection against certificate substitution.
+
+HTTPS control traffic and WSS initial dials and redials use the same HTTP
+client and TLS verification policy. Pin failures retain a diagnostic error
+identifying a changed certificate, with no fallback to insecure TLS and no
+implicit trust change during transport failover. Existing connections do
+not repeat TLS handshakes on every request; a changed certificate is observed
+on the next handshake. Matching pinned certificates produce no recurring
+metadata logs. Certificate details are not persisted in `known_servers`.
+
+The relay's public listener passes TLS through; it does not acquire certificate
+ownership or terminate TLS for inspection. Clients see the origin certificate,
+or the certificate presented by an external TLS terminator/interceptor.
+Server-to-relay registration certificates remain separate. Pinning protects
+against substitution after a correctly verified first trust. It cannot prove
+that a first-use certificate is authentic, detect every enterprise proxy,
+or prevent inspection on an endpoint where software can access plaintext or
+modify the client, trust decisions, keys, or runtime.
+
 ## TLS trust model and avoiding repeated re-trust prompts
 
 When `tls.cert_file`/`tls.key_file` are unset, the server generates a
@@ -131,7 +206,8 @@ expiring within 30 days; the server logs its SHA-256 pin at startup as
 `tls_fingerprint`. Set `tls.ephemeral: true` to opt back into a fresh
 in-memory-only certificate on every start instead. A client that connects
 for the first time computes the presented certificate's SHA-256 fingerprint
-and stores it in `~/.ntwire/known_servers` (TOFU: trust on first use); every
+and, after explicit user approval, stores it in `~/.ntwire/known_servers`
+(TOFU: trust on first use); every
 later connection compares the presented certificate's fingerprint against
 that pin and fails closed with `UnknownCertificateError` if it differs.
 
@@ -153,13 +229,13 @@ automatically" workarounds; instead, use one of:
   backed up if you want to survive rebuilding the host.
 - **Configure a real certificate** (`tls.cert_file`/`tls.key_file`, e.g. from
   Let's Encrypt or an internal CA). This is the most robust fix for a
-  long-lived deployment with a real hostname: it sidesteps TOFU entirely and
-  is reloaded live from disk (see
+  long-lived deployment with a real hostname: it is reloaded live from disk.
+  Clients still use TOFU unless configured with `--ca` (see
   [Server configuration](CONFIGURATION.md#hot-reload)).
 - **Pre-seed the client's pin out of band.** `known_servers` is a plain
-  YAML file (`host: SHA256:...` entries; see `TrustServer` in
-  `pkg/client/client.go`) that a client also writes to via
-  `ntwire connect --insecure` on first trust. Read the pin from the server's
+  YAML file with a `servers` map (`host: SHA256:...` entries; see
+  `TrustServer` in `pkg/client/client.go`). Explicit CLI or GUI trust writes
+  that map; `--insecure` neither verifies nor records a pin. Read the pin from the server's
   startup log (`tls_fingerprint`), or compute it yourself with `openssl x509
   -in <state_dir>/selfsigned-cert.pem -noout -fingerprint -sha256` formatted
   to match the `SHA256:base64(...)` form the client stores, and write it into

@@ -1108,32 +1108,71 @@ function trustModal(snap) {
   if (changed) {
     const warn = document.createElement('p');
     warn.className = 'warn';
-    warn.textContent = `The certificate ntwire has on file for "${p.host}" (profile "${snap.profile.Name}") does not match what the server presented just now. This can mean the server was reinstalled -- or that something is intercepting the connection.`;
+    warn.textContent = `The certificate ntwire has on file for "${p.host}" (profile "${snap.profile.Name}") does not match what the server presented just now. This can mean legitimate certificate renewal or rotation, or interception. Verify the new fingerprint with the server administrator.`;
     body.append(warn);
   } else {
     const intro = document.createElement('p');
     intro.textContent = `"${p.host}" (profile "${snap.profile.Name}") has not been connected to before. Verify its fingerprint out-of-band before trusting it.`;
     body.append(intro);
   }
-  const fp = document.createElement('div');
-  fp.className = 'fingerprint';
-  fp.textContent = p.fingerprint;
-  body.append(fp);
+  const line = (label, value, parent = body) => {
+    const row = document.createElement('p');
+    row.textContent = `${label}: ${value}`;
+    row.style.overflowWrap = 'anywhere';
+    parent.append(row);
+  };
+  line('Server', p.host);
+  if (p.certificate) {
+    const c = p.certificate;
+    line('Subject', c.subject || '(unavailable)');
+    line('Issuer', c.issuer || '(unavailable)');
+    line('Valid from', c.not_before);
+    line('Valid until', c.not_after);
+    if (c.chain && c.chain.length) {
+      const advanced = document.createElement('details');
+      const summary = document.createElement('summary');
+      summary.textContent = 'Advanced certificate details (presented chain, not proof of trust)';
+      advanced.append(summary);
+      line('DNS names', (c.dns_names || []).join(', '), advanced);
+      line('IP addresses', (c.ip_addresses || []).join(', '), advanced);
+      line('Serial number', c.serial_number || '(unavailable)', advanced);
+      line('Public key algorithm', c.public_key_algorithm, advanced);
+      line('Signature algorithm', c.signature_algorithm, advanced);
+      for (const entry of c.chain) {
+        line('Subject', entry.subject, advanced);
+        line('Issuer', entry.issuer, advanced);
+        line('SHA-256', entry.sha256_fingerprint, advanced);
+        line('CA certificate', entry.is_ca, advanced);
+      }
+      body.append(advanced);
+    }
+  }
+  if (changed) line('Previously trusted fingerprint', p.previous);
+  line('Current SHA-256 fingerprint', p.fingerprint);
+  for (const warning of (p.assessment?.warnings || [])) {
+    const warn = document.createElement('p');
+    warn.className = 'warn';
+    warn.textContent = warning;
+    body.append(warn);
+  }
 
   const actions = document.createElement('div');
   actions.className = 'row';
   actions.style.marginTop = '1rem';
   const reject = document.createElement('button');
-  reject.className = changed ? '' : 'secondary';
+  reject.className = '';
   reject.textContent = 'Reject';
   reject.addEventListener('click', () => answerTrust(snap.profile.ID, false));
   const trust = document.createElement('button');
-  trust.className = changed ? 'danger' : '';
-  trust.textContent = changed ? 'Trust anyway (dangerous)' : 'Trust and connect';
+  trust.textContent = 'Trust Certificate';
+  trust.className = changed ? 'danger' : 'secondary';
   trust.addEventListener('click', () => answerTrust(snap.profile.ID, true));
-  // On a changed pin, Reject is the safe default -- render it first and
-  // give Trust no visual precedence, rather than the usual primary button.
-  actions.append(...(changed ? [reject, trust] : [trust, reject]));
+  // Reject is the safe default for first trust and changed certificates.
+  actions.append(reject, trust);
+  modal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') { event.preventDefault(); reject.click(); }
+  });
+  queueMicrotask(() => reject.focus());
 
   modal.append(h, body, actions);
   return overlay(modal);

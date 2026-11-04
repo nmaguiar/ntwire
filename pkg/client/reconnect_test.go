@@ -159,6 +159,8 @@ func TestReconnectReconcilesTunnelGrants(t *testing.T) {
 	tcpRoundTrip(t, c.LocalAddresses[1])
 	// A protocol change retains the requested local address on the other protocol.
 	address := c.LocalAddresses[1]
+	// The connection owns the previous grants; copy them before editing the next response.
+	response.Tunnels = append([]protocol.Tunnel(nil), response.Tunnels...)
 	response.Tunnels[1].Protocol = "udp"
 	response.Tunnels[1].VirtualPort = 18081
 	if err := c.applyReconnectedSession(authResult{response: response, method: "ssh"}); err != nil {

@@ -40,6 +40,13 @@ func ClientCommand() Command {
 	}
 
 	subcmds = append(subcmds,
+		Command{Name: "cert", Summary: "inspect TLS certificates", Subcommands: []Command{{Name: "inspect", Summary: "inspect without trusting or authenticating", Flags: []Flag{
+			{Name: "json", Usage: "emit JSON"},
+			{Name: "known-servers", Usage: "known_servers file (read only)", TakesValue: true, IsFilePath: true},
+			{Name: "https-proxy", Usage: "proxy URL", TakesValue: true},
+			{Name: "no-system-proxy", Usage: "ignore system proxy environment"},
+			{Name: "ip-version", Usage: "IP version", TakesValue: true, Choices: []string{"4", "6"}},
+		}}}},
 		Command{
 			Name:       "completion",
 			Summary:    "generate shell completion script",
@@ -52,7 +59,7 @@ func ClientCommand() Command {
 		Command{
 			Name:       "help",
 			Summary:    "show help for a command",
-			ArgChoices: []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
+			ArgChoices: []string{"cert", "keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
 		},
 	)
 

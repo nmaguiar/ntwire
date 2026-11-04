@@ -48,7 +48,9 @@ type Prompt struct {
 	// Previous is set only when the server's pinned fingerprint CHANGED --
 	// the dangerous case a caller must render distinctly from a first
 	// connection (see client.UnknownCertificateError.Previous).
-	Previous string `json:"previous,omitempty"`
+	Previous    string                        `json:"previous,omitempty"`
+	Certificate *client.CertificateDetails    `json:"certificate,omitempty"`
+	Assessment  *client.CertificateAssessment `json:"assessment,omitempty"`
 
 	// Set for PromptPassphrase.
 	KeyPath string `json:"key_path,omitempty"`

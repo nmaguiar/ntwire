@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
@@ -278,9 +277,16 @@ func (c *Connection) fireEvent(e Event) {
 
 // UnknownCertificateError is returned for a server that has not yet been
 // pinned in known_servers. Call TrustServer and retry after user confirmation.
-type UnknownCertificateError struct{ Host, Fingerprint, Previous string }
+type UnknownCertificateError struct {
+	Host, Fingerprint, Previous string
+	Certificate                 *CertificateDetails
+	Assessment                  *CertificateAssessment
+}
 
 func (e *UnknownCertificateError) Error() string {
+	if e.Previous != "" {
+		return fmt.Sprintf("server certificate changed for %s (previous %s, current %s)", e.Host, e.Previous, e.Fingerprint)
+	}
 	return fmt.Sprintf("unknown server certificate for %s (%s)", e.Host, e.Fingerprint)
 }
 
@@ -493,15 +499,24 @@ func httpClient(url string, o Options) (*http.Client, error) {
 	if b, err := os.ReadFile(path); err == nil {
 		_ = yaml.Unmarshal(b, &v)
 	}
-	host := strings.TrimPrefix(strings.SplitN(url, "/", 4)[2], "")
+	target, err := urlpkg.Parse(url)
+	if err != nil || target.Host == "" {
+		return nil, fmt.Errorf("invalid HTTPS server URL")
+	}
+	host := target.Host
 	return resilientHTTPClient(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13, VerifyConnection: func(cs tls.ConnectionState) error { // #nosec G402 -- verification is the pin below
-		if len(cs.PeerCertificates) == 0 {
+		if len(cs.PeerCertificates) == 0 || cs.PeerCertificates[0] == nil {
 			return fmt.Errorf("server supplied no certificate")
 		}
-		s := sha256.Sum256(cs.PeerCertificates[0].Raw)
-		fp := "SHA256:" + base64.RawStdEncoding.EncodeToString(s[:])
+		fp := certificateFingerprint(cs.PeerCertificates[0])
 		if v.Servers[host] != fp {
-			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host]}
+			details := DescribeCertificate(cs, target.Hostname())
+			var assessment *CertificateAssessment
+			if details != nil {
+				a := AssessCertificate(*details, v.Servers[host])
+				assessment = &a
+			}
+			return &UnknownCertificateError{Host: host, Fingerprint: fp, Previous: v.Servers[host], Certificate: details, Assessment: assessment}
 		}
 		return nil
 	}}, proxy, dialContext), nil

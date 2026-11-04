@@ -46,6 +46,8 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
+	case "cert":
+		certCmd(os.Args[2:])
 	case "update":
 		updateCmd(os.Args[2:], u)
 	case "version":
@@ -75,6 +77,8 @@ func main() {
 			switch os.Args[2] {
 			case "update":
 				updateCmd([]string{"-h"}, u)
+			case "cert":
+				certCmd([]string{"inspect", "-h"})
 			case "keygen":
 				keygen([]string{"-h"}, u)
 			case "connect":
@@ -124,6 +128,7 @@ func usage(u *ui.UI) {
 		Tool:    "ntwire",
 		Tagline: "connect to tunnels published by an ntwire-server",
 		Commands: []ui.Command{
+			{Name: "cert", Summary: "inspect a presented TLS certificate without trusting it"},
 			{Name: "keygen", Summary: "create an SSH identity"},
 			{Name: "connect", Summary: "connect tunnels"},
 			{Name: "list", Summary: "show allowed tunnels"},
@@ -1064,24 +1069,38 @@ func collectedInfo(command string) (protocol.ClientInfo, error) {
 }
 
 func trustPrompt(e *client.UnknownCertificateError, path string) bool {
-	if info, err := os.Stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
-		fmt.Fprintf(os.Stderr, "cannot confirm certificate without a terminal; verify with the admin then pre-seed it in %s\n", path)
+	return confirmCertificate(e, path, os.Stdin, os.Stderr, term.IsTerminal(int(os.Stdin.Fd())))
+}
+
+func confirmCertificate(e *client.UnknownCertificateError, path string, input io.Reader, output io.Writer, terminal bool) bool {
+	if !terminal {
+		fmt.Fprintf(output, "cannot confirm certificate without a terminal; verify with the admin then pre-seed it in %s\n", path)
 		return false
 	}
-	if e.Previous == "" {
-		fmt.Fprintf(os.Stderr, "First connection to %s. Verify this fingerprint with the server startup log; it will be remembered in ~/.ntwire/known_servers.\n%s\nTrust? [y/N] ", e.Host, e.Fingerprint)
-	} else {
-		fmt.Fprintf(os.Stderr, "WARNING: certificate for %s CHANGED. Old: %s\nNew: %s\nConfirm with the admin; this could be interception. Trust? [y/N] ", e.Host, e.Previous, e.Fingerprint)
-	}
+	writeTrustPrompt(output, e)
 	var answer string
-	if _, err := fmt.Fscan(os.Stdin, &answer); err != nil || strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
+	if _, err := fmt.Fscan(input, &answer); err != nil || strings.ToLower(answer) != "y" && strings.ToLower(answer) != "yes" {
 		return false
 	}
 	if err := client.TrustServer(path, e.Host, e.Fingerprint); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(output, err)
 		return false
 	}
 	return true
+}
+
+func writeTrustPrompt(w io.Writer, e *client.UnknownCertificateError) {
+	if e.Previous != "" {
+		fmt.Fprintln(w, "WARNING: SERVER CERTIFICATE CHANGED")
+	} else {
+		fmt.Fprintln(w, "TLS certificate verification - not previously trusted")
+	}
+	client.WriteCertificateSummary(w, e.Host, e.Fingerprint, e.Previous, e.Certificate, e.Assessment)
+	fmt.Fprintln(w, "Verify this fingerprint using a trusted source, such as the server\nadministrator or server startup log.")
+	if e.Previous != "" {
+		fmt.Fprintln(w, "Certificate changes may reflect renewal or rotation, or interception.")
+	}
+	fmt.Fprint(w, "Trust this certificate? [y/N] ")
 }
 
 // resolveKeyPassphrase checks whether keyPath is an encrypted private key
