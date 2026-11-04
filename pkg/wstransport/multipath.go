@@ -220,7 +220,8 @@ func (m *MultipathBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 				}
 				eps[out] = m.endpoint
 				if out != i {
-					bufs[out], sizes[out] = bufs[i], sizes[i]
+					// Preserve WireGuard's per-slot backing-array ownership.
+					sizes[out] = copy(bufs[out], bufs[i][:sizes[i]])
 				}
 				out++
 			}
