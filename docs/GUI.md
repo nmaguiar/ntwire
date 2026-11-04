@@ -188,31 +188,6 @@ for the preferences, screenshot, signing setup, recovery, and platform acceptanc
 checklist. Production updating remains unavailable until a public key and release
 signing secret have been provisioned.
 
-## SSH identities in the settings window
-
-Selecting a private key with the file picker copies it into the GUI's
-`identities` directory next to its configuration file (normally
-`~/.ntwire/identities/`). The original remains in place. The GUI displays the
-copy's path and checks its format; encrypted keys are checked fully when you
-enter the passphrase during connection. Alternatively, enter a path to use an
-existing key in place. Save the profile after changing its identity.
-
-Generate an identity from setup, a profile, or the Profiles panel. The GUI
-shows the private and public key paths, fingerprint, and public key. Generated
-private keys are unencrypted: keep them private and give only the public key to
-your administrator for server authorization. Setup selects the generated key
-for its connection; profile edits must be saved. Generating from the Profiles
-panel lets you choose a profile or start a new one. A connected profile uses
-changes on its next connection.
-
-Expand a profile's SSH identity details to see the path selected for its next
-connection, including automatic discovery, or whether forced SSO ignores SSH
-keys. A key recognized locally still needs authorization on the server. Errors
-identify unreadable or unsupported keys and let you retry or select another
-key; an incorrect passphrase and damaged encrypted key may produce the same
-error. For supported formats and conversion examples, see
-[Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).
-
 ## Certificate trust dialog
 
 The trust dialog shows the server hostname, subject, issuer, validity, and
@@ -247,3 +222,84 @@ The dependency-free frontend behavior check is:
 ```sh
 node internal/gui/webui/tests/certificate-dialog.mjs
 ```
+
+## SSH identities in the settings window
+
+Selecting a private key with the file picker copies it into the GUI's
+`identities` directory next to its configuration file (normally
+`~/.ntwire/identities/`). The original remains in place. The GUI displays the
+copy's path and checks its format; encrypted keys are checked fully when you
+enter the passphrase during connection. Alternatively, enter a path to use an
+existing key in place. Save the profile after changing its identity.
+
+Generate an identity from setup, a profile, or the Profiles panel. The GUI
+shows the private and public key paths, fingerprint, and public key. Generated
+private keys are unencrypted: keep them private and give only the public key to
+your administrator for server authorization. Setup selects the generated key
+for its connection; profile edits must be saved. Generating from the Profiles
+panel lets you choose a profile or start a new one. A connected profile uses
+changes on its next connection.
+
+Expand a profile's SSH identity details to see the path selected for its next
+connection, including automatic discovery, or whether forced SSO ignores SSH
+keys. A key recognized locally still needs authorization on the server. Errors
+identify unreadable or unsupported keys and let you retry or select another
+key; an incorrect passphrase and damaged encrypted key may produce the same
+error. For supported formats and conversion examples, see
+[Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).
+
+## Outbound proxy settings
+
+Each profile has a visible **Proxy settings** section with three choices:
+
+- **Use system/environment proxy** (default): leaves `https_proxy` and
+  `no_system_proxy` unset. Read-only diagnostics show the core process's
+  HTTP(S)_PROXY and NO_PROXY variables, including lowercase variants, and
+  resolve the effective proxy for this profile's server URL.
+- **Custom proxy**: saves an HTTP, HTTPS, SOCKS5 or SOCKS5h URL in the profile.
+  This takes precedence over the environment. SOCKS5 resolves destination
+  names locally; SOCKS5h resolves them at the proxy.
+- **Direct connection**: clears the custom URL and saves
+  `no_system_proxy: true`, ignoring application environment proxy settings
+  for HTTPS/WSS. This does not change firewall or operating-system policies.
+
+Resolution uses the same Go HTTP environment selector as the client, including
+uppercase/lowercase precedence, scheme-specific HTTP/HTTPS selection, NO_PROXY
+host/port/CIDR exclusions, and automatic localhost/loopback bypass. An HTTP_PROXY
+alone does not configure an HTTPS destination. Diagnostics describe the next
+connection's configuration, not evidence that a proxy is reachable or in use.
+
+Proxy settings apply to the HTTPS control channel and WSS transport. Direct
+UDP and UDP-relay paths do not use this HTTP/SOCKS proxy. Choosing a proxy does
+not force WSS; Auto can still select native UDP. Select WSS separately when
+required by your network administrator.
+
+All three choices survive restart in `~/.ntwire/gui.yaml`; inherited values are
+never copied there. Existing profiles need no migration. The CLI's
+`~/.ntwire/config.yaml` is not modified. Proxy passwords are stored in the
+profile file (mode `0600`), so protect that file and its backups. API responses,
+SSE events and diagnostics mask URL passwords. The replacement URL input is
+write-only: leave it blank to retain a saved URL, enter a complete URL to replace
+its credentials, or enter a URL without userinfo to clear credentials. Switching
+to environment or direct clears the saved URL.
+
+Opening the editor or selecting **Refresh proxy diagnostics** reads metadata
+from the running core, never the browser or secondary window process. Environment
+changes made outside the app do not propagate to an already-running core; quit
+and restart ntwire-gui with the intended launch environment. Go caches proxy
+environment selection for the life of that process.
+
+Saving does not interrupt an active connection or its automatic recovery. If
+its proxy settings differ from the saved profile, the GUI displays **Proxy
+settings saved. Reconnect this profile to apply the changes.** Disconnect and
+connect that profile when convenient. The live transport status continues to
+describe the active connection.
+
+### Corporate proxy environments
+
+Use the proxy URL and NO_PROXY exclusions provided by your administrator. A GUI
+launched from the desktop may inherit a different environment than a terminal;
+check the core's displayed defaults. Use Custom when a profile requires a
+specific proxy. TLS verification and certificate pinning still apply through
+proxies; coordinate certificate trust with your administrator. Proxy settings
+do not disable, evade or override corporate security controls.
