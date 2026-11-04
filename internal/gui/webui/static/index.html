@@ -519,6 +519,13 @@ function renderProfileRow(snap) {
   }
 
   block.append(infoRow, actions);
+  if (snap.proxy_reconnect_required) {
+    const notice = document.createElement('p');
+    notice.className = 'help';
+    notice.setAttribute('role', 'status');
+    notice.textContent = 'Proxy settings saved. Reconnect this profile to apply the changes.';
+    block.append(notice);
+  }
   const identity = document.createElement('details');
   identity.className = 'identity-details';
   const summary = document.createElement('summary');
@@ -730,10 +737,76 @@ async function previewTunnels(id) {
   } catch (e) { setMessage(e.message); }
 }
 
+// Proxy URLs with saved credentials are display-only. Replacing the entire URL
+// deliberately replaces (or clears) credentials; a blank input retains it.
+function proxySettingsControl(profile) {
+  const fs = document.createElement('fieldset');
+  fs.innerHTML = `<legend>Proxy settings</legend>
+    <label>Connection method<select name="ProxyMode">
+      <option value="environment">Use system/environment proxy</option>
+      <option value="custom">Custom proxy</option>
+      <option value="direct">Direct connection</option>
+    </select></label>
+    <div data-custom><label>New proxy URL<input name="ProxyURL" type="password" autocomplete="new-password" placeholder="Enter a complete proxy URL"></label>
+    <p class="help">Supports http://, https://, socks5:// and socks5h://, optional username/password, and bracketed IPv6. Default ports are supported. Enter a complete URL to replace saved credentials; enter a URL without credentials to clear them. Leave blank to keep a saved URL.</p></div>
+    <p class="help">Proxy settings apply to the HTTPS control channel and WebSocket Secure (WSS) transport. Direct UDP and UDP-relay paths do not use the configured HTTP/SOCKS proxy. Auto transport may select native UDP.</p>
+    <p class="help">Direct mode ignores HTTP_PROXY, HTTPS_PROXY and NO_PROXY for HTTPS/WSS. It does not change firewall policies or operating-system network controls.</p>
+    <pre data-proxy-status role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <button type="button" class="secondary" data-refresh-proxy>Refresh proxy diagnostics</button>
+    <p class="help">Inherited values are read-only defaults from the ntwire-gui core process and are not stored in this profile. Restart ntwire-gui after changing its launch environment. This describes saved or proposed configuration, not an established proxy connection.</p>`;
+  const mode = fs.querySelector('select');
+  mode.value = profile && profile.HTTPSProxy ? 'custom' : profile && profile.NoSystemProxy ? 'direct' : 'environment';
+  const input = fs.querySelector('input');
+  const status = fs.querySelector('[data-proxy-status]');
+  let sequence = 0;
+  async function refresh() {
+    const current = ++sequence;
+    fs.querySelector('[data-custom]').hidden = mode.value !== 'custom';
+    input.required = mode.value === 'custom' && !(profile && profile.HTTPSProxy);
+    if (input.required && !input.value) { status.textContent = 'Enter a custom proxy URL.'; return; }
+    status.textContent = 'Resolving proxy configuration…';
+    try {
+      const d = await api('POST', '/api/proxy', proxyRequest(profile));
+      if (current !== sequence || !fs.isConnected) return;
+      const lines = [`Proxy: ${d.mode === 'environment' ? 'System (environment)' : d.mode === 'custom' ? 'Custom profile setting' : 'Direct'}`,
+        `Effective for this server: ${d.error || d.effective_proxy || d.status || 'No HTTP/WSS proxy'}`,
+        `Source: ${d.effective_source}`, `Transport: ${form.elements.Transport?.value || (form.elements.Websocket?.checked ? 'wss' : 'auto')}`];
+      if (mode.value === 'environment') {
+        lines.push('Inherited environment (read-only):');
+        for (const [key, value] of Object.entries(d.environment)) lines.push(`${key}: ${value}`);
+        if (!Object.keys(d.environment).length) lines.push('No environment proxy configured');
+      }
+      status.textContent = lines.join('\n');
+    } catch (e) { if (current === sequence) status.textContent = e.message; }
+  }
+  mode.addEventListener('change', refresh);
+  input.addEventListener('change', refresh);
+  if (profile && profiles.get(profile.ID)?.proxy_reconnect_required) {
+    const notice = document.createElement('p');
+    notice.textContent = 'Proxy settings saved. Reconnect this profile to apply the changes.';
+    fs.append(notice);
+  }
+  fs.querySelector('[data-refresh-proxy]').addEventListener('click', refresh);
+  form.onchange = event => {
+    if (['Server', 'Transport', 'Websocket'].includes(event.target.name)) refresh();
+  };
+  queueMicrotask(refresh);
+  return fs;
+}
+function proxyRequest(profile) {
+  const mode = form.elements.ProxyMode.value;
+  const value = form.elements.ProxyURL.value;
+  return {ID: profile?.ID || '', Server: form.Server.value,
+    HTTPSProxy: mode === 'custom' ? value : '', NoSystemProxy: mode === 'direct',
+    ReplaceProxyURL: mode === 'custom' && !!value,
+    KeepProxyURL: mode === 'custom' && !value && !!profile?.HTTPSProxy};
+}
+
 function renderGeneratedFields(profile) {
-  generatedFields.replaceChildren();
+  generatedFields.replaceChildren(proxySettingsControl(profile));
   const groups = new Map();
   for (const f of schema) {
+    if (["HTTPSProxy", "NoSystemProxy"].includes(f.field)) continue;
     if (!groups.has(f.group)) groups.set(f.group, []);
     groups.get(f.group).push(f);
   }
@@ -849,6 +922,8 @@ form.addEventListener('submit', async (e) => {
       }
       else body[f.field] = el.value;
     }
+    Object.assign(body, proxyRequest(editingID ? profiles.get(editingID)?.profile : null));
+    delete body.ID;
     const oidcClientSecret = form.elements.OIDCClientSecret;
     if (oidcClientSecret && oidcClientSecret.value) body.OIDCClientSecret = oidcClientSecret.value;
     if (editingID) {
@@ -858,6 +933,7 @@ form.addEventListener('submit', async (e) => {
     }
     closeForm();
     await refreshProfiles();
+    setMessage("Profile settings saved. Connected profiles use proxy changes after reconnecting.", "info");
   } catch (err) {
     setMessage(err.message);
   }

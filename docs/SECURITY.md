@@ -689,3 +689,15 @@ cache files and release metadata are not a source of trust. See
 [UPDATES.md](UPDATES.md) for signing-secret provisioning, key rotation, recovery,
 and native release acceptance. Update signatures do not provide Apple Developer
 ID notarization or Windows Authenticode signing.
+
+## GUI outbound proxy credentials
+
+The authenticated loopback settings API exposes only the six HTTP(S)_PROXY and
+NO_PROXY environment variants for proxy diagnostics. URL passwords are masked
+in diagnostics, profile responses and SSE snapshots. No outbound request is
+made by diagnostics. Custom proxy credentials are stored in `gui.yaml` under
+the existing atomic mode-0600 profile-store policy; protect this file and backups.
+A blank replacement field retains the saved URL. Supplying a complete replacement
+URL explicitly replaces credentials; omitting userinfo clears them. Environment
+and direct modes clear the custom URL. Direct mode changes only ntwire's
+application proxy selection and does not override network security controls.

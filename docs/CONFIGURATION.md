@@ -57,6 +57,24 @@ ntwire connect \
   server.internal.example
 ```
 
+### GUI profile proxy configuration
+
+The GUI offers Environment (empty `https_proxy`, false `no_system_proxy`),
+Custom (nonempty `https_proxy`), and Direct (empty `https_proxy`, true
+`no_system_proxy`) per profile in `~/.ntwire/gui.yaml`. An explicit proxy wins
+even in older profiles with both fields set. Saving affects the next connection;
+reconnect active profiles to apply it. Inherited environment values are read-only
+and are never persisted. Resolution uses the client's Go HTTP selector against
+the actual server URL, including variable precedence, NO_PROXY and loopback
+bypass. Restart the GUI core after changing its launch environment.
+
+Custom URL passwords remain in the private profile store but are masked in API
+responses. Leave the GUI replacement field blank to keep saved credentials;
+enter a complete URL to replace them or a URL without userinfo to clear them.
+See [GUI proxy settings](GUI.md#outbound-proxy-settings) for transport scope,
+corporate network guidance and configured-versus-active status.
+
+
 Run `ntwire-server --config path/to/ntwire.yaml`; the default path is
 `ntwire.yaml`. Use `ntwire-server --print-sample-config > ntwire.yaml` to
 write a complete, extensively commented template for every available option.

@@ -131,3 +131,27 @@ func TestSimpleSetupUsesURLFirstOIDCThenFileChooserFallback(t *testing.T) {
 		}
 	}
 }
+
+func TestProxySettingsAreVisibleAndCredentialsAreWriteOnly(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(page)
+	for _, want := range []string{
+		"Use system/environment proxy", "Custom proxy", "Direct connection",
+		"generatedFields.replaceChildren(proxySettingsControl(profile))",
+		"[\"HTTPSProxy\", \"NoSystemProxy\"].includes(f.field)",
+		"type=\"password\" autocomplete=\"new-password\"",
+		"Inherited environment (read-only)", "Restart ntwire-gui",
+		"snap.proxy_reconnect_required", "Proxy settings saved. Reconnect this profile to apply the changes.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing proxy UI requirement %q", want)
+		}
+	}
+}
