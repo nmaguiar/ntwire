@@ -90,10 +90,12 @@ func TestWebSocketBindSend_NonReadingPeerNeverBlocks(t *testing.T) {
 
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
 	client.writeTimeout = 100 * time.Millisecond
-	failed := make(chan string, 1)
-	client.OnWriteFailure = func(id string, _ conn.Endpoint) {
+	// A write timeout also wakes the reader, which can remove the peer before
+	// reportWriteFailure runs. Assert teardown rather than callback ordering.
+	disconnected := make(chan string, 1)
+	client.OnPeerDisconnected = func(id string, _ conn.Endpoint) {
 		select {
-		case failed <- id:
+		case disconnected <- id:
 		default:
 		}
 	}
@@ -115,12 +117,12 @@ func TestWebSocketBindSend_NonReadingPeerNeverBlocks(t *testing.T) {
 		t.Fatalf("5000 Sends took %s against a non-reading peer, want non-blocking", elapsed)
 	}
 	select {
-	case id := <-failed:
+	case id := <-disconnected:
 		if id != "remote" {
-			t.Fatalf("OnWriteFailure id = %q", id)
+			t.Fatalf("OnPeerDisconnected id = %q", id)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("OnWriteFailure was not called for a wedged carrier")
+		t.Fatal("OnPeerDisconnected was not called for a wedged carrier")
 	}
 	if client.Dropped.Load() == 0 {
 		t.Fatal("expected overflow drops to be counted")
