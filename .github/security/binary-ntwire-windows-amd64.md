@@ -1,8 +1,8 @@
 # binary-ntwire-windows-amd64 — windows/amd64
 
-- Scanned: 2026-11-01 23:40 UTC
-- Source commit: `a0c02df809df9be1eeba7b6d0136d1e3e9671121`
-- Artifact: `sha256:86f452d77feb3d205a620b85d6122f73c66c7a295214aaffdbb30be13f3d5ce1`
+- Scanned: 2026-11-04 22:18 UTC
+- Source commit: `a10102e66650ced2e7ce12262367ed34a47d8dd4`
+- Artifact: `sha256:49512ff77bf3f6753e0ad26c855a5b6cdb022215046db48eec5c3ced69e593ff`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 3
@@ -11,7 +11,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 
 | Advisory | Severity | Package | Installed | Fixed |
 | --- | --- | --- | --- | --- |
-| [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) | UNKNOWN |  |  |  |
+| [GO-2026-5932](https://pkg.go.dev/vuln/GO-2026-5932) | UNKNOWN | ,  |  |  |
 | [GO-2026-6860](https://pkg.go.dev/vuln/GO-2026-6860) | UNKNOWN |  |  |  |
 | [GO-2026-6866](https://pkg.go.dev/vuln/GO-2026-6866) | UNKNOWN |  |  |  |
 
@@ -24,7 +24,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "scanner_name": "govulncheck",
     "scanner_version": "v1.9.0",
     "db": "https://vuln.go.dev",
-    "db_last_modified": "2026-10-27T21:16:18Z",
+    "db_last_modified": "2026-11-02T22:01:43Z",
     "scan_level": "symbol",
     "scan_mode": "binary"
   }
@@ -40,7 +40,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.84"
+        "version": "v0.0.85"
       },
       {
         "path": "github.com/coder/websocket",
@@ -93,6 +93,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "path": "golang.org/x/term",
         "version": "v0.47.0"
+      },
+      {
+        "path": "golang.org/x/text",
+        "version": "v0.43.0"
       },
       {
         "path": "golang.org/x/time",
@@ -2747,7 +2751,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5932",
-    "modified": "2026-07-07T22:15:29Z",
+    "modified": "2026-11-02T22:01:43Z",
     "published": "2026-07-07T22:15:29Z",
     "summary": "The golang.org/x/crypto/openpgp package is unmaintained, unsafe by design, and has known security issues",
     "details": "The golang.org/x/crypto/openpgp package is unsafe by design, has numerous known security issues, is not maintained, and should not be used.\n\nIf you are required to interoperate with OpenPGP systems and need a maintained package, consider github.com/ProtonMail/go-crypto/openpgp which is a maintained fork that aims to be a drop-in replacement for this package.",
@@ -2755,6 +2759,50 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "package": {
           "name": "golang.org/x/crypto",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.58.1-0.20261009181718-2f1f834330b2"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/crypto/openpgp"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/packet"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/armor"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/clearsign"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/errors"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/elgamal"
+            },
+            {
+              "path": "golang.org/x/crypto/openpgp/s2k"
+            }
+          ]
+        }
+      },
+      {
+        "package": {
+          "name": "golang.org/x/crypto/openpgp",
           "ecosystem": "Go"
         },
         "ranges": [
@@ -2798,6 +2846,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "type": "REPORT",
         "url": "https://go.dev/issue/44226"
+      },
+      {
+        "type": "WEB",
+        "url": "https://go.dev/issue/81227"
       }
     ],
     "database_specific": {
@@ -8643,6 +8695,387 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     ],
     "database_specific": {
       "url": "https://pkg.go.dev/vuln/GO-2026-5024",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2020-0015",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2021-04-14T20:04:52Z",
+    "aliases": [
+      "CVE-2020-14040",
+      "GHSA-5rcv-m4m3-hfh7"
+    ],
+    "summary": "Infinite loop when decoding some inputs in golang.org/x/text",
+    "details": "An attacker could provide a single byte to a UTF16 decoder instantiated with UseBOM or ExpectBOM to trigger an infinite loop if the String function on the Decoder is called, or the Decoder is passed to transform.String. If used to parse user supplied input, this may be used as a denial of service vector.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/text",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.3.3"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/text/encoding/unicode",
+              "symbols": [
+                "bomOverride.Transform",
+                "utf16Decoder.Transform"
+              ]
+            },
+            {
+              "path": "golang.org/x/text/transform",
+              "symbols": [
+                "String"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/238238"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.googlesource.com/text/+/23ae387dee1f90d29a23c0e87ee0b46038fbed0e"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/39491"
+      },
+      {
+        "type": "WEB",
+        "url": "https://groups.google.com/g/golang-announce/c/bXVeAmGOqz0"
+      }
+    ],
+    "credits": [
+      {
+        "name": "@abacabadabacaba"
+      },
+      {
+        "name": "Anton Gyllenberg"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2020-0015",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2021-0113",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2021-10-06T17:51:21Z",
+    "aliases": [
+      "CVE-2021-38561",
+      "GHSA-ppp9-7jff-5vj2"
+    ],
+    "summary": "Out-of-bounds read in golang.org/x/text/language",
+    "details": "Due to improper index calculation, an incorrectly formatted language tag can cause Parse to panic via an out of bounds read. If Parse is used to process untrusted user inputs, this may be used as a vector for a denial of service attack.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/text",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.3.7"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/text/language",
+              "symbols": [
+                "MatchStrings",
+                "MustParse",
+                "Parse",
+                "ParseAcceptLanguage"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/340830"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.googlesource.com/text/+/383b2e75a7a4198c42f8f87833eefb772868a56f"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Guido Vranken"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2021-0113",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2022-1059",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2022-10-11T18:16:24Z",
+    "aliases": [
+      "CVE-2022-32149",
+      "GHSA-69ch-w2m2-3vjp"
+    ],
+    "summary": "Denial of service via crafted Accept-Language header in golang.org/x/text/language",
+    "details": "An attacker may cause a denial of service by crafting an Accept-Language header which ParseAcceptLanguage will take significant time to parse.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/text",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.3.8"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/text/language",
+              "symbols": [
+                "MatchStrings",
+                "ParseAcceptLanguage"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/56152"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/442235"
+      },
+      {
+        "type": "WEB",
+        "url": "https://groups.google.com/g/golang-announce/c/-hjNw559_tE/m/KlGTfid5CAAJ"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Adam Korczynski (ADA Logics)"
+      },
+      {
+        "name": "OSS-Fuzz"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2022-1059",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-5970",
+    "modified": "2026-08-10T22:42:36Z",
+    "published": "2026-07-14T17:29:56Z",
+    "aliases": [
+      "CVE-2026-56852"
+    ],
+    "summary": "Infinite loop on invalid input in golang.org/x/text",
+    "details": "A norm.Iter can enter an infinite loop when handling input containing invalid UTF-8 bytes.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/text",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.39.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/text/unicode/norm",
+              "symbols": [
+                "Form.Append",
+                "Form.AppendString",
+                "Form.Bytes",
+                "Form.FirstBoundary",
+                "Form.FirstBoundaryInString",
+                "Form.IsNormal",
+                "Form.IsNormalString",
+                "Form.LastBoundary",
+                "Form.NextBoundary",
+                "Form.NextBoundaryInString",
+                "Form.Properties",
+                "Form.PropertiesString",
+                "Form.QuickSpan",
+                "Form.QuickSpanString",
+                "Form.Span",
+                "Form.SpanString",
+                "Form.String",
+                "Form.Transform",
+                "Iter.Init",
+                "Iter.InitString",
+                "Iter.Next",
+                "Iter.Seek",
+                "nextComposed",
+                "normReader.Read",
+                "normWriter.Write"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/80142"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/794100"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Viky Choi (\"vikychoi\" on GitHub)"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-5970",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6629",
+    "modified": "2026-10-07T14:09:43Z",
+    "published": "2026-10-07T14:09:43Z",
+    "aliases": [
+      "CVE-2026-56851"
+    ],
+    "summary": "Panic parsing crafted input in x/text/secure/precis in golang.org/x/text",
+    "details": "The Nickname profile can panic with an out-of-bounds slice error when transforming crafted input into a short destination buffer.",
+    "affected": [
+      {
+        "package": {
+          "name": "golang.org/x/text",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.41.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "golang.org/x/text/secure/precis",
+              "symbols": [
+                "Profile.Append",
+                "Profile.AppendCompareKey",
+                "Profile.Bytes",
+                "Profile.Compare",
+                "Profile.CompareKey",
+                "Profile.NewTransformer",
+                "Profile.String",
+                "Transformer.Bytes",
+                "Transformer.String",
+                "Transformer.Transform",
+                "nickAdditionalMapping.Transform"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/793360"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/80112"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Omkhar Arasaratnam (GitHub: omkhar)"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-6629",
       "review_status": "REVIEWED"
     }
   }
@@ -28295,6 +28728,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
@@ -28330,6 +28764,46 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/armor"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/clearsign"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/errors"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
@@ -28342,6 +28816,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
@@ -28380,6 +28855,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
@@ -28392,6 +28868,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
@@ -28404,11 +28881,14 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor"
+        "package": "golang.org/x/crypto/openpgp",
+        "function": "org/x/crypto/openpgp/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -28416,11 +28896,14 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/clearsign"
+        "package": "golang.org/x/crypto/openpgp/clearsign",
+        "function": "org/x/crypto/openpgp/clearsign/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -28428,11 +28911,102 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "finding": {
     "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
     "trace": [
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/errors"
+        "package": "golang.org/x/crypto/openpgp/elgamal",
+        "function": "org/x/crypto/openpgp/elgamal/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k",
+        "function": "org/x/crypto/openpgp/s2k/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6860",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "Parse"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-6866",
+    "fixed_version": "v0.62.0",
+    "trace": [
+      {
+        "module": "golang.org/x/net",
+        "version": "v0.61.0",
+        "package": "golang.org/x/net/html",
+        "function": "Render"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/packet",
+        "function": "org/x/crypto/openpgp/packet/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/armor",
+        "function": "org/x/crypto/openpgp/armor/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/errors",
+        "function": "org/x/crypto/openpgp/errors/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -28467,62 +29041,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 }
 {
   "finding": {
-    "osv": "GO-2026-6866",
-    "fixed_version": "v0.62.0",
-    "trace": [
-      {
-        "module": "golang.org/x/net",
-        "version": "v0.61.0",
-        "package": "golang.org/x/net/html",
-        "function": "Render"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp",
-        "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet",
-        "function": "org/x/crypto/openpgp/packet/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/errors",
-        "function": "org/x/crypto/openpgp/errors/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
     "osv": "GO-2026-6860",
     "fixed_version": "v0.62.0",
     "trace": [
@@ -28531,76 +29049,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.61.0",
         "package": "golang.org/x/net/html",
         "function": "ParseWithOptions"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor",
-        "function": "org/x/crypto/openpgp/armor/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/clearsign",
-        "function": "org/x/crypto/openpgp/clearsign/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/elgamal",
-        "function": "org/x/crypto/openpgp/elgamal/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k",
-        "function": "org/x/crypto/openpgp/s2k/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-6860",
-    "fixed_version": "v0.62.0",
-    "trace": [
-      {
-        "module": "golang.org/x/net",
-        "version": "v0.61.0",
-        "package": "golang.org/x/net/html",
-        "function": "Parse"
       }
     ]
   }
