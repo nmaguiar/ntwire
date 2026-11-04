@@ -489,6 +489,29 @@ relay offers it) and only escalates further to the fully direct path if
 lands on whichever of these two rungs is still warm, not always straight back
 to WebSocket.
 
+### UDP receive diagnostics and recovery
+
+Native WireGuard relay traffic and ntwire UDP-relay traffic share the server's
+WireGuard UDP receive sockets. WSS has a separate receiver, so it can continue
+working if UDP reception fails. Restarting only the relay does not recreate
+the server's sockets.
+
+The ntwire WireGuard UDP bind retries temporary errors and recognized network
+or resource errors (including connection refused/reset, network/host unreachable,
+and exhausted receive resources) with backoff from 10 ms to one second. These
+retries continue until reception succeeds or the bind closes, rather than
+exhausting wireguard-go's receive retry limit. This applies to IPv4 and IPv6,
+including Linux batched reads, on clients and servers.
+
+Look for `WireGuard UDP receive failed; retrying` and
+`WireGuard UDP receive recovered` in the normal ntwire logs; retry warnings
+are limited to one per socket every 30 seconds, with a recovery message for
+an outage that was logged. These diagnostics do not depend on wireguard-go's
+internal logger. `WireGuard UDP receiver stopped` indicates an unrecognized
+terminal read error; the bind logs it and returns the error without reopening
+the socket. Recovery retries preserve the existing socket and do not repair
+external firewall rules or replace a permanently broken socket.
+
 ## Opportunistic direct-UDP upgrade
 
 A relayed server can also let clients try to punch a direct UDP path straight
