@@ -120,7 +120,7 @@ func TestConnectWithUnknownCertificateThenTrustSucceeds(t *testing.T) {
 	fc := &fakeConnector{connectFunc: func(server, keyPath string, opts client.Options) (Handle, error) {
 		if first {
 			first = false
-			return nil, &client.UnknownCertificateError{Host: "home.example:8443", Fingerprint: "SHA256:abc"}
+			return nil, &client.UnknownCertificateError{Host: "home.example:8443", Fingerprint: "SHA256:abc", Certificate: &client.CertificateDetails{Subject: "CN=home.example"}, Assessment: &client.CertificateAssessment{Status: "not_previously_trusted"}}
 		}
 		return &fakeHandle{}, nil
 	}}
@@ -133,6 +133,10 @@ func TestConnectWithUnknownCertificateThenTrustSucceeds(t *testing.T) {
 	snap := waitForState(t, m, p.ID, StateAwaitingTrust, 5*time.Second)
 	if snap.Prompt == nil || snap.Prompt.Kind != PromptTrust || snap.Prompt.Host != "home.example:8443" {
 		t.Fatalf("Prompt = %+v, want a trust prompt for home.example:8443", snap.Prompt)
+	}
+
+	if snap.Prompt.Certificate == nil || snap.Prompt.Certificate.Subject != "CN=home.example" || snap.Prompt.Assessment == nil || snap.Prompt.Assessment.Status != "not_previously_trusted" {
+		t.Fatalf("certificate metadata not forwarded: %+v", snap.Prompt)
 	}
 
 	if err := m.AnswerTrust(p.ID, true); err != nil {

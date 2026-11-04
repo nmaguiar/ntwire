@@ -2,6 +2,8 @@ package manager
 
 import (
 	"encoding/json"
+	"github.com/nmaguiar/ntwire/pkg/client"
+	"strings"
 	"testing"
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
@@ -81,5 +83,26 @@ func TestSnapshotJSONHasLowercaseStateKey(t *testing.T) {
 	}
 	if got["state"] != "connected" {
 		t.Errorf(`snapshot JSON["state"] = %v, want "connected"`, got["state"])
+	}
+}
+
+func TestCertificatePromptMetadataJSON(t *testing.T) {
+	prompt := Prompt{Kind: PromptTrust, Host: "example.test", Fingerprint: "SHA256:new", Previous: "SHA256:old",
+		Certificate: &client.CertificateDetails{Subject: "<script>alert(1)</script>", Issuer: "CN=Netskope CA", SHA256Fingerprint: "SHA256:new"},
+		Assessment:  &client.CertificateAssessment{Status: "possible_interception", Warnings: []string{"Possible enterprise TLS inspection"}},
+	}
+	data, err := json.Marshal(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["kind"] != "trust" || decoded["previous"] != "SHA256:old" || decoded["assessment"].(map[string]any)["status"] != "possible_interception" || decoded["certificate"].(map[string]any)["subject"] != prompt.Certificate.Subject {
+		t.Fatalf("metadata lost: %s", data)
+	}
+	if strings.Contains(string(data), "<script>") {
+		t.Fatal("JSON did not escape HTML")
 	}
 }

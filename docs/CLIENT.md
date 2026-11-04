@@ -8,6 +8,7 @@ and SSO. For a first connection or an official WireGuard client, start with
 
 | Command | Behavior |
 | --- | --- |
+| `ntwire cert inspect [--json] [--known-servers path] URL` | Inspects TLS through the connect proxy/dialer path without authentication, trusting, or modifying pins. |
 | `ntwire keygen [-o path]` | Writes a PKCS#8 Ed25519 private key and an OpenSSH `.pub` key. The default private key is `~/.ntwire/id_ed25519`. |
 | `ntwire list [-i key \| --sso] [--json] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, it uses `~/.ntwire/id_ed25519` if present, then the first conventional key in `~/.ssh`, or falls back to SSO when advertised. `--json` is machine-readable. Do not add a trailing `/` to `URL`. |
 | `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket] [--bind address]` | Starts local listeners, renews the session, and prints a token-protected status URL. A tunnel's `local_port`/`local_host` are preferred when available; otherwise a free port and `127.0.0.1` are used. `--port name=local-port` or `--port name=host:local-port` is a client-side override. `--websocket` selects the fallback transport; `--bind` is advanced and changes the exposure of the listener. |
@@ -28,6 +29,61 @@ non-interactive invocation without a terminal fails instead of waiting.
 `-h`/`--help` uses color and UTF-8 on capable terminals, and automatically
 falls back to plain ASCII when piped, redirected, or `NO_COLOR` is set. Use
 `--no-color` to disable color explicitly; see [LOGGING.md](LOGGING.md).
+
+## Certificate trust and inspection
+
+First-use prompts display the subject, issuer, validity and SHA-256 fingerprint.
+A changed certificate also displays the previous pin and a prominent warning.
+Recognizable TLS-inspection issuer names add a possible-interception warning;
+the name alone is not proof. Self-signed, invalid dates and hostname mismatches
+have separate warnings. Confirm the fingerprint through a trusted channel
+before answering `y`; Enter or any other answer rejects it. Without a terminal,
+pre-seed a verified pin rather than attempting an interactive trust decision.
+Metadata is optional; older callers still receive fingerprint-only prompts.
+
+```text
+WARNING: SERVER CERTIFICATE CHANGED
+Server: server.example.com
+Subject: CN=server.example.com
+Issuer: CN=Example Netskope Enterprise CA
+Previously trusted:
+  SHA256:<previous unpadded base64>
+Current fingerprint:
+  SHA256:<current unpadded base64>
+Certificate status: possible_interception
+WARNING: The certificate issuer resembles an enterprise TLS-inspection authority.
+...
+Trust this certificate? [y/N]
+```
+
+For a read-only check before connecting:
+
+```sh
+ntwire cert inspect https://server.example.com
+ntwire cert inspect --json --https-proxy http://proxy.example:8080 https://server.example.com
+```
+
+Put flags before the URL. Options are `--json`, `--known-servers`,
+`--https-proxy`, `--no-system-proxy` and `--ip-version` (`4` or `6`). System
+proxy environment variables apply by default. Supply the same options used
+by connect; inspection does not automatically load saved connect/GUI profiles.
+The command requires an HTTPS URL and compares TOFU pins; it does not support
+`--ca` or `--insecure`. It stops at the TLS verification callback before sending
+HTTP requests, and never changes the pin, even when it matches.
+
+Exit codes: **0** means a matching pin with no identity, validity, metadata or
+enterprise-issuer warning (a self-signature alone is allowed); **2** means
+unpinned, changed, or diagnostic warnings; **1** means an argument, network,
+proxy or TLS-observation error. JSON is emitted for codes 0 and 2, including
+`previously_pinned`, `fingerprint_match`, `certificate` (with presented chain)
+and `assessment` (`status`, `indicators`, `warnings`). No exit code proves that
+interception is absent.
+
+Certificate rotation requires confirming a new pin. HTTPS and WSS use the
+same verifier, including WSS reconnects. `--ca` uses chain/hostname/validity
+verification instead of TOFU. `--insecure` skips verification and pinning.
+See [SECURITY.md](SECURITY.md#inspecting-certificates-and-possible-tls-interception)
+for limitations and independent fingerprint verification.
 
 ## Local dashboard and settings
 

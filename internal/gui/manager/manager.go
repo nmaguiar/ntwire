@@ -951,7 +951,7 @@ func (m *Manager) resolveTrust(id string, unknown *client.UnknownCertificateErro
 		return false
 	}
 	s.state = StateAwaitingTrust
-	s.prompt = &Prompt{Kind: PromptTrust, Host: unknown.Host, Fingerprint: unknown.Fingerprint, Previous: unknown.Previous}
+	s.prompt = &Prompt{Kind: PromptTrust, Host: unknown.Host, Fingerprint: unknown.Fingerprint, Previous: unknown.Previous, Certificate: unknown.Certificate, Assessment: unknown.Assessment}
 	s.trustReply = reply
 	cancel := s.cancel
 	firstPrompt := m.pendingPromptCountLocked() == 1

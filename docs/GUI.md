@@ -212,3 +212,38 @@ identify unreadable or unsupported keys and let you retry or select another
 key; an incorrect passphrase and damaged encrypted key may produce the same
 error. For supported formats and conversion examples, see
 [Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).
+
+## Certificate trust dialog
+
+The trust dialog shows the server hostname, subject, issuer, validity, and
+current SHA-256 fingerprint. A changed certificate has a distinct danger
+heading and displays the previous fingerprint. Advanced certificate details
+expand the presented chain, SANs, serial number and algorithms. Chain entries
+are diagnostic data, not evidence of CA trust. Missing metadata preserves the
+existing fingerprint-only trust workflow.
+
+For example, a changed pin with an issuer resembling Netskope shows **Server
+fingerprint changed**, both fingerprints, and a warning that the connection
+may be intercepted by a network security product. Legitimate rotation can
+also change the pin, and issuer text alone cannot prove interception. Verify
+the fingerprint with the administrator using a separate trusted channel.
+Self-signed status, invalid dates and identity mismatches are separate facts.
+
+**Reject** receives focus by default and Escape rejects the prompt. **Trust
+Certificate** explicitly records the presented fingerprint and retries the
+connection; it does not suppress future change warnings. OS CA trust does
+not automatically approve TOFU certificates. GUI profiles and `known_servers`
+keep their existing formats.
+
+The settings API preserves `kind`, `host`, `fingerprint`, and `previous`, with
+optional `certificate` and `assessment` objects on trust prompts. Certificate
+strings are rendered as text, including within advanced details. HTTPS and WSS
+share the verifier; relay routing and server-to-relay certificates are unchanged.
+See [SECURITY.md](SECURITY.md#inspecting-certificates-and-possible-tls-interception)
+for custom CA, insecure mode, and endpoint inspection limitations.
+
+The dependency-free frontend behavior check is:
+
+```sh
+node internal/gui/webui/tests/certificate-dialog.mjs
+```
