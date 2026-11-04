@@ -124,6 +124,7 @@ func (s *Server) routes() {
 	// subsequent /api/* fetches, the same convention pkg/client's status
 	// page uses.
 	s.mux.Handle("GET /", s.requireToken(http.FileServer(http.FS(s.fsys)).ServeHTTP))
+	s.mux.HandleFunc("POST /api/proxy", s.requireToken(s.handleProxy))
 	s.mux.HandleFunc("GET /api/schema", s.requireToken(s.handleSchema))
 	s.mux.HandleFunc("GET /api/version", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.String()})
@@ -175,6 +176,10 @@ func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 	if body.OIDCClientSecret != nil {
 		p.OIDCClientSecret = *body.OIDCClientSecret
 	}
+	if err := applyProxyRequest(&p, config.Profile{}, body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	p.ID = "" // a client does not choose its own ID; AddProfile assigns one
 	added, err := s.mgr.AddProfile(p)
 	if err != nil {
@@ -195,6 +200,10 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	previous, ok := s.mgr.Snapshot(id)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("gui: no such profile %q", id))
+		return
+	}
+	if err := applyProxyRequest(&p, previous.Profile, body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
 	// Profile reads intentionally omit OIDCClientSecret. A blank value from
@@ -219,6 +228,8 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 // every API response and must never contain the saved secret.
 type profileRequest struct {
 	config.Profile
+	ReplaceProxyURL       bool    `json:"ReplaceProxyURL"`
+	KeepProxyURL          bool    `json:"KeepProxyURL"`
 	OIDCClientSecret      *string `json:"OIDCClientSecret"`
 	ClearOIDCClientSecret bool    `json:"ClearOIDCClientSecret"`
 }

@@ -7,6 +7,12 @@
 // `ntwire connect`, and a second writer would fight it.
 package config
 
+import (
+	"encoding/json"
+
+	"github.com/nmaguiar/ntwire/pkg/client"
+)
+
 // Profile is one saved server connection. It holds everything
 // ToClientOptions needs to build a client.Options, plus GUI-only metadata
 // (ID, Name, ConnectOnStart).
@@ -22,8 +28,8 @@ type Profile struct {
 	Hosts            map[string]string `yaml:"hosts"`
 	CAFile           string            `yaml:"ca_file"`
 	Insecure         bool              `yaml:"insecure"`
-	HTTPSProxy       string            `yaml:"https_proxy"`
-	NoSystemProxy    bool              `yaml:"no_system_proxy"`
+	HTTPSProxy       string            `yaml:"https_proxy,omitempty"`
+	NoSystemProxy    bool              `yaml:"no_system_proxy,omitempty"`
 	KnownServersFile string            `yaml:"known_servers_file"`
 	TokenCacheFile   string            `yaml:"token_cache_file"`
 	// Websocket forces the WebSocket WireGuard transport. Leave false for
@@ -66,3 +72,11 @@ type Config struct {
 
 // CurrentVersion is the Config.Version this package reads and writes.
 const CurrentVersion = 1
+
+// MarshalJSON keeps proxy credentials out of profiles, snapshots and SSE events.
+func (p Profile) MarshalJSON() ([]byte, error) {
+	type plain Profile
+	safe := plain(p)
+	safe.HTTPSProxy = client.RedactProxyURL(p.HTTPSProxy)
+	return json.Marshal(safe)
+}

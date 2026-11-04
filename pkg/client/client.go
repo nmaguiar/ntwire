@@ -361,27 +361,21 @@ func RedactProxyURL(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	u, err := urlpkg.Parse(raw)
+	// Environment proxy URLs may omit the scheme. Parse their userinfo as
+	// an authority too, so malformed and scheme-less values cannot leak secrets.
+	parseRaw := raw
+	schemeless := !strings.Contains(raw, "://") && strings.Contains(raw, "@")
+	if schemeless {
+		parseRaw = "http://" + raw
+	}
+	u, err := urlpkg.Parse(parseRaw)
 	if err != nil {
-		return redactUserinfoString(raw)
+		return "[invalid proxy URL]"
+	}
+	if schemeless {
+		return strings.TrimPrefix(u.Redacted(), "http://")
 	}
 	return u.Redacted()
-}
-
-func redactUserinfoString(raw string) string {
-	if idx := strings.Index(raw, "://"); idx != -1 {
-		prefix := raw[:idx+3]
-		rest := raw[idx+3:]
-		if at := strings.Index(rest, "@"); at != -1 {
-			userinfo := rest[:at]
-			after := rest[at+1:]
-			if colon := strings.Index(userinfo, ":"); colon != -1 {
-				userinfo = userinfo[:colon] + ":xxxxx"
-			}
-			return prefix + userinfo + "@" + after
-		}
-	}
-	return raw
 }
 
 type socksForwardDialer struct {

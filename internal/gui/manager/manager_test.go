@@ -707,3 +707,34 @@ func TestImportIdentityRejectsInvalidKey(t *testing.T) {
 		t.Fatal("invalid key left in storage")
 	}
 }
+
+func TestProxyEditRequiresReconnectWithoutInterruptingSession(t *testing.T) {
+	m, _ := newTestManager(t, &fakeConnector{})
+	p, err := m.AddProfile(config.Profile{Name: "proxy", Server: "https://server.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Connect(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, m, p.ID, StateConnected, time.Second)
+	defer m.Disconnect(p.ID)
+	p.HTTPSProxy = "http://proxy:8080"
+	if err := m.UpdateProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	snap, _ := m.Snapshot(p.ID)
+	if snap.State != StateConnected || snap.Connection == nil || !snap.ProxyReconnectRequired {
+		t.Fatal("proxy edit interrupted session or lacks reconnect warning")
+	}
+	if err := m.Disconnect(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Connect(p.ID); err != nil {
+		t.Fatal(err)
+	}
+	snap = waitForState(t, m, p.ID, StateConnected, time.Second)
+	if snap.ProxyReconnectRequired {
+		t.Fatal("reconnect warning did not clear")
+	}
+}

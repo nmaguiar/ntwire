@@ -326,6 +326,9 @@ func (m *Manager) Snapshots() []Snapshot {
 
 func snapshotOf(s *session) Snapshot {
 	snap := Snapshot{Profile: s.profile, State: s.state, Prompt: s.prompt}
+	if s.state != StateIdle && s.state != StateFailed {
+		snap.ProxyReconnectRequired = s.profile.HTTPSProxy != s.activeProfile.HTTPSProxy || s.profile.NoSystemProxy != s.activeProfile.NoSystemProxy
+	}
 	if s.profile.SSO {
 		snap.IdentitySource = "sso"
 	} else if s.profile.IdentityFile != "" {
@@ -365,6 +368,7 @@ func (m *Manager) Connect(id string) error {
 	s.err = nil
 	s.prompt = nil
 	profile := s.profile
+	s.activeProfile = profile
 	m.mu.Unlock()
 	m.publish(id)
 

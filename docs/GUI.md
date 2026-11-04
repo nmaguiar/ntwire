@@ -212,3 +212,59 @@ identify unreadable or unsupported keys and let you retry or select another
 key; an incorrect passphrase and damaged encrypted key may produce the same
 error. For supported formats and conversion examples, see
 [Private-key formats and conversion](CLIENT.md#private-key-formats-and-conversion).
+
+## Outbound proxy settings
+
+Each profile has a visible **Proxy settings** section with three choices:
+
+- **Use system/environment proxy** (default): leaves `https_proxy` and
+  `no_system_proxy` unset. Read-only diagnostics show the core process's
+  HTTP(S)_PROXY and NO_PROXY variables, including lowercase variants, and
+  resolve the effective proxy for this profile's server URL.
+- **Custom proxy**: saves an HTTP, HTTPS, SOCKS5 or SOCKS5h URL in the profile.
+  This takes precedence over the environment. SOCKS5 resolves destination
+  names locally; SOCKS5h resolves them at the proxy.
+- **Direct connection**: clears the custom URL and saves
+  `no_system_proxy: true`, ignoring application environment proxy settings
+  for HTTPS/WSS. This does not change firewall or operating-system policies.
+
+Resolution uses the same Go HTTP environment selector as the client, including
+uppercase/lowercase precedence, scheme-specific HTTP/HTTPS selection, NO_PROXY
+host/port/CIDR exclusions, and automatic localhost/loopback bypass. An HTTP_PROXY
+alone does not configure an HTTPS destination. Diagnostics describe the next
+connection's configuration, not evidence that a proxy is reachable or in use.
+
+Proxy settings apply to the HTTPS control channel and WSS transport. Direct
+UDP and UDP-relay paths do not use this HTTP/SOCKS proxy. Choosing a proxy does
+not force WSS; Auto can still select native UDP. Select WSS separately when
+required by your network administrator.
+
+All three choices survive restart in `~/.ntwire/gui.yaml`; inherited values are
+never copied there. Existing profiles need no migration. The CLI's
+`~/.ntwire/config.yaml` is not modified. Proxy passwords are stored in the
+profile file (mode `0600`), so protect that file and its backups. API responses,
+SSE events and diagnostics mask URL passwords. The replacement URL input is
+write-only: leave it blank to retain a saved URL, enter a complete URL to replace
+its credentials, or enter a URL without userinfo to clear credentials. Switching
+to environment or direct clears the saved URL.
+
+Opening the editor or selecting **Refresh proxy diagnostics** reads metadata
+from the running core, never the browser or secondary window process. Environment
+changes made outside the app do not propagate to an already-running core; quit
+and restart ntwire-gui with the intended launch environment. Go caches proxy
+environment selection for the life of that process.
+
+Saving does not interrupt an active connection or its automatic recovery. If
+its proxy settings differ from the saved profile, the GUI displays **Proxy
+settings saved. Reconnect this profile to apply the changes.** Disconnect and
+connect that profile when convenient. The live transport status continues to
+describe the active connection.
+
+### Corporate proxy environments
+
+Use the proxy URL and NO_PROXY exclusions provided by your administrator. A GUI
+launched from the desktop may inherit a different environment than a terminal;
+check the core's displayed defaults. Use Custom when a profile requires a
+specific proxy. TLS verification and certificate pinning still apply through
+proxies; coordinate certificate trust with your administrator. Proxy settings
+do not disable, evade or override corporate security controls.
