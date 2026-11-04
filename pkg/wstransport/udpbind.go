@@ -34,12 +34,13 @@ type UDPBufferStatus struct {
 // conn.StdNetBind, it can tune them immediately after opening while retaining
 // batched UDP I/O on Linux.
 type UDPBind struct {
-	mu        sync.Mutex
-	ipv4      *net.UDPConn
-	ipv6      *net.UDPConn
-	requested int
-	log       *slog.Logger
-	status    []UDPBufferStatus
+	mu          sync.Mutex
+	ipv4        *net.UDPConn
+	ipv6        *net.UDPConn
+	requested   int
+	log         *slog.Logger
+	status      []UDPBufferStatus
+	receiveStop chan struct{}
 }
 
 // NewUDPBind returns a WireGuard UDP bind with a validated buffer request.
@@ -106,11 +107,12 @@ again:
 		b.ipv6 = v6
 	}
 	fns := make([]conn.ReceiveFunc, 0, 2)
+	b.receiveStop = make(chan struct{})
 	if v4 != nil {
-		fns = append(fns, makeUDPReceive(ipv4.NewPacketConn(v4), v4))
+		fns = append(fns, resilientUDPReceive(makeUDPReceive(ipv4.NewPacketConn(v4), v4), b.receiveStop, b.log, "ipv4"))
 	}
 	if v6 != nil {
-		fns = append(fns, makeUDPReceive(ipv6.NewPacketConn(v6), v6))
+		fns = append(fns, resilientUDPReceive(makeUDPReceive(ipv6.NewPacketConn(v6), v6), b.receiveStop, b.log, "ipv6"))
 	}
 	return fns, uint16(port), nil
 }
@@ -187,6 +189,10 @@ func makeUDPBatchReceive(pc interface {
 func (b *UDPBind) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.receiveStop != nil {
+		close(b.receiveStop)
+		b.receiveStop = nil
+	}
 	var errs []error
 	if b.ipv4 != nil {
 		errs = append(errs, b.ipv4.Close())
