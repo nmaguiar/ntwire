@@ -1,12 +1,49 @@
 package ipfamily
 
 import (
+	"bytes"
 	"errors"
 	"net/netip"
 	"testing"
 
 	"golang.zx2c4.com/wireguard/conn"
 )
+
+func TestReceiveCompactionPreservesWireGuardBuffers(t *testing.T) {
+	for _, family := range []string{"4", "6"} {
+		t.Run(family, func(t *testing.T) {
+			b := &Bind{is6: family == "6"}
+			v4 := fakeEndpoint{addr: netip.MustParseAddrPort("127.0.0.1:1000")}
+			v6 := fakeEndpoint{addr: netip.MustParseAddrPort("[::1]:1000")}
+			accepted, rejected := v4, v6
+			if b.is6 {
+				accepted, rejected = v6, v4
+			}
+			receive := b.wrapReceive(func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+				for i, ep := range []fakeEndpoint{rejected, accepted, accepted} {
+					sizes[i] = copy(bufs[i], bytes.Repeat([]byte{byte(i)}, i+1))
+					eps[i] = ep
+				}
+				return 3, nil
+			})
+			bufs := [][]byte{make([]byte, 16), make([]byte, 16), make([]byte, 16)}
+			owned := append([][]byte(nil), bufs...)
+			sizes, eps := make([]int, 3), make([]conn.Endpoint, 3)
+			n, err := receive(bufs, sizes, eps)
+			if err != nil || n != 2 {
+				t.Fatalf("receive = %d, %v", n, err)
+			}
+			for i := range owned {
+				if &bufs[i][0] != &owned[i][0] {
+					t.Fatalf("receive replaced WireGuard-owned buffer %d", i)
+				}
+				if i < n && (!bytes.Equal(owned[i][:sizes[i]], bytes.Repeat([]byte{byte(i + 1)}, i+2)) || eps[i] != accepted) {
+					t.Fatalf("incorrect payload or endpoint in slot %d", i)
+				}
+			}
+		})
+	}
+}
 
 // fakeEndpoint is a minimal conn.Endpoint for a given destination address.
 type fakeEndpoint struct{ addr netip.AddrPort }

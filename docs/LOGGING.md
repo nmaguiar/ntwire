@@ -84,6 +84,14 @@ relay reflector`. A control-plane renewal/reconnect preserves the selected route
 transport transition. Shutdown changes the local route to `unknown` after
 stopping the data plane.
 
+`WireGuard WebSocket carrier is not draining; dropping` means that one
+carrier's bounded outbound queue repeatedly overflowed. The carrier is closed
+so the client can reconnect or select another healthy path. It does not by
+itself show that the shared UDP receiver has stopped. For UDP failures, look
+for `WireGuard UDP receive failed; retrying`, `WireGuard UDP receive recovered`,
+or `WireGuard UDP receiver stopped`, and collect client and relay logs around
+the same transport transition.
+
 `/metrics` also exposes the process-lifetime counter
 `ntwire_lifecycle_events_total{event,method}`. Both labels are bounded:
 `event` is an ntwire-defined lifecycle name and `method` is `ssh`, `oidc`, or

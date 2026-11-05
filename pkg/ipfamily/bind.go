@@ -78,7 +78,10 @@ func (b *Bind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 					continue
 				}
 				if out != i {
-					bufs[out], sizes[out], eps[out] = bufs[i], sizes[i], eps[i]
+					// WireGuard retains each slot's backing array separately.
+					// Compact bytes, never the caller's buffer references.
+					sizes[out] = copy(bufs[out], bufs[i][:sizes[i]])
+					eps[out] = eps[i]
 				}
 				out++
 			}
