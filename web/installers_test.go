@@ -45,7 +45,7 @@ func TestWindowsInstallers_InstallAndChecksumFailures(t *testing.T) {
 	const mockHTTP = `function Invoke-RestMethod { param([switch]$UseBasicParsing, [string]$Uri) Get-Content -Raw -LiteralPath (Join-Path $env:NTWIRE_INSTALLER_FIXTURE 'release.json') | ConvertFrom-Json }; function Invoke-WebRequest { param([switch]$UseBasicParsing, [string]$Uri, [string]$OutFile) if($Uri -eq 'https://example.invalid/archive'){Copy-Item -LiteralPath (Join-Path $env:NTWIRE_INSTALLER_FIXTURE 'fixture.zip') -Destination $OutFile} elseif($Uri -eq 'https://example.invalid/sums'){@{Content=(Get-Content -Raw -LiteralPath (Join-Path $env:NTWIRE_INSTALLER_FIXTURE 'checksums.txt'))}} else {throw 'Unexpected URL'} }; `
 	for scriptName, bin := range windowsInstallers {
 		for _, arch := range []string{"amd64", "arm64"} {
-			for _, scenario := range []string{"success", "mismatch", "missing-manifest", "missing-entry"} {
+			for _, scenario := range []string{"success", "incompatible-modules", "mismatch", "missing-manifest", "missing-entry"} {
 				t.Run(scriptName+"/"+arch+"/"+scenario, func(t *testing.T) {
 					dir := filepath.Join(t.TempDir(), "fixture with spaces")
 					if err := os.MkdirAll(dir, 0700); err != nil {
@@ -101,11 +101,29 @@ func TestWindowsInstallers_InstallAndChecksumFailures(t *testing.T) {
 					t.Setenv("LOCALAPPDATA", filepath.Join(dir, "app data"))
 					t.Setenv("TEMP", dir)
 					t.Setenv("PROCESSOR_ARCHITECTURE", strings.ToUpper(arch))
+					if scenario == "incompatible-modules" {
+						// Model a newer PowerShell module shadowing the Windows
+						// PowerShell built-in, even when the test starts outside pwsh.
+						module := filepath.Join("modules", "Microsoft.PowerShell.Utility")
+						if err := os.MkdirAll(filepath.Join(dir, module), 0700); err != nil {
+							t.Fatal(err)
+						}
+						write(filepath.Join(module, "Microsoft.PowerShell.Utility.psd1"), []byte("@{ RootModule='Microsoft.PowerShell.Utility.psm1'; ModuleVersion='1.0'; PowerShellVersion='99.0'; FunctionsToExport=@('Get-FileHash') }"))
+						write(filepath.Join(module, "Microsoft.PowerShell.Utility.psm1"), []byte("function Get-FileHash { throw 'Incompatible module loaded' }"))
+						t.Setenv("PSModulePath", filepath.Join(dir, "modules"))
+						// Confirm that the fixture actually breaks command discovery
+						// before checking that the batch installer repairs it.
+						probe := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Command Get-FileHash -ErrorAction Stop")
+						output, err := probe.CombinedOutput()
+						if err == nil || !strings.Contains(string(output), "Get-FileHash") {
+							t.Fatalf("expected incompatible module discovery to fail, got %v\n%s", err, output)
+						}
+					}
 					cmd := exec.Command("cmd.exe", "/d", "/c", "install.bat")
 					cmd.Dir = dir
 					output, runErr := cmd.CombinedOutput()
 					installed := filepath.Join(dir, "app data", "ntwire", "bin", bin+".exe")
-					if scenario == "success" {
+					if scenario == "success" || scenario == "incompatible-modules" {
 						if runErr != nil {
 							t.Fatalf("install failed: %v\n%s", runErr, output)
 						}
