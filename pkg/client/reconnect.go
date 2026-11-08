@@ -36,7 +36,8 @@ func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
 		old.Multipath == r.Multipath &&
 		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityMultipathV3) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3) &&
 		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathMTUV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1) &&
-		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathPromoteV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathPromoteV1)
+		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathPromoteV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathPromoteV1) &&
+		old.WSSLanes == r.WSSLanes
 }
 
 // applyReconnectedSession is called with networkMu held. Carrier setup steps
@@ -312,6 +313,10 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)
 			stackConfig.Bind = hybrid
+		}
+		// Must precede wgnet.New, which opens the bind.
+		if lanes := negotiatedLanes(options, r); lanes > 1 {
+			hybrid.WebSocket.SetLanes(lanes)
 		}
 	}
 	st, err := wgnet.New(stackConfig)

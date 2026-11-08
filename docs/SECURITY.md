@@ -113,6 +113,11 @@ remains outstanding before an iOS data plane can be enabled by default.
 - Session tokens are random bearer credentials and expire when checked.
 - The WebSocket fallback requires the session bearer token and accepts only
   bounded binary WireGuard datagrams.
+- Opt-in WSS lanes (`GET /v1/wg?lane=N`, off unless the server sets
+  `transport.wss_lanes` > 1 and the session negotiated `wss-lanes-v1`) use the
+  same session bearer token and the same WireGuard-key binding as lane 0, and
+  are capped per session by the negotiated allowance (at most 4). Through a
+  relay they count toward the tenant's connection limit.
 - Opt-in transport promotion (`POST /v1/transport/primary`, off unless the
   server sets `transport.promotion` and the session negotiated
   `path-promote-v1`) requires the session bearer token. It can only select

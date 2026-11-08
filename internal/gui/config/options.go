@@ -62,6 +62,10 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 	if err != nil {
 		return client.Options{}, fmt.Errorf("gui: profile %q: %w", p.Name, err)
 	}
+	wssLanes, err := client.ParseWSSLanes(p.WSSLanes)
+	if err != nil {
+		return client.Options{}, fmt.Errorf("gui: profile %q: %w", p.Name, err)
+	}
 	ports := make(map[string]int, len(p.Ports))
 	for k, v := range p.Ports {
 		ports[k] = v
@@ -94,6 +98,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		UDPAlt:           p.UDPAlt,
 		MTUAware:         p.MTUAware,
 		Promote:          p.Promote,
+		WSSLanes:         wssLanes,
 		TunnelMTU:        tunnelMTU,
 		SettingsURL:      settingsURL,
 	}, nil

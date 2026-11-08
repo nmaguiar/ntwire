@@ -15,7 +15,7 @@ The reference server serves HTTPS.
 | `POST /v1/auth/oidc` | Verified OIDC ID token | New session and grants |
 | `POST /v1/renew` | Bearer token | Replacement session and grants |
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
-| `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
+| `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages; `?lane=N` opens an opt-in extra lane (`wss-lanes-v1`) |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
 | `POST /v1/transport/direct` | Bearer token | Registers a reflected direct-UDP client candidate for a negotiated multipath session |
 | `POST /v1/transport/primary` | Bearer token | Opt-in (`path-promote-v1`): commits a healthy candidate as the session's primary carrier; `404` unless negotiated |
@@ -656,6 +656,39 @@ registering the candidate for that session's WireGuard public key. The server
 and client probe it before either scheduler selects it; WSS stays active as a
 candidate throughout. The endpoint returns `409 Conflict` when multipath was
 not negotiated.
+
+### Opt-in parallel WSS lanes (`wss-lanes-v1`, experimental)
+
+A single WSS connection is one TCP stream, so one lost segment stalls every
+WireGuard packet behind it. `wss-lanes-v1` lets a session open a few
+connections instead. Both sides must opt in: the client offers the capability
+only with `--wss-lanes N` (N > 1), and the server offers it only with
+`transport.wss_lanes` > 1. It is independent of multipath, so WSS-only and
+relay sessions can use it too.
+
+When negotiated, the auth (and renew) response carries the server's allowance:
+
+```json
+{"transport_capabilities": ["wss-lanes-v1"], "wss_lanes": 3}
+```
+
+The client opens `min(N, wss_lanes)` connections. Lane 0 is the ordinary
+`GET /v1/wg`. Lanes 1..n-1 are `GET /v1/wg?lane=1` and so on, with the same
+bearer token. The server answers `400` for a lane at or beyond the session's
+allowance, or for any lane when the session was granted none. A newer
+connection on the same lane replaces the older one, as lane 0 already does.
+
+Lane 0 alone defines the carrier's lifecycle: connect, disconnect,
+write-failure callbacks, multipath `wss` health, and redial behave exactly as
+without lanes. Extra lanes redial on their own and never mark the carrier
+down. Every lane delivers into the same receive queue under the same endpoint
+identity, so WireGuard and the scheduler still see one `wss` carrier. Each
+sender uses a single active lane and moves to the least-loaded lane only when
+the active lane's queue is half full (a TCP stall). It returns to lane 0 once
+lane 0 has been drained for at least a second. Moving between lanes can
+reorder WireGuard packets, which WireGuard's replay window and the inner TCP
+tolerate. Through `ntwire-relay` every lane is a separate spliced connection
+and counts toward `limits.max_conns_per_server`.
 
 ### Opt-in client-led promotion (`path-promote-v1`, experimental)
 

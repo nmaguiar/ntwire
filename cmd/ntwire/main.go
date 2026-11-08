@@ -598,6 +598,9 @@ func printTransportDetails(u *ui.UI, info client.TransportInfo) {
 		fmt.Fprintln(u.Out)
 		u.Info("Startup transport reason: %s", info.Reason)
 	}
+	if info.WSSLanesUp > 0 {
+		u.Info("WebSocket lanes up: %d", info.WSSLanesUp)
+	}
 	fmt.Fprintln(u.Out)
 	if len(info.Events) == 0 {
 		u.Info("No transport switches recorded")
@@ -821,6 +824,11 @@ func connect(args []string, u *ui.UI) {
 	udpAlt := fs.BoolVal("udp-alt")
 	mtuAware := fs.BoolVal("mtu-aware")
 	promote := fs.BoolVal("promote")
+	wssLanes, lanesErr := client.ParseWSSLanes(fs.Str("wss-lanes"))
+	if lanesErr != nil {
+		u.Errorf("%v", lanesErr)
+		os.Exit(2)
+	}
 	tunnelMTU, mtuErr := client.ParseTunnelMTU(fs.Str("tunnel-mtu"))
 	if mtuErr != nil {
 		u.Errorf("%v", mtuErr)
@@ -861,7 +869,7 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
-		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
+		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote, WSSLanes: wssLanes,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

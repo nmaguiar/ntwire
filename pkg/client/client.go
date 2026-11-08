@@ -171,6 +171,11 @@ type Options struct {
 	// coordinated with the server so both directions switch together.
 	// Default false keeps selection strictly failure-driven.
 	Promote bool
+	// WSSLanes opts into parallel WSS lanes (wss-lanes-v1, experimental):
+	// 2-4 /v1/wg connections instead of one, so a single TCP connection
+	// recovering from loss stalls less traffic. The server must also enable
+	// transport.wss_lanes. 0 or 1 (default) keeps one connection.
+	WSSLanes int
 
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
@@ -493,6 +498,9 @@ func httpClient(url string, o Options) (*http.Client, error) {
 	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
 		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
 	}
+	if o.WSSLanes < 0 || o.WSSLanes > wstransport.MaxWSSLanes {
+		return nil, fmt.Errorf("invalid WebSocket lanes %d: must be 1-%d", o.WSSLanes, wstransport.MaxWSSLanes)
+	}
 	if o.TunnelMTU != 0 && (o.TunnelMTU < MinTunnelMTU || o.TunnelMTU > wstransport.DefaultTunnelMTU) {
 		return nil, fmt.Errorf("invalid tunnel MTU %d: must be %d-%d", o.TunnelMTU, MinTunnelMTU, wstransport.DefaultTunnelMTU)
 	}
@@ -771,7 +779,20 @@ func transportCapabilitiesFor(o Options) []string {
 	if o.Promote {
 		caps = append(caps, protocol.CapabilityPathPromoteV1)
 	}
+	if o.WSSLanes > 1 {
+		caps = append(caps, protocol.CapabilityWSSLanesV1)
+	}
 	return caps
+}
+
+// negotiatedLanes is how many /v1/wg connections this session opens: the
+// smaller of the client's request and the server's allowance, or 1 unless
+// wss-lanes-v1 was negotiated.
+func negotiatedLanes(o Options, r protocol.AuthResponse) int {
+	if o.WSSLanes <= 1 || r.WSSLanes <= 1 || !hasTransportCapability(r.TransportCapabilities, protocol.CapabilityWSSLanesV1) {
+		return 1
+	}
+	return min(o.WSSLanes, r.WSSLanes, wstransport.MaxWSSLanes)
 }
 
 func validateAuthResponseCapabilities(r protocol.AuthResponse, o Options) error {
@@ -1351,6 +1372,20 @@ type MultipathOptions struct {
 
 // MinTunnelMTU is the smallest accepted Options.TunnelMTU (the IPv6 minimum).
 const MinTunnelMTU = 1280
+
+// ParseWSSLanes converts the --wss-lanes / wss_lanes text setting. Empty
+// means the default (0, one connection).
+func ParseWSSLanes(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > wstransport.MaxWSSLanes {
+		return 0, fmt.Errorf("invalid WebSocket lanes %q: must be a number from 1 to %d", s, wstransport.MaxWSSLanes)
+	}
+	return n, nil
+}
 
 // ParseTunnelMTU converts the --tunnel-mtu / tunnel_mtu text setting. Empty
 // means the default (0).
@@ -2509,6 +2544,9 @@ type TransportInfo struct {
 	// is unchanged.
 	Events []wstransport.SwitchEvent `json:"events,omitempty"`
 	Reason string                    `json:"reason,omitempty"`
+	// WSSLanesUp is the number of WSS connections currently up, reported
+	// only when the session negotiated more than one lane.
+	WSSLanesUp int `json:"wss_lanes_up,omitempty"`
 }
 
 // TransportDetails is TransportInfo plus the switch history and the reason
@@ -2521,6 +2559,12 @@ func (c *Connection) TransportDetails() TransportInfo {
 	c.mu.Unlock()
 	if multipath != nil {
 		info.Events = multipath.Scheduler().SwitchEvents()
+	}
+	c.mu.Lock()
+	hybrid, response := c.hybrid, c.Response
+	c.mu.Unlock()
+	if hybrid != nil && negotiatedLanes(c.options, response) > 1 {
+		info.WSSLanesUp = hybrid.WebSocket.LanesUp("remote")
 	}
 	return info
 }

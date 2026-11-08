@@ -236,6 +236,13 @@ var registry = []Option{
 		Help: "Off by default. Normally a session that starts on the WebSocket carrier stays there while it is healthy, even if a UDP path becomes available. With this on, and with transport.promotion enabled on the server, ntwire moves both directions to a UDP path once it has been healthy for about 15 seconds and clearly better, at most once a minute, backing off if a promoted path fails soon after. Has no effect unless the server enables it.",
 	},
 	{
+		Name: "wss-lanes", Kind: KindString, Usage: "parallel WebSocket connections for the WSS carrier, 1-4 (default 1)",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: strDefault(func(s client.Settings) string { return s.WSSLanes }),
+		Label:   "WebSocket lanes (experimental)", Group: "🛠️ Advanced", Widget: WidgetText, Advanced: true,
+		Help: "Leave empty for one connection. 2-4 opens that many parallel WebSocket connections for the WSS carrier, so one TCP connection recovering from packet loss stalls less traffic. Only used when the server enables transport.wss_lanes; through a relay each lane counts as a separate connection.",
+	},
+	{
 		Name: "websocket", Kind: KindBool, Usage: "use the WebSocket WireGuard transport",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Force WebSocket transport", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,

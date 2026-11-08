@@ -59,6 +59,8 @@ type Profile struct {
 	TunnelMTU string `yaml:"tunnel_mtu,omitempty"`
 	// Promote is the opt-in --promote setting; see client.Options.Promote.
 	Promote bool `yaml:"promote,omitempty"`
+	// WSSLanes is the opt-in --wss-lanes setting; see client.Options.WSSLanes.
+	WSSLanes string `yaml:"wss_lanes,omitempty"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

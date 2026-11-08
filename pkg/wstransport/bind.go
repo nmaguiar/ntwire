@@ -64,6 +64,11 @@ type Bind struct {
 
 	// Dropped counts batches discarded because a peer's queue was full.
 	Dropped atomic.Uint64
+
+	// laneCount (client) and lanes (both sides) back the opt-in parallel
+	// lanes in lanes.go. Both are zero/nil by default. Guarded by mu.
+	laneCount int
+	lanes     map[string]*laneGroup
 }
 
 const (
@@ -90,6 +95,9 @@ type peer struct {
 	out         chan [][]byte
 	overflow    atomic.Int32
 	failureOnce sync.Once
+	// lane is 0 for the ordinary connection and 1..MaxWSSLanes-1 for an
+	// opt-in extra lane (see lanes.go).
+	lane int
 }
 type endpoint struct {
 	id      string
@@ -356,12 +364,16 @@ func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 		b.peers[p.id] = p
 		connected, onConnected = p, b.OnPeerConnected
 	}
+	laneCount := b.laneCount
 	b.mu.Unlock()
 	if connected != nil {
 		if onConnected != nil {
 			onConnected(connected.id, connected.endpoint)
 		}
 		go b.read(connected)
+		for lane := 1; lane < laneCount; lane++ {
+			go b.dialLane(lane)
+		}
 	}
 	return []conn.ReceiveFunc{b.receive}, 0, nil
 }
@@ -462,10 +474,16 @@ func (b *Bind) read(p *peer) {
 			go b.redial()
 		}
 	}()
+	b.pump(p)
+}
+
+// pump delivers p's binary WireGuard datagrams to the shared receive queue
+// until the connection fails or the bind closes.
+func (b *Bind) pump(p *peer) {
 	for {
 		typ, data, err := p.ws.Read(context.Background())
 		if err != nil {
-			slog.Debug("WireGuard WebSocket read failed", "peer", p.id, "error", err)
+			slog.Debug("WireGuard WebSocket read failed", "peer", p.id, "lane", p.lane, "error", err)
 			return
 		}
 		if typ != websocket.MessageBinary {
@@ -606,7 +624,11 @@ func (b *Bind) CloseSession(id string) {
 	b.mu.Lock()
 	p := b.peers[id]
 	delete(b.peers, id)
+	lanes := b.closeLanesLocked(id)
 	b.mu.Unlock()
+	for _, lp := range lanes {
+		go func() { _ = lp.ws.Close(websocket.StatusPolicyViolation, "session closed") }()
+	}
 	if p != nil {
 		// Close waits for the peer's close handshake; never hold the caller
 		// (often under server locks) behind an unresponsive carrier.
@@ -624,8 +646,12 @@ func (b *Bind) Close() error {
 	b.open = false
 	peers := b.peers
 	b.peers = nil
+	lanes := b.closeLanesLocked("")
 	b.mu.Unlock()
 	for _, p := range peers {
+		_ = p.ws.Close(websocket.StatusNormalClosure, "closed")
+	}
+	for _, p := range lanes {
 		_ = p.ws.Close(websocket.StatusNormalClosure, "closed")
 	}
 	return nil
@@ -639,6 +665,9 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	b.mu.Lock()
 	p := b.peers[e.id]
+	if p != nil && b.lanes != nil {
+		p = b.pickLaneLocked(e.id, p)
+	}
 	b.mu.Unlock()
 	if p == nil {
 		return fmt.Errorf("WebSocket peer is not connected")
