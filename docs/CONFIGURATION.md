@@ -124,9 +124,8 @@ Retired v1/v2 peers use the legacy single-path data plane.
 `--transport direct-udp` remains an explicit single-path UDP connection. Set
 `transport.multipath: false` to force legacy single-path behavior.
 
-The opt-in transport keys are all off by default. `transport.promotion` and
-`transport.wss_lanes` take effect for sessions created after a configuration
-reload. `transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
+The opt-in transport keys are all off by default. `transport.promotion`
+takes effect for sessions created after a configuration reload. `transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
 `listen.tcp`, and `relay.tcp` are read at startup and need a restart. The
 matching client opt-ins are listed in
 [CLIENT.md](CLIENT.md#opt-in-transport-settings).
@@ -184,7 +183,6 @@ transport:
   metrics: false                          # opt-in transport switch/path series on the metrics listener; see LOGGING.md
   mtu_aware: false                        # opt-in MTU-aware probing with retries and mtu_state; see PROTOCOL.md
   promotion: false                        # opt-in, experimental: accept client-led promotion from WSS to a proven UDP path (path-promote-v1); see PROTOCOL.md
-  wss_lanes: 1                            # opt-in, experimental: allow up to this many parallel /v1/wg connections per client (2-4, wss-lanes-v1); see PROTOCOL.md
 authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
   exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty

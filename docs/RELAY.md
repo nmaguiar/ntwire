@@ -494,10 +494,6 @@ TCP `listen.public: ":443"` listener (they are separate sockets), which helps
 clients on networks that allow only 443 outbound:
 `udp_relay: ":443"`.
 
-Opt-in WSS lanes (`transport.wss_lanes` on the server, `--wss-lanes` on the
-client) open up to four spliced connections per client instead of one. Size
-`limits.max_conns_per_server` for that if you enable them.
-
 ### UDP receive diagnostics and recovery
 
 Native WireGuard relay traffic and ntwire UDP-relay traffic share the server's

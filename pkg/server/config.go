@@ -102,10 +102,6 @@ type TransportConfig struct {
 	// to a better proven candidate via POST /v1/transport/primary. Off
 	// keeps v3 strictly failure-driven.
 	Promotion bool `yaml:"promotion"`
-	// WSSLanes opts into parallel WSS lanes (wss-lanes-v1): clients that
-	// also ask for lanes may open up to this many /v1/wg connections per
-	// session (2-4). 0 or 1 (default) allows only the ordinary connection.
-	WSSLanes int `yaml:"wss_lanes"`
 }
 
 // MultipathEnabled reports the effective transport.multipath setting.
@@ -474,7 +470,6 @@ transport:
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
-  wss_lanes: 1                            # opt-in (experimental): allow clients that pass --wss-lanes up to this many parallel /v1/wg connections (2-4); 1 allows only the ordinary connection
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -929,9 +924,6 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	}
 	if c.Listen.WireGuard == "" {
 		c.Listen.WireGuard = ":51820"
-	}
-	if c.Transport.WSSLanes < 0 || c.Transport.WSSLanes > 4 {
-		return c, fmt.Errorf("transport.wss_lanes must be between 1 and 4, got %d", c.Transport.WSSLanes)
 	}
 	if c.Listen.WireGuardAlt != "" {
 		alt, err := portOf(c.Listen.WireGuardAlt)

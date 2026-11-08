@@ -38,13 +38,6 @@ const CapabilityPathMTUV1 = "path-mtu-v1"
 // transport.promotion); without it v3 stays strictly failure-driven.
 const CapabilityPathPromoteV1 = "path-promote-v1"
 
-// CapabilityWSSLanesV1 opts a session into parallel WSS lanes: besides the
-// ordinary GET /v1/wg connection, the client may open up to
-// AuthResponse.WSSLanes-1 extra connections with ?lane=1.. to reduce TCP
-// head-of-line stalls. It is independent of multipath and offered only when
-// enabled (client --wss-lanes > 1, server transport.wss_lanes > 1).
-const CapabilityWSSLanesV1 = "wss-lanes-v1"
-
 // CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
 // forwarding tier used by unmodified official clients.
 const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"
@@ -249,9 +242,6 @@ type AuthResponse struct {
 	// upgrade ladder wire-compatible.
 	Multipath             bool     `json:"multipath,omitempty"`
 	TransportCapabilities []string `json:"transport_capabilities,omitempty"`
-	// WSSLanes is the server's maximum lanes per session (lane 0 included),
-	// present only when CapabilityWSSLanesV1 was negotiated.
-	WSSLanes int `json:"wss_lanes,omitempty"`
 	// RequiredTransportCapabilities lists capabilities the server mandates
 	// for this session (e.g. it refuses to fall back below multipath-v3).
 	// A client that cannot honor one of these should treat the session as

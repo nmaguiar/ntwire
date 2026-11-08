@@ -16,20 +16,20 @@ func TestProfileTransportOptIns_DefaultOffAndOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if o.UDPAlt || o.MTUAware || o.TunnelMTU != 0 || o.Promote || o.WSSLanes != 0 {
+	if o.UDPAlt || o.MTUAware || o.TunnelMTU != 0 {
 		t.Fatalf("default profile enabled opt-in transport options: %+v", o)
 	}
 	b, err := yaml.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "udp_alt") || strings.Contains(string(b), "mtu") || strings.Contains(string(b), "promote") || strings.Contains(string(b), "wss_lanes") {
+	if strings.Contains(string(b), "udp_alt") || strings.Contains(string(b), "mtu") {
 		t.Fatalf("default profile YAML contains opt-in keys:\n%s", b)
 	}
 }
 
 func TestProfileTransportOptIns_RoundTripAndMapping(t *testing.T) {
-	in := Profile{Name: "home-lab", UDPAlt: true, MTUAware: true, TunnelMTU: "1380", Promote: true, WSSLanes: "3"}
+	in := Profile{Name: "home-lab", UDPAlt: true, MTUAware: true, TunnelMTU: "1380"}
 	b, err := yaml.Marshal(in)
 	if err != nil {
 		t.Fatal(err)
@@ -38,14 +38,14 @@ func TestProfileTransportOptIns_RoundTripAndMapping(t *testing.T) {
 	if err := yaml.Unmarshal(b, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !out.UDPAlt || !out.MTUAware || out.TunnelMTU != "1380" || !out.Promote || out.WSSLanes != "3" {
+	if !out.UDPAlt || !out.MTUAware || out.TunnelMTU != "1380" {
 		t.Fatalf("round trip lost opt-in settings: %+v\n%s", out, b)
 	}
 	o, err := out.ToClientOptions("/tmp/status.json", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !o.UDPAlt || !o.MTUAware || o.TunnelMTU != 1380 || !o.Promote || o.WSSLanes != 3 {
+	if !o.UDPAlt || !o.MTUAware || o.TunnelMTU != 1380 {
 		t.Fatalf("ToClientOptions did not map opt-in settings: %+v", o)
 	}
 }

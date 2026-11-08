@@ -39,7 +39,6 @@ var settingsField = map[string]string{
 	"bind":            "BindAddress",
 	"ip-version":      "IPVersion",
 	"transport":       "Transport",
-	"wss-lanes":       "WSSLanes",
 	"promote":         "Promote",
 	"tunnel-mtu":      "TunnelMTU",
 	"mtu-aware":       "MTUAware",

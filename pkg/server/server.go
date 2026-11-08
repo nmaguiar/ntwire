@@ -23,7 +23,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -481,37 +480,9 @@ func (s *Server) transportCapabilitiesAvailable() []string {
 		if s.Config.Transport.Promotion {
 			caps = append(caps, protocol.CapabilityPathPromoteV1)
 		}
-		return s.withLaneCapability(caps)
+		return caps
 	}
-	return s.withLaneCapability(nil)
-}
-
-// withLaneCapability adds wss-lanes-v1 when transport.wss_lanes enables it.
-// Lanes help WSS-only sessions too, so this does not depend on multipath.
-func (s *Server) withLaneCapability(caps []string) []string {
-	if s.Config.Transport.WSSLanes > 1 {
-		return append(caps, protocol.CapabilityWSSLanesV1)
-	}
-	return caps
-}
-
-// negotiatedLanes returns the session's lane allowance for a negotiated
-// capability set.
-func (s *Server) negotiatedLanes(negotiated []string) int {
-	if !protocol.HasCapability(negotiated, protocol.CapabilityWSSLanesV1) || s.Config.Transport.WSSLanes <= 1 {
-		return 0
-	}
-	return min(s.Config.Transport.WSSLanes, wstransport.MaxWSSLanes)
-}
-
-// responseTransportCapabilities is transportCapabilities plus wss-lanes-v1
-// when the session was granted lanes.
-func responseTransportCapabilities(multipath, pathMTU, promote bool, lanes int) []string {
-	caps := transportCapabilities(multipath, pathMTU, promote)
-	if lanes > 1 {
-		caps = append(caps, protocol.CapabilityWSSLanesV1)
-	}
-	return caps
+	return nil
 }
 
 // multipathAlternateAvailable prevents v3 from adding health/control traffic
@@ -767,12 +738,11 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	multipath := multipathV3
 	pathMTU = multipath && pathMTU
 	promote := multipath && protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathPromoteV1)
-	lanes := s.negotiatedLanes(negotiatedTransport)
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
-		Multipath: multipath, PathMTU: pathMTU, Promote: promote, WSSLanes: lanes, ClientInfo: req.Info,
+		Multipath: multipath, PathMTU: pathMTU, Promote: promote, ClientInfo: req.Info,
 	})
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
@@ -780,7 +750,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
 	udpEndpoint := s.advertisedUDPEndpoint()
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: udpEndpoint, UDPAlt: s.alternateUDPEndpoint(udpEndpoint), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: responseTransportCapabilities(multipath, pathMTU, promote, lanes), WSSLanes: lanes})
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: udpEndpoint, UDPAlt: s.alternateUDPEndpoint(udpEndpoint), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU, promote)})
 	return true
 }
 
@@ -887,18 +857,6 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	// renewal (which mints a new session ID) so the fallback connection the
 	// client opened once at Connect time keeps working after renewal instead
 	// of being torn down (see dropSession / renew).
-	if raw := r.URL.Query().Get("lane"); raw != "" {
-		lane, err := strconv.Atoi(raw)
-		if err != nil || lane < 1 || lane >= v.WSSLanes {
-			http.Error(w, "lane not allowed for this session", http.StatusBadRequest)
-			return
-		}
-		s.log.Debug("WebSocket lane connected", "session", v.ID, "lane", lane)
-		if err := data.ws.WebSocket.ServeLane(w, r, v.WireGuardPublicKey, lane); err != nil {
-			s.log.Warn("WebSocket lane rejected", "error", err)
-		}
-		return
-	}
 	s.log.Debug("WebSocket fallback connected", "session", v.ID, "wireguard_public_key", v.WireGuardPublicKey)
 	if err := data.ws.WebSocket.ServeHTTP(w, r, v.WireGuardPublicKey); err != nil {
 		s.log.Warn("WebSocket fallback rejected", "error", err)
@@ -1077,7 +1035,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
-		Multipath: old.Multipath, PathMTU: old.PathMTU, Promote: old.Promote, WSSLanes: old.WSSLanes, ClientInfo: body.Info,
+		Multipath: old.Multipath, PathMTU: old.PathMTU, Promote: old.Promote, ClientInfo: body.Info,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
@@ -1086,7 +1044,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
 	renewUDP := s.advertisedUDPEndpoint()
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: renewUDP, UDPAlt: s.alternateUDPEndpoint(renewUDP), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: responseTransportCapabilities(n.Multipath, n.PathMTU, n.Promote, n.WSSLanes), WSSLanes: n.WSSLanes})
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: renewUDP, UDPAlt: s.alternateUDPEndpoint(renewUDP), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU, n.Promote)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
@@ -1284,8 +1242,8 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 // never sees, so there is nothing here for it to hot-reload. The opt-in
 // listen.wireguard_alt and listen.tcp (part of Listen), relay.tcp, and
 // transport.metrics/transport.mtu_aware (read when the data plane starts)
-// are likewise restart-only; transport.promotion and transport.wss_lanes
-// apply to sessions created after the reload.
+// are likewise restart-only; transport.promotion applies to sessions
+// created after the reload.
 func (s *Server) Reload(c Config) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()

@@ -100,7 +100,6 @@ transport:
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
-  wss_lanes: 1                            # opt-in (experimental): allow clients that pass --wss-lanes up to this many parallel /v1/wg connections (2-4); 1 allows only the ordinary connection
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -768,9 +767,6 @@ audit:
         },
         "promotion": {
           "type": "boolean"
-        },
-        "wss_lanes": {
-          "type": "integer"
         }
       },
       "type": "object"

@@ -26,10 +26,7 @@ type Session struct {
 	PathMTU bool
 	// Promote is true only when this session negotiated
 	// CapabilityPathPromoteV1.
-	Promote bool
-	// WSSLanes is the number of /v1/wg lanes (lane 0 included) this session
-	// may open; 0 or 1 means only the ordinary connection.
-	WSSLanes   int
+	Promote    bool
 	ClientInfo protocol.ClientInfo
 	Expires    time.Time
 }
@@ -64,7 +61,6 @@ type CreateParams struct {
 	Multipath                    bool
 	PathMTU                      bool
 	Promote                      bool
-	WSSLanes                     int
 	ClientInfo                   protocol.ClientInfo
 	TTL                          time.Duration
 }
@@ -80,7 +76,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, WSSLanes: p.WSSLanes, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
 	return v

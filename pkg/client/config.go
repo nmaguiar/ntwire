@@ -87,8 +87,6 @@ type Settings struct {
 	TunnelMTU string `yaml:"tunnel_mtu"`
 	// Promote is the persisted opt-in default for --promote.
 	Promote bool `yaml:"promote"`
-	// WSSLanes is the persisted opt-in default for --wss-lanes.
-	WSSLanes string `yaml:"wss_lanes"`
 }
 
 func DefaultConfigFile() string {
@@ -161,7 +159,6 @@ var settingsUIFields = []struct {
 	{Field: "BindAddress", YAMLKey: "bind_address"},
 	{Field: "IPVersion", YAMLKey: "ip_version"},
 	{Field: "Transport", YAMLKey: "transport"},
-	{Field: "WSSLanes", YAMLKey: "wss_lanes"},
 	{Field: "Promote", YAMLKey: "promote", Bool: true},
 	{Field: "TunnelMTU", YAMLKey: "tunnel_mtu"},
 	{Field: "MTUAware", YAMLKey: "mtu_aware", Bool: true},

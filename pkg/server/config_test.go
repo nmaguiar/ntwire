@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
 func TestSampleConfigIsCompleteAndLoadable(t *testing.T) {
@@ -759,31 +757,5 @@ func TestAlternateUDPEndpoint(t *testing.T) {
 		if got := s.alternateUDPEndpoint(tt.udp); got != tt.want {
 			t.Errorf("alternateUDPEndpoint(alt=%q, udp=%q) = %q, want %q", tt.alt, tt.udp, got, tt.want)
 		}
-	}
-}
-
-func TestParseConfig_WSSLanes(t *testing.T) {
-	const auth = "auth:\n  authorized_keys_dir: keys\n"
-	for _, tt := range []struct {
-		yaml    string
-		wantErr bool
-	}{{"", false}, {"transport:\n  wss_lanes: 4\n", false}, {"transport:\n  wss_lanes: 5\n", true}, {"transport:\n  wss_lanes: -1\n", true}} {
-		if _, err := ParseConfig([]byte(auth+tt.yaml), t.TempDir()); (err != nil) != tt.wantErr {
-			t.Errorf("ParseConfig(%q) error = %v, wantErr %v", tt.yaml, err, tt.wantErr)
-		}
-	}
-}
-
-func TestTransportCapabilitiesAvailable_LanesOptIn(t *testing.T) {
-	s := New(Config{}, nil)
-	if caps := s.transportCapabilitiesAvailable(); protocol.HasCapability(caps, protocol.CapabilityWSSLanesV1) {
-		t.Fatalf("default server offers lanes: %v", caps)
-	}
-	s.Config.Transport.WSSLanes = 3
-	if caps := s.transportCapabilitiesAvailable(); !protocol.HasCapability(caps, protocol.CapabilityWSSLanesV1) {
-		t.Fatalf("wss_lanes 3 does not offer lanes: %v", caps)
-	}
-	if got := s.negotiatedLanes([]string{protocol.CapabilityWSSLanesV1}); got != 3 {
-		t.Fatalf("negotiatedLanes = %d, want 3", got)
 	}
 }
