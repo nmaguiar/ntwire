@@ -143,10 +143,10 @@ func TestValidateAuthResponseCapabilities(t *testing.T) {
 	if got, want := clientCapabilities(), []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("clientCapabilities() = %v, want v3-only %v", got, want)
 	}
-	if err := validateAuthResponseCapabilities(protocol.AuthResponse{TransportCapabilities: []string{"future-transport"}}); err != nil {
+	if err := validateAuthResponseCapabilities(protocol.AuthResponse{TransportCapabilities: []string{"future-transport"}}, Options{}); err != nil {
 		t.Fatalf("unknown optional transport capability should be ignored: %v", err)
 	}
-	if err := validateAuthResponseCapabilities(protocol.AuthResponse{RequiredTransportCapabilities: []string{"future-transport"}}); err == nil {
+	if err := validateAuthResponseCapabilities(protocol.AuthResponse{RequiredTransportCapabilities: []string{"future-transport"}}, Options{}); err == nil {
 		t.Fatal("unknown required transport capability should fail")
 	}
 }

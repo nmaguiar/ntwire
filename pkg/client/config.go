@@ -85,6 +85,8 @@ type Settings struct {
 	MTUAware bool `yaml:"mtu_aware"`
 	// TunnelMTU is the persisted opt-in default for --tunnel-mtu.
 	TunnelMTU string `yaml:"tunnel_mtu"`
+	// Promote is the persisted opt-in default for --promote.
+	Promote bool `yaml:"promote"`
 }
 
 func DefaultConfigFile() string {
@@ -157,6 +159,7 @@ var settingsUIFields = []struct {
 	{Field: "BindAddress", YAMLKey: "bind_address"},
 	{Field: "IPVersion", YAMLKey: "ip_version"},
 	{Field: "Transport", YAMLKey: "transport"},
+	{Field: "Promote", YAMLKey: "promote", Bool: true},
 	{Field: "TunnelMTU", YAMLKey: "tunnel_mtu"},
 	{Field: "MTUAware", YAMLKey: "mtu_aware", Bool: true},
 	{Field: "UDPAlt", YAMLKey: "udp_alt", Bool: true},

@@ -39,6 +39,7 @@ var settingsField = map[string]string{
 	"bind":            "BindAddress",
 	"ip-version":      "IPVersion",
 	"transport":       "Transport",
+	"promote":         "Promote",
 	"tunnel-mtu":      "TunnelMTU",
 	"mtu-aware":       "MTUAware",
 	"udp-alt":         "UDPAlt",

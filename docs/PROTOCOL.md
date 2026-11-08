@@ -18,6 +18,7 @@ The reference server serves HTTPS.
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
 | `POST /v1/transport/direct` | Bearer token | Registers a reflected direct-UDP client candidate for a negotiated multipath session |
+| `POST /v1/transport/primary` | Bearer token | Opt-in (`path-promote-v1`): commits a healthy candidate as the session's primary carrier; `404` unless negotiated |
 | `GET /v1/portal` | Bearer token | Rendered portal Markdown/HTML and authorized targets |
 | `POST /v1/portal/action` | Bearer token | Dispatches and resolves an action against authorized targets |
 | `GET /proxy.pac` | None | Proxy Auto-Configuration (PAC) script for the default SOCKS egress tunnel (Desktop / localhost) |
@@ -655,6 +656,47 @@ registering the candidate for that session's WireGuard public key. The server
 and client probe it before either scheduler selects it; WSS stays active as a
 candidate throughout. The endpoint returns `409 Conflict` when multipath was
 not negotiated.
+
+### Opt-in client-led promotion (`path-promote-v1`, experimental)
+
+v3 never leaves a healthy incumbent on its own, so a session that bootstraps
+on WSS normally stays on WSS while it is healthy. `path-promote-v1` is an
+optional transport capability that changes this, and only for sessions where
+**both** sides opt in: a client offers it only with `--promote`, and a server
+returns it in `transport_capabilities` only when `transport.promotion: true`.
+Without it, behavior is exactly the sticky, failure-driven v3 described above.
+
+Only the client decides, so the two directions cannot drift apart:
+
+1. Once per probe interval the client looks for a non-WSS candidate that is
+   healthy, has passed its last 15 consecutive probes, is not MTU-`limited`
+   (and is MTU-`ok` when the client is MTU-aware), and is clearly better than
+   the healthy incumbent: a higher path rank (`direct-udp` > `udp-relay` >
+   `wss`), or the same rank with an RTT at least 25% and 15 ms lower. Nothing
+   is promoted while a transport is forced, or within 60 seconds of the last
+   non-initial switch.
+2. The client sends:
+
+   ```json
+   {"path": "direct-udp"}
+   ```
+
+   to `POST /v1/transport/primary` with the session bearer token.
+3. The server accepts only a path registered for that session's own WireGuard
+   peer that is also healthy by the **server's** own probes, is not
+   MTU-`limited`, and is not overridden by a healthy `transport.force`. It then
+   commits it as the peer's primary and returns `204 No Content`. Otherwise it
+   returns `409 Conflict` (unknown, unhealthy, limited, or forced), `400` for
+   an invalid path, `429` for more than one attempt per session in 10 seconds,
+   and `404` when promotion is not enabled or not negotiated.
+4. Only after a `204` does the client commit the same primary locally. Both
+   sides record a `promoted` switch event.
+
+Afterwards selection is sticky and failure-driven again; demotion still
+happens only on carrier failure or missed probes. If a promoted path fails
+within 5 minutes, or a promotion is rejected, the client doubles the required
+qualifying probes (up to about 10 minutes) before trying again. A reconnect
+starts fresh on WSS.
 
 ### Peer ownership and relay PAC metadata
 

@@ -698,6 +698,34 @@ func (c *Connection) tryDirectMultipathCandidate(serverAddr string) bool {
 	return false
 }
 
+// postTransportPrimary is the client half of opt-in path-promote-v1: it asks
+// the server to commit path as this session's primary. Only a 204 counts as
+// acceptance; the caller commits locally only then.
+func (c *Connection) postTransportPrimary(path string) error {
+	c.mu.Lock()
+	base, token := c.base, c.token
+	c.mu.Unlock()
+	b, _ := json.Marshal(protocol.TransportPrimaryRequest{Path: path})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/transport/primary", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("transport promotion rejected: %s", resp.Status)
+	}
+	c.log.Info("transport promoted", "server", c.DisplayName(), "path", path)
+	return nil
+}
+
 func (c *Connection) postDirectTransport(address string) error {
 	c.mu.Lock()
 	base, token := c.base, c.token

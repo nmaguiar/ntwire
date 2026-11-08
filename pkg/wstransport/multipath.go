@@ -48,6 +48,10 @@ type MultipathBind struct {
 	pathMTU bool
 	// mtu is the opt-in MTU-aware policy; nil keeps the diagnostic ladder.
 	mtu *mtuPolicy
+	// promo is the opt-in path-promote-v1 policy; nil (the default) keeps
+	// selection strictly failure-driven.
+	promo             atomic.Pointer[promoter]
+	promoteQualifying int
 
 	// dupLimiter bounds Select's reactive WireGuard type-4 duplication.
 	dupLimiter *byteRateLimiter
@@ -142,9 +146,10 @@ func NewMultipathBind(base conn.Bind, id string, pathMTU bool, opts MultipathOpt
 		base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second),
 		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
 		probes: make(map[string]outstandingProbe), mtuProbes: make(map[string]outstandingMTUProbe), mtuDone: make(map[string]bool), stop: make(chan struct{}),
-		pathMTU:    pathMTU,
-		mtu:        newMTUPolicy(opts),
-		dupLimiter: newByteRateLimiter(opts.DuplicateRateBytesPerSec),
+		pathMTU:           pathMTU,
+		mtu:               newMTUPolicy(opts),
+		promoteQualifying: opts.PromotionQualifyingProbes,
+		dupLimiter:        newByteRateLimiter(opts.DuplicateRateBytesPerSec),
 	}
 	go m.probeLoop(m.stop)
 	return m
@@ -464,6 +469,9 @@ func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 		select {
 		case <-ticker.C:
 			m.probeAll()
+			if p := m.promo.Load(); p != nil {
+				p.evaluate(m.scheduler, time.Now())
+			}
 		case <-stop:
 			return
 		}
@@ -712,6 +720,9 @@ type candidate struct {
 	// failedBy records what last made this candidate unhealthy, for the
 	// diagnostic switch log only; it never influences selection.
 	failedBy SwitchReason
+	// streak counts consecutive successful probes. It is read only by the
+	// opt-in promotion policy (promotionCandidate).
+	streak int
 }
 
 // Scheduler implements v3's sticky, failure-driven selection policy. Probe
@@ -809,6 +820,7 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		p.used++
 	}
 	if !ok {
+		p.streak = 0
 		p.misses++
 		if p.misses >= 3 {
 			if p.Healthy {
@@ -821,6 +833,7 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		return
 	}
 	p.misses = 0
+	p.streak++
 	p.Healthy, p.LastSuccess = true, now
 	if rtt > 0 {
 		if p.RTT == 0 {
@@ -849,6 +862,7 @@ func (s *Scheduler) CarrierFailure(name string) {
 	}
 	p.Healthy = false
 	p.misses = 3
+	p.streak = 0
 }
 
 // ReserveControlSend bounds receive-triggered probe and MTU replies to one

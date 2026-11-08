@@ -11,6 +11,7 @@ import (
 func FuzzAuthRequestDecoding(f *testing.F) {
 	f.Add([]byte(`{"version":1,"public_key":"x","timestamp":"2020-01-01T00:00:00Z"}`))
 	f.Add([]byte(`null`))
+	f.Add([]byte(`{"version":1,"public_key":"x","transport_capabilities":["multipath-v3","path-mtu-v1","path-promote-v1"]}`))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		var request AuthRequest
 		if err := json.Unmarshal(input, &request); err != nil {

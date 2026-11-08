@@ -57,6 +57,8 @@ type Profile struct {
 	MTUAware bool `yaml:"mtu_aware,omitempty"`
 	// TunnelMTU is the opt-in --tunnel-mtu setting; see client.Options.TunnelMTU.
 	TunnelMTU string `yaml:"tunnel_mtu,omitempty"`
+	// Promote is the opt-in --promote setting; see client.Options.Promote.
+	Promote bool `yaml:"promote,omitempty"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

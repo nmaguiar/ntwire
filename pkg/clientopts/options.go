@@ -229,6 +229,13 @@ var registry = []Option{
 		Help: "Leave empty for 1420. Lower it (for example 1380) on links with extra encapsulation such as PPPoE or another VPN, so full-size tunnel packets fit. With MTU-aware path selection, the required probe size follows this value.",
 	},
 	{
+		Name: "promote", Kind: KindBool, Usage: "move a healthy session from WebSocket to a proven faster UDP path, coordinated with the server",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: boolDefault(func(s client.Settings) bool { return s.Promote }),
+		Label:   "Promote to faster transport (experimental)", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,
+		Help: "Off by default. Normally a session that starts on the WebSocket carrier stays there while it is healthy, even if a UDP path becomes available. With this on, and with transport.promotion enabled on the server, ntwire moves both directions to a UDP path once it has been healthy for about 15 seconds and clearly better, at most once a minute, backing off if a promoted path fails soon after. Has no effect unless the server enables it.",
+	},
+	{
 		Name: "websocket", Kind: KindBool, Usage: "use the WebSocket WireGuard transport",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Force WebSocket transport", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,

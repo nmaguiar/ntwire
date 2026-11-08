@@ -1,6 +1,10 @@
 package client
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/nmaguiar/ntwire/pkg/protocol"
+)
 
 func TestParseTunnelMTU(t *testing.T) {
 	tests := []struct {
@@ -37,5 +41,25 @@ func TestMultipathOptionsFor_DefaultsOff(t *testing.T) {
 func TestHTTPClient_RejectsTunnelMTUOutOfRange(t *testing.T) {
 	if _, err := httpClient("https://example.test", Options{TunnelMTU: 9000}); err == nil {
 		t.Fatal("httpClient accepted TunnelMTU 9000")
+	}
+}
+
+func TestTransportCapabilitiesFor_PromoteOnlyWhenOptedIn(t *testing.T) {
+	for _, c := range transportCapabilitiesFor(Options{}) {
+		if c == protocol.CapabilityPathPromoteV1 {
+			t.Fatal("default options offered path-promote-v1")
+		}
+	}
+	found := false
+	for _, c := range transportCapabilitiesFor(Options{Promote: true}) {
+		found = found || c == protocol.CapabilityPathPromoteV1
+	}
+	if !found {
+		t.Fatal("Promote did not offer path-promote-v1")
+	}
+	// A server requiring promotion is satisfiable only by an opted-in client.
+	r := protocol.AuthResponse{RequiredTransportCapabilities: []string{protocol.CapabilityPathPromoteV1}}
+	if validateAuthResponseCapabilities(r, Options{}) == nil || validateAuthResponseCapabilities(r, Options{Promote: true}) != nil {
+		t.Fatal("required path-promote-v1 validation does not follow Options.Promote")
 	}
 }

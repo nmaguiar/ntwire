@@ -19,6 +19,10 @@ type MultipathOptions struct {
 	// TunnelMTU is this side's WireGuard tunnel MTU used to derive the
 	// required probe size. Zero means DefaultTunnelMTU.
 	TunnelMTU int
+	// PromotionQualifyingProbes overrides how many consecutive healthy
+	// probes a candidate needs before opt-in promotion (tests only). Zero
+	// keeps the production default.
+	PromotionQualifyingProbes int
 }
 
 const defaultDuplicateRateBytesPerSec = 262144 // 256 KB/s

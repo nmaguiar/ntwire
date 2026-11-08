@@ -31,6 +31,13 @@ const CapabilityMultipathV3 = "multipath-v3"
 // diagnostic datagrams.
 const CapabilityPathMTUV1 = "path-mtu-v1"
 
+// CapabilityPathPromoteV1 opts a v3 peer into client-led promotion: the
+// client may move both directions of a session from a healthy incumbent to a
+// better proven candidate by calling POST /v1/transport/primary. Both sides
+// offer it only when explicitly enabled (client --promote, server
+// transport.promotion); without it v3 stays strictly failure-driven.
+const CapabilityPathPromoteV1 = "path-promote-v1"
+
 // CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
 // forwarding tier used by unmodified official clients.
 const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"
@@ -354,6 +361,14 @@ type PunchRequest struct {
 // succeed before its scheduler can select it.
 type TransportPathRequest struct {
 	Address string `json:"address"`
+}
+
+// TransportPrimaryRequest asks the server to commit Path ("direct-udp",
+// "udp-relay", or "wss") as this session's primary multipath carrier. It is
+// accepted only for sessions that negotiated CapabilityPathPromoteV1 and only
+// when that candidate is currently healthy on the server too.
+type TransportPrimaryRequest struct {
+	Path string `json:"path"`
 }
 
 // PunchResponse answers a PunchRequest. ServerAddr is the server's own most

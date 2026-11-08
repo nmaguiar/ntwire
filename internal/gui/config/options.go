@@ -93,6 +93,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		Transport:        p.Transport,
 		UDPAlt:           p.UDPAlt,
 		MTUAware:         p.MTUAware,
+		Promote:          p.Promote,
 		TunnelMTU:        tunnelMTU,
 		SettingsURL:      settingsURL,
 	}, nil

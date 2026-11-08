@@ -35,7 +35,8 @@ func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
 		old.ServerPublicKey == r.ServerPublicKey && old.UDP == r.UDP && old.WebSocket == r.WebSocket &&
 		old.Multipath == r.Multipath &&
 		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityMultipathV3) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3) &&
-		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathMTUV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
+		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathMTUV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1) &&
+		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathPromoteV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathPromoteV1)
 }
 
 // applyReconnectedSession is called with networkMu held. Carrier setup steps
@@ -208,6 +209,9 @@ func (c *Connection) openReconnectedTunnel(grant protocol.Tunnel, old *localTunn
 }
 
 func (c *Connection) startTransportWorkers(n *connectionNetwork, stop chan struct{}) {
+	if n.multipath != nil && c.options.Promote && hasTransportCapability(n.response.TransportCapabilities, protocol.CapabilityPathPromoteV1) {
+		n.multipath.EnablePromotion(c.postTransportPrimary)
+	}
 	if n.multipath != nil && shouldBootstrapDirectMultipath(n.multipathV3, n.udpEndpoint, c.options.UseWebSocket) {
 		go func() {
 			c.transportMu.RLock()

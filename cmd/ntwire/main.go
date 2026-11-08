@@ -820,6 +820,7 @@ func connect(args []string, u *ui.UI) {
 	transport := fs.Str("transport")
 	udpAlt := fs.BoolVal("udp-alt")
 	mtuAware := fs.BoolVal("mtu-aware")
+	promote := fs.BoolVal("promote")
 	tunnelMTU, mtuErr := client.ParseTunnelMTU(fs.Str("tunnel-mtu"))
 	if mtuErr != nil {
 		u.Errorf("%v", mtuErr)
@@ -860,7 +861,7 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
-		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU,
+		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

@@ -164,6 +164,13 @@ type Options struct {
 	// TunnelMTU overrides the WireGuard netstack MTU (1280-1420). Zero keeps
 	// 1420. Lower it for links with extra encapsulation (PPPoE, nested VPNs).
 	TunnelMTU int
+	// Promote opts into client-led promotion (path-promote-v1, experimental).
+	// When the server also enables transport.promotion, a healthy session
+	// moves from its incumbent (normally the WSS bootstrap) to a candidate
+	// that has stayed healthy and clearly better for a qualification period,
+	// coordinated with the server so both directions switch together.
+	// Default false keeps selection strictly failure-driven.
+	Promote bool
 
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
@@ -757,8 +764,18 @@ func clientCapabilities() []string {
 
 func clientTransportCapabilities() []string { return clientCapabilities() }
 
-func validateAuthResponseCapabilities(r protocol.AuthResponse) error {
-	if err := protocol.ValidateRequiredCapabilities(clientTransportCapabilities(), r.RequiredTransportCapabilities); err != nil {
+// transportCapabilitiesFor is what one connection offers: the base set plus
+// any opt-in transport capability its options enable.
+func transportCapabilitiesFor(o Options) []string {
+	caps := clientTransportCapabilities()
+	if o.Promote {
+		caps = append(caps, protocol.CapabilityPathPromoteV1)
+	}
+	return caps
+}
+
+func validateAuthResponseCapabilities(r protocol.AuthResponse, o Options) error {
+	if err := protocol.ValidateRequiredCapabilities(transportCapabilitiesFor(o), r.RequiredTransportCapabilities); err != nil {
 		return fmt.Errorf("server requires an unsupported transport capability: %w", err)
 	}
 	return nil
@@ -863,7 +880,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	r := protocol.OIDCAuthRequest{
 		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
-		TransportCapabilities: clientTransportCapabilities(),
+		TransportCapabilities: transportCapabilitiesFor(o),
 		QueryOnly:             o.QueryOnly,
 	}
 	b, _ := json.Marshal(r)
@@ -879,7 +896,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	if err := validateAuthResponseCapabilities(out); err != nil {
+	if err := validateAuthResponseCapabilities(out, o); err != nil {
 		return protocol.AuthResponse{}, err
 	}
 	return out, nil
@@ -910,7 +927,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: clientTransportCapabilities(), QueryOnly: o.QueryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: transportCapabilitiesFor(o), QueryOnly: o.QueryOnly}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -932,7 +949,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	if err := validateAuthResponseCapabilities(out); err != nil {
+	if err := validateAuthResponseCapabilities(out, o); err != nil {
 		return protocol.AuthResponse{}, err
 	}
 	return out, nil
@@ -1327,6 +1344,9 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 type MultipathOptions struct {
 	// DuplicateRateBytesPerSec bounds reactive WireGuard-only duplication.
 	DuplicateRateBytesPerSec int
+	// PromotionQualifyingProbes shortens opt-in promotion's qualification
+	// period (tests only). Zero keeps the production default.
+	PromotionQualifyingProbes int
 }
 
 // MinTunnelMTU is the smallest accepted Options.TunnelMTU (the IPv6 minimum).
@@ -1351,7 +1371,8 @@ func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
 		return wstransport.MultipathOptions{}
 	}
 	return wstransport.MultipathOptions{
-		DuplicateRateBytesPerSec: o.DuplicateRateBytesPerSec,
+		DuplicateRateBytesPerSec:  o.DuplicateRateBytesPerSec,
+		PromotionQualifyingProbes: o.PromotionQualifyingProbes,
 	}
 }
 
