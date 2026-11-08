@@ -597,6 +597,18 @@ any target from 1200 to 1500 bytes. An MTU-aware side:
 
 Re-registering a candidate with a new endpoint restarts its MTU-aware ladder.
 
+A client that lowered its tunnel MTU reports it in the optional, unsigned
+`tunnel_mtu` field of its `/v1/auth` or `/v1/auth/oidc` request (omitted when
+the default 1420 is used). An MTU-aware server then derives that peer's
+required size from the smaller of the two tunnel MTUs (for example 1372 for
+1340), so the server agrees with the client about whether a path is `ok`.
+Values outside 1280 up to the server's own tunnel MTU are ignored. The field
+can only lower the requirement for the caller's own peer, which is why it is
+not part of the signed payload. The server's netstack keeps its 1420 MTU:
+TCP through the tunnel follows the client's smaller MSS, but a non-TCP
+datagram from a target that is larger than the client's tunnel MTU can still
+be dropped on such a path.
+
 Frame `11` is reserved for the retired receive-triggered payload-acknowledgement
 experiment and current peers neither emit nor accept it. Direct and relay E2E
 testing showed that replying to real payload from inside the receive path could

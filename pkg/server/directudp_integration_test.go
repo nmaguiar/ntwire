@@ -383,3 +383,31 @@ func TestDirectMultipath_MTUAwareBothEndsReportOK(t *testing.T) {
 	}
 	t.Fatalf("mtu_state never reached ok on both ends; client paths: %+v", conn.Status().Paths)
 }
+
+// TestDirectMultipath_ServerHonorsClientTunnelMTU: a client that lowered its
+// tunnel MTU reports it, so an MTU-aware server probes for the client's
+// required size and the server-side path state follows it.
+func TestDirectMultipath_ServerHonorsClientTunnelMTU(t *testing.T) {
+	s, keyPath, _ := newTestServer(t, nil)
+	port := freeUDPPort(t)
+	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Transport.MTUAware = true
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+		Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"), MTUAware: true, TunnelMTU: 1340,
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+	if got := s.data.multipath.PeerRequiredMTU(conn.Stack.PublicKey()); got != 1372 {
+		t.Fatalf("server required probe size = %d, want 1372 for a 1340 client tunnel", got)
+	}
+}

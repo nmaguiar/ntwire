@@ -882,6 +882,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
 		TransportCapabilities: transportCapabilitiesFor(o),
 		QueryOnly:             o.QueryOnly,
+		TunnelMTU:             o.TunnelMTU,
 	}
 	b, _ := json.Marshal(r)
 	resp, err := h.Post(base+"/v1/auth/oidc", "application/json", bytes.NewReader(b))
@@ -927,7 +928,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: transportCapabilitiesFor(o), QueryOnly: o.QueryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: transportCapabilitiesFor(o), QueryOnly: o.QueryOnly, TunnelMTU: o.TunnelMTU}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err

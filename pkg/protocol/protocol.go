@@ -131,6 +131,13 @@ type AuthRequest struct {
 	// max_sessions_per_key. Not part of the signed payload since it only
 	// ever narrows what the server does for the caller's own request.
 	QueryOnly bool `json:"query_only,omitempty"`
+	// TunnelMTU is the client's WireGuard tunnel MTU when it lowered it
+	// (--tunnel-mtu, 1280-1420). An MTU-aware server then probes this
+	// peer's UDP paths for the size the client's packets need instead of
+	// its own 1420 default. Unsigned for the same reason as
+	// TransportCapabilities: it only affects probing of the caller's own
+	// peer. Omitted (0) means the default.
+	TunnelMTU int `json:"tunnel_mtu,omitempty"`
 }
 
 // OIDCAuthRequest authenticates with an ID token instead of an SSH signature.
@@ -147,6 +154,8 @@ type OIDCAuthRequest struct {
 	RequiredTransportCapabilities []string   `json:"required_transport_capabilities,omitempty"`
 	// QueryOnly: see AuthRequest.QueryOnly.
 	QueryOnly bool `json:"query_only,omitempty"`
+	// TunnelMTU: see AuthRequest.TunnelMTU.
+	TunnelMTU int `json:"tunnel_mtu,omitempty"`
 }
 
 // OIDCIssuerInfo advertises an issuer to clients so they can run the login

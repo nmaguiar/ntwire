@@ -572,7 +572,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -628,7 +628,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -647,6 +647,8 @@ type sessionRequest struct {
 	TransportCapabilities []string
 	// QueryOnly: see protocol.AuthRequest.QueryOnly.
 	QueryOnly bool
+	// TunnelMTU: see protocol.AuthRequest.TunnelMTU.
+	TunnelMTU int
 }
 
 // establishSession is the common tail shared by SSH and OIDC authentication:
@@ -744,6 +746,11 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
 		Multipath: multipath, PathMTU: pathMTU, Promote: promote, ClientInfo: req.Info,
 	})
+	if multipath && pathMTU && s.data != nil && s.data.multipath != nil {
+		// Out-of-range values are ignored by SetPeerTunnelMTU, so a client
+		// can only lower its own peer's required probe size.
+		s.data.multipath.SetPeerTunnelMTU(req.WireGuardPublicKey, req.TunnelMTU)
+	}
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("authentication_success", session.Method)

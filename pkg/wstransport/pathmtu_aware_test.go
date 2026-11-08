@@ -210,3 +210,30 @@ func TestServerMultipathMTUAware_LimitedAfterRetries(t *testing.T) {
 		}
 	}
 }
+
+func TestServerMultipath_PeerTunnelMTUOverridesRequiredSize(t *testing.T) {
+	m := NewServerMultipathBind(&fakeBind{}, MultipathOptions{MTUAware: true})
+	defer m.Close()
+	m.SetPeerTunnelMTU("low", 1340)
+	m.SetPeerTunnelMTU("bogus-high", 9000)
+	m.SetPeerTunnelMTU("bogus-low", 500)
+	m.mu.RLock()
+	low, high, small := m.peers["low"], m.peers["bogus-high"], m.peers["bogus-low"]
+	m.mu.RUnlock()
+	if got := m.mtuFor(low).required; got != 1372 {
+		t.Fatalf("required for a 1340 tunnel = %d, want 1372", got)
+	}
+	for _, p := range []*serverMultipathPeer{high, small} {
+		if got := m.mtuFor(p).required; got != 1452 {
+			t.Fatalf("out-of-range client MTU changed required size to %d, want 1452", got)
+		}
+	}
+	off := NewServerMultipathBind(&fakeBind{}, MultipathOptions{})
+	defer off.Close()
+	off.SetPeerTunnelMTU("low", 1340)
+	off.mu.RLock()
+	defer off.mu.RUnlock()
+	if len(off.peers) != 0 {
+		t.Fatal("SetPeerTunnelMTU created state on a bind that is not MTU-aware")
+	}
+}

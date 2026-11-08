@@ -68,6 +68,10 @@ type serverMultipathPeer struct {
 	mtuDone   map[string]bool
 	pathMTU   bool
 
+	// mtu overrides the bind-wide MTU-aware policy for a client that
+	// reported a lower tunnel MTU (see SetPeerTunnelMTU). nil uses m.mtu.
+	mtu *mtuPolicy
+
 	// dupLimiter is this peer's counterpart of MultipathBind.dupLimiter.
 	// Reactive type-4 duplication has a strict per-peer byte budget.
 	dupLimiter *byteRateLimiter
@@ -225,6 +229,59 @@ func (m *ServerMultipathBind) SetSwitchObserver(fn func(SwitchEvent)) {
 	for _, p := range peers {
 		p.scheduler.SetSwitchObserver(fn)
 	}
+}
+
+// SetPeerTunnelMTU records the tunnel MTU a client reported at
+// authentication, so MTU-aware probing of that peer's paths uses the size
+// the client's packets actually need. It is a no-op unless the bind is
+// MTU-aware, and values outside 1280..this side's tunnel MTU are ignored, so
+// a client can only lower its own requirement.
+func (m *ServerMultipathBind) SetPeerTunnelMTU(peerID string, tunnelMTU int) {
+	if m.mtu == nil {
+		return
+	}
+	own := m.opts.TunnelMTU
+	if own <= 0 {
+		own = DefaultTunnelMTU
+	}
+	var policy *mtuPolicy
+	if tunnelMTU >= 1280 && tunnelMTU < own {
+		policy = newMTUPolicy(MultipathOptions{MTUAware: true, TunnelMTU: tunnelMTU})
+	}
+	m.mu.Lock()
+	p := m.peer(peerID)
+	m.mu.Unlock()
+	p.mu.Lock()
+	p.mtu = policy
+	p.mu.Unlock()
+}
+
+// PeerRequiredMTU returns the UDP payload size MTU-aware probing requires
+// for peerID, or 0 when MTU awareness is off or the peer is unknown.
+func (m *ServerMultipathBind) PeerRequiredMTU(peerID string) uint16 {
+	m.mu.RLock()
+	p := m.peers[peerID]
+	m.mu.RUnlock()
+	if p == nil {
+		return 0
+	}
+	if policy := m.mtuFor(p); policy != nil {
+		return policy.required
+	}
+	return 0
+}
+
+// mtuFor returns the MTU-aware policy for p, or nil when MTU awareness is off.
+func (m *ServerMultipathBind) mtuFor(p *serverMultipathPeer) *mtuPolicy {
+	if m.mtu == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.mtu != nil {
+		return p.mtu
+	}
+	return m.mtu
 }
 
 // PeerPaths returns one peer's candidate snapshot, or nil for an unknown peer.
@@ -409,7 +466,7 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		p.mu.Unlock()
 		if found {
 			p.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
-			if m.mtu != nil {
+			if m.mtuFor(p) != nil {
 				m.driveMTU(p, name, now)
 			} else {
 				m.sendMTUProbe(p, name, minPathMTUProbe)
@@ -441,9 +498,9 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if found {
 			p.scheduler.ReportDatagramMTU(name, ack.Target)
 			next := nextPathMTUProbe(ack.Target)
-			if m.mtu != nil {
-				next = m.mtu.next(ack.Target)
-				if state := m.mtu.stateAfterAck(ack.Target); state != "" {
+			if policy := m.mtuFor(p); policy != nil {
+				next = policy.next(ack.Target)
+				if state := policy.stateAfterAck(ack.Target); state != "" {
 					p.scheduler.SetMTUState(name, state)
 				}
 			}
@@ -581,6 +638,10 @@ func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, 
 
 // driveMTU is the server-side counterpart of MultipathBind.driveMTU.
 func (m *ServerMultipathBind) driveMTU(p *serverMultipathPeer, name string, now time.Time) {
+	policy := m.mtuFor(p)
+	if policy == nil {
+		return
+	}
 	p.mu.Lock()
 	ep, enabled := p.paths[name], p.pathMTU
 	if ep == nil || !enabled || p.mtuDone[name] {
@@ -588,7 +649,7 @@ func (m *ServerMultipathBind) driveMTU(p *serverMultipathPeer, name string, now 
 		return
 	}
 	out, outstanding := p.mtuProbes[name]
-	target, attempts := m.mtu.ladder[0], 0
+	target, attempts := policy.ladder[0], 0
 	if outstanding {
 		if now.Sub(out.sentAt) < mtuProbeTimeout {
 			p.mu.Unlock()
@@ -598,7 +659,7 @@ func (m *ServerMultipathBind) driveMTU(p *serverMultipathPeer, name string, now 
 			delete(p.mtuProbes, name)
 			p.mtuDone[name] = true
 			p.mu.Unlock()
-			p.scheduler.SetMTUState(name, m.mtu.stateAfterGivingUp(out.target))
+			p.scheduler.SetMTUState(name, policy.stateAfterGivingUp(out.target))
 			return
 		}
 		target, attempts = out.target, out.attempts+1
