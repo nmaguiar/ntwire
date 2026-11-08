@@ -149,6 +149,12 @@ type Options struct {
 	// if the forced transport becomes unavailable or degraded.
 	Transport string
 
+	// UDPAlt opts into the server's alternate WireGuard UDP endpoint
+	// (AuthResponse.UDPAlt, server listen.wireguard_alt). When the primary
+	// direct-UDP multipath candidate cannot prove reachability, the client
+	// retries the candidate on the alternate port. Default false ignores it.
+	UDPAlt bool
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0

@@ -239,6 +239,7 @@ the same shape:
                "target_hint":"reports.internal:8080",
                "instructions":"curl http://{{.LocalHost}}:{{.LocalPort}}/", "docs_url":"https://wiki/reports"}],
   "udp_endpoint": "vpn.example:51820",
+  "udp_alt_endpoint": "vpn.example:443",
   "websocket_endpoint": "wss://vpn.example:8443/v1/wg"
 }
 ```
@@ -267,6 +268,14 @@ address and port and renders the result as Markdown (see
 [CONFIGURATION.md](CONFIGURATION.md#tunnel-instructions)), and ignores a
 `docs_url` that is not an absolute `http(s)` URL. `udp_endpoint` mirrors
 `network.advertised_endpoint`, which clients use for the WireGuard peer.
+`udp_alt_endpoint` is optional and present only when the server sets
+`listen.wireguard_alt`: it is `udp_endpoint`'s host with the alternate port.
+The same WireGuard device listens on both ports and replies from whichever
+socket a peer last used. A client uses it only when its user opted in
+(`--udp-alt`), and only after the direct-UDP candidate on `udp_endpoint` fails
+to become healthy; it then repeats the ordinary reflection and
+`/v1/transport/direct` registration against the alternate address. Clients
+that do not know the field ignore it.
 
 Errors are JSON objects of the form `{"error":"message"}`. Malformed input
 returns `400`; authentication or session failures return `401`; an authorizer

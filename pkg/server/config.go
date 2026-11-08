@@ -32,7 +32,13 @@ type Config struct {
 	Listen struct {
 		HTTPS     string `yaml:"https"`
 		WireGuard string `yaml:"wireguard"`
-		Metrics   string `yaml:"metrics"`
+		// WireGuardAlt opts into a second UDP listener for the same
+		// WireGuard device, for example ":443" for networks that block
+		// 51820/udp but pass QUIC. Only its port is used. It is advertised
+		// to clients as udp_alt_endpoint, and replies leave from whichever
+		// socket each peer last used. Empty (default) opens nothing.
+		WireGuardAlt string `yaml:"wireguard_alt"`
+		Metrics      string `yaml:"metrics"`
 		// Name is an optional friendly label advertised to clients in
 		// AuthResponse.ServerName, so a client running a local status UI for
 		// several servers at once can tell them apart. Clients that get an
@@ -404,6 +410,7 @@ func SampleConfig() string {
 listen:
   https    : ":8443"                     # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+  wireguard_alt: ""                      # opt-in second UDP port for the same data plane, e.g. ":443" for networks that block 51820/udp; advertised to clients that enable --udp-alt; empty opens nothing
   metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
   name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
   tcp:                                   # opt-in Linux TCP tuning for the listen.https listener (WSS carrier); empty/zero changes nothing
@@ -906,6 +913,18 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	}
 	if c.Listen.WireGuard == "" {
 		c.Listen.WireGuard = ":51820"
+	}
+	if c.Listen.WireGuardAlt != "" {
+		alt, err := portOf(c.Listen.WireGuardAlt)
+		if err != nil || alt <= 0 || alt > 65535 {
+			return c, fmt.Errorf("listen.wireguard_alt must be host:port with a non-zero port, got %q", c.Listen.WireGuardAlt)
+		}
+		if primary, _ := portOf(c.Listen.WireGuard); primary == alt {
+			return c, fmt.Errorf("listen.wireguard_alt must use a different port from listen.wireguard")
+		}
+		if c.Relay.Enabled {
+			return c, fmt.Errorf("listen.wireguard_alt cannot be combined with relay.enabled: a relayed server advertises no UDP endpoint")
+		}
 	}
 	c.Listen.Name = strings.TrimSpace(c.Listen.Name)
 	if c.Auth.SessionTTL == 0 {

@@ -223,9 +223,13 @@ type AuthResponse struct {
 	TTLSeconds      int      `json:"ttl_seconds"`
 	Tunnels         []Tunnel `json:"tunnels"`
 	UDP             string   `json:"udp_endpoint,omitempty"`
-	WebSocket       string   `json:"websocket_endpoint,omitempty"`
-	Identity        string   `json:"identity,omitempty"`
-	Method          string   `json:"method,omitempty"`
+	// UDPAlt is the optional alternate WireGuard UDP endpoint (same host as
+	// UDP, server listen.wireguard_alt port). Only clients that opt in with
+	// --udp-alt use it, and only after UDP fails to prove reachable.
+	UDPAlt    string `json:"udp_alt_endpoint,omitempty"`
+	WebSocket string `json:"websocket_endpoint,omitempty"`
+	Identity  string `json:"identity,omitempty"`
+	Method    string `json:"method,omitempty"`
 	// Multipath is set only by relay-mode servers that implement the stable
 	// candidate transport. Older peers omit it, keeping the legacy endpoint
 	// upgrade ladder wire-compatible.

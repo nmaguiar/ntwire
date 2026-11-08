@@ -22,8 +22,11 @@ type connectionNetwork struct {
 	multipath                        *wstransport.MultipathBind
 	clientIP, serverIP               netip.Addr
 	udpEndpoint, mismatch, transport string
-	useWS, multipathV3               bool
-	response                         protocol.AuthResponse
+	// udpAlt is the opt-in alternate direct-UDP endpoint, empty unless
+	// Options.UDPAlt is set and the server advertised one.
+	udpAlt             string
+	useWS, multipathV3 bool
+	response           protocol.AuthResponse
 }
 
 func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
@@ -210,7 +213,7 @@ func (c *Connection) startTransportWorkers(n *connectionNetwork, stop chan struc
 			c.transportMu.RLock()
 			defer c.transportMu.RUnlock()
 			if c.transportGenerationCurrent(stop) {
-				c.bootstrapDirectMultipath(n.udpEndpoint)
+				c.bootstrapDirectMultipath(n.udpEndpoint, n.udpAlt)
 			}
 		}()
 	}
@@ -267,6 +270,10 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if r.UDP != "" && !matchesIPVersion(r.UDP, options.IPVersion) {
 		mismatch = fmt.Sprintf("server's direct UDP endpoint (%s) is not IPv%s", r.UDP, options.IPVersion)
 		udpEndpoint = ""
+	}
+	udpAlt := ""
+	if options.UDPAlt && udpEndpoint != "" && r.UDPAlt != "" && matchesIPVersion(r.UDPAlt, options.IPVersion) {
+		udpAlt = r.UDPAlt
 	}
 	transport, err := normalizeTransportPreference(options.UseWebSocket, options.Transport)
 	if err != nil {
@@ -328,5 +335,5 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if multipath != nil && transport != "" {
 		multipath.SetForced(transport)
 	}
-	return &connectionNetwork{stack: st, hybrid: hybrid, multipath: multipath, clientIP: clientIP, serverIP: serverIP, udpEndpoint: udpEndpoint, mismatch: mismatch, transport: transport, useWS: useWS, multipathV3: multipathV3, response: r}, nil
+	return &connectionNetwork{stack: st, hybrid: hybrid, multipath: multipath, clientIP: clientIP, serverIP: serverIP, udpEndpoint: udpEndpoint, udpAlt: udpAlt, mismatch: mismatch, transport: transport, useWS: useWS, multipathV3: multipathV3, response: r}, nil
 }

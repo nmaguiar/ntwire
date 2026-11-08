@@ -39,6 +39,7 @@ var settingsField = map[string]string{
 	"bind":            "BindAddress",
 	"ip-version":      "IPVersion",
 	"transport":       "Transport",
+	"udp-alt":         "UDPAlt",
 }
 
 // schemaField mirrors internal/gui/api's wire shape so the two settings

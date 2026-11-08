@@ -742,7 +742,8 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.observe("authentication_success", session.Method)
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU)})
+	udpEndpoint := s.advertisedUDPEndpoint()
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: udpEndpoint, UDPAlt: s.alternateUDPEndpoint(udpEndpoint), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU)})
 	return true
 }
 
@@ -782,6 +783,23 @@ func websocketURL(r *http.Request) string {
 // instead of connecting. Resolved on every call rather than once at startup
 // so dynamic DNS (e.g. a home server behind a changing IP) stays usable
 // across reconnects without a server restart.
+// alternateUDPEndpoint returns udp with its port replaced by the opt-in
+// listen.wireguard_alt port, or "" when either is unset.
+func (s *Server) alternateUDPEndpoint(udp string) string {
+	if udp == "" || s.Config.Listen.WireGuardAlt == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(udp)
+	if err != nil {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(s.Config.Listen.WireGuardAlt)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func (s *Server) advertisedUDPEndpoint() string {
 	hostport := s.Config.Network.AdvertisedEndpoint
 	if hostport == "" {
@@ -1014,7 +1032,8 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU)})
+	renewUDP := s.advertisedUDPEndpoint()
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: renewUDP, UDPAlt: s.alternateUDPEndpoint(renewUDP), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()

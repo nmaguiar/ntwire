@@ -489,6 +489,11 @@ relay offers it) and only escalates further to the fully direct path if
 lands on whichever of these two rungs is still warm, not always straight back
 to WebSocket.
 
+The client-facing `listen.udp_relay` address can use port 443 alongside the
+TCP `listen.public: ":443"` listener (they are separate sockets), which helps
+clients on networks that allow only 443 outbound:
+`udp_relay: ":443"`.
+
 ### UDP receive diagnostics and recovery
 
 Native WireGuard relay traffic and ntwire UDP-relay traffic share the server's

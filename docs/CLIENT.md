@@ -225,3 +225,14 @@ specific key type, or ask the administrator to compare the derived public key.
 For PEM keys OpenSSL can extract the public component with
 `openssl pkey -in identity-from-p12.pem -pubout -out public.pem`; share only
 public material, never the private key or passphrase.
+
+## Opt-in transport settings
+
+These `ntwire connect` flags are all off by default; leaving them unset keeps
+the existing transport behavior. Each one is also an **Advanced** setting in the
+ntwire-gui profile editor and in the `ntwire connect` local settings page, and
+can be persisted in `~/.ntwire/config.yaml` under the key shown.
+
+| Flag | config.yaml key | Effect | Needs on the server |
+| --- | --- | --- | --- |
+| `--udp-alt` | `udp_alt` | If direct UDP to the server's primary WireGuard port cannot be proven, retry it on the server's alternate port (for example 443/udp). | `listen.wireguard_alt` |

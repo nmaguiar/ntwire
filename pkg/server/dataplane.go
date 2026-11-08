@@ -179,6 +179,16 @@ func (s *Server) StartDataPlane() error {
 		return err
 	}
 	ws := wstransport.NewHybrid(s.log)
+	if s.Config.Listen.WireGuardAlt != "" {
+		alt, err := portOf(s.Config.Listen.WireGuardAlt)
+		if err != nil {
+			return err
+		}
+		if udp, ok := ws.UDP.(*wstransport.FilterBind).Unwrap().(*wstransport.UDPBind); ok {
+			udp.SetAltPort(uint16(alt))
+			s.log.Info("alternate WireGuard UDP port enabled", "port", alt)
+		}
+	}
 	relayMode := s.Config.Relay.Enabled
 	ws.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
 		s.observe("websocket_connected", "")

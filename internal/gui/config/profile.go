@@ -51,6 +51,8 @@ type Profile struct {
 	IPVersion string `yaml:"ip_version"`
 	// Transport is "auto", "direct-udp", "udp-relay", or "wss"; see client.Options.Transport.
 	Transport string `yaml:"transport"`
+	// UDPAlt is the opt-in --udp-alt setting; see client.Options.UDPAlt.
+	UDPAlt bool `yaml:"udp_alt,omitempty"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

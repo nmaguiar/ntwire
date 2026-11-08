@@ -49,6 +49,7 @@ Collect unanswered required choices before producing YAML. Retain the displayed 
 listen:
   https    : ":8443"                     # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+  wireguard_alt: ""                      # opt-in second UDP port for the same data plane, e.g. ":443" for networks that block 51820/udp; advertised to clients that enable --udp-alt; empty opens nothing
   metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
   name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
   tcp:                                   # opt-in Linux TCP tuning for the listen.https listener (WSS carrier); empty/zero changes nothing
@@ -464,6 +465,9 @@ audit:
         },
         "wireguard": {
           "default": ":51820",
+          "type": "string"
+        },
+        "wireguard_alt": {
           "type": "string"
         }
       },

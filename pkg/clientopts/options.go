@@ -208,6 +208,13 @@ var registry = []Option{
 		Label: "Token cache file", Group: "🔑 SSO", Widget: WidgetPath, Advanced: true,
 	},
 	{
+		Name: "udp-alt", Kind: KindBool, Usage: "retry direct UDP on the server's alternate port (listen.wireguard_alt) when the primary port is unreachable",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: boolDefault(func(s client.Settings) bool { return s.UDPAlt }),
+		Label:   "Try alternate UDP port", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,
+		Help: "Off by default. When the server advertises an alternate WireGuard UDP port (for example 443) and direct UDP on its primary port cannot be proven, retry the direct-UDP path on the alternate port. Has no effect unless the server enables listen.wireguard_alt.",
+	},
+	{
 		Name: "websocket", Kind: KindBool, Usage: "use the WebSocket WireGuard transport",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Force WebSocket transport", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,

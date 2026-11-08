@@ -87,6 +87,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		BindAddress:      p.BindAddress,
 		IPVersion:        p.IPVersion,
 		Transport:        p.Transport,
+		UDPAlt:           p.UDPAlt,
 		SettingsURL:      settingsURL,
 	}, nil
 }

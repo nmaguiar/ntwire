@@ -202,3 +202,23 @@ func TestLoadConfig_ValidatesRegistrationListen(t *testing.T) {
 		})
 	}
 }
+
+// UDP 443 is a separate socket from the TCP public listener, so a relay can
+// serve its UDP tiers on the port QUIC-friendly networks usually allow.
+func TestLoadConfig_UDPRelayOn443AlongsideTCPPublic(t *testing.T) {
+	k := generateTestKey(t)
+	path := t.TempDir() + "/relay.yaml"
+	content := "domain: relay.example.com\n" +
+		"listen:\n  public: \":443\"\n  udp_relay: \":443\"\n  udp_relay_ports: \"40000-40010\"\n" +
+		"registrations:\n  - name: home\n    public_key: \"" + k.line + "\"\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if c.Listen.Public != ":443" || c.Listen.UDPRelay != ":443" {
+		t.Fatalf("listen = %+v", c.Listen)
+	}
+}

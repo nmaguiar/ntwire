@@ -666,3 +666,96 @@ tunnels:
 		}
 	}
 }
+
+// WireGuard UDP on 443 shares the port number, not the socket, with the TCP
+// listen.https listener.
+func TestParseConfig_WireGuardUDPOn443(t *testing.T) {
+	c, err := ParseConfig([]byte("auth:\n  authorized_keys_dir: keys\nlisten:\n  https: \":443\"\n  wireguard: \":443\"\nnetwork:\n  advertised_endpoint: \"vpn.example.com:443\"\n"), t.TempDir())
+	if err != nil {
+		t.Fatalf("ParseConfig() error = %v", err)
+	}
+	if c.Listen.HTTPS != ":443" || c.Listen.WireGuard != ":443" || c.Network.AdvertisedEndpoint != "vpn.example.com:443" {
+		t.Fatalf("parsed = %+v / %+v", c.Listen, c.Network)
+	}
+}
+
+func TestParseConfig_TCPTuning(t *testing.T) {
+	const auth = "auth:\n  authorized_keys_dir: keys\n"
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{"default off", "listen:\n  https: \":8443\"\n", ""},
+		{"listen bbr", "listen:\n  tcp:\n    congestion: bbr\n    notsent_lowat: 131072\n", ""},
+		{"negative lowat", "listen:\n  tcp:\n    notsent_lowat: -1\n", "listen.tcp"},
+		{"relay bad name", "relay:\n  tcp:\n    congestion: \"b b\"\n", "relay.tcp"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := ParseConfig([]byte(auth+tt.yaml), t.TempDir())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ParseConfig() error = %v", err)
+				}
+				if tt.name == "default off" && (c.Listen.TCP.Enabled() || c.Relay.TCP.Enabled()) {
+					t.Fatal("TCP tuning enabled without configuration")
+				}
+				if tt.name == "listen bbr" && (c.Listen.TCP.Congestion != "bbr" || c.Listen.TCP.NotSentLowat != 131072) {
+					t.Fatalf("listen.tcp = %+v", c.Listen.TCP)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ParseConfig() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseConfig_WireGuardAlt(t *testing.T) {
+	const auth = "auth:\n  authorized_keys_dir: keys\n"
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{"default empty", "", ""},
+		{"alt 443", "listen:\n  wireguard_alt: \":443\"\n", ""},
+		{"same port", "listen:\n  wireguard: \":51820\"\n  wireguard_alt: \":51820\"\n", "different port"},
+		{"no port", "listen:\n  wireguard_alt: \"443\"\n", "non-zero port"},
+		{"relay mode", "listen:\n  wireguard_alt: \":443\"\nrelay:\n  enabled: true\n  url: wss://relay.example.com:8444\n  identity_file: id\n", "wireguard_alt cannot be combined with relay.enabled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseConfig([]byte(auth+tt.yaml), t.TempDir())
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ParseConfig() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ParseConfig() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestAlternateUDPEndpoint(t *testing.T) {
+	tests := []struct {
+		alt, udp, want string
+	}{
+		{"", "203.0.113.5:51820", ""},
+		{":443", "", ""},
+		{":443", "203.0.113.5:51820", "203.0.113.5:443"},
+		{"0.0.0.0:4443", "[2001:db8::1]:51820", "[2001:db8::1]:4443"},
+	}
+	for _, tt := range tests {
+		s := New(Config{}, nil)
+		s.Config.Listen.WireGuardAlt = tt.alt
+		if got := s.alternateUDPEndpoint(tt.udp); got != tt.want {
+			t.Errorf("alternateUDPEndpoint(alt=%q, udp=%q) = %q, want %q", tt.alt, tt.udp, got, tt.want)
+		}
+	}
+}

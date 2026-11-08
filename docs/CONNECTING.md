@@ -115,6 +115,14 @@ above, and that file is meant to be deleted from the server once transferred.
    ```
    or open the token-protected status URL `connect` prints. Use `ntwire status --json` for scripts, `ntwire port name=local-port` to rebind ports live, or `ntwire disconnect` to stop the session.
 
+> **Networks that block 51820/udp:** WireGuard UDP can share port 443 with the
+> HTTPS listener, because TCP and UDP use separate sockets. Either move it
+> (`listen.wireguard: ":443"` with `network.advertised_endpoint: "host:443"`) or
+> keep 51820 and add the opt-in second port `listen.wireguard_alt: ":443"`.
+> With the second port, clients that pass `--udp-alt` (or enable **Try
+> alternate UDP port** in ntwire-gui) retry direct UDP on 443 only when 51820
+> fails. Open 443/udp in the firewall either way.
+
 > **Tip:** Generate shell completion for your environment (`bash`, `zsh`, `fish`, `powershell`):
 > `source <(ntwire completion zsh)` or `ntwire completion bash > /etc/bash_completion.d/ntwire`
 

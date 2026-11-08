@@ -79,6 +79,8 @@ type Settings struct {
 	// Transport is the optional persisted default for client.Options.Transport
 	// ("auto", "direct-udp", "udp-relay", "wss").
 	Transport string `yaml:"transport"`
+	// UDPAlt is the persisted opt-in default for --udp-alt.
+	UDPAlt bool `yaml:"udp_alt"`
 }
 
 func DefaultConfigFile() string {
@@ -151,6 +153,7 @@ var settingsUIFields = []struct {
 	{Field: "BindAddress", YAMLKey: "bind_address"},
 	{Field: "IPVersion", YAMLKey: "ip_version"},
 	{Field: "Transport", YAMLKey: "transport"},
+	{Field: "UDPAlt", YAMLKey: "udp_alt", Bool: true},
 }
 
 // SaveSettings writes every settingsUIFields value from s into the
