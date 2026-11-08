@@ -531,3 +531,33 @@ the GUI defaults to daily checks and notifications only. Managed deployments can
 set `settings.update_checks_disabled: true` in `gui.yaml`. Package-managed clients
 should use their package manager. Server/relay binaries and containers continue
 to use operator-managed deployment upgrades. See [UPDATES.md](UPDATES.md).
+
+## Optional TCP tuning for the WebSocket carrier (Linux)
+
+The WSS carrier (`/v1/wg`) carries WireGuard over TCP, so packet loss on long or
+lossy links hits it harder than UDP. On Linux, `ntwire-server` and
+`ntwire-relay` can set per-socket TCP options. This is off by default and
+changes nothing unless configured:
+
+```yaml
+# ntwire-server: listen.https listener, and (separately) dials to the relay
+listen:
+  tcp:
+    congestion: bbr          # TCP_CONGESTION; needs the tcp_bbr kernel module
+    notsent_lowat: 131072    # TCP_NOTSENT_LOWAT; bounds kernel send-queue latency
+relay:
+  tcp:
+    congestion: bbr
+
+# ntwire-relay: public, agents, and registration listeners
+listen:
+  tcp:
+    congestion: bbr
+```
+
+BBR works best with the `fq` queueing discipline on the host
+(`sysctl -w net.core.default_qdisc=fq`; load the module with `modprobe tcp_bbr`).
+In containers the module must be loaded on the host; the per-socket option needs
+no extra capability. If the kernel rejects a value, or on a non-Linux host,
+ntwire logs one warning and keeps serving untuned sockets. Check what took effect
+with `ss -ti` (look for `bbr` and `notsent_lowat`).

@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/tcptune"
 )
 
 const defaultUDPBufferBytes = 4 << 20
@@ -173,11 +175,11 @@ func (r *Relay) Start() error {
 		}
 	}
 
-	publicLn, err = net.Listen("tcp", r.cfg.Listen.Public)
+	publicLn, err = tcptune.Listen(r.cfg.Listen.TCP, r.cfg.Listen.Public)
 	if err != nil {
 		return fmt.Errorf("listen.public: %w", err)
 	}
-	agentsLn, err = net.Listen("tcp", r.cfg.Listen.Agents)
+	agentsLn, err = tcptune.Listen(r.cfg.Listen.TCP, r.cfg.Listen.Agents)
 	if err != nil {
 		abortAll()
 		return fmt.Errorf("listen.agents: %w", err)
@@ -271,7 +273,7 @@ func (r *Relay) Start() error {
 		if reg.Listen == "" {
 			continue
 		}
-		ln, e := net.Listen("tcp", reg.Listen)
+		ln, e := tcptune.Listen(r.cfg.Listen.TCP, reg.Listen)
 		if e != nil {
 			abortAll()
 			return fmt.Errorf("registration %q listen: %w", reg.Name, e)

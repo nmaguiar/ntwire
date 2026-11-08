@@ -51,6 +51,9 @@ listen:
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
   metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
   name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
+  tcp:                                   # opt-in Linux TCP tuning for the listen.https listener (WSS carrier); empty/zero changes nothing
+    congestion   : ""                    # TCP_CONGESTION algorithm, e.g. bbr (needs the kernel module); empty keeps the system default
+    notsent_lowat: 0                     # TCP_NOTSENT_LOWAT bytes, e.g. 131072, to bound send-queue latency; 0 keeps the system default
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -157,6 +160,9 @@ relay:
   # - url        : "wss://relay-b.example.com:8444"
   #   fingerprint: "SHA256:..."
   reconnect_min  : 1s                      # initial backoff after a dropped control connection; default: 1s
+  tcp:                                     # opt-in Linux TCP tuning for this server's connections to the relay; empty/zero changes nothing
+    congestion   : ""                      # TCP_CONGESTION algorithm, e.g. bbr; empty keeps the system default
+    notsent_lowat: 0                       # TCP_NOTSENT_LOWAT bytes; 0 keeps the system default
   reconnect_max  : 1m                      # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
   direct_clients : false                   # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
@@ -444,6 +450,18 @@ audit:
         "name": {
           "type": "string"
         },
+        "tcp": {
+          "additionalProperties": false,
+          "properties": {
+            "congestion": {
+              "type": "string"
+            },
+            "notsent_lowat": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "wireguard": {
           "default": ":51820",
           "type": "string"
@@ -682,6 +700,18 @@ audit:
         "reconnect_min": {
           "format": "duration",
           "type": "string"
+        },
+        "tcp": {
+          "additionalProperties": false,
+          "properties": {
+            "congestion": {
+              "type": "string"
+            },
+            "notsent_lowat": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
         },
         "url": {
           "type": "string"
