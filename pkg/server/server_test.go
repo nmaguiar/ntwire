@@ -51,13 +51,13 @@ func TestAuthRequiredTransportCapabilityFailsBeforeAuthentication(t *testing.T) 
 }
 
 func TestTransportCapabilitiesAreV3Only(t *testing.T) {
-	if got, want := transportCapabilities(true, true), []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}; !slices.Equal(got, want) {
+	if got, want := transportCapabilities(true, true, false), []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}; !slices.Equal(got, want) {
 		t.Fatalf("transportCapabilities(v3, mtu) = %v, want %v", got, want)
 	}
-	if got, want := transportCapabilities(true, false), []string{protocol.CapabilityMultipathV3}; !slices.Equal(got, want) {
+	if got, want := transportCapabilities(true, false, false), []string{protocol.CapabilityMultipathV3}; !slices.Equal(got, want) {
 		t.Fatalf("transportCapabilities(v3) = %v, want %v", got, want)
 	}
-	if got := transportCapabilities(false, true); got != nil {
+	if got := transportCapabilities(false, true, true); got != nil {
 		t.Fatalf("transportCapabilities(legacy) = %v, want nil", got)
 	}
 }

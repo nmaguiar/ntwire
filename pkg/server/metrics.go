@@ -2,8 +2,10 @@ package server
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/nmaguiar/ntwire/pkg/server/webui"
@@ -185,6 +187,39 @@ func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, "ntwire_tunnel_bytes_to_target_total{%s} %d\n", labels, totals.toTarget)
 		fmt.Fprintf(w, "ntwire_tunnel_bytes_from_target_total{%s} %d\n", labels, totals.fromTarget)
 		fmt.Fprintf(w, "ntwire_tunnel_connections_active{%s} %d\n", labels, totals.active)
+	}
+	s.writeTransportMetrics(w)
+}
+
+// writeTransportMetrics emits the opt-in transport.metrics series. It writes
+// nothing unless transport.metrics enabled the counters at data-plane start.
+func (s *Server) writeTransportMetrics(w io.Writer) {
+	counters := s.transportSwitches.Load()
+	if counters == nil {
+		return
+	}
+	fmt.Fprintln(w, "# HELP ntwire_transport_switches_total Committed multipath primary-path changes since process start.")
+	fmt.Fprintln(w, "# TYPE ntwire_transport_switches_total counter")
+	for _, c := range counters.snapshot() {
+		fmt.Fprintf(w, "ntwire_transport_switches_total{from=\"%s\",to=\"%s\",reason=\"%s\"} %d\n", promLabel(c.from), promLabel(c.to), promLabel(c.reason), c.total)
+	}
+	fmt.Fprintln(w, "# HELP ntwire_sessions_by_path Multipath peers by current primary path.")
+	fmt.Fprintln(w, "# TYPE ntwire_sessions_by_path gauge")
+	if s.data == nil || s.data.multipath == nil {
+		return
+	}
+	counts := s.data.multipath.PrimaryCounts()
+	names := make([]string, 0, len(counts))
+	for name := range counts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		label := name
+		if label == "" {
+			label = "none"
+		}
+		fmt.Fprintf(w, "ntwire_sessions_by_path{path=\"%s\"} %d\n", promLabel(label), counts[name])
 	}
 }
 

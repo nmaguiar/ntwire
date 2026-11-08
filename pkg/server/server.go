@@ -67,14 +67,17 @@ type Server struct {
 	tlsManager       *TLSManager
 	auditLog         *slog.Logger
 	lifecycle        *lifecycleCounters
-	direct           *directUDP
-	udpr             atomic.Pointer[udpRelay]
-	nativeRelayMu    sync.Mutex
-	nativeRelayStop  chan struct{}
-	policies         map[string]*compiledPolicy
-	asn              *socks.ASNIndex
-	dnsForwardSlots  chan struct{}
-	dnsForward       func([]byte, []string) ([]byte, error)
+	promotions       promoteLimiter
+	// transportSwitches is non-nil only when transport.metrics is enabled.
+	transportSwitches atomic.Pointer[transportSwitchCounters]
+	direct            *directUDP
+	udpr              atomic.Pointer[udpRelay]
+	nativeRelayMu     sync.Mutex
+	nativeRelayStop   chan struct{}
+	policies          map[string]*compiledPolicy
+	asn               *socks.ASNIndex
+	dnsForwardSlots   chan struct{}
+	dnsForward        func([]byte, []string) ([]byte, error)
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -130,6 +133,7 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("GET /v1/wg", s.websocket)
 	m.HandleFunc("POST /v1/punch", s.punch)
 	m.HandleFunc("POST /v1/transport/direct", s.registerDirectTransport)
+	m.HandleFunc("POST /v1/transport/primary", s.promoteTransport)
 	m.HandleFunc("POST /v1/udp-relay", s.udpRelayHandler)
 	m.HandleFunc("POST /v1/masque/certificate", s.masqueCertificate)
 	m.HandleFunc("GET /v1/portal", s.portalHandler)
@@ -472,7 +476,11 @@ func (s *Server) transportCapabilitiesAvailable() []string {
 	if s.Config.MultipathEnabled() && s.data != nil && s.data.multipath != nil && s.multipathAlternateAvailable() {
 		// v1/v2 are deliberately retired. A peer either negotiates the complete
 		// v3 contract or stays on the legacy single-path data plane.
-		return []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+		caps := []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+		if s.Config.Transport.Promotion {
+			caps = append(caps, protocol.CapabilityPathPromoteV1)
+		}
+		return caps
 	}
 	return nil
 }
@@ -564,7 +572,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -620,7 +628,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -639,6 +647,8 @@ type sessionRequest struct {
 	TransportCapabilities []string
 	// QueryOnly: see protocol.AuthRequest.QueryOnly.
 	QueryOnly bool
+	// TunnelMTU: see protocol.AuthRequest.TunnelMTU.
+	TunnelMTU int
 }
 
 // establishSession is the common tail shared by SSH and OIDC authentication:
@@ -729,30 +739,41 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	pathMTU := protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathMTUV1)
 	multipath := multipathV3
 	pathMTU = multipath && pathMTU
+	promote := multipath && protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathPromoteV1)
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
-		Multipath: multipath, PathMTU: pathMTU, ClientInfo: req.Info,
+		Multipath: multipath, PathMTU: pathMTU, Promote: promote, ClientInfo: req.Info,
 	})
+	if multipath && pathMTU && s.data != nil && s.data.multipath != nil {
+		// Out-of-range values are ignored by SetPeerTunnelMTU, so a client
+		// can only lower its own peer's required probe size.
+		s.data.multipath.SetPeerTunnelMTU(req.WireGuardPublicKey, req.TunnelMTU)
+	}
 	s.log.Info("authentication allowed", "method", session.Method, "identity", session.Identity, "session", session.ID)
 	s.log.Debug("session established", "session", session.ID, "wireguard_public_key", req.WireGuardPublicKey, "tunnel_ip", tunnelIP, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("authentication_success", session.Method)
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU)})
+	udpEndpoint := s.advertisedUDPEndpoint()
+	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: udpEndpoint, UDPAlt: s.alternateUDPEndpoint(udpEndpoint), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU, promote)})
 	return true
 }
 
 // transportCapabilities echoes the sole supported multipath contract.
-func transportCapabilities(multipath, pathMTU bool) []string {
+func transportCapabilities(multipath, pathMTU, promote bool) []string {
 	if !multipath {
 		return nil
 	}
+	caps := []string{protocol.CapabilityMultipathV3}
 	if pathMTU {
-		return []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+		caps = append(caps, protocol.CapabilityPathMTUV1)
 	}
-	return []string{protocol.CapabilityMultipathV3}
+	if promote {
+		caps = append(caps, protocol.CapabilityPathPromoteV1)
+	}
+	return caps
 }
 
 // tunnelNames extracts the tunnel names granted in a session, for compact
@@ -780,6 +801,23 @@ func websocketURL(r *http.Request) string {
 // instead of connecting. Resolved on every call rather than once at startup
 // so dynamic DNS (e.g. a home server behind a changing IP) stays usable
 // across reconnects without a server restart.
+// alternateUDPEndpoint returns udp with its port replaced by the opt-in
+// listen.wireguard_alt port, or "" when either is unset.
+func (s *Server) alternateUDPEndpoint(udp string) string {
+	if udp == "" || s.Config.Listen.WireGuardAlt == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(udp)
+	if err != nil {
+		return ""
+	}
+	_, port, err := net.SplitHostPort(s.Config.Listen.WireGuardAlt)
+	if err != nil {
+		return ""
+	}
+	return net.JoinHostPort(host, port)
+}
+
 func (s *Server) advertisedUDPEndpoint() string {
 	hostport := s.Config.Network.AdvertisedEndpoint
 	if hostport == "" {
@@ -1004,7 +1042,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
-		Multipath: old.Multipath, PathMTU: old.PathMTU, ClientInfo: body.Info,
+		Multipath: old.Multipath, PathMTU: old.PathMTU, Promote: old.Promote, ClientInfo: body.Info,
 	})
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
@@ -1012,7 +1050,8 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: s.advertisedUDPEndpoint(), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU)})
+	renewUDP := s.advertisedUDPEndpoint()
+	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: renewUDP, UDPAlt: s.alternateUDPEndpoint(renewUDP), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU, n.Promote)})
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
@@ -1207,7 +1246,11 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 // restart. Listener address, cert_file/key_file *paths*, tunnel-CIDR, and
 // relay changes are intentionally ignored until restart: relay mode changes
 // which net.Listener cmd/ntwire-server passes to ServeTLS, which Handler()
-// never sees, so there is nothing here for it to hot-reload.
+// never sees, so there is nothing here for it to hot-reload. The opt-in
+// listen.wireguard_alt and listen.tcp (part of Listen), relay.tcp, and
+// transport.metrics/transport.mtu_aware (read when the data plane starts)
+// are likewise restart-only; transport.promotion applies to sessions
+// created after the reload.
 func (s *Server) Reload(c Config) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
@@ -1218,6 +1261,8 @@ func (s *Server) Reload(c Config) {
 	c.Relay = s.Config.Relay
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
 	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
+	c.Transport.Metrics = s.Config.Transport.Metrics
+	c.Transport.MTUAware = s.Config.Transport.MTUAware
 	oldNative := s.Config.NativeWireGuard.Peers
 	oldNativeEnabled := s.Config.NativeWireGuard.Enabled
 	oldIssuers := s.Config.Auth.OIDC.Issuers

@@ -33,6 +33,12 @@ type ServerMultipathBind struct {
 
 	opts   MultipathOptions
 	forced string
+	// mtu is the opt-in MTU-aware policy; nil keeps the diagnostic ladder.
+	mtu *mtuPolicy
+
+	// onSwitch, when set, observes every peer scheduler's committed primary
+	// changes (opt-in server transport metrics). Guarded by mu.
+	onSwitch func(SwitchEvent)
 
 	// reserved holds UDP sources that belong to infrastructure (a relay's
 	// native-WireGuard listener) and must never be claimed as a peer's
@@ -61,6 +67,10 @@ type serverMultipathPeer struct {
 	mtuProbes map[string]outstandingMTUProbe
 	mtuDone   map[string]bool
 	pathMTU   bool
+
+	// mtu overrides the bind-wide MTU-aware policy for a client that
+	// reported a lower tunnel MTU (see SetPeerTunnelMTU). nil uses m.mtu.
+	mtu *mtuPolicy
 
 	// dupLimiter is this peer's counterpart of MultipathBind.dupLimiter.
 	// Reactive type-4 duplication has a strict per-peer byte budget.
@@ -94,6 +104,7 @@ func NewServerMultipathBind(base conn.Bind, opts MultipathOptions) *ServerMultip
 	m := &ServerMultipathBind{
 		base: base, peers: map[string]*serverMultipathPeer{}, bySource: map[string]*serverMultipathPeer{},
 		cache: NewDuplicateCache(4096, 10*time.Second), opts: resolveMultipathOptions(opts), stop: make(chan struct{}),
+		mtu: newMTUPolicy(opts),
 	}
 	go m.probeLoop(m.stop)
 	return m
@@ -105,6 +116,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 			id: id, endpoint: serverMultipathEndpoint{id: id}, scheduler: NewScheduler(), paths: map[string]conn.Endpoint{}, probes: map[string]outstandingProbe{}, mtuProbes: map[string]outstandingMTUProbe{}, mtuDone: map[string]bool{},
 			dupLimiter: newByteRateLimiter(m.opts.DuplicateRateBytesPerSec),
 		}
+		p.scheduler.SetSwitchObserver(m.onSwitch)
 		m.peers[id] = p
 	}
 	return p
@@ -150,6 +162,13 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.scheduler.SetForced(forced)
 
 	p.scheduler.Register(name, kind)
+	if m.mtu != nil && pathMTU && kind != PathWSS {
+		p.mu.Lock()
+		delete(p.mtuProbes, name)
+		delete(p.mtuDone, name)
+		p.mu.Unlock()
+		p.scheduler.SetMTUState(name, MTUStateProbing)
+	}
 	if kind != PathWSS {
 		m.sendProbe(p, name, time.Now())
 	}
@@ -194,6 +213,103 @@ func (m *ServerMultipathBind) SetForced(name string) {
 	for _, p := range peers {
 		p.scheduler.SetForced(normalized)
 	}
+}
+
+// SetSwitchObserver registers fn for every existing and future peer
+// scheduler's committed primary changes. Passing nil removes it. fn must not
+// block: it runs on the scheduler's selection path.
+func (m *ServerMultipathBind) SetSwitchObserver(fn func(SwitchEvent)) {
+	m.mu.Lock()
+	m.onSwitch = fn
+	peers := make([]*serverMultipathPeer, 0, len(m.peers))
+	for _, p := range m.peers {
+		peers = append(peers, p)
+	}
+	m.mu.Unlock()
+	for _, p := range peers {
+		p.scheduler.SetSwitchObserver(fn)
+	}
+}
+
+// SetPeerTunnelMTU records the tunnel MTU a client reported at
+// authentication, so MTU-aware probing of that peer's paths uses the size
+// the client's packets actually need. It is a no-op unless the bind is
+// MTU-aware, and values outside 1280..this side's tunnel MTU are ignored, so
+// a client can only lower its own requirement.
+func (m *ServerMultipathBind) SetPeerTunnelMTU(peerID string, tunnelMTU int) {
+	if m.mtu == nil {
+		return
+	}
+	own := m.opts.TunnelMTU
+	if own <= 0 {
+		own = DefaultTunnelMTU
+	}
+	var policy *mtuPolicy
+	if tunnelMTU >= 1280 && tunnelMTU < own {
+		policy = newMTUPolicy(MultipathOptions{MTUAware: true, TunnelMTU: tunnelMTU})
+	}
+	m.mu.Lock()
+	p := m.peer(peerID)
+	m.mu.Unlock()
+	p.mu.Lock()
+	p.mtu = policy
+	p.mu.Unlock()
+}
+
+// PeerRequiredMTU returns the UDP payload size MTU-aware probing requires
+// for peerID, or 0 when MTU awareness is off or the peer is unknown.
+func (m *ServerMultipathBind) PeerRequiredMTU(peerID string) uint16 {
+	m.mu.RLock()
+	p := m.peers[peerID]
+	m.mu.RUnlock()
+	if p == nil {
+		return 0
+	}
+	if policy := m.mtuFor(p); policy != nil {
+		return policy.required
+	}
+	return 0
+}
+
+// mtuFor returns the MTU-aware policy for p, or nil when MTU awareness is off.
+func (m *ServerMultipathBind) mtuFor(p *serverMultipathPeer) *mtuPolicy {
+	if m.mtu == nil {
+		return nil
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.mtu != nil {
+		return p.mtu
+	}
+	return m.mtu
+}
+
+// PeerPaths returns one peer's candidate snapshot, or nil for an unknown peer.
+func (m *ServerMultipathBind) PeerPaths(peerID string) []PathStatus {
+	m.mu.RLock()
+	p := m.peers[peerID]
+	m.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	return p.scheduler.Status()
+}
+
+// PrimaryCounts returns how many peers currently use each path name as their
+// primary. Peers with no selectable path are counted under "".
+func (m *ServerMultipathBind) PrimaryCounts() map[string]int {
+	m.mu.RLock()
+	peers := make([]*serverMultipathPeer, 0, len(m.peers))
+	for _, p := range m.peers {
+		peers = append(peers, p)
+	}
+	m.mu.RUnlock()
+	out := make(map[string]int, 4)
+	for _, p := range peers {
+		primary, _, _ := p.scheduler.Select()
+		out[primary]++
+	}
+	return out
 }
 
 // ReserveSources replaces the set of UDP source addresses that no peer may
@@ -350,7 +466,11 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		p.mu.Unlock()
 		if found {
 			p.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
-			m.sendMTUProbe(p, name, minPathMTUProbe)
+			if m.mtuFor(p) != nil {
+				m.driveMTU(p, name, now)
+			} else {
+				m.sendMTUProbe(p, name, minPathMTUProbe)
+			}
 		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
@@ -378,6 +498,12 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if found {
 			p.scheduler.ReportDatagramMTU(name, ack.Target)
 			next := nextPathMTUProbe(ack.Target)
+			if policy := m.mtuFor(p); policy != nil {
+				next = policy.next(ack.Target)
+				if state := policy.stateAfterAck(ack.Target); state != "" {
+					p.scheduler.SetMTUState(name, state)
+				}
+			}
 			if next == 0 {
 				p.mu.Lock()
 				p.mtuDone[name] = true
@@ -505,7 +631,45 @@ func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, 
 		p.mu.Unlock()
 		return
 	}
-	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target}
+	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: time.Now()}
+	p.mu.Unlock()
+	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
+}
+
+// driveMTU is the server-side counterpart of MultipathBind.driveMTU.
+func (m *ServerMultipathBind) driveMTU(p *serverMultipathPeer, name string, now time.Time) {
+	policy := m.mtuFor(p)
+	if policy == nil {
+		return
+	}
+	p.mu.Lock()
+	ep, enabled := p.paths[name], p.pathMTU
+	if ep == nil || !enabled || p.mtuDone[name] {
+		p.mu.Unlock()
+		return
+	}
+	out, outstanding := p.mtuProbes[name]
+	target, attempts := policy.ladder[0], 0
+	if outstanding {
+		if now.Sub(out.sentAt) < mtuProbeTimeout {
+			p.mu.Unlock()
+			return
+		}
+		if out.attempts+1 >= mtuMaxAttempts {
+			delete(p.mtuProbes, name)
+			p.mtuDone[name] = true
+			p.mu.Unlock()
+			p.scheduler.SetMTUState(name, policy.stateAfterGivingUp(out.target))
+			return
+		}
+		target, attempts = out.target, out.attempts+1
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		p.mu.Unlock()
+		return
+	}
+	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: now, attempts: attempts}
 	p.mu.Unlock()
 	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
 }

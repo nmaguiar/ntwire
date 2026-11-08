@@ -18,6 +18,7 @@ The reference server serves HTTPS.
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
 | `POST /v1/transport/direct` | Bearer token | Registers a reflected direct-UDP client candidate for a negotiated multipath session |
+| `POST /v1/transport/primary` | Bearer token | Opt-in (`path-promote-v1`): commits a healthy candidate as the session's primary carrier; `404` unless negotiated |
 | `GET /v1/portal` | Bearer token | Rendered portal Markdown/HTML and authorized targets |
 | `POST /v1/portal/action` | Bearer token | Dispatches and resolves an action against authorized targets |
 | `GET /proxy.pac` | None | Proxy Auto-Configuration (PAC) script for the default SOCKS egress tunnel (Desktop / localhost) |
@@ -239,6 +240,7 @@ the same shape:
                "target_hint":"reports.internal:8080",
                "instructions":"curl http://{{.LocalHost}}:{{.LocalPort}}/", "docs_url":"https://wiki/reports"}],
   "udp_endpoint": "vpn.example:51820",
+  "udp_alt_endpoint": "vpn.example:443",
   "websocket_endpoint": "wss://vpn.example:8443/v1/wg"
 }
 ```
@@ -267,6 +269,14 @@ address and port and renders the result as Markdown (see
 [CONFIGURATION.md](CONFIGURATION.md#tunnel-instructions)), and ignores a
 `docs_url` that is not an absolute `http(s)` URL. `udp_endpoint` mirrors
 `network.advertised_endpoint`, which clients use for the WireGuard peer.
+`udp_alt_endpoint` is optional and present only when the server sets
+`listen.wireguard_alt`: it is `udp_endpoint`'s host with the alternate port.
+The same WireGuard device listens on both ports and replies from whichever
+socket a peer last used. A client uses it only when its user opted in
+(`--udp-alt`), and only after the direct-UDP candidate on `udp_endpoint` fails
+to become healthy; it then repeats the ordinary reflection and
+`/v1/transport/direct` registration against the alternate address. Clients
+that do not know the field ignore it.
 
 Errors are JSON objects of the form `{"error":"message"}`. Malformed input
 returns `400`; authentication or session failures return `401`; an authorizer
@@ -561,12 +571,43 @@ this version of the feature: WireGuard continues to use a 1420-byte tunnel
 MTU. This is diagnostic probing, not automatic path-MTU
 adaptation, and does not guarantee that a path supports every tunnel packet.
 
-MTU discovery currently has no timeout/retry for an unanswered size probe.
+By default, MTU discovery has no timeout/retry for an unanswered size probe.
 A lost probe or acknowledgement can therefore leave discovery incomplete for
 that candidate even while ordinary health probes succeed. Replacing a server
 candidate with a different endpoint clears its outstanding probes and MTU
 completion state; refreshing the same endpoint retains that state. Automatic
-MTU adaptation and loss-tolerant MTU discovery remain unimplemented.
+MTU adaptation remains unimplemented.
+
+**Opt-in MTU-aware probing** (client `--mtu-aware`, server
+`transport.mtu_aware`; each side decides for its own probes) uses the same
+frames, so it needs no new capability: any `path-mtu-v1` peer already answers
+any target from 1200 to 1500 bytes. An MTU-aware side:
+
+- probes 1200, 1400 (when below the required size), the **required** size, and
+  1500, where required = that side's tunnel MTU + 32 bytes of WireGuard
+  transport overhead (1452 for the default 1420; a client can lower its tunnel
+  MTU with `--tunnel-mtu`);
+- waits 2 seconds for each acknowledgement and sends a step at most 3 times;
+- reports `mtu_state` on the candidate: `probing`, then `ok` once the required
+  size is acknowledged, or `limited` when a step at or below the required size
+  exhausts its retries;
+- ranks a `limited` candidate after other healthy candidates when a
+  replacement primary must be chosen. A healthy incumbent is never moved
+  because of its MTU state, and a forced path is still honored.
+
+Re-registering a candidate with a new endpoint restarts its MTU-aware ladder.
+
+A client that lowered its tunnel MTU reports it in the optional, unsigned
+`tunnel_mtu` field of its `/v1/auth` or `/v1/auth/oidc` request (omitted when
+the default 1420 is used). An MTU-aware server then derives that peer's
+required size from the smaller of the two tunnel MTUs (for example 1372 for
+1340), so the server agrees with the client about whether a path is `ok`.
+Values outside 1280 up to the server's own tunnel MTU are ignored. The field
+can only lower the requirement for the caller's own peer, which is why it is
+not part of the signed payload. The server's netstack keeps its 1420 MTU:
+TCP through the tunnel follows the client's smaller MSS, but a non-TCP
+datagram from a target that is larger than the client's tunnel MTU can still
+be dropped on such a path.
 
 Frame `11` is reserved for the retired receive-triggered payload-acknowledgement
 experiment and current peers neither emit nor accept it. Direct and relay E2E
@@ -627,6 +668,47 @@ registering the candidate for that session's WireGuard public key. The server
 and client probe it before either scheduler selects it; WSS stays active as a
 candidate throughout. The endpoint returns `409 Conflict` when multipath was
 not negotiated.
+
+### Opt-in client-led promotion (`path-promote-v1`, experimental)
+
+v3 never leaves a healthy incumbent on its own, so a session that bootstraps
+on WSS normally stays on WSS while it is healthy. `path-promote-v1` is an
+optional transport capability that changes this, and only for sessions where
+**both** sides opt in: a client offers it only with `--promote`, and a server
+returns it in `transport_capabilities` only when `transport.promotion: true`.
+Without it, behavior is exactly the sticky, failure-driven v3 described above.
+
+Only the client decides, so the two directions cannot drift apart:
+
+1. Once per probe interval the client looks for a non-WSS candidate that is
+   healthy, has passed its last 15 consecutive probes, is not MTU-`limited`
+   (and is MTU-`ok` when the client is MTU-aware), and is clearly better than
+   the healthy incumbent: a higher path rank (`direct-udp` > `udp-relay` >
+   `wss`), or the same rank with an RTT at least 25% and 15 ms lower. Nothing
+   is promoted while a transport is forced, or within 60 seconds of the last
+   non-initial switch.
+2. The client sends:
+
+   ```json
+   {"path": "direct-udp"}
+   ```
+
+   to `POST /v1/transport/primary` with the session bearer token.
+3. The server accepts only a path registered for that session's own WireGuard
+   peer that is also healthy by the **server's** own probes, is not
+   MTU-`limited`, and is not overridden by a healthy `transport.force`. It then
+   commits it as the peer's primary and returns `204 No Content`. Otherwise it
+   returns `409 Conflict` (unknown, unhealthy, limited, or forced), `400` for
+   an invalid path, `429` for more than one attempt per session in 10 seconds,
+   and `404` when promotion is not enabled or not negotiated.
+4. Only after a `204` does the client commit the same primary locally. Both
+   sides record a `promoted` switch event.
+
+Afterwards selection is sticky and failure-driven again; demotion still
+happens only on carrier failure or missed probes. If a promoted path fails
+within 5 minutes, or a promotion is rejected, the client doubles the required
+qualifying probes (up to about 10 minutes) before trying again. A reconnect
+starts fresh on WSS.
 
 ### Peer ownership and relay PAC metadata
 

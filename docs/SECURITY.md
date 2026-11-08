@@ -113,6 +113,13 @@ remains outstanding before an iOS data plane can be enabled by default.
 - Session tokens are random bearer credentials and expire when checked.
 - The WebSocket fallback requires the session bearer token and accepts only
   bounded binary WireGuard datagrams.
+- Opt-in transport promotion (`POST /v1/transport/primary`, off unless the
+  server sets `transport.promotion` and the session negotiated
+  `path-promote-v1`) requires the session bearer token. It can only select
+  among carriers already registered for that session's own WireGuard peer and
+  proven healthy by the server's own probes. It never accepts an address and
+  cannot affect other peers. Attempts are rate-limited to one per session per
+  10 seconds. An operator `transport.force` still takes precedence.
 - OIDC grant matching stays scoped to the authentication method: an SSH
   request is never compared against email/domain/group `allow` entries and an
   OIDC request is never compared against fingerprint/comment entries, even

@@ -646,35 +646,84 @@ func (c *Connection) postPunch(clientAddr string) (protocol.PunchResponse, error
 // address then travels over the authenticated HTTPS control plane, allowing
 // the server to register the reciprocal candidate before either scheduler is
 // allowed to select it.
-func (c *Connection) bootstrapDirectMultipath(serverAddr string) {
+//
+// altAddr is the opt-in alternate endpoint (Options.UDPAlt); when non-empty
+// and serverAddr cannot prove reachability, the same candidate is retried on
+// altAddr. Empty altAddr keeps the single attempt.
+func (c *Connection) bootstrapDirectMultipath(serverAddr, altAddr string) {
+	if c.tryDirectMultipathCandidate(serverAddr) || altAddr == "" {
+		return
+	}
+	select {
+	case <-c.stop:
+		return
+	default:
+	}
+	c.log.Info("direct UDP unreachable on primary port; trying alternate port", "server", c.DisplayName(), "candidate", altAddr)
+	c.tryDirectMultipathCandidate(altAddr)
+}
+
+// tryDirectMultipathCandidate registers serverAddr as the direct-udp
+// candidate and reports whether it became healthy within the probe timeout.
+func (c *Connection) tryDirectMultipathCandidate(serverAddr string) bool {
 	c.mu.Lock()
 	multipath, hybrid := c.multipath, c.hybrid
 	c.mu.Unlock()
 	if multipath == nil || hybrid == nil {
-		return
+		return false
 	}
 	bind, ok := hybrid.UDP.(*wstransport.FilterBind)
 	if !ok {
-		return
+		return false
 	}
 	ep, err := hybrid.UDP.ParseEndpoint(serverAddr)
 	if err != nil {
 		c.log.Debug("direct multipath candidate is invalid", "candidate", serverAddr, "error", err)
-		return
+		return false
 	}
 	multipath.RegisterPath("direct-udp", wstransport.PathDirect, ep)
 	clientAddr, err := selfReflect(bind, serverAddr, c.upgradeTiming.reflectTimeout)
 	if err != nil {
 		c.log.Debug("direct multipath reflection failed", "candidate", serverAddr, "error", err)
-		return
+		return false
 	}
 	if err := c.postDirectTransport(clientAddr); err != nil {
 		c.log.Debug("direct multipath registration failed", "candidate", serverAddr, "error", err)
-		return
+		return false
 	}
 	if waitForMultipathPath(multipath, "direct-udp", c.upgradeTiming.probeTimeout, c.stop) {
 		c.log.Info("direct UDP multipath candidate established", "server", c.DisplayName(), "candidate", serverAddr)
+		return true
 	}
+	return false
+}
+
+// postTransportPrimary is the client half of opt-in path-promote-v1: it asks
+// the server to commit path as this session's primary. Only a 204 counts as
+// acceptance; the caller commits locally only then.
+func (c *Connection) postTransportPrimary(path string) error {
+	c.mu.Lock()
+	base, token := c.base, c.token
+	c.mu.Unlock()
+	b, _ := json.Marshal(protocol.TransportPrimaryRequest{Path: path})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/transport/primary", bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("transport promotion rejected: %s", resp.Status)
+	}
+	c.log.Info("transport promoted", "server", c.DisplayName(), "path", path)
+	return nil
 }
 
 func (c *Connection) postDirectTransport(address string) error {

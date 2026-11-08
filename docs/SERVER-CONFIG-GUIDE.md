@@ -49,8 +49,12 @@ Collect unanswered required choices before producing YAML. Retain the displayed 
 listen:
   https    : ":8443"                     # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+  wireguard_alt: ""                      # opt-in second UDP port for the same data plane, e.g. ":443" for networks that block 51820/udp; advertised to clients that enable --udp-alt; empty opens nothing
   metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
   name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
+  tcp:                                   # opt-in Linux TCP tuning for the listen.https listener (WSS carrier); empty/zero changes nothing
+    congestion   : ""                    # TCP_CONGESTION algorithm, e.g. bbr (needs the kernel module); empty keeps the system default
+    notsent_lowat: 0                     # TCP_NOTSENT_LOWAT bytes, e.g. 131072, to bound send-queue latency; 0 keeps the system default
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -93,6 +97,9 @@ transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
+  mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
+  promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -156,6 +163,9 @@ relay:
   # - url        : "wss://relay-b.example.com:8444"
   #   fingerprint: "SHA256:..."
   reconnect_min  : 1s                      # initial backoff after a dropped control connection; default: 1s
+  tcp:                                     # opt-in Linux TCP tuning for this server's connections to the relay; empty/zero changes nothing
+    congestion   : ""                      # TCP_CONGESTION algorithm, e.g. bbr; empty keeps the system default
+    notsent_lowat: 0                       # TCP_NOTSENT_LOWAT bytes; 0 keeps the system default
   reconnect_max  : 1m                      # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
   direct_clients : false                   # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
@@ -443,8 +453,23 @@ audit:
         "name": {
           "type": "string"
         },
+        "tcp": {
+          "additionalProperties": false,
+          "properties": {
+            "congestion": {
+              "type": "string"
+            },
+            "notsent_lowat": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "wireguard": {
           "default": ":51820",
+          "type": "string"
+        },
+        "wireguard_alt": {
           "type": "string"
         }
       },
@@ -682,6 +707,18 @@ audit:
           "format": "duration",
           "type": "string"
         },
+        "tcp": {
+          "additionalProperties": false,
+          "properties": {
+            "congestion": {
+              "type": "string"
+            },
+            "notsent_lowat": {
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
         "url": {
           "type": "string"
         }
@@ -719,7 +756,16 @@ audit:
           ],
           "type": "string"
         },
+        "metrics": {
+          "type": "boolean"
+        },
+        "mtu_aware": {
+          "type": "boolean"
+        },
         "multipath": {
+          "type": "boolean"
+        },
+        "promotion": {
           "type": "boolean"
         }
       },

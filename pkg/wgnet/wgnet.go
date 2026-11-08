@@ -52,7 +52,12 @@ type Config struct {
 	// UDPBufferLogger receives the requested and kernel-accepted socket
 	// capacities when this config uses the default direct UDP bind.
 	UDPBufferLogger *slog.Logger
+	// MTU is the netstack/tunnel MTU. Zero keeps the default 1420.
+	MTU int
 }
+
+// DefaultMTU is the tunnel MTU used when Config.MTU is zero.
+const DefaultMTU = 1420
 
 // Stack owns both the WireGuard device and its in-memory TCP/IP stack.
 type Stack struct {
@@ -81,7 +86,11 @@ func New(c Config) (*Stack, error) {
 		return nil, err
 	}
 	key.Public = base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes())
-	td, ns, err := netstack.CreateNetTUN(c.Addresses, c.DNSServers, 1420)
+	mtu := c.MTU
+	if mtu <= 0 {
+		mtu = DefaultMTU
+	}
+	td, ns, err := netstack.CreateNetTUN(c.Addresses, c.DNSServers, mtu)
 	if err != nil {
 		return nil, err
 	}

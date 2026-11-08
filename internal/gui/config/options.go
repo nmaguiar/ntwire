@@ -58,6 +58,10 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 	if statusFile == "" {
 		return client.Options{}, fmt.Errorf("gui: profile %q has no status file", p.Name)
 	}
+	tunnelMTU, err := client.ParseTunnelMTU(p.TunnelMTU)
+	if err != nil {
+		return client.Options{}, fmt.Errorf("gui: profile %q: %w", p.Name, err)
+	}
 	ports := make(map[string]int, len(p.Ports))
 	for k, v := range p.Ports {
 		ports[k] = v
@@ -87,6 +91,10 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		BindAddress:      p.BindAddress,
 		IPVersion:        p.IPVersion,
 		Transport:        p.Transport,
+		UDPAlt:           p.UDPAlt,
+		MTUAware:         p.MTUAware,
+		Promote:          p.Promote,
+		TunnelMTU:        tunnelMTU,
 		SettingsURL:      settingsURL,
 	}, nil
 }

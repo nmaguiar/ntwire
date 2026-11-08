@@ -149,6 +149,29 @@ type Options struct {
 	// if the forced transport becomes unavailable or degraded.
 	Transport string
 
+	// UDPAlt opts into the server's alternate WireGuard UDP endpoint
+	// (AuthResponse.UDPAlt, server listen.wireguard_alt). When the primary
+	// direct-UDP multipath candidate cannot prove reachability, the client
+	// retries the candidate on the alternate port. Default false ignores it.
+	UDPAlt bool
+
+	// MTUAware opts into MTU-aware multipath probing: lost MTU probes are
+	// retried, each UDP candidate is probed at the size a full tunnel packet
+	// needs, and one that cannot carry it is reported as "limited" and
+	// ranked after other candidates when a replacement is chosen. Default
+	// false keeps the diagnostic-only probing.
+	MTUAware bool
+	// TunnelMTU overrides the WireGuard netstack MTU (1280-1420). Zero keeps
+	// 1420. Lower it for links with extra encapsulation (PPPoE, nested VPNs).
+	TunnelMTU int
+	// Promote opts into client-led promotion (path-promote-v1, experimental).
+	// When the server also enables transport.promotion, a healthy session
+	// moves from its incumbent (normally the WSS bootstrap) to a candidate
+	// that has stayed healthy and clearly better for a qualification period,
+	// coordinated with the server so both directions switch together.
+	// Default false keeps selection strictly failure-driven.
+	Promote bool
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
@@ -470,6 +493,9 @@ func httpClient(url string, o Options) (*http.Client, error) {
 	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
 		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
 	}
+	if o.TunnelMTU != 0 && (o.TunnelMTU < MinTunnelMTU || o.TunnelMTU > wstransport.DefaultTunnelMTU) {
+		return nil, fmt.Errorf("invalid tunnel MTU %d: must be %d-%d", o.TunnelMTU, MinTunnelMTU, wstransport.DefaultTunnelMTU)
+	}
 	proxy, dialContext, err := configureProxy(o)
 	if err != nil {
 		return nil, err
@@ -738,8 +764,18 @@ func clientCapabilities() []string {
 
 func clientTransportCapabilities() []string { return clientCapabilities() }
 
-func validateAuthResponseCapabilities(r protocol.AuthResponse) error {
-	if err := protocol.ValidateRequiredCapabilities(clientTransportCapabilities(), r.RequiredTransportCapabilities); err != nil {
+// transportCapabilitiesFor is what one connection offers: the base set plus
+// any opt-in transport capability its options enable.
+func transportCapabilitiesFor(o Options) []string {
+	caps := clientTransportCapabilities()
+	if o.Promote {
+		caps = append(caps, protocol.CapabilityPathPromoteV1)
+	}
+	return caps
+}
+
+func validateAuthResponseCapabilities(r protocol.AuthResponse, o Options) error {
+	if err := protocol.ValidateRequiredCapabilities(transportCapabilitiesFor(o), r.RequiredTransportCapabilities); err != nil {
 		return fmt.Errorf("server requires an unsupported transport capability: %w", err)
 	}
 	return nil
@@ -844,8 +880,9 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	r := protocol.OIDCAuthRequest{
 		Version: protocol.Version, IssuerName: issuer.Name, IDToken: tok.IDToken,
 		WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Info: info,
-		TransportCapabilities: clientTransportCapabilities(),
+		TransportCapabilities: transportCapabilitiesFor(o),
 		QueryOnly:             o.QueryOnly,
+		TunnelMTU:             o.TunnelMTU,
 	}
 	b, _ := json.Marshal(r)
 	resp, err := h.Post(base+"/v1/auth/oidc", "application/json", bytes.NewReader(b))
@@ -860,7 +897,7 @@ func authenticateOIDC(h *http.Client, base string, issuer protocol.OIDCIssuerInf
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	if err := validateAuthResponseCapabilities(out); err != nil {
+	if err := validateAuthResponseCapabilities(out, o); err != nil {
 		return protocol.AuthResponse{}, err
 	}
 	return out, nil
@@ -891,7 +928,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if _, err = rand.Read(n); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: clientTransportCapabilities(), QueryOnly: o.QueryOnly}
+	r := protocol.AuthRequest{Version: protocol.Version, PublicKey: pub, WireGuardPublicKey: wgPublic, Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n), Info: info, TransportCapabilities: transportCapabilitiesFor(o), QueryOnly: o.QueryOnly, TunnelMTU: o.TunnelMTU}
 	p, err := protocol.SigningPayload(r)
 	if err != nil {
 		return protocol.AuthResponse{}, err
@@ -913,7 +950,7 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 	if err = json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return protocol.AuthResponse{}, err
 	}
-	if err := validateAuthResponseCapabilities(out); err != nil {
+	if err := validateAuthResponseCapabilities(out, o); err != nil {
 		return protocol.AuthResponse{}, err
 	}
 	return out, nil
@@ -1308,6 +1345,26 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 type MultipathOptions struct {
 	// DuplicateRateBytesPerSec bounds reactive WireGuard-only duplication.
 	DuplicateRateBytesPerSec int
+	// PromotionQualifyingProbes shortens opt-in promotion's qualification
+	// period (tests only). Zero keeps the production default.
+	PromotionQualifyingProbes int
+}
+
+// MinTunnelMTU is the smallest accepted Options.TunnelMTU (the IPv6 minimum).
+const MinTunnelMTU = 1280
+
+// ParseTunnelMTU converts the --tunnel-mtu / tunnel_mtu text setting. Empty
+// means the default (0).
+func ParseTunnelMTU(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < MinTunnelMTU || n > wstransport.DefaultTunnelMTU {
+		return 0, fmt.Errorf("invalid tunnel MTU %q: must be a number from %d to %d", s, MinTunnelMTU, wstransport.DefaultTunnelMTU)
+	}
+	return n, nil
 }
 
 func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
@@ -1315,8 +1372,18 @@ func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
 		return wstransport.MultipathOptions{}
 	}
 	return wstransport.MultipathOptions{
-		DuplicateRateBytesPerSec: o.DuplicateRateBytesPerSec,
+		DuplicateRateBytesPerSec:  o.DuplicateRateBytesPerSec,
+		PromotionQualifyingProbes: o.PromotionQualifyingProbes,
 	}
+}
+
+// multipathOptionsFor adds the connection's opt-in transport settings to the
+// resolved multipath options.
+func multipathOptionsFor(o Options) wstransport.MultipathOptions {
+	mo := resolveMultipathOptions(o.Multipath)
+	mo.MTUAware = o.MTUAware
+	mo.TunnelMTU = o.TunnelMTU
+	return mo
 }
 
 func hasTransportCapability(caps []string, want string) bool {
@@ -2036,6 +2103,10 @@ func (c *Connection) startWebUI() {
 			return
 		}
 		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("details") == "1" {
+				_ = json.NewEncoder(w).Encode(c.TransportDetails())
+				return
+			}
 			_ = json.NewEncoder(w).Encode(c.TransportInfo())
 			return
 		}
@@ -2434,6 +2505,25 @@ type TransportInfo struct {
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective"`
 	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+	// Events and Reason are populated only for a detailed request (GET
+	// /transport?details=1, ntwire transport -v), so the default response
+	// is unchanged.
+	Events []wstransport.SwitchEvent `json:"events,omitempty"`
+	Reason string                    `json:"reason,omitempty"`
+}
+
+// TransportDetails is TransportInfo plus the switch history and the reason
+// the connection did not start on direct UDP.
+func (c *Connection) TransportDetails() TransportInfo {
+	info := c.TransportInfo()
+	info.Reason = c.TransportReason()
+	c.mu.Lock()
+	multipath := c.multipath
+	c.mu.Unlock()
+	if multipath != nil {
+		info.Events = multipath.Scheduler().SwitchEvents()
+	}
+	return info
 }
 
 func (c *Connection) TransportInfo() TransportInfo {

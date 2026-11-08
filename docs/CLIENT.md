@@ -13,6 +13,7 @@ and SSO. For a first connection or an official WireGuard client, start with
 | `ntwire list [-i key \| --sso] [--json] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, it uses `~/.ntwire/id_ed25519` if present, then the first conventional key in `~/.ssh`, or falls back to SSO when advertised. `--json` is machine-readable. Do not add a trailing `/` to `URL`. |
 | `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket] [--bind address]` | Starts local listeners, renews the session, and prints a token-protected status URL. A tunnel's `local_port`/`local_host` are preferred when available; otherwise a free port and `127.0.0.1` are used. `--port name=local-port` or `--port name=host:local-port` is a client-side override. `--websocket` selects the fallback transport; `--bind` is advanced and changes the exposure of the listener. |
 | `ntwire status [--json]` | Shows the running connection's tunnels, transport, and expiry. |
+| `ntwire transport [-v] [auto\|wss\|udp-relay\|direct-udp]` | Shows the active transport and multipath candidates, or switches the live mode. `-v` also shows each UDP candidate's confirmed datagram MTU, why the session did not start on direct UDP, and the bounded transport switch history (time, from → to, reason). Without `-v` the output is unchanged. |
 | `ntwire disconnect` | Stops the connection in this state directory. |
 | `ntwire port name=15432` | Replaces a running tunnel's local listener; the status UI offers the same action. |
 | `ntwire logout URL` | Clears cached SSO credentials for a server. |
@@ -224,3 +225,17 @@ specific key type, or ask the administrator to compare the derived public key.
 For PEM keys OpenSSL can extract the public component with
 `openssl pkey -in identity-from-p12.pem -pubout -out public.pem`; share only
 public material, never the private key or passphrase.
+
+## Opt-in transport settings
+
+These `ntwire connect` flags are all off by default; leaving them unset keeps
+the existing transport behavior. Each one is also an **Advanced** setting in the
+ntwire-gui profile editor and in the `ntwire connect` local settings page, and
+can be persisted in `~/.ntwire/config.yaml` under the key shown.
+
+| Flag | config.yaml key | Effect | Needs on the server |
+| --- | --- | --- | --- |
+| `--udp-alt` | `udp_alt` | If direct UDP to the server's primary WireGuard port cannot be proven, retry it on the server's alternate port (for example 443/udp). | `listen.wireguard_alt` |
+| `--mtu-aware` | `mtu_aware` | Retry lost MTU probes, probe the size a full tunnel packet needs, report each UDP path's `mtu_state` (`ntwire transport -v`), and rank `limited` paths after others on failover. | Any multipath server (path MTU probing); `transport.mtu_aware` is the server-side equivalent. |
+| `--tunnel-mtu N` | `tunnel_mtu` | Lower the WireGuard tunnel MTU (1280–1420, default 1420) for links with extra encapsulation. The value is reported to the server so an MTU-aware server probes for the same size. | Nothing |
+| `--promote` | `promote` | **Experimental.** Move a healthy session from the WebSocket bootstrap to a proven, clearly better UDP path, coordinated with the server so both directions switch together (`path-promote-v1`). Without it a healthy WSS session stays on WSS. | `transport.promotion` |

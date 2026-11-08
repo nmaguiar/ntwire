@@ -108,6 +108,14 @@ therefore copied, mode `0600`, under `~/.ntwire/identities/` next to the GUI
 configuration. This avoids asking non-technical users to type a filesystem
 path while keeping the selected key private to their account.
 
+### Opt-in transport settings
+
+A profile's **🛠️ Advanced** section includes the opt-in transport settings
+described in [CLIENT.md](CLIENT.md#opt-in-transport-settings) (for example
+**Try alternate UDP port**). They are off for new and existing profiles and
+are written to `gui.yaml` only once enabled, so profiles that never use them
+are unchanged.
+
 ## Autostart and single instance
 
 Toggling "Start at login" in the tray registers a per-OS login item via

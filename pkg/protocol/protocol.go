@@ -31,6 +31,13 @@ const CapabilityMultipathV3 = "multipath-v3"
 // diagnostic datagrams.
 const CapabilityPathMTUV1 = "path-mtu-v1"
 
+// CapabilityPathPromoteV1 opts a v3 peer into client-led promotion: the
+// client may move both directions of a session from a healthy incumbent to a
+// better proven candidate by calling POST /v1/transport/primary. Both sides
+// offer it only when explicitly enabled (client --promote, server
+// transport.promotion); without it v3 stays strictly failure-driven.
+const CapabilityPathPromoteV1 = "path-promote-v1"
+
 // CapabilityNativeWireGuardRelay advertises the optional opaque WireGuard
 // forwarding tier used by unmodified official clients.
 const CapabilityNativeWireGuardRelay = "native-wireguard-relay-v1"
@@ -124,6 +131,13 @@ type AuthRequest struct {
 	// max_sessions_per_key. Not part of the signed payload since it only
 	// ever narrows what the server does for the caller's own request.
 	QueryOnly bool `json:"query_only,omitempty"`
+	// TunnelMTU is the client's WireGuard tunnel MTU when it lowered it
+	// (--tunnel-mtu, 1280-1420). An MTU-aware server then probes this
+	// peer's UDP paths for the size the client's packets need instead of
+	// its own 1420 default. Unsigned for the same reason as
+	// TransportCapabilities: it only affects probing of the caller's own
+	// peer. Omitted (0) means the default.
+	TunnelMTU int `json:"tunnel_mtu,omitempty"`
 }
 
 // OIDCAuthRequest authenticates with an ID token instead of an SSH signature.
@@ -140,6 +154,8 @@ type OIDCAuthRequest struct {
 	RequiredTransportCapabilities []string   `json:"required_transport_capabilities,omitempty"`
 	// QueryOnly: see AuthRequest.QueryOnly.
 	QueryOnly bool `json:"query_only,omitempty"`
+	// TunnelMTU: see AuthRequest.TunnelMTU.
+	TunnelMTU int `json:"tunnel_mtu,omitempty"`
 }
 
 // OIDCIssuerInfo advertises an issuer to clients so they can run the login
@@ -223,9 +239,13 @@ type AuthResponse struct {
 	TTLSeconds      int      `json:"ttl_seconds"`
 	Tunnels         []Tunnel `json:"tunnels"`
 	UDP             string   `json:"udp_endpoint,omitempty"`
-	WebSocket       string   `json:"websocket_endpoint,omitempty"`
-	Identity        string   `json:"identity,omitempty"`
-	Method          string   `json:"method,omitempty"`
+	// UDPAlt is the optional alternate WireGuard UDP endpoint (same host as
+	// UDP, server listen.wireguard_alt port). Only clients that opt in with
+	// --udp-alt use it, and only after UDP fails to prove reachable.
+	UDPAlt    string `json:"udp_alt_endpoint,omitempty"`
+	WebSocket string `json:"websocket_endpoint,omitempty"`
+	Identity  string `json:"identity,omitempty"`
+	Method    string `json:"method,omitempty"`
 	// Multipath is set only by relay-mode servers that implement the stable
 	// candidate transport. Older peers omit it, keeping the legacy endpoint
 	// upgrade ladder wire-compatible.
@@ -350,6 +370,14 @@ type PunchRequest struct {
 // succeed before its scheduler can select it.
 type TransportPathRequest struct {
 	Address string `json:"address"`
+}
+
+// TransportPrimaryRequest asks the server to commit Path ("direct-udp",
+// "udp-relay", or "wss") as this session's primary multipath carrier. It is
+// accepted only for sessions that negotiated CapabilityPathPromoteV1 and only
+// when that candidate is currently healthy on the server too.
+type TransportPrimaryRequest struct {
+	Path string `json:"path"`
 }
 
 // PunchResponse answers a PunchRequest. ServerAddr is the server's own most

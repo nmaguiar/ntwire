@@ -46,6 +46,12 @@ type MultipathBind struct {
 	stopped     bool
 
 	pathMTU bool
+	// mtu is the opt-in MTU-aware policy; nil keeps the diagnostic ladder.
+	mtu *mtuPolicy
+	// promo is the opt-in path-promote-v1 policy; nil (the default) keeps
+	// selection strictly failure-driven.
+	promo             atomic.Pointer[promoter]
+	promoteQualifying int
 
 	// dupLimiter bounds Select's reactive WireGuard type-4 duplication.
 	dupLimiter *byteRateLimiter
@@ -109,6 +115,9 @@ type outstandingProbe struct {
 type outstandingMTUProbe struct {
 	nonce  [pathProbeSize]byte
 	target uint16
+	// sentAt and attempts are read only by the opt-in MTU-aware retry path.
+	sentAt   time.Time
+	attempts int
 }
 
 // probeInterval/probeTimeout pace the health-probing every registered
@@ -137,8 +146,10 @@ func NewMultipathBind(base conn.Bind, id string, pathMTU bool, opts MultipathOpt
 		base: base, scheduler: NewScheduler(), cache: NewDuplicateCache(4096, 10*time.Second),
 		paths: make(map[string]conn.Endpoint), endpoint: multipathEndpoint{id: id},
 		probes: make(map[string]outstandingProbe), mtuProbes: make(map[string]outstandingMTUProbe), mtuDone: make(map[string]bool), stop: make(chan struct{}),
-		pathMTU:    pathMTU,
-		dupLimiter: newByteRateLimiter(opts.DuplicateRateBytesPerSec),
+		pathMTU:           pathMTU,
+		mtu:               newMTUPolicy(opts),
+		promoteQualifying: opts.PromotionQualifyingProbes,
+		dupLimiter:        newByteRateLimiter(opts.DuplicateRateBytesPerSec),
 	}
 	go m.probeLoop(m.stop)
 	return m
@@ -160,6 +171,15 @@ func (m *MultipathBind) RegisterPath(name string, kind PathKind, endpoint conn.E
 		m.relayEndpointID.Store(&id)
 	}
 	m.scheduler.Register(name, kind)
+	if m.mtu != nil && m.pathMTU && kind != PathWSS {
+		// A (re)registered endpoint is a new network path: forget what the
+		// previous endpoint proved.
+		m.probeMu.Lock()
+		delete(m.mtuProbes, name)
+		delete(m.mtuDone, name)
+		m.probeMu.Unlock()
+		m.scheduler.SetMTUState(name, MTUStateProbing)
+	}
 	if kind != PathWSS {
 		m.sendProbe(name, time.Now())
 	}
@@ -362,7 +382,11 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		m.probeMu.Unlock()
 		if found {
 			m.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
-			m.sendMTUProbe(name, minPathMTUProbe)
+			if m.mtu != nil {
+				m.driveMTU(name, now)
+			} else {
+				m.sendMTUProbe(name, minPathMTUProbe)
+			}
 		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
@@ -390,6 +414,12 @@ func (m *MultipathBind) handlePathControl(typ byte, payload []byte, ep conn.Endp
 		if found {
 			m.scheduler.ReportDatagramMTU(name, ack.Target)
 			next := nextPathMTUProbe(ack.Target)
+			if m.mtu != nil {
+				next = m.mtu.next(ack.Target)
+				if state := m.mtu.stateAfterAck(ack.Target); state != "" {
+					m.scheduler.SetMTUState(name, state)
+				}
+			}
 			if next == 0 {
 				m.probeMu.Lock()
 				m.mtuDone[name] = true
@@ -439,6 +469,9 @@ func (m *MultipathBind) probeLoop(stop <-chan struct{}) {
 		select {
 		case <-ticker.C:
 			m.probeAll()
+			if p := m.promo.Load(); p != nil {
+				p.evaluate(m.scheduler, time.Now())
+			}
 		case <-stop:
 			return
 		}
@@ -532,7 +565,51 @@ func (m *MultipathBind) sendMTUProbe(name string, target uint16) {
 		m.probeMu.Unlock()
 		return
 	}
-	m.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target}
+	m.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: time.Now()}
+	m.probeMu.Unlock()
+	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
+}
+
+// driveMTU is the MTU-aware replacement for re-arming the ladder on every
+// health ack: it starts the ladder, retries a lost step up to
+// mtuMaxAttempts times, then records the step as the path's limit.
+func (m *MultipathBind) driveMTU(name string, now time.Time) {
+	if !m.pathMTU {
+		return
+	}
+	m.mu.RLock()
+	ep := m.paths[name]
+	m.mu.RUnlock()
+	if ep == nil {
+		return
+	}
+	m.probeMu.Lock()
+	if m.mtuDone[name] {
+		m.probeMu.Unlock()
+		return
+	}
+	out, outstanding := m.mtuProbes[name]
+	target, attempts := m.mtu.ladder[0], 0
+	if outstanding {
+		if now.Sub(out.sentAt) < mtuProbeTimeout {
+			m.probeMu.Unlock()
+			return
+		}
+		if out.attempts+1 >= mtuMaxAttempts {
+			delete(m.mtuProbes, name)
+			m.mtuDone[name] = true
+			m.probeMu.Unlock()
+			m.scheduler.SetMTUState(name, m.mtu.stateAfterGivingUp(out.target))
+			return
+		}
+		target, attempts = out.target, out.attempts+1
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		m.probeMu.Unlock()
+		return
+	}
+	m.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: now, attempts: attempts}
 	m.probeMu.Unlock()
 	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
 }
@@ -610,6 +687,9 @@ type PathStatus struct {
 	// authenticated probe exchange. It is diagnostic only: WireGuard keeps
 	// its established 1420-byte tunnel MTU for this connection.
 	DatagramMTU uint16 `json:"datagram_mtu"`
+	// MTUState is set only by an MTU-aware bind (MultipathOptions.MTUAware):
+	// "probing", "ok", or "limited" (cannot carry a full-size tunnel packet).
+	MTUState string `json:"mtu_state,omitempty"`
 	// Forced indicates whether this candidate is the user's manual selection.
 	Forced bool `json:"forced"`
 	// DuplicatedBytes is the cumulative count of primary WireGuard bytes
@@ -637,6 +717,12 @@ type candidate struct {
 	duplicatedBytes            atomic.Uint64
 	duplicationSuppressedBytes atomic.Uint64
 	controlSending             atomic.Bool
+	// failedBy records what last made this candidate unhealthy, for the
+	// diagnostic switch log only; it never influences selection.
+	failedBy SwitchReason
+	// streak counts consecutive successful probes. It is read only by the
+	// opt-in promotion policy (promotionCandidate).
+	streak int
 }
 
 // Scheduler implements v3's sticky, failure-driven selection policy. Probe
@@ -662,6 +748,10 @@ type Scheduler struct {
 	// event, so it pays its own atomic store instead of forcing every caller
 	// through an exclusive lock.
 	primary atomic.Pointer[primaryState]
+
+	// switches is the bounded, diagnostic history of committed primary
+	// changes (see switchlog.go).
+	switches switchLog
 }
 
 // primaryState is Scheduler.primary's committed incumbent.
@@ -710,6 +800,7 @@ func (s *Scheduler) ActivateCarrier(name string, now time.Time) {
 	s.mu.Unlock()
 	if p != nil && s.primary.CompareAndSwap(nil, &primaryState{name: name}) {
 		slog.Debug("multipath initial carrier activated", "candidate", name)
+		s.switches.record(SwitchEvent{At: now, To: name, Reason: SwitchInitial})
 	}
 }
 
@@ -729,10 +820,12 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		p.used++
 	}
 	if !ok {
+		p.streak = 0
 		p.misses++
 		if p.misses >= 3 {
 			if p.Healthy {
 				slog.Debug("multipath candidate became unhealthy", "candidate", name, "consecutive_probe_misses", p.misses)
+				p.failedBy = SwitchProbeMisses
 			}
 			p.Healthy = false
 		}
@@ -740,6 +833,7 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		return
 	}
 	p.misses = 0
+	p.streak++
 	p.Healthy, p.LastSuccess = true, now
 	if rtt > 0 {
 		if p.RTT == 0 {
@@ -764,9 +858,11 @@ func (s *Scheduler) CarrierFailure(name string) {
 	}
 	if p.Healthy {
 		slog.Debug("multipath candidate carrier failed", "candidate", name)
+		p.failedBy = SwitchCarrierFailure
 	}
 	p.Healthy = false
 	p.misses = 3
+	p.streak = 0
 }
 
 // ReserveControlSend bounds receive-triggered probe and MTU replies to one
@@ -822,6 +918,17 @@ func (s *Scheduler) ReportDatagramMTU(name string, mtu uint16) {
 	defer s.mu.Unlock()
 	if p := s.candidates[name]; p != nil && mtu > p.DatagramMTU {
 		p.DatagramMTU = mtu
+	}
+}
+
+// SetMTUState records an MTU-aware bind's verdict for a candidate. It is
+// diagnostic except that "limited" ranks the candidate after others when a
+// replacement is chosen (see selectLocked).
+func (s *Scheduler) SetMTUState(name, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p := s.candidates[name]; p != nil {
+		p.MTUState = state
 	}
 }
 
@@ -898,6 +1005,11 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		}
 	}
 	sort.Slice(paths, func(i, j int) bool {
+		// MTUState is empty unless an MTU-aware bind set it, so this only
+		// changes ordering for opted-in sessions.
+		if li, lj := paths[i].MTUState == MTUStateLimited, paths[j].MTUState == MTUStateLimited; li != lj {
+			return lj
+		}
 		left, right := s.score(paths[i]), s.score(paths[j])
 		if left == right {
 			return paths[i].Name < paths[j].Name
@@ -960,8 +1072,12 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		curName = cur.name
 	}
 	if chosen.Name != curName {
-		slog.Debug("multipath primary changed", "from", curName, "to", chosen.Name, "forced", forcedName != "")
-		s.primary.Store(&primaryState{name: chosen.Name})
+		// Concurrent Select callers may reach the same decision; only the one
+		// whose compare-and-swap commits the change logs it.
+		if s.primary.CompareAndSwap(cur, &primaryState{name: chosen.Name}) {
+			slog.Debug("multipath primary changed", "from", curName, "to", chosen.Name, "forced", forcedName != "")
+			s.switches.record(SwitchEvent{At: time.Now(), From: curName, To: chosen.Name, Reason: s.switchReasonLocked(curName, chosen == forcedCandidate)})
+		}
 	}
 	primary = chosen.Name
 	if len(paths) == 1 {
@@ -981,6 +1097,21 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		return primary, alt.Name, true
 	}
 	return primary, "", false
+}
+
+// switchReasonLocked classifies a committed primary change for the switch
+// log. Callers hold at least s.mu's read lock.
+func (s *Scheduler) switchReasonLocked(from string, forced bool) SwitchReason {
+	switch {
+	case from == "":
+		return SwitchInitial
+	case forced:
+		return SwitchForced
+	}
+	if p := s.candidates[from]; p != nil && p.failedBy != "" {
+		return p.failedBy
+	}
+	return SwitchCarrierFailure
 }
 
 func findCandidate(paths []*candidate, name string) *candidate {

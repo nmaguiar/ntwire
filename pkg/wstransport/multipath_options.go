@@ -9,6 +9,20 @@ import (
 // V3 never mirrors ordinary tunnel traffic merely to sample a standby path.
 type MultipathOptions struct {
 	DuplicateRateBytesPerSec int
+	// MTUAware opts into the MTU-aware probe ladder: retries for lost MTU
+	// probes, a probe at exactly the size a full tunnel packet needs, and an
+	// "mtu_state" per UDP candidate. A candidate that cannot carry full-size
+	// packets ("limited") is ranked after other healthy candidates when a
+	// replacement is chosen. Requires the peer to have negotiated
+	// path-mtu-v1; it changes nothing on the wire.
+	MTUAware bool
+	// TunnelMTU is this side's WireGuard tunnel MTU used to derive the
+	// required probe size. Zero means DefaultTunnelMTU.
+	TunnelMTU int
+	// PromotionQualifyingProbes overrides how many consecutive healthy
+	// probes a candidate needs before opt-in promotion (tests only). Zero
+	// keeps the production default.
+	PromotionQualifyingProbes int
 }
 
 const defaultDuplicateRateBytesPerSec = 262144 // 256 KB/s

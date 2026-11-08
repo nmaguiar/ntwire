@@ -13,6 +13,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/tcptune"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"log/slog"
@@ -310,7 +311,7 @@ func main() {
 		go pool.Run(context.Background())
 		defer pool.Close()
 		if c.Relay.DirectClients {
-			directListener, listenErr := net.Listen("tcp", c.Listen.HTTPS)
+			directListener, listenErr := tcptune.Listen(c.Listen.TCP, c.Listen.HTTPS)
 			if listenErr != nil {
 				slog.Error("direct client listener error", "https", c.Listen.HTTPS, "error", listenErr)
 				os.Exit(2)
@@ -331,7 +332,20 @@ func main() {
 		return
 	}
 	slog.Info("ntwire server listening", "https", c.Listen.HTTPS, "wireguard", c.Listen.WireGuard, "version", buildinfo.String(), "tls_fingerprint", tlsManager.Fingerprint())
-	if err = h.ListenAndServeTLS("", ""); err != nil {
+	if !c.Listen.TCP.Enabled() {
+		err = h.ListenAndServeTLS("", "")
+	} else {
+		// Same address resolution as ListenAndServeTLS, plus opt-in tuning.
+		addr := h.Addr
+		if addr == "" {
+			addr = ":https"
+		}
+		var ln net.Listener
+		if ln, err = tcptune.Listen(c.Listen.TCP, addr); err == nil {
+			err = h.ServeTLS(ln, "", "")
+		}
+	}
+	if err != nil {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}

@@ -179,6 +179,16 @@ func (s *Server) StartDataPlane() error {
 		return err
 	}
 	ws := wstransport.NewHybrid(s.log)
+	if s.Config.Listen.WireGuardAlt != "" {
+		alt, err := portOf(s.Config.Listen.WireGuardAlt)
+		if err != nil {
+			return err
+		}
+		if udp, ok := ws.UDP.(*wstransport.FilterBind).Unwrap().(*wstransport.UDPBind); ok {
+			udp.SetAltPort(uint16(alt))
+			s.log.Info("alternate WireGuard UDP port enabled", "port", alt)
+		}
+	}
 	relayMode := s.Config.Relay.Enabled
 	ws.WebSocket.OnPeerConnected = func(_ string, _ conn.Endpoint) {
 		s.observe("websocket_connected", "")
@@ -194,8 +204,14 @@ func (s *Server) StartDataPlane() error {
 		mc := s.Config.Relay.Multipath
 		multipath = wstransport.NewServerMultipathBind(ws, wstransport.MultipathOptions{
 			DuplicateRateBytesPerSec: mc.DuplicateRateBytesPerSec,
+			MTUAware:                 s.Config.Transport.MTUAware,
 		})
 		multipath.SetForced(s.Config.Transport.Force)
+		if s.Config.Transport.Metrics {
+			// Keep totals across data-plane restarts within one process.
+			s.transportSwitches.CompareAndSwap(nil, newTransportSwitchCounters())
+			multipath.SetSwitchObserver(s.transportSwitches.Load().observe)
+		}
 		bind = multipath
 		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
 		// handler's ServeHTTP call). Gate on that session's own negotiated

@@ -22,8 +22,11 @@ type connectionNetwork struct {
 	multipath                        *wstransport.MultipathBind
 	clientIP, serverIP               netip.Addr
 	udpEndpoint, mismatch, transport string
-	useWS, multipathV3               bool
-	response                         protocol.AuthResponse
+	// udpAlt is the opt-in alternate direct-UDP endpoint, empty unless
+	// Options.UDPAlt is set and the server advertised one.
+	udpAlt             string
+	useWS, multipathV3 bool
+	response           protocol.AuthResponse
 }
 
 func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
@@ -32,7 +35,8 @@ func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
 		old.ServerPublicKey == r.ServerPublicKey && old.UDP == r.UDP && old.WebSocket == r.WebSocket &&
 		old.Multipath == r.Multipath &&
 		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityMultipathV3) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3) &&
-		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathMTUV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1)
+		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathMTUV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1) &&
+		hasTransportCapability(old.TransportCapabilities, protocol.CapabilityPathPromoteV1) == hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathPromoteV1)
 }
 
 // applyReconnectedSession is called with networkMu held. Carrier setup steps
@@ -205,12 +209,15 @@ func (c *Connection) openReconnectedTunnel(grant protocol.Tunnel, old *localTunn
 }
 
 func (c *Connection) startTransportWorkers(n *connectionNetwork, stop chan struct{}) {
+	if n.multipath != nil && c.options.Promote && hasTransportCapability(n.response.TransportCapabilities, protocol.CapabilityPathPromoteV1) {
+		n.multipath.EnablePromotion(c.postTransportPrimary)
+	}
 	if n.multipath != nil && shouldBootstrapDirectMultipath(n.multipathV3, n.udpEndpoint, c.options.UseWebSocket) {
 		go func() {
 			c.transportMu.RLock()
 			defer c.transportMu.RUnlock()
 			if c.transportGenerationCurrent(stop) {
-				c.bootstrapDirectMultipath(n.udpEndpoint)
+				c.bootstrapDirectMultipath(n.udpEndpoint, n.udpAlt)
 			}
 		}()
 	}
@@ -268,6 +275,10 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 		mismatch = fmt.Sprintf("server's direct UDP endpoint (%s) is not IPv%s", r.UDP, options.IPVersion)
 		udpEndpoint = ""
 	}
+	udpAlt := ""
+	if options.UDPAlt && udpEndpoint != "" && r.UDPAlt != "" && matchesIPVersion(r.UDPAlt, options.IPVersion) {
+		udpAlt = r.UDPAlt
+	}
 	transport, err := normalizeTransportPreference(options.UseWebSocket, options.Transport)
 	if err != nil {
 		return nil, err
@@ -284,7 +295,7 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if err != nil {
 		return nil, err
 	}
-	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger}
+	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger, MTU: options.TunnelMTU}
 	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
 	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
 	// self-reflect, prime, and move the peer's endpoint between transports.
@@ -296,7 +307,7 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 		if multipathV3 {
 			// V3 deliberately uses sticky carrier/probe health and never samples
 			// a standby by mirroring ordinary tunnel payload.
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, resolveMultipathOptions(options.Multipath), options.IPVersion, options.Logger)
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, multipathOptionsFor(options), options.IPVersion, options.Logger)
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)
@@ -328,5 +339,5 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if multipath != nil && transport != "" {
 		multipath.SetForced(transport)
 	}
-	return &connectionNetwork{stack: st, hybrid: hybrid, multipath: multipath, clientIP: clientIP, serverIP: serverIP, udpEndpoint: udpEndpoint, mismatch: mismatch, transport: transport, useWS: useWS, multipathV3: multipathV3, response: r}, nil
+	return &connectionNetwork{stack: st, hybrid: hybrid, multipath: multipath, clientIP: clientIP, serverIP: serverIP, udpEndpoint: udpEndpoint, udpAlt: udpAlt, mismatch: mismatch, transport: transport, useWS: useWS, multipathV3: multipathV3, response: r}, nil
 }

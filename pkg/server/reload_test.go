@@ -140,3 +140,20 @@ func TestReloadSerializesConcurrentRenewal(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+func TestReload_TransportOptInRestartOnlyKeysKept(t *testing.T) {
+	c := Config{}
+	c.Transport.Metrics, c.Transport.MTUAware = true, true
+	c.Listen.WireGuardAlt = ":443"
+	s := New(c, nil)
+	next := Config{}
+	next.Transport.Promotion = true
+	s.Reload(next)
+	got := s.Config
+	if !got.Transport.Metrics || !got.Transport.MTUAware || got.Listen.WireGuardAlt != ":443" {
+		t.Fatalf("restart-only opt-ins changed on reload: %+v / %+v", got.Transport, got.Listen)
+	}
+	if !got.Transport.Promotion {
+		t.Fatalf("live opt-ins not applied on reload: %+v", got.Transport)
+	}
+}

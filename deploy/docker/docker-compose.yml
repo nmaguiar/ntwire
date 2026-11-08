@@ -4,7 +4,7 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
     command: ["--config", "/etc/ntwire/ntwire.yaml"]
-    ports: ["8443:8443", "51820:51820/udp"]
+    ports: ["8443:8443", "51820:51820/udp"]   # add "443:443/udp" with listen.wireguard_alt
     volumes:
       - ./ntwire.yaml:/etc/ntwire/ntwire.yaml:ro
       - ./keys:/etc/ntwire/keys:ro

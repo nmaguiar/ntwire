@@ -1,6 +1,10 @@
 listen:
   https: ":8443"
   wireguard: ":51820"
+  # Optional: also accept WireGuard on 443/udp for networks that block 51820
+  # (publish "443:443/udp" in docker-compose.yml too). Clients use it only
+  # with --udp-alt.
+  # wireguard_alt: ":443"
 auth:
   authorized_keys_dir: /etc/ntwire/keys
   # SSO (OIDC) as a parallel authentication method — see

@@ -17,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
+	"github.com/nmaguiar/ntwire/pkg/tcptune"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
@@ -31,12 +32,21 @@ type Config struct {
 	Listen struct {
 		HTTPS     string `yaml:"https"`
 		WireGuard string `yaml:"wireguard"`
-		Metrics   string `yaml:"metrics"`
+		// WireGuardAlt opts into a second UDP listener for the same
+		// WireGuard device, for example ":443" for networks that block
+		// 51820/udp but pass QUIC. Only its port is used. It is advertised
+		// to clients as udp_alt_endpoint, and replies leave from whichever
+		// socket each peer last used. Empty (default) opens nothing.
+		WireGuardAlt string `yaml:"wireguard_alt"`
+		Metrics      string `yaml:"metrics"`
 		// Name is an optional friendly label advertised to clients in
 		// AuthResponse.ServerName, so a client running a local status UI for
 		// several servers at once can tell them apart. Clients that get an
 		// empty name fall back to displaying the host:port they connected to.
 		Name string `yaml:"name"`
+		// TCP is opt-in socket tuning for the listen.https listener (direct
+		// clients and relay.direct_clients). Zero changes nothing.
+		TCP tcptune.Options `yaml:"tcp"`
 	} `yaml:"listen"`
 	Auth struct {
 		AuthorizedKeysDir string        `yaml:"authorized_keys_dir"`
@@ -53,17 +63,7 @@ type Config struct {
 		WireGuardPrivateKeyFile string    `yaml:"wireguard_private_key_file"`
 		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
-	Transport struct {
-		// Multipath controls the scheduler when both WebSocket and UDP legs
-		// are available. Nil is enabled for backward-compatible defaults;
-		// set false only to retain the legacy one-leg data plane.
-		Multipath *bool `yaml:"multipath"`
-		// Force pins every negotiated multipath peer to this candidate while it
-		// is healthy. Valid values are auto (the default), wss, udp-relay, and
-		// direct-udp. An unavailable forced path safely falls back to automatic
-		// scheduling rather than disconnecting the peer.
-		Force string `yaml:"force"`
-	} `yaml:"transport"`
+	Transport           TransportConfig              `yaml:"transport"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
@@ -75,6 +75,33 @@ type Config struct {
 	Audit               struct {
 		LogFile string `yaml:"log_file"`
 	} `yaml:"audit"`
+}
+
+// TransportConfig is the server transport: block. Every field added after
+// multipath/force is opt-in and defaults to the pre-existing behavior.
+type TransportConfig struct {
+	// Multipath controls the scheduler when both WebSocket and UDP legs
+	// are available. Nil is enabled for backward-compatible defaults;
+	// set false only to retain the legacy one-leg data plane.
+	Multipath *bool `yaml:"multipath"`
+	// Force pins every negotiated multipath peer to this candidate while it
+	// is healthy. Valid values are auto (the default), wss, udp-relay, and
+	// direct-udp. An unavailable forced path safely falls back to automatic
+	// scheduling rather than disconnecting the peer.
+	Force string `yaml:"force"`
+	// Metrics opts into per-path transport series on the metrics
+	// listener: ntwire_transport_switches_total and
+	// ntwire_sessions_by_path. Read when the data plane starts.
+	Metrics bool `yaml:"metrics"`
+	// MTUAware opts this server's multipath peers into MTU-aware probing
+	// (retries, a required-size probe, and mtu_state). It changes nothing
+	// on the wire and only affects peers that negotiated path-mtu-v1.
+	MTUAware bool `yaml:"mtu_aware"`
+	// Promotion opts into client-led promotion (path-promote-v1): a client
+	// that also enables --promote may move both directions of its session
+	// to a better proven candidate via POST /v1/transport/primary. Off
+	// keeps v3 strictly failure-driven.
+	Promotion bool `yaml:"promotion"`
 }
 
 // MultipathEnabled reports the effective transport.multipath setting.
@@ -119,7 +146,10 @@ type RelayConfig struct {
 	// agents listener for the same relay tenant/domain; ntwire-server keeps a
 	// control connection to each one. URL/Fingerprint remain supported for a
 	// single-relay deployment and must not be combined with Endpoints.
-	Endpoints    []RelayEndpoint `yaml:"endpoints"`
+	Endpoints []RelayEndpoint `yaml:"endpoints"`
+	// TCP is opt-in socket tuning for this server's control and data
+	// connections to the relay. Zero changes nothing.
+	TCP          tcptune.Options `yaml:"tcp"`
 	ReconnectMin time.Duration   `yaml:"reconnect_min"`
 	ReconnectMax time.Duration   `yaml:"reconnect_max"`
 	// AdvertiseDirect opts into the opportunistic direct-UDP WireGuard
@@ -389,8 +419,12 @@ func SampleConfig() string {
 listen:
   https    : ":8443"                     # TLS control API and WebSocket fallback listener; default: :8443
   wireguard: ":51820"                    # UDP listener for the userspace WireGuard data plane; default: :51820
+  wireguard_alt: ""                      # opt-in second UDP port for the same data plane, e.g. ":443" for networks that block 51820/udp; advertised to clients that enable --udp-alt; empty opens nothing
   metrics  : ""                          # optional plaintext metrics/dashboard listener; exposes /metrics and, with admin.web_ui_token, /?token=... (for example, 127.0.0.1:9090)
   name     : ""                          # friendly label shown in the client's local status UI and logs, to tell apart several ntwire clients running locally; empty falls back to the host:port the client connected to
+  tcp:                                   # opt-in Linux TCP tuning for the listen.https listener (WSS carrier); empty/zero changes nothing
+    congestion   : ""                    # TCP_CONGESTION algorithm, e.g. bbr (needs the kernel module); empty keeps the system default
+    notsent_lowat: 0                     # TCP_NOTSENT_LOWAT bytes, e.g. 131072, to bound send-queue latency; 0 keeps the system default
 
 tls:
   cert_file: ""                          # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -433,6 +467,9 @@ transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
+  mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
+  promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -496,6 +533,9 @@ relay:
   # - url        : "wss://relay-b.example.com:8444"
   #   fingerprint: "SHA256:..."
   reconnect_min  : 1s                      # initial backoff after a dropped control connection; default: 1s
+  tcp:                                     # opt-in Linux TCP tuning for this server's connections to the relay; empty/zero changes nothing
+    congestion   : ""                      # TCP_CONGESTION algorithm, e.g. bbr; empty keeps the system default
+    notsent_lowat: 0                       # TCP_NOTSENT_LOWAT bytes; 0 keeps the system default
   reconnect_max  : 1m                      # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
   direct_clients : false                   # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
@@ -870,6 +910,12 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	if e = decoder.Decode(&c); e != nil {
 		return c, e
 	}
+	if e = c.Listen.TCP.Validate(); e != nil {
+		return c, fmt.Errorf("listen.tcp: %w", e)
+	}
+	if e = c.Relay.TCP.Validate(); e != nil {
+		return c, fmt.Errorf("relay.tcp: %w", e)
+	}
 	if c.TLS.StateDir == "" {
 		c.TLS.StateDir = stateDir
 	}
@@ -878,6 +924,18 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	}
 	if c.Listen.WireGuard == "" {
 		c.Listen.WireGuard = ":51820"
+	}
+	if c.Listen.WireGuardAlt != "" {
+		alt, err := portOf(c.Listen.WireGuardAlt)
+		if err != nil || alt <= 0 || alt > 65535 {
+			return c, fmt.Errorf("listen.wireguard_alt must be host:port with a non-zero port, got %q", c.Listen.WireGuardAlt)
+		}
+		if primary, _ := portOf(c.Listen.WireGuard); primary == alt {
+			return c, fmt.Errorf("listen.wireguard_alt must use a different port from listen.wireguard")
+		}
+		if c.Relay.Enabled {
+			return c, fmt.Errorf("listen.wireguard_alt cannot be combined with relay.enabled: a relayed server advertises no UDP endpoint")
+		}
 	}
 	c.Listen.Name = strings.TrimSpace(c.Listen.Name)
 	if c.Auth.SessionTTL == 0 {

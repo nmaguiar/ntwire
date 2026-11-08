@@ -286,3 +286,128 @@ func pollPeerEndpoint(t *testing.T, conn *client.Connection, publicKey string, t
 	t.Fatalf("PeerEndpoint() never satisfied the expected condition within %v; last seen %q", timeout, ep)
 	return ep
 }
+
+// TestDirectMultipath_UDPAltFallback advertises an unreachable primary UDP
+// port. A client that opts into Options.UDPAlt retries the direct-udp
+// candidate on listen.wireguard_alt and proves it healthy; a default client
+// ignores the alternate endpoint entirely.
+func TestDirectMultipath_UDPAltFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		optIn       bool
+		wantHealthy bool
+	}{
+		{"opted in", true, true},
+		{"default ignores alt", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, keyPath, _ := newTestServer(t, nil)
+			port, alt, dead := freeUDPPort(t), freeUDPPort(t), freeUDPPort(t)
+			s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+			s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+			s.Config.Listen.WireGuardAlt = ":" + fmt.Sprint(alt)
+			s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(dead)
+			if err := s.StartDataPlane(); err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			httpSrv := httptest.NewTLSServer(s.Handler())
+			defer httpSrv.Close()
+			timing := &client.DirectUpgradeTiming{
+				InitialDelay: 100 * time.Millisecond, RetryInterval: 500 * time.Millisecond,
+				HealthCheckInterval: 500 * time.Millisecond, ReflectTimeout: 500 * time.Millisecond, ProbeTimeout: time.Second,
+			}
+			conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+				Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"),
+				DirectUpgradeTiming: timing, UDPAlt: tc.optIn,
+			})
+			if err != nil {
+				t.Fatalf("ConnectWithOptions() = %v", err)
+			}
+			defer conn.Close()
+			if got, want := conn.Response.UDPAlt, "127.0.0.1:"+fmt.Sprint(alt); got != want {
+				t.Fatalf("UDPAlt = %q, want %q", got, want)
+			}
+			healthy := false
+			deadline := time.Now().Add(6 * time.Second)
+			for time.Now().Before(deadline) && !healthy {
+				for _, path := range conn.Status().Paths {
+					if path.Name == "direct-udp" && path.Healthy {
+						healthy = true
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if healthy != tc.wantHealthy {
+				t.Fatalf("direct-udp healthy = %v, want %v: %+v", healthy, tc.wantHealthy, conn.Status().Paths)
+			}
+		})
+	}
+}
+
+func TestDirectMultipath_MTUAwareBothEndsReportOK(t *testing.T) {
+	s, keyPath, _ := newTestServer(t, nil)
+	port := freeUDPPort(t)
+	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Transport.MTUAware = true
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+		Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"), MTUAware: true, TunnelMTU: 1380,
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		clientOK, serverOK := false, false
+		for _, path := range conn.Status().Paths {
+			clientOK = clientOK || (path.Name == "direct-udp" && path.MTUState == "ok")
+		}
+		if s.data != nil && s.data.multipath != nil {
+			for _, st := range s.data.multipath.PeerPaths(conn.Stack.PublicKey()) {
+				serverOK = serverOK || (st.Name == "direct-udp" && st.MTUState == "ok")
+			}
+		}
+		if clientOK && serverOK {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("mtu_state never reached ok on both ends; client paths: %+v", conn.Status().Paths)
+}
+
+// TestDirectMultipath_ServerHonorsClientTunnelMTU: a client that lowered its
+// tunnel MTU reports it, so an MTU-aware server probes for the client's
+// required size and the server-side path state follows it.
+func TestDirectMultipath_ServerHonorsClientTunnelMTU(t *testing.T) {
+	s, keyPath, _ := newTestServer(t, nil)
+	port := freeUDPPort(t)
+	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Transport.MTUAware = true
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+		Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"), MTUAware: true, TunnelMTU: 1340,
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+	if got := s.data.multipath.PeerRequiredMTU(conn.Stack.PublicKey()); got != 1372 {
+		t.Fatalf("server required probe size = %d, want 1372 for a 1340 client tunnel", got)
+	}
+}

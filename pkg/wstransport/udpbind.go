@@ -8,7 +8,9 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -41,6 +43,88 @@ type UDPBind struct {
 	log         *slog.Logger
 	status      []UDPBufferStatus
 	receiveStop chan struct{}
+
+	// altPort, when non-zero, opens a second socket pair on that port (for
+	// example 443/udp for networks that only pass QUIC-like traffic). It is
+	// opt-in; with altPort zero none of the alt fields are touched and the
+	// receive/send paths are unchanged.
+	altPort    uint16
+	alt4, alt6 *net.UDPConn
+	// altPeers remembers sources whose most recent datagram arrived on an
+	// alt socket, so replies leave from the socket the peer's NAT mapping
+	// expects. Keyed by netip.AddrPort; values are *atomic.Int64 holding the
+	// last-seen time (UnixNano). It is bounded by altPeerLimit and
+	// altPeerTTL, so unsolicited or spoofed datagrams to the alternate port
+	// cannot grow it without bound; an evicted or rejected source simply
+	// gets replies from the primary socket.
+	altPeers     sync.Map
+	altPeerCount atomic.Int64
+	altSweepMu   sync.Mutex
+}
+
+const (
+	// altPeerLimit caps remembered alternate-port sources.
+	altPeerLimit = 4096
+	// altPeerTTL forgets a source that has sent nothing on the alternate
+	// port for this long. Multipath probes (1 s) and WireGuard keepalives
+	// keep live peers fresh.
+	altPeerTTL = 3 * time.Minute
+)
+
+// noteAltPeer records key as last seen on the alternate socket.
+func (b *UDPBind) noteAltPeer(key netip.AddrPort, now time.Time) {
+	if v, ok := b.altPeers.Load(key); ok {
+		seen := v.(*atomic.Int64)
+		if now.UnixNano()-seen.Load() > int64(time.Second) {
+			seen.Store(now.UnixNano())
+		}
+		return
+	}
+	if b.altPeerCount.Load() >= altPeerLimit {
+		b.sweepAltPeers(now)
+		if b.altPeerCount.Load() >= altPeerLimit {
+			return
+		}
+	}
+	seen := &atomic.Int64{}
+	seen.Store(now.UnixNano())
+	if _, loaded := b.altPeers.LoadOrStore(key, seen); !loaded {
+		b.altPeerCount.Add(1)
+	}
+}
+
+func (b *UDPBind) forgetAltPeer(key netip.AddrPort) {
+	if _, loaded := b.altPeers.LoadAndDelete(key); loaded {
+		b.altPeerCount.Add(-1)
+	}
+}
+
+// sweepAltPeers drops expired entries. Only one sweep runs at a time.
+func (b *UDPBind) sweepAltPeers(now time.Time) {
+	if !b.altSweepMu.TryLock() {
+		return
+	}
+	defer b.altSweepMu.Unlock()
+	b.altPeers.Range(func(k, v any) bool {
+		if now.UnixNano()-v.(*atomic.Int64).Load() > int64(altPeerTTL) {
+			b.forgetAltPeer(k.(netip.AddrPort))
+		}
+		return true
+	})
+}
+
+// isAltPeer reports whether replies to key should use the alternate socket.
+func (b *UDPBind) isAltPeer(key netip.AddrPort, now time.Time) bool {
+	v, ok := b.altPeers.Load(key)
+	return ok && now.UnixNano()-v.(*atomic.Int64).Load() <= int64(altPeerTTL)
+}
+
+// SetAltPort configures an additional listening port, opened by the next
+// Open. It must be called before Open; zero disables the alternate socket.
+func (b *UDPBind) SetAltPort(port uint16) {
+	b.mu.Lock()
+	b.altPort = port
+	b.mu.Unlock()
 }
 
 // NewUDPBind returns a WireGuard UDP bind with a validated buffer request.
@@ -106,15 +190,95 @@ again:
 		b.recordBufferStatus("ipv6", v6)
 		b.ipv6 = v6
 	}
-	fns := make([]conn.ReceiveFunc, 0, 2)
+	var a4, a6 *net.UDPConn
+	if b.altPort != 0 {
+		var err error
+		if a4, a6, err = listenUDPPair(int(b.altPort)); err != nil {
+			b.closeLocked()
+			if v4 != nil {
+				_ = v4.Close()
+			}
+			if v6 != nil {
+				_ = v6.Close()
+			}
+			b.ipv4, b.ipv6 = nil, nil
+			return nil, 0, fmt.Errorf("alternate WireGuard UDP port %d: %w", b.altPort, err)
+		}
+		if a4 != nil {
+			b.recordBufferStatus("ipv4-alt", a4)
+		}
+		if a6 != nil {
+			b.recordBufferStatus("ipv6-alt", a6)
+		}
+		b.alt4, b.alt6 = a4, a6
+	}
+	fns := make([]conn.ReceiveFunc, 0, 4)
 	b.receiveStop = make(chan struct{})
+	alt := b.altPort != 0
 	if v4 != nil {
-		fns = append(fns, resilientUDPReceive(makeUDPReceive(ipv4.NewPacketConn(v4), v4), b.receiveStop, b.log, "ipv4"))
+		fns = append(fns, resilientUDPReceive(b.trackAlt(makeUDPReceive(ipv4.NewPacketConn(v4), v4), alt, false), b.receiveStop, b.log, "ipv4"))
 	}
 	if v6 != nil {
-		fns = append(fns, resilientUDPReceive(makeUDPReceive(ipv6.NewPacketConn(v6), v6), b.receiveStop, b.log, "ipv6"))
+		fns = append(fns, resilientUDPReceive(b.trackAlt(makeUDPReceive(ipv6.NewPacketConn(v6), v6), alt, false), b.receiveStop, b.log, "ipv6"))
+	}
+	if a4 != nil {
+		fns = append(fns, resilientUDPReceive(b.trackAlt(makeUDPReceive(ipv4.NewPacketConn(a4), a4), true, true), b.receiveStop, b.log, "ipv4-alt"))
+	}
+	if a6 != nil {
+		fns = append(fns, resilientUDPReceive(b.trackAlt(makeUDPReceive(ipv6.NewPacketConn(a6), a6), true, true), b.receiveStop, b.log, "ipv6-alt"))
 	}
 	return fns, uint16(port), nil
+}
+
+// listenUDPPair opens IPv4 and IPv6 sockets on a fixed port, tolerating a
+// missing address family the same way Open does for the primary port.
+func listenUDPPair(port int) (*net.UDPConn, *net.UDPConn, error) {
+	v4, err4 := net.ListenUDP("udp4", &net.UDPAddr{Port: port})
+	if err4 != nil && !errors.Is(err4, syscall.EAFNOSUPPORT) {
+		return nil, nil, err4
+	}
+	v6, err6 := net.ListenUDP("udp6", &net.UDPAddr{Port: port})
+	if err6 != nil && !errors.Is(err6, syscall.EAFNOSUPPORT) {
+		if v4 != nil {
+			_ = v4.Close()
+		}
+		return nil, nil, err6
+	}
+	if v4 == nil && v6 == nil {
+		return nil, nil, syscall.EAFNOSUPPORT
+	}
+	return v4, v6, nil
+}
+
+// altPeerKey normalizes an IPv4-mapped IPv6 source so receive and send
+// agree on the same key.
+func altPeerKey(a netip.AddrPort) netip.AddrPort {
+	return netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
+}
+
+// trackAlt records which socket each source last used. With no alternate
+// port configured it returns fn unchanged, so the default receive path has no
+// extra work.
+func (b *UDPBind) trackAlt(fn conn.ReceiveFunc, enabled, isAlt bool) conn.ReceiveFunc {
+	if !enabled {
+		return fn
+	}
+	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		n, err := fn(bufs, sizes, eps)
+		for i := 0; i < n; i++ {
+			e, ok := eps[i].(udpEndpoint)
+			if !ok {
+				continue
+			}
+			key := altPeerKey(e.addr)
+			if isAlt {
+				b.noteAltPeer(key, time.Now())
+			} else if _, seen := b.altPeers.Load(key); seen {
+				b.forgetAltPeer(key)
+			}
+		}
+		return n, err
+	}
 }
 
 func (b *UDPBind) recordBufferStatus(socket string, pc *net.UDPConn) {
@@ -193,7 +357,7 @@ func (b *UDPBind) Close() error {
 		close(b.receiveStop)
 		b.receiveStop = nil
 	}
-	var errs []error
+	errs := []error{b.closeLocked()}
 	if b.ipv4 != nil {
 		errs = append(errs, b.ipv4.Close())
 		b.ipv4 = nil
@@ -202,6 +366,22 @@ func (b *UDPBind) Close() error {
 		errs = append(errs, b.ipv6.Close())
 		b.ipv6 = nil
 	}
+	return errors.Join(errs...)
+}
+
+// closeLocked closes the alternate sockets and forgets their peers.
+func (b *UDPBind) closeLocked() error {
+	var errs []error
+	if b.alt4 != nil {
+		errs = append(errs, b.alt4.Close())
+		b.alt4 = nil
+	}
+	if b.alt6 != nil {
+		errs = append(errs, b.alt6.Close())
+		b.alt6 = nil
+	}
+	b.altPeers.Clear()
+	b.altPeerCount.Store(0)
 	return errors.Join(errs...)
 }
 
@@ -218,16 +398,26 @@ func (b *UDPBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if len(bufs) == 0 || len(bufs) > b.BatchSize() {
 		return fmt.Errorf("invalid WireGuard UDP send batch")
 	}
+	dst := netip.AddrPortFrom(ep.DstIP(), portFromEndpoint(ep))
 	b.mu.Lock()
 	udp := b.ipv4
 	if ep.DstIP().Is6() {
 		udp = b.ipv6
 	}
+	if b.altPort != 0 {
+		if b.isAltPeer(altPeerKey(dst), time.Now()) {
+			if ep.DstIP().Is6() && b.alt6 != nil {
+				udp = b.alt6
+			} else if !ep.DstIP().Is6() && b.alt4 != nil {
+				udp = b.alt4
+			}
+		}
+	}
 	b.mu.Unlock()
 	if udp == nil {
 		return syscall.EAFNOSUPPORT
 	}
-	addr := net.UDPAddrFromAddrPort(netip.AddrPortFrom(ep.DstIP(), portFromEndpoint(ep)))
+	addr := net.UDPAddrFromAddrPort(dst)
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
 		for _, buf := range bufs {
 			if _, _, err := udp.WriteMsgUDP(buf, nil, addr); err != nil {

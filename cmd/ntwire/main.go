@@ -289,13 +289,14 @@ func transportCmd(args []string, u *ui.UI) {
 	setUsage(fs.FlagSet, u, "show or switch the active transport mode", "ntwire transport", "ntwire transport direct-udp", "ntwire transport auto")
 	fs.Parse(args)
 	path := fs.Str("status-file")
+	details := fs.BoolVal("v")
 	s, err := client.ReadStatus(path)
 	if err != nil {
 		u.Errorf("not connected: %v", err)
 		os.Exit(1)
 	}
 	if fs.NArg() == 0 {
-		req, err := client.NewUIRequest(s.UIURL, http.MethodGet, "/transport", nil)
+		req, err := transportInfoRequest(s.UIURL, details)
 		if err != nil {
 			u.Errorf("%v", err)
 			os.Exit(1)
@@ -337,10 +338,23 @@ func transportCmd(args []string, u *ui.UI) {
 					{Header: "LOSS", Sep: "  ", Align: "right"},
 				},
 			}
+			if details {
+				// LOSS is the free-form last column by default; give it a
+				// width only in detailed mode so the default output is unchanged.
+				t.Columns[len(t.Columns)-1].Width = 6
+				t.Columns = append(t.Columns, ui.Column{Header: "MTU", Sep: "  ", Align: "right"})
+			}
 			for _, p := range info.Paths {
-				t.Rows = append(t.Rows, pathStatusRow(p))
+				row := pathStatusRow(p)
+				if details {
+					row = append(row, pathMTUCell(p))
+				}
+				t.Rows = append(t.Rows, row)
 			}
 			fmt.Fprint(u.Out, t.Render(u))
+		}
+		if details {
+			printTransportDetails(u, info)
 		}
 		return
 	}
@@ -562,6 +576,54 @@ func pathStatusRow(p wstransport.PathStatus) []string {
 	return []string{p.Name, string(p.Kind), status, fmt.Sprintf("%dms", p.RTT.Milliseconds()), fmt.Sprintf("%.1f%%", p.Loss*100)}
 }
 
+// transportInfoRequest builds GET /transport for the running client's local
+// UI. NewUIRequest sets only the path, so the details query is added here.
+func transportInfoRequest(uiURL string, details bool) (*http.Request, error) {
+	req, err := client.NewUIRequest(uiURL, http.MethodGet, "/transport", nil)
+	if err != nil || !details {
+		return req, err
+	}
+	req.URL.RawQuery = "details=1"
+	return req, nil
+}
+
+// pathMTUCell renders a candidate's confirmed datagram MTU for
+// ntwire transport -v. WSS is a stream carrier and has no datagram MTU.
+func pathMTUCell(p wstransport.PathStatus) string {
+	if p.Kind == wstransport.PathWSS || p.DatagramMTU == 0 {
+		return "-"
+	}
+	if p.MTUState != "" {
+		return fmt.Sprintf("%d (%s)", p.DatagramMTU, p.MTUState)
+	}
+	return fmt.Sprint(p.DatagramMTU)
+}
+
+// printTransportDetails renders the detailed-only fields of TransportInfo.
+func printTransportDetails(u *ui.UI, info client.TransportInfo) {
+	if info.Reason != "" {
+		fmt.Fprintln(u.Out)
+		u.Info("Startup transport reason: %s", info.Reason)
+	}
+	fmt.Fprintln(u.Out)
+	if len(info.Events) == 0 {
+		u.Info("No transport switches recorded")
+		return
+	}
+	u.Info("Transport switch history (oldest first):")
+	for _, e := range info.Events {
+		fmt.Fprintln(u.Out, switchEventLine(e))
+	}
+}
+
+func switchEventLine(e wstransport.SwitchEvent) string {
+	from := e.From
+	if from == "" {
+		from = "-"
+	}
+	return fmt.Sprintf("  %s  %s -> %s (%s)", e.At.Local().Format("2006-01-02 15:04:05"), from, e.To, e.Reason)
+}
+
 // listColumns is factored out of list() so a test can render the exact
 // column widths list() uses and catch overflow that would break the
 // DESCRIPTION column's alignment (see TestListColumnsFitLiveStats).
@@ -763,6 +825,14 @@ func connect(args []string, u *ui.UI) {
 	bind := fs.Str("bind")
 	ipVersion := fs.Str("ip-version")
 	transport := fs.Str("transport")
+	udpAlt := fs.BoolVal("udp-alt")
+	mtuAware := fs.BoolVal("mtu-aware")
+	promote := fs.BoolVal("promote")
+	tunnelMTU, mtuErr := client.ParseTunnelMTU(fs.Str("tunnel-mtu"))
+	if mtuErr != nil {
+		u.Errorf("%v", mtuErr)
+		os.Exit(2)
+	}
 	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -798,6 +868,7 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
+		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

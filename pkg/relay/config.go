@@ -13,6 +13,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/configguide"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/tcptune"
 	"gopkg.in/yaml.v3"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -51,6 +52,9 @@ type Config struct {
 		// default. The operating system may clamp it; a clamp is diagnostic,
 		// never a startup failure.
 		UDPBufferBytes int `yaml:"udp_buffer_bytes"`
+		// TCP is opt-in socket tuning for the public, agents, and
+		// per-registration TCP listeners. Zero changes nothing.
+		TCP tcptune.Options `yaml:"tcp"`
 	} `yaml:"listen"`
 	TLS struct {
 		CertFile  string `yaml:"cert_file"`
@@ -143,6 +147,9 @@ listen:
   udp_relay: ""                            # optional shared client-facing UDP address for the UDP-relay forwarding tier, e.g. ":3481"; empty disables it (default). No server-side opt-in needed -- see docs/RELAY.md
   udp_relay_ports: "40000-40999"           # inclusive port range the relay allocates one dedicated per-session UDP port from (server leg); required when udp_relay is set. Every port in range is bound at startup: size this to your expected concurrent UDP-relay session count, not maximally -- it is a direct tradeoff between max concurrent sessions and how large a firewall rule you must open
   udp_buffer_bytes: 4194304                 # requested kernel UDP read/write buffer per relay socket; the OS may clamp it. Zero uses this default
+  tcp:                                     # opt-in Linux TCP tuning for public, agents, and registration listeners; empty/zero changes nothing
+    congestion   : ""                      # TCP_CONGESTION algorithm, e.g. bbr (needs the kernel module); empty keeps the system default
+    notsent_lowat: 0                       # TCP_NOTSENT_LOWAT bytes, e.g. 131072, to bound send-queue latency; 0 keeps the system default
 
 tls:                                        # applies to listen.agents only
   cert_file: ""                            # PEM certificate; set together with key_file, or leave both empty for a generated self-signed certificate
@@ -345,6 +352,9 @@ func LoadConfig(path string) (Config, error) {
 	decoder.KnownFields(true)
 	if err = decoder.Decode(&c); err != nil {
 		return c, err
+	}
+	if err = c.Listen.TCP.Validate(); err != nil {
+		return c, fmt.Errorf("listen.tcp: %w", err)
 	}
 	if c.TLS.StateDir == "" {
 		c.TLS.StateDir = filepath.Dir(path)

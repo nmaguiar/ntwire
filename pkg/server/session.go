@@ -23,7 +23,10 @@ type Session struct {
 	LatencyMillis, Reconnections              uint64
 	Multipath                                 bool
 	// PathMTU is true only when this session negotiated CapabilityPathMTUV1.
-	PathMTU    bool
+	PathMTU bool
+	// Promote is true only when this session negotiated
+	// CapabilityPathPromoteV1.
+	Promote    bool
 	ClientInfo protocol.ClientInfo
 	Expires    time.Time
 }
@@ -57,6 +60,7 @@ type CreateParams struct {
 	LatencyMillis, Reconnections uint64
 	Multipath                    bool
 	PathMTU                      bool
+	Promote                      bool
 	ClientInfo                   protocol.ClientInfo
 	TTL                          time.Duration
 }
@@ -72,7 +76,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
 	return v

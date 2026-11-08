@@ -22,6 +22,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
+	"github.com/nmaguiar/ntwire/pkg/tcptune"
 )
 
 // relayListener is a net.Listener whose connections all arrive through a
@@ -559,11 +560,12 @@ func (a *RelayAgent) Close() error {
 // pkg/client's VerifyConnection hook) when relay.fingerprint is configured,
 // or falling back to normal PKI verification when it is empty.
 func relayHTTPClient(cfg RelayConfig) (*http.Client, error) {
+	dial := tcptune.DialContext(cfg.TCP) // nil (the default dialer) unless relay.tcp is set
 	if cfg.Fingerprint == "" {
-		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}, nil
+		return &http.Client{Transport: &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}}, nil
 	}
 	fp := cfg.Fingerprint
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{ // #nosec G402 -- verification is the pin below
+	return &http.Client{Transport: &http.Transport{DialContext: dial, TLSClientConfig: &tls.Config{ // #nosec G402 -- verification is the pin below
 		InsecureSkipVerify: true, MinVersion: tls.VersionTLS12,
 		VerifyConnection: func(cs tls.ConnectionState) error {
 			if len(cs.PeerCertificates) == 0 {

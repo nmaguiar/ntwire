@@ -124,6 +124,12 @@ Retired v1/v2 peers use the legacy single-path data plane.
 `--transport direct-udp` remains an explicit single-path UDP connection. Set
 `transport.multipath: false` to force legacy single-path behavior.
 
+The opt-in transport keys are all off by default. `transport.promotion`
+takes effect for sessions created after a configuration reload. `transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
+`listen.tcp`, and `relay.tcp` are read at startup and need a restart. The
+matching client opt-ins are listed in
+[CLIENT.md](CLIENT.md#opt-in-transport-settings).
+
 V3 is advertised only while a second carrier is actually available. A relay
 that offers WSS but no UDP-relay or reflected-direct tier stays on the simpler
 single-path WSS data plane even when `transport.multipath` is enabled; probing
@@ -174,6 +180,9 @@ transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                        # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force: auto                             # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  metrics: false                          # opt-in transport switch/path series on the metrics listener; see LOGGING.md
+  mtu_aware: false                        # opt-in MTU-aware probing with retries and mtu_state; see PROTOCOL.md
+  promotion: false                        # opt-in, experimental: accept client-led promotion from WSS to a proven UDP path (path-promote-v1); see PROTOCOL.md
 authorizer:
   webhook_url: ""                        # POST request JSON to this URL for a per-connection allow/deny decision; takes precedence when both hook options are set
   exec: ""                               # path to an executable that reads the same JSON on stdin and returns a decision when webhook_url is empty
