@@ -98,6 +98,7 @@ transport:
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
+  mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -755,6 +756,9 @@ audit:
           "type": "string"
         },
         "metrics": {
+          "type": "boolean"
+        },
+        "mtu_aware": {
           "type": "boolean"
         },
         "multipath": {

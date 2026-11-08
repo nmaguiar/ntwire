@@ -15,7 +15,7 @@ var wantSurface = map[string][]string{
 	"connect": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
 		"sso", "provider", "token-cache", "websocket", "collect-exec",
-		"no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "udp-alt",
+		"no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "tunnel-mtu", "mtu-aware", "udp-alt",
 	},
 	"list": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",

@@ -93,6 +93,10 @@ type TransportConfig struct {
 	// listener: ntwire_transport_switches_total and
 	// ntwire_sessions_by_path. Read when the data plane starts.
 	Metrics bool `yaml:"metrics"`
+	// MTUAware opts this server's multipath peers into MTU-aware probing
+	// (retries, a required-size probe, and mtu_state). It changes nothing
+	// on the wire and only affects peers that negotiated path-mtu-v1.
+	MTUAware bool `yaml:"mtu_aware"`
 }
 
 // MultipathEnabled reports the effective transport.multipath setting.
@@ -459,6 +463,7 @@ transport:
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
+  mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.

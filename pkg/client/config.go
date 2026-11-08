@@ -81,6 +81,10 @@ type Settings struct {
 	Transport string `yaml:"transport"`
 	// UDPAlt is the persisted opt-in default for --udp-alt.
 	UDPAlt bool `yaml:"udp_alt"`
+	// MTUAware is the persisted opt-in default for --mtu-aware.
+	MTUAware bool `yaml:"mtu_aware"`
+	// TunnelMTU is the persisted opt-in default for --tunnel-mtu.
+	TunnelMTU string `yaml:"tunnel_mtu"`
 }
 
 func DefaultConfigFile() string {
@@ -153,6 +157,8 @@ var settingsUIFields = []struct {
 	{Field: "BindAddress", YAMLKey: "bind_address"},
 	{Field: "IPVersion", YAMLKey: "ip_version"},
 	{Field: "Transport", YAMLKey: "transport"},
+	{Field: "TunnelMTU", YAMLKey: "tunnel_mtu"},
+	{Field: "MTUAware", YAMLKey: "mtu_aware", Bool: true},
 	{Field: "UDPAlt", YAMLKey: "udp_alt", Bool: true},
 }
 

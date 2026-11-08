@@ -53,6 +53,10 @@ type Profile struct {
 	Transport string `yaml:"transport"`
 	// UDPAlt is the opt-in --udp-alt setting; see client.Options.UDPAlt.
 	UDPAlt bool `yaml:"udp_alt,omitempty"`
+	// MTUAware is the opt-in --mtu-aware setting; see client.Options.MTUAware.
+	MTUAware bool `yaml:"mtu_aware,omitempty"`
+	// TunnelMTU is the opt-in --tunnel-mtu setting; see client.Options.TunnelMTU.
+	TunnelMTU string `yaml:"tunnel_mtu,omitempty"`
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

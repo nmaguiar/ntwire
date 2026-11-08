@@ -570,12 +570,31 @@ this version of the feature: WireGuard continues to use a 1420-byte tunnel
 MTU. This is diagnostic probing, not automatic path-MTU
 adaptation, and does not guarantee that a path supports every tunnel packet.
 
-MTU discovery currently has no timeout/retry for an unanswered size probe.
+By default, MTU discovery has no timeout/retry for an unanswered size probe.
 A lost probe or acknowledgement can therefore leave discovery incomplete for
 that candidate even while ordinary health probes succeed. Replacing a server
 candidate with a different endpoint clears its outstanding probes and MTU
 completion state; refreshing the same endpoint retains that state. Automatic
-MTU adaptation and loss-tolerant MTU discovery remain unimplemented.
+MTU adaptation remains unimplemented.
+
+**Opt-in MTU-aware probing** (client `--mtu-aware`, server
+`transport.mtu_aware`; each side decides for its own probes) uses the same
+frames, so it needs no new capability: any `path-mtu-v1` peer already answers
+any target from 1200 to 1500 bytes. An MTU-aware side:
+
+- probes 1200, 1400 (when below the required size), the **required** size, and
+  1500, where required = that side's tunnel MTU + 32 bytes of WireGuard
+  transport overhead (1452 for the default 1420; a client can lower its tunnel
+  MTU with `--tunnel-mtu`);
+- waits 2 seconds for each acknowledgement and sends a step at most 3 times;
+- reports `mtu_state` on the candidate: `probing`, then `ok` once the required
+  size is acknowledged, or `limited` when a step at or below the required size
+  exhausts its retries;
+- ranks a `limited` candidate after other healthy candidates when a
+  replacement primary must be chosen. A healthy incumbent is never moved
+  because of its MTU state, and a forced path is still honored.
+
+Re-registering a candidate with a new endpoint restarts its MTU-aware ladder.
 
 Frame `11` is reserved for the retired receive-triggered payload-acknowledgement
 experiment and current peers neither emit nor accept it. Direct and relay E2E

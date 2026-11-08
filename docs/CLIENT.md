@@ -236,3 +236,5 @@ can be persisted in `~/.ntwire/config.yaml` under the key shown.
 | Flag | config.yaml key | Effect | Needs on the server |
 | --- | --- | --- | --- |
 | `--udp-alt` | `udp_alt` | If direct UDP to the server's primary WireGuard port cannot be proven, retry it on the server's alternate port (for example 443/udp). | `listen.wireguard_alt` |
+| `--mtu-aware` | `mtu_aware` | Retry lost MTU probes, probe the size a full tunnel packet needs, report each UDP path's `mtu_state` (`ntwire transport -v`), and rank `limited` paths after others on failover. | Any multipath server (path MTU probing); `transport.mtu_aware` is the server-side equivalent. |
+| `--tunnel-mtu N` | `tunnel_mtu` | Lower the WireGuard tunnel MTU (1280–1420, default 1420) for links with extra encapsulation. | Nothing |

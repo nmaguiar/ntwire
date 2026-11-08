@@ -344,3 +344,42 @@ func TestDirectMultipath_UDPAltFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectMultipath_MTUAwareBothEndsReportOK(t *testing.T) {
+	s, keyPath, _ := newTestServer(t, nil)
+	port := freeUDPPort(t)
+	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
+	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
+	s.Config.Transport.MTUAware = true
+	if err := s.StartDataPlane(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	httpSrv := httptest.NewTLSServer(s.Handler())
+	defer httpSrv.Close()
+	conn, err := client.ConnectWithOptions(httpSrv.URL, keyPath, protocol.ClientInfo{OS: "darwin"}, client.Options{
+		Insecure: true, NoWebUI: true, StatusFile: filepath.Join(t.TempDir(), "status.json"), MTUAware: true, TunnelMTU: 1380,
+	})
+	if err != nil {
+		t.Fatalf("ConnectWithOptions() = %v", err)
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		clientOK, serverOK := false, false
+		for _, path := range conn.Status().Paths {
+			clientOK = clientOK || (path.Name == "direct-udp" && path.MTUState == "ok")
+		}
+		if s.data != nil && s.data.multipath != nil {
+			for _, st := range s.data.multipath.PeerPaths(conn.Stack.PublicKey()) {
+				serverOK = serverOK || (st.Name == "direct-udp" && st.MTUState == "ok")
+			}
+		}
+		if clientOK && serverOK {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("mtu_state never reached ok on both ends; client paths: %+v", conn.Status().Paths)
+}

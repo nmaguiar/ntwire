@@ -204,6 +204,7 @@ func (s *Server) StartDataPlane() error {
 		mc := s.Config.Relay.Multipath
 		multipath = wstransport.NewServerMultipathBind(ws, wstransport.MultipathOptions{
 			DuplicateRateBytesPerSec: mc.DuplicateRateBytesPerSec,
+			MTUAware:                 s.Config.Transport.MTUAware,
 		})
 		multipath.SetForced(s.Config.Transport.Force)
 		if s.Config.Transport.Metrics {

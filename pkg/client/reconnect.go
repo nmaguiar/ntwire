@@ -291,7 +291,7 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if err != nil {
 		return nil, err
 	}
-	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger}
+	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger, MTU: options.TunnelMTU}
 	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
 	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
 	// self-reflect, prime, and move the peer's endpoint between transports.
@@ -303,7 +303,7 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 		if multipathV3 {
 			// V3 deliberately uses sticky carrier/probe health and never samples
 			// a standby by mirroring ordinary tunnel payload.
-			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, resolveMultipathOptions(options.Multipath), options.IPVersion, options.Logger)
+			hybrid, multipath = wstransport.NewMultipathHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, pathMTU, multipathOptionsFor(options), options.IPVersion, options.Logger)
 			stackConfig.Bind = multipath
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)

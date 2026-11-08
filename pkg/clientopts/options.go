@@ -215,6 +215,20 @@ var registry = []Option{
 		Help: "Off by default. When the server advertises an alternate WireGuard UDP port (for example 443) and direct UDP on its primary port cannot be proven, retry the direct-UDP path on the alternate port. Has no effect unless the server enables listen.wireguard_alt.",
 	},
 	{
+		Name: "mtu-aware", Kind: KindBool, Usage: "retry lost MTU probes and avoid UDP paths that cannot carry full-size tunnel packets",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: boolDefault(func(s client.Settings) bool { return s.MTUAware }),
+		Label:   "MTU-aware path selection", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,
+		Help: "Off by default. Probes each UDP path at the size a full tunnel packet needs, retrying lost probes, and reports it as ok or limited in ntwire transport -v. A limited path is ranked after other healthy paths on failover. Works with any server that negotiates path-MTU probing; the server's own transport.mtu_aware setting is independent.",
+	},
+	{
+		Name: "tunnel-mtu", Kind: KindString, Usage: "WireGuard tunnel MTU, 1280-1420 (default 1420)",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: strDefault(func(s client.Settings) string { return s.TunnelMTU }),
+		Label:   "Tunnel MTU", Group: "🛠️ Advanced", Widget: WidgetText, Advanced: true,
+		Help: "Leave empty for 1420. Lower it (for example 1380) on links with extra encapsulation such as PPPoE or another VPN, so full-size tunnel packets fit. With MTU-aware path selection, the required probe size follows this value.",
+	},
+	{
 		Name: "websocket", Kind: KindBool, Usage: "use the WebSocket WireGuard transport",
 		Bind:  []Binding{{Command: "connect"}},
 		Label: "Force WebSocket transport", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,

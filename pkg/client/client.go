@@ -155,6 +155,16 @@ type Options struct {
 	// retries the candidate on the alternate port. Default false ignores it.
 	UDPAlt bool
 
+	// MTUAware opts into MTU-aware multipath probing: lost MTU probes are
+	// retried, each UDP candidate is probed at the size a full tunnel packet
+	// needs, and one that cannot carry it is reported as "limited" and
+	// ranked after other candidates when a replacement is chosen. Default
+	// false keeps the diagnostic-only probing.
+	MTUAware bool
+	// TunnelMTU overrides the WireGuard netstack MTU (1280-1420). Zero keeps
+	// 1420. Lower it for links with extra encapsulation (PPPoE, nested VPNs).
+	TunnelMTU int
+
 	// BindAddress is the local IP address tunnel listeners bind to. Empty
 	// (the default) means 127.0.0.1: tunneled targets are reachable only
 	// from this host. Setting it to another address (a LAN IP, or 0.0.0.0
@@ -475,6 +485,9 @@ func configureProxy(o Options) (func(*http.Request) (*urlpkg.URL, error), func(c
 func httpClient(url string, o Options) (*http.Client, error) {
 	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
 		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
+	}
+	if o.TunnelMTU != 0 && (o.TunnelMTU < MinTunnelMTU || o.TunnelMTU > wstransport.DefaultTunnelMTU) {
+		return nil, fmt.Errorf("invalid tunnel MTU %d: must be %d-%d", o.TunnelMTU, MinTunnelMTU, wstransport.DefaultTunnelMTU)
 	}
 	proxy, dialContext, err := configureProxy(o)
 	if err != nil {
@@ -1316,6 +1329,23 @@ type MultipathOptions struct {
 	DuplicateRateBytesPerSec int
 }
 
+// MinTunnelMTU is the smallest accepted Options.TunnelMTU (the IPv6 minimum).
+const MinTunnelMTU = 1280
+
+// ParseTunnelMTU converts the --tunnel-mtu / tunnel_mtu text setting. Empty
+// means the default (0).
+func ParseTunnelMTU(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < MinTunnelMTU || n > wstransport.DefaultTunnelMTU {
+		return 0, fmt.Errorf("invalid tunnel MTU %q: must be a number from %d to %d", s, MinTunnelMTU, wstransport.DefaultTunnelMTU)
+	}
+	return n, nil
+}
+
 func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
 	if o == nil {
 		return wstransport.MultipathOptions{}
@@ -1323,6 +1353,15 @@ func resolveMultipathOptions(o *MultipathOptions) wstransport.MultipathOptions {
 	return wstransport.MultipathOptions{
 		DuplicateRateBytesPerSec: o.DuplicateRateBytesPerSec,
 	}
+}
+
+// multipathOptionsFor adds the connection's opt-in transport settings to the
+// resolved multipath options.
+func multipathOptionsFor(o Options) wstransport.MultipathOptions {
+	mo := resolveMultipathOptions(o.Multipath)
+	mo.MTUAware = o.MTUAware
+	mo.TunnelMTU = o.TunnelMTU
+	return mo
 }
 
 func hasTransportCapability(caps []string, want string) bool {

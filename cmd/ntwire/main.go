@@ -586,6 +586,9 @@ func pathMTUCell(p wstransport.PathStatus) string {
 	if p.Kind == wstransport.PathWSS || p.DatagramMTU == 0 {
 		return "-"
 	}
+	if p.MTUState != "" {
+		return fmt.Sprintf("%d (%s)", p.DatagramMTU, p.MTUState)
+	}
 	return fmt.Sprint(p.DatagramMTU)
 }
 
@@ -816,6 +819,12 @@ func connect(args []string, u *ui.UI) {
 	ipVersion := fs.Str("ip-version")
 	transport := fs.Str("transport")
 	udpAlt := fs.BoolVal("udp-alt")
+	mtuAware := fs.BoolVal("mtu-aware")
+	tunnelMTU, mtuErr := client.ParseTunnelMTU(fs.Str("tunnel-mtu"))
+	if mtuErr != nil {
+		u.Errorf("%v", mtuErr)
+		os.Exit(2)
+	}
 	mappings := fs.KeyValues("port")
 	server := settings.Server
 	if fs.NArg() == 1 {
@@ -851,7 +860,7 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
-		UDPAlt: udpAlt,
+		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

@@ -33,6 +33,8 @@ type ServerMultipathBind struct {
 
 	opts   MultipathOptions
 	forced string
+	// mtu is the opt-in MTU-aware policy; nil keeps the diagnostic ladder.
+	mtu *mtuPolicy
 
 	// onSwitch, when set, observes every peer scheduler's committed primary
 	// changes (opt-in server transport metrics). Guarded by mu.
@@ -98,6 +100,7 @@ func NewServerMultipathBind(base conn.Bind, opts MultipathOptions) *ServerMultip
 	m := &ServerMultipathBind{
 		base: base, peers: map[string]*serverMultipathPeer{}, bySource: map[string]*serverMultipathPeer{},
 		cache: NewDuplicateCache(4096, 10*time.Second), opts: resolveMultipathOptions(opts), stop: make(chan struct{}),
+		mtu: newMTUPolicy(opts),
 	}
 	go m.probeLoop(m.stop)
 	return m
@@ -155,6 +158,13 @@ func (m *ServerMultipathBind) RegisterPath(peerID, name string, kind PathKind, e
 	p.scheduler.SetForced(forced)
 
 	p.scheduler.Register(name, kind)
+	if m.mtu != nil && pathMTU && kind != PathWSS {
+		p.mu.Lock()
+		delete(p.mtuProbes, name)
+		delete(p.mtuDone, name)
+		p.mu.Unlock()
+		p.scheduler.SetMTUState(name, MTUStateProbing)
+	}
 	if kind != PathWSS {
 		m.sendProbe(p, name, time.Now())
 	}
@@ -215,6 +225,17 @@ func (m *ServerMultipathBind) SetSwitchObserver(fn func(SwitchEvent)) {
 	for _, p := range peers {
 		p.scheduler.SetSwitchObserver(fn)
 	}
+}
+
+// PeerPaths returns one peer's candidate snapshot, or nil for an unknown peer.
+func (m *ServerMultipathBind) PeerPaths(peerID string) []PathStatus {
+	m.mu.RLock()
+	p := m.peers[peerID]
+	m.mu.RUnlock()
+	if p == nil {
+		return nil
+	}
+	return p.scheduler.Status()
 }
 
 // PrimaryCounts returns how many peers currently use each path name as their
@@ -388,7 +409,11 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		p.mu.Unlock()
 		if found {
 			p.scheduler.ProbeResult(name, now.Sub(outstanding.sentAt), true, now)
-			m.sendMTUProbe(p, name, minPathMTUProbe)
+			if m.mtu != nil {
+				m.driveMTU(p, name, now)
+			} else {
+				m.sendMTUProbe(p, name, minPathMTUProbe)
+			}
 		}
 	case FramePathMTUProbe:
 		probe, ok := DecodePathMTUProbe(payload)
@@ -416,6 +441,12 @@ func (m *ServerMultipathBind) dispatchControl(p *serverMultipathPeer, typ byte, 
 		if found {
 			p.scheduler.ReportDatagramMTU(name, ack.Target)
 			next := nextPathMTUProbe(ack.Target)
+			if m.mtu != nil {
+				next = m.mtu.next(ack.Target)
+				if state := m.mtu.stateAfterAck(ack.Target); state != "" {
+					p.scheduler.SetMTUState(name, state)
+				}
+			}
 			if next == 0 {
 				p.mu.Lock()
 				p.mtuDone[name] = true
@@ -543,7 +574,41 @@ func (m *ServerMultipathBind) sendMTUProbe(p *serverMultipathPeer, name string, 
 		p.mu.Unlock()
 		return
 	}
-	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target}
+	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: time.Now()}
+	p.mu.Unlock()
+	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
+}
+
+// driveMTU is the server-side counterpart of MultipathBind.driveMTU.
+func (m *ServerMultipathBind) driveMTU(p *serverMultipathPeer, name string, now time.Time) {
+	p.mu.Lock()
+	ep, enabled := p.paths[name], p.pathMTU
+	if ep == nil || !enabled || p.mtuDone[name] {
+		p.mu.Unlock()
+		return
+	}
+	out, outstanding := p.mtuProbes[name]
+	target, attempts := m.mtu.ladder[0], 0
+	if outstanding {
+		if now.Sub(out.sentAt) < mtuProbeTimeout {
+			p.mu.Unlock()
+			return
+		}
+		if out.attempts+1 >= mtuMaxAttempts {
+			delete(p.mtuProbes, name)
+			p.mtuDone[name] = true
+			p.mu.Unlock()
+			p.scheduler.SetMTUState(name, m.mtu.stateAfterGivingUp(out.target))
+			return
+		}
+		target, attempts = out.target, out.attempts+1
+	}
+	var nonce [pathProbeSize]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		p.mu.Unlock()
+		return
+	}
+	p.mtuProbes[name] = outstandingMTUProbe{nonce: nonce, target: target, sentAt: now, attempts: attempts}
 	p.mu.Unlock()
 	_ = m.base.Send([][]byte{EncodeControlFrame(FramePathMTUProbe, EncodePathMTUProbe(nonce, target))}, ep)
 }
