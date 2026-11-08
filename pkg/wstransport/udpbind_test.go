@@ -3,6 +3,7 @@ package wstransport
 import (
 	"bytes"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"testing"
@@ -154,5 +155,35 @@ func TestUDPBind_NoAltPortByDefault(t *testing.T) {
 	}
 	if len(fns) > 2 {
 		t.Fatalf("default bind returned %d receive funcs, want at most 2", len(fns))
+	}
+}
+
+func TestUDPBind_AltPeersBoundedAndExpire(t *testing.T) {
+	b := NewUDPBind(0, nil)
+	now := time.Now()
+	for i := 0; i < altPeerLimit+500; i++ {
+		b.noteAltPeer(netip.AddrPortFrom(netip.AddrFrom4([4]byte{10, byte(i >> 16), byte(i >> 8), byte(i)}), 4000), now)
+	}
+	if got := b.altPeerCount.Load(); got != altPeerLimit {
+		t.Fatalf("alt peers = %d, want capped at %d", got, altPeerLimit)
+	}
+	late := netip.MustParseAddrPort("192.0.2.1:5000")
+	b.noteAltPeer(late, now)
+	if b.isAltPeer(late, now) {
+		t.Fatal("source admitted beyond the cap while no entry had expired")
+	}
+	// Once entries expire, a sweep makes room again.
+	later := now.Add(altPeerTTL + time.Second)
+	b.noteAltPeer(late, later)
+	if !b.isAltPeer(late, later) {
+		t.Fatal("source not admitted after expired entries were swept")
+	}
+	if got := b.altPeerCount.Load(); got != 1 {
+		t.Fatalf("alt peers after sweep = %d, want 1", got)
+	}
+	old := netip.MustParseAddrPort("192.0.2.2:5000")
+	b.noteAltPeer(old, now)
+	if b.isAltPeer(old, now.Add(altPeerTTL+time.Second)) {
+		t.Fatal("expired source still routed to the alternate socket")
 	}
 }

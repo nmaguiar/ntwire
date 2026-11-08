@@ -493,11 +493,25 @@ func (b *Bind) pump(p *peer) {
 		if !ok {
 			continue
 		}
+		ep := p.endpoint
+		if p.lane > 0 {
+			// An extra lane reports lane 0's endpoint, so endpoint-keyed
+			// consumers (ServerMultipathBind's bySource, WireGuard roaming)
+			// see one carrier rather than a different address per lane.
+			// While lane 0 is down the carrier is down: drop.
+			b.mu.Lock()
+			p0 := b.peers[p.id]
+			b.mu.Unlock()
+			if p0 == nil {
+				continue
+			}
+			ep = p0.endpoint
+		}
 		copyData := append([]byte(nil), data...)
 		select {
 		case <-b.done:
 			return
-		case b.packets <- packet{copyData, p.endpoint}:
+		case b.packets <- packet{copyData, ep}:
 		}
 	}
 }

@@ -124,6 +124,13 @@ Retired v1/v2 peers use the legacy single-path data plane.
 `--transport direct-udp` remains an explicit single-path UDP connection. Set
 `transport.multipath: false` to force legacy single-path behavior.
 
+The opt-in transport keys are all off by default. `transport.promotion` and
+`transport.wss_lanes` take effect for sessions created after a configuration
+reload. `transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
+`listen.tcp`, and `relay.tcp` are read at startup and need a restart. The
+matching client opt-ins are listed in
+[CLIENT.md](CLIENT.md#opt-in-transport-settings).
+
 V3 is advertised only while a second carrier is actually available. A relay
 that offers WSS but no UDP-relay or reflected-direct tier stays on the simpler
 single-path WSS data plane even when `transport.multipath` is enabled; probing

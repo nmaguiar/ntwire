@@ -1281,7 +1281,11 @@ func (s *Server) authorize(r *http.Request, ac authContext, info protocol.Client
 // restart. Listener address, cert_file/key_file *paths*, tunnel-CIDR, and
 // relay changes are intentionally ignored until restart: relay mode changes
 // which net.Listener cmd/ntwire-server passes to ServeTLS, which Handler()
-// never sees, so there is nothing here for it to hot-reload.
+// never sees, so there is nothing here for it to hot-reload. The opt-in
+// listen.wireguard_alt and listen.tcp (part of Listen), relay.tcp, and
+// transport.metrics/transport.mtu_aware (read when the data plane starts)
+// are likewise restart-only; transport.promotion and transport.wss_lanes
+// apply to sessions created after the reload.
 func (s *Server) Reload(c Config) {
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
@@ -1292,6 +1296,8 @@ func (s *Server) Reload(c Config) {
 	c.Relay = s.Config.Relay
 	c.Network.TunnelCIDR = s.Config.Network.TunnelCIDR
 	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
+	c.Transport.Metrics = s.Config.Transport.Metrics
+	c.Transport.MTUAware = s.Config.Transport.MTUAware
 	oldNative := s.Config.NativeWireGuard.Peers
 	oldNativeEnabled := s.Config.NativeWireGuard.Enabled
 	oldIssuers := s.Config.Auth.OIDC.Issuers

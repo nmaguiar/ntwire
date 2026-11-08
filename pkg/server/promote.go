@@ -55,7 +55,10 @@ func (s *Server) promoteTransport(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
-	if !s.Config.Transport.Promotion || !sess.Promote {
+	s.mu.Lock()
+	enabled := s.Config.Transport.Promotion
+	s.mu.Unlock()
+	if !enabled || !sess.Promote {
 		http.NotFound(w, r)
 		return
 	}

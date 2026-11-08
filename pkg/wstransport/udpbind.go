@@ -8,7 +8,9 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -50,8 +52,71 @@ type UDPBind struct {
 	alt4, alt6 *net.UDPConn
 	// altPeers remembers sources whose most recent datagram arrived on an
 	// alt socket, so replies leave from the socket the peer's NAT mapping
-	// expects. Keyed by netip.AddrPort; values are struct{}.
-	altPeers sync.Map
+	// expects. Keyed by netip.AddrPort; values are *atomic.Int64 holding the
+	// last-seen time (UnixNano). It is bounded by altPeerLimit and
+	// altPeerTTL, so unsolicited or spoofed datagrams to the alternate port
+	// cannot grow it without bound; an evicted or rejected source simply
+	// gets replies from the primary socket.
+	altPeers     sync.Map
+	altPeerCount atomic.Int64
+	altSweepMu   sync.Mutex
+}
+
+const (
+	// altPeerLimit caps remembered alternate-port sources.
+	altPeerLimit = 4096
+	// altPeerTTL forgets a source that has sent nothing on the alternate
+	// port for this long. Multipath probes (1 s) and WireGuard keepalives
+	// keep live peers fresh.
+	altPeerTTL = 3 * time.Minute
+)
+
+// noteAltPeer records key as last seen on the alternate socket.
+func (b *UDPBind) noteAltPeer(key netip.AddrPort, now time.Time) {
+	if v, ok := b.altPeers.Load(key); ok {
+		seen := v.(*atomic.Int64)
+		if now.UnixNano()-seen.Load() > int64(time.Second) {
+			seen.Store(now.UnixNano())
+		}
+		return
+	}
+	if b.altPeerCount.Load() >= altPeerLimit {
+		b.sweepAltPeers(now)
+		if b.altPeerCount.Load() >= altPeerLimit {
+			return
+		}
+	}
+	seen := &atomic.Int64{}
+	seen.Store(now.UnixNano())
+	if _, loaded := b.altPeers.LoadOrStore(key, seen); !loaded {
+		b.altPeerCount.Add(1)
+	}
+}
+
+func (b *UDPBind) forgetAltPeer(key netip.AddrPort) {
+	if _, loaded := b.altPeers.LoadAndDelete(key); loaded {
+		b.altPeerCount.Add(-1)
+	}
+}
+
+// sweepAltPeers drops expired entries. Only one sweep runs at a time.
+func (b *UDPBind) sweepAltPeers(now time.Time) {
+	if !b.altSweepMu.TryLock() {
+		return
+	}
+	defer b.altSweepMu.Unlock()
+	b.altPeers.Range(func(k, v any) bool {
+		if now.UnixNano()-v.(*atomic.Int64).Load() > int64(altPeerTTL) {
+			b.forgetAltPeer(k.(netip.AddrPort))
+		}
+		return true
+	})
+}
+
+// isAltPeer reports whether replies to key should use the alternate socket.
+func (b *UDPBind) isAltPeer(key netip.AddrPort, now time.Time) bool {
+	v, ok := b.altPeers.Load(key)
+	return ok && now.UnixNano()-v.(*atomic.Int64).Load() <= int64(altPeerTTL)
 }
 
 // SetAltPort configures an additional listening port, opened by the next
@@ -207,11 +272,9 @@ func (b *UDPBind) trackAlt(fn conn.ReceiveFunc, enabled, isAlt bool) conn.Receiv
 			}
 			key := altPeerKey(e.addr)
 			if isAlt {
-				if _, seen := b.altPeers.Load(key); !seen {
-					b.altPeers.Store(key, struct{}{})
-				}
+				b.noteAltPeer(key, time.Now())
 			} else if _, seen := b.altPeers.Load(key); seen {
-				b.altPeers.Delete(key)
+				b.forgetAltPeer(key)
 			}
 		}
 		return n, err
@@ -318,6 +381,7 @@ func (b *UDPBind) closeLocked() error {
 		b.alt6 = nil
 	}
 	b.altPeers.Clear()
+	b.altPeerCount.Store(0)
 	return errors.Join(errs...)
 }
 
@@ -341,7 +405,7 @@ func (b *UDPBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 		udp = b.ipv6
 	}
 	if b.altPort != 0 {
-		if _, alt := b.altPeers.Load(altPeerKey(dst)); alt {
+		if b.isAltPeer(altPeerKey(dst), time.Now()) {
 			if ep.DstIP().Is6() && b.alt6 != nil {
 				udp = b.alt6
 			} else if !ep.DstIP().Is6() && b.alt4 != nil {

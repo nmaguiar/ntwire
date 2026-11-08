@@ -176,3 +176,43 @@ func TestLaneURL(t *testing.T) {
 		t.Fatalf("laneURL = %q, %v", got, err)
 	}
 }
+
+// Packets that arrive on an extra lane must carry lane 0's endpoint, never
+// the lane's own remote address.
+func TestLanes_ExtraLanePacketsUseLaneZeroEndpoint(t *testing.T) {
+	lh := newLaneHarness(t, 2)
+	waitLanes(t, lh.server, "peer", 2)
+	lh.server.mu.Lock()
+	lane0 := lh.server.peers["peer"].endpoint
+	lane1 := lh.server.lanes["peer"].extra[1]
+	lh.server.mu.Unlock()
+	if lane1.endpoint.DstToString() == lane0.DstToString() {
+		t.Skip("lane connections share a source address; cannot distinguish")
+	}
+	// Force the client's next send onto lane 1.
+	lh.client.mu.Lock()
+	g := lh.client.lanes["remote"]
+	g.active, g.lastSpillAt = 1, time.Now()
+	lh.client.mu.Unlock()
+	ep, _ := lh.client.ParseEndpoint("127.0.0.1:1")
+	if err := lh.client.Send([][]byte{bytes.Repeat([]byte{9}, 32)}, ep); err != nil {
+		t.Fatal(err)
+	}
+	bufs := [][]byte{make([]byte, 128)}
+	sizes := make([]int, 1)
+	eps := make([]conn.Endpoint, 1)
+	got := make(chan string, 1)
+	go func() {
+		if _, err := lh.recv(bufs, sizes, eps); err == nil {
+			got <- eps[0].DstToString()
+		}
+	}()
+	select {
+	case addr := <-got:
+		if addr != lane0.DstToString() {
+			t.Fatalf("lane-1 packet endpoint = %s, want lane 0's %s", addr, lane0.DstToString())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not receive the lane-1 packet")
+	}
+}
