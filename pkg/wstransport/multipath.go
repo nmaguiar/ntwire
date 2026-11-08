@@ -637,6 +637,9 @@ type candidate struct {
 	duplicatedBytes            atomic.Uint64
 	duplicationSuppressedBytes atomic.Uint64
 	controlSending             atomic.Bool
+	// failedBy records what last made this candidate unhealthy, for the
+	// diagnostic switch log only; it never influences selection.
+	failedBy SwitchReason
 }
 
 // Scheduler implements v3's sticky, failure-driven selection policy. Probe
@@ -662,6 +665,10 @@ type Scheduler struct {
 	// event, so it pays its own atomic store instead of forcing every caller
 	// through an exclusive lock.
 	primary atomic.Pointer[primaryState]
+
+	// switches is the bounded, diagnostic history of committed primary
+	// changes (see switchlog.go).
+	switches switchLog
 }
 
 // primaryState is Scheduler.primary's committed incumbent.
@@ -710,6 +717,7 @@ func (s *Scheduler) ActivateCarrier(name string, now time.Time) {
 	s.mu.Unlock()
 	if p != nil && s.primary.CompareAndSwap(nil, &primaryState{name: name}) {
 		slog.Debug("multipath initial carrier activated", "candidate", name)
+		s.switches.record(SwitchEvent{At: now, To: name, Reason: SwitchInitial})
 	}
 }
 
@@ -733,6 +741,7 @@ func (s *Scheduler) ProbeResult(name string, rtt time.Duration, ok bool, now tim
 		if p.misses >= 3 {
 			if p.Healthy {
 				slog.Debug("multipath candidate became unhealthy", "candidate", name, "consecutive_probe_misses", p.misses)
+				p.failedBy = SwitchProbeMisses
 			}
 			p.Healthy = false
 		}
@@ -764,6 +773,7 @@ func (s *Scheduler) CarrierFailure(name string) {
 	}
 	if p.Healthy {
 		slog.Debug("multipath candidate carrier failed", "candidate", name)
+		p.failedBy = SwitchCarrierFailure
 	}
 	p.Healthy = false
 	p.misses = 3
@@ -960,8 +970,12 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		curName = cur.name
 	}
 	if chosen.Name != curName {
-		slog.Debug("multipath primary changed", "from", curName, "to", chosen.Name, "forced", forcedName != "")
-		s.primary.Store(&primaryState{name: chosen.Name})
+		// Concurrent Select callers may reach the same decision; only the one
+		// whose compare-and-swap commits the change logs it.
+		if s.primary.CompareAndSwap(cur, &primaryState{name: chosen.Name}) {
+			slog.Debug("multipath primary changed", "from", curName, "to", chosen.Name, "forced", forcedName != "")
+			s.switches.record(SwitchEvent{At: time.Now(), From: curName, To: chosen.Name, Reason: s.switchReasonLocked(curName, chosen == forcedCandidate)})
+		}
 	}
 	primary = chosen.Name
 	if len(paths) == 1 {
@@ -981,6 +995,21 @@ func (s *Scheduler) selectLocked() (primary, alternate string, duplicate bool) {
 		return primary, alt.Name, true
 	}
 	return primary, "", false
+}
+
+// switchReasonLocked classifies a committed primary change for the switch
+// log. Callers hold at least s.mu's read lock.
+func (s *Scheduler) switchReasonLocked(from string, forced bool) SwitchReason {
+	switch {
+	case from == "":
+		return SwitchInitial
+	case forced:
+		return SwitchForced
+	}
+	if p := s.candidates[from]; p != nil && p.failedBy != "" {
+		return p.failedBy
+	}
+	return SwitchCarrierFailure
 }
 
 func findCandidate(paths []*candidate, name string) *candidate {

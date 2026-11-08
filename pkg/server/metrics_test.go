@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 func TestMetricsHandlerExposesMetrics(t *testing.T) {
@@ -62,5 +63,42 @@ func TestMetricsHandlerOnlyServesMetrics(t *testing.T) {
 	New(Config{}, nil).MetricsHandler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestMetricsTransport_DisabledByDefault(t *testing.T) {
+	s := New(Config{}, nil)
+	rec := httptest.NewRecorder()
+	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if body := rec.Body.String(); strings.Contains(body, "ntwire_transport_switches_total") || strings.Contains(body, "ntwire_sessions_by_path") {
+		t.Fatalf("transport metrics emitted without transport.metrics:\n%s", body)
+	}
+}
+
+func TestMetricsTransport_SwitchCountersAndPathGauge(t *testing.T) {
+	s := New(Config{}, nil)
+	counters := newTransportSwitchCounters()
+	s.transportSwitches.Store(counters)
+	mp := wstransport.NewServerMultipathBind(wstransport.NewServer(), wstransport.MultipathOptions{})
+	defer mp.Close()
+	mp.SetSwitchObserver(counters.observe)
+	ep, err := wstransport.NewServer().ParseEndpoint("peer-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mp.RegisterPath("peer-a", "wss", wstransport.PathWSS, ep, false)
+	mp.ActivatePath("peer-a", "wss")
+	s.data = &dataPlane{multipath: mp}
+	rec := httptest.NewRecorder()
+	s.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	for _, want := range []string{
+		"# TYPE ntwire_transport_switches_total counter",
+		`ntwire_transport_switches_total{from="none",to="wss",reason="initial"} 1`,
+		`ntwire_sessions_by_path{path="wss"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q in:\n%s", want, body)
+		}
 	}
 }

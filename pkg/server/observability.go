@@ -3,6 +3,8 @@ package server
 import (
 	"sort"
 	"sync"
+
+	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
 // lifecycleCounters records bounded, process-lifetime event totals for the
@@ -69,4 +71,56 @@ func (s *Server) auditLifecycle(event, method, reason string) {
 		l = s.log
 	}
 	l.Info("audit", "event", event, "method", method, "reason", reason)
+}
+
+// transportSwitchCounters records committed multipath primary changes for the
+// opt-in transport.metrics Prometheus series. Every label is drawn from a
+// fixed vocabulary (path names and wstransport.SwitchReason values), never
+// from identities or addresses.
+type transportSwitchCounters struct {
+	mu     sync.Mutex
+	values map[transportSwitchKey]uint64
+}
+
+type transportSwitchKey struct {
+	from, to, reason string
+}
+
+func newTransportSwitchCounters() *transportSwitchCounters {
+	return &transportSwitchCounters{values: make(map[transportSwitchKey]uint64)}
+}
+
+func (c *transportSwitchCounters) observe(e wstransport.SwitchEvent) {
+	from := e.From
+	if from == "" {
+		from = "none"
+	}
+	c.mu.Lock()
+	c.values[transportSwitchKey{from: from, to: e.To, reason: string(e.Reason)}]++
+	c.mu.Unlock()
+}
+
+type transportSwitchCounter struct {
+	transportSwitchKey
+	total uint64
+}
+
+func (c *transportSwitchCounters) snapshot() []transportSwitchCounter {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]transportSwitchCounter, 0, len(c.values))
+	for k, v := range c.values {
+		out = append(out, transportSwitchCounter{transportSwitchKey: k, total: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i].transportSwitchKey, out[j].transportSwitchKey
+		if a.from != b.from {
+			return a.from < b.from
+		}
+		if a.to != b.to {
+			return a.to < b.to
+		}
+		return a.reason < b.reason
+	})
+	return out
 }

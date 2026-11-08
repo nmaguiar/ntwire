@@ -2036,6 +2036,10 @@ func (c *Connection) startWebUI() {
 			return
 		}
 		if r.Method == http.MethodGet {
+			if r.URL.Query().Get("details") == "1" {
+				_ = json.NewEncoder(w).Encode(c.TransportDetails())
+				return
+			}
 			_ = json.NewEncoder(w).Encode(c.TransportInfo())
 			return
 		}
@@ -2434,6 +2438,25 @@ type TransportInfo struct {
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective"`
 	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+	// Events and Reason are populated only for a detailed request (GET
+	// /transport?details=1, ntwire transport -v), so the default response
+	// is unchanged.
+	Events []wstransport.SwitchEvent `json:"events,omitempty"`
+	Reason string                    `json:"reason,omitempty"`
+}
+
+// TransportDetails is TransportInfo plus the switch history and the reason
+// the connection did not start on direct UDP.
+func (c *Connection) TransportDetails() TransportInfo {
+	info := c.TransportInfo()
+	info.Reason = c.TransportReason()
+	c.mu.Lock()
+	multipath := c.multipath
+	c.mu.Unlock()
+	if multipath != nil {
+		info.Events = multipath.Scheduler().SwitchEvents()
+	}
+	return info
 }
 
 func (c *Connection) TransportInfo() TransportInfo {

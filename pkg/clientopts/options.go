@@ -112,7 +112,7 @@ func boolDefault(f func(client.Settings) bool) func(Defaults) string {
 var registry = []Option{
 	{
 		Name: "v", Kind: KindBool, Usage: "show connection diagnostics",
-		Bind:  []Binding{{Command: "connect"}, {Command: "list"}},
+		Bind:  []Binding{{Command: "connect"}, {Command: "list"}, {Command: "transport", Usage: "show per-path MTU and the transport switch history"}},
 		Group: "🛠️ Advanced", GUIHidden: true,
 	},
 	{

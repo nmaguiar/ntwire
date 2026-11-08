@@ -93,6 +93,7 @@ transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -718,6 +719,9 @@ audit:
             "direct-udp"
           ],
           "type": "string"
+        },
+        "metrics": {
+          "type": "boolean"
         },
         "multipath": {
           "type": "boolean"

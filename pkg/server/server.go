@@ -67,14 +67,16 @@ type Server struct {
 	tlsManager       *TLSManager
 	auditLog         *slog.Logger
 	lifecycle        *lifecycleCounters
-	direct           *directUDP
-	udpr             atomic.Pointer[udpRelay]
-	nativeRelayMu    sync.Mutex
-	nativeRelayStop  chan struct{}
-	policies         map[string]*compiledPolicy
-	asn              *socks.ASNIndex
-	dnsForwardSlots  chan struct{}
-	dnsForward       func([]byte, []string) ([]byte, error)
+	// transportSwitches is non-nil only when transport.metrics is enabled.
+	transportSwitches atomic.Pointer[transportSwitchCounters]
+	direct            *directUDP
+	udpr              atomic.Pointer[udpRelay]
+	nativeRelayMu     sync.Mutex
+	nativeRelayStop   chan struct{}
+	policies          map[string]*compiledPolicy
+	asn               *socks.ASNIndex
+	dnsForwardSlots   chan struct{}
+	dnsForward        func([]byte, []string) ([]byte, error)
 }
 
 func New(c Config, l *slog.Logger) *Server {

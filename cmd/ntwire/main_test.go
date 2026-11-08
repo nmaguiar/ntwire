@@ -563,3 +563,26 @@ func TestResolveKeyPassphrasePPKWithoutTerminal(t *testing.T) {
 		t.Fatalf("expected non-interactive failure, got %v", err)
 	}
 }
+
+func TestTransportDetails_MTUCellAndEventLine(t *testing.T) {
+	if got := pathMTUCell(wstransport.PathStatus{Kind: wstransport.PathWSS, DatagramMTU: 1420}); got != "-" {
+		t.Errorf("wss MTU cell = %q, want -", got)
+	}
+	if got := pathMTUCell(wstransport.PathStatus{Kind: wstransport.PathDirect, DatagramMTU: 1452}); got != "1452" {
+		t.Errorf("direct MTU cell = %q, want 1452", got)
+	}
+	line := switchEventLine(wstransport.SwitchEvent{To: "wss", Reason: wstransport.SwitchInitial})
+	if !strings.Contains(line, "- -> wss (initial)") {
+		t.Errorf("event line = %q, want initial transition", line)
+	}
+}
+
+func TestTransportInfoJSON_DetailsOmittedByDefault(t *testing.T) {
+	b, err := json.Marshal(client.TransportInfo{Active: "wss"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "events") || strings.Contains(string(b), "reason") {
+		t.Fatalf("default TransportInfo JSON = %s, want no detail fields", b)
+	}
+}

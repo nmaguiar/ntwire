@@ -53,17 +53,7 @@ type Config struct {
 		WireGuardPrivateKeyFile string    `yaml:"wireguard_private_key_file"`
 		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
-	Transport struct {
-		// Multipath controls the scheduler when both WebSocket and UDP legs
-		// are available. Nil is enabled for backward-compatible defaults;
-		// set false only to retain the legacy one-leg data plane.
-		Multipath *bool `yaml:"multipath"`
-		// Force pins every negotiated multipath peer to this candidate while it
-		// is healthy. Valid values are auto (the default), wss, udp-relay, and
-		// direct-udp. An unavailable forced path safely falls back to automatic
-		// scheduling rather than disconnecting the peer.
-		Force string `yaml:"force"`
-	} `yaml:"transport"`
+	Transport           TransportConfig              `yaml:"transport"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
@@ -75,6 +65,24 @@ type Config struct {
 	Audit               struct {
 		LogFile string `yaml:"log_file"`
 	} `yaml:"audit"`
+}
+
+// TransportConfig is the server transport: block. Every field added after
+// multipath/force is opt-in and defaults to the pre-existing behavior.
+type TransportConfig struct {
+	// Multipath controls the scheduler when both WebSocket and UDP legs
+	// are available. Nil is enabled for backward-compatible defaults;
+	// set false only to retain the legacy one-leg data plane.
+	Multipath *bool `yaml:"multipath"`
+	// Force pins every negotiated multipath peer to this candidate while it
+	// is healthy. Valid values are auto (the default), wss, udp-relay, and
+	// direct-udp. An unavailable forced path safely falls back to automatic
+	// scheduling rather than disconnecting the peer.
+	Force string `yaml:"force"`
+	// Metrics opts into per-path transport series on the metrics
+	// listener: ntwire_transport_switches_total and
+	// ntwire_sessions_by_path. Read when the data plane starts.
+	Metrics bool `yaml:"metrics"`
 }
 
 // MultipathEnabled reports the effective transport.multipath setting.
@@ -433,6 +441,7 @@ transport:
   # V3 keeps the healthy incumbent and changes carrier only on proven failure.
   multipath: true                         # negotiate WebSocket/UDP scheduling when both legs are available; default: true; set false for legacy single-path behavior
   force    : auto                         # optional server-side preference: auto, wss, udp-relay, or direct-udp; falls back automatically if unavailable
+  metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.

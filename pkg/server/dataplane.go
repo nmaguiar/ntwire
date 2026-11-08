@@ -196,6 +196,11 @@ func (s *Server) StartDataPlane() error {
 			DuplicateRateBytesPerSec: mc.DuplicateRateBytesPerSec,
 		})
 		multipath.SetForced(s.Config.Transport.Force)
+		if s.Config.Transport.Metrics {
+			// Keep totals across data-plane restarts within one process.
+			s.transportSwitches.CompareAndSwap(nil, newTransportSwitchCounters())
+			multipath.SetSwitchObserver(s.transportSwitches.Load().observe)
+		}
 		bind = multipath
 		// id is the connecting peer's WireGuardPublicKey (see the /v1/wg
 		// handler's ServeHTTP call). Gate on that session's own negotiated

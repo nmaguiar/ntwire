@@ -99,6 +99,15 @@ the same transport transition.
 or error text. Existing session and traffic values remain snapshots of active
 state.
 
+With the opt-in server setting `transport.metrics: true` (read when the data
+plane starts), `/metrics` also exposes
+`ntwire_transport_switches_total{from,to,reason}` — committed multipath
+primary-path changes, where `from`/`to` are path names (`wss`, `direct-udp`,
+`udp-relay`, or `none` for a session's first selection) and `reason` is one of
+`initial`, `forced`, `carrier_failure`, `probe_misses`, or `promoted` — and
+the gauge `ntwire_sessions_by_path{path}`. Both are omitted when the setting is
+off.
+
 ### fluent-bit example
 
 Both daemons write logs to stderr, not to a file, so under a container

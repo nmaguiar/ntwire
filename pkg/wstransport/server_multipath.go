@@ -34,6 +34,10 @@ type ServerMultipathBind struct {
 	opts   MultipathOptions
 	forced string
 
+	// onSwitch, when set, observes every peer scheduler's committed primary
+	// changes (opt-in server transport metrics). Guarded by mu.
+	onSwitch func(SwitchEvent)
+
 	// reserved holds UDP sources that belong to infrastructure (a relay's
 	// native-WireGuard listener) and must never be claimed as a peer's
 	// candidate path: doing so would retag, and reroute replies for, other
@@ -105,6 +109,7 @@ func (m *ServerMultipathBind) peer(id string) *serverMultipathPeer {
 			id: id, endpoint: serverMultipathEndpoint{id: id}, scheduler: NewScheduler(), paths: map[string]conn.Endpoint{}, probes: map[string]outstandingProbe{}, mtuProbes: map[string]outstandingMTUProbe{}, mtuDone: map[string]bool{},
 			dupLimiter: newByteRateLimiter(m.opts.DuplicateRateBytesPerSec),
 		}
+		p.scheduler.SetSwitchObserver(m.onSwitch)
 		m.peers[id] = p
 	}
 	return p
@@ -194,6 +199,39 @@ func (m *ServerMultipathBind) SetForced(name string) {
 	for _, p := range peers {
 		p.scheduler.SetForced(normalized)
 	}
+}
+
+// SetSwitchObserver registers fn for every existing and future peer
+// scheduler's committed primary changes. Passing nil removes it. fn must not
+// block: it runs on the scheduler's selection path.
+func (m *ServerMultipathBind) SetSwitchObserver(fn func(SwitchEvent)) {
+	m.mu.Lock()
+	m.onSwitch = fn
+	peers := make([]*serverMultipathPeer, 0, len(m.peers))
+	for _, p := range m.peers {
+		peers = append(peers, p)
+	}
+	m.mu.Unlock()
+	for _, p := range peers {
+		p.scheduler.SetSwitchObserver(fn)
+	}
+}
+
+// PrimaryCounts returns how many peers currently use each path name as their
+// primary. Peers with no selectable path are counted under "".
+func (m *ServerMultipathBind) PrimaryCounts() map[string]int {
+	m.mu.RLock()
+	peers := make([]*serverMultipathPeer, 0, len(m.peers))
+	for _, p := range m.peers {
+		peers = append(peers, p)
+	}
+	m.mu.RUnlock()
+	out := make(map[string]int, 4)
+	for _, p := range peers {
+		primary, _, _ := p.scheduler.Select()
+		out[primary]++
+	}
+	return out
 }
 
 // ReserveSources replaces the set of UDP source addresses that no peer may

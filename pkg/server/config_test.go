@@ -81,10 +81,7 @@ func TestMultipathEnabledDefaultsOnAndCanBeDisabled(t *testing.T) {
 		t.Fatal("unset transport.multipath must default to enabled")
 	}
 	no := false
-	if (Config{Transport: struct {
-		Multipath *bool  `yaml:"multipath"`
-		Force     string `yaml:"force"`
-	}{Multipath: &no}}).MultipathEnabled() {
+	if (Config{Transport: TransportConfig{Multipath: &no}}).MultipathEnabled() {
 		t.Fatal("transport.multipath=false was ignored")
 	}
 }
