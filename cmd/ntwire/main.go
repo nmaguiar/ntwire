@@ -296,11 +296,7 @@ func transportCmd(args []string, u *ui.UI) {
 		os.Exit(1)
 	}
 	if fs.NArg() == 0 {
-		endpoint := "/transport"
-		if details {
-			endpoint += "?details=1"
-		}
-		req, err := client.NewUIRequest(s.UIURL, http.MethodGet, endpoint, nil)
+		req, err := transportInfoRequest(s.UIURL, details)
 		if err != nil {
 			u.Errorf("%v", err)
 			os.Exit(1)
@@ -578,6 +574,17 @@ func pathStatusRow(p wstransport.PathStatus) []string {
 		status += " (forced, fallback active)"
 	}
 	return []string{p.Name, string(p.Kind), status, fmt.Sprintf("%dms", p.RTT.Milliseconds()), fmt.Sprintf("%.1f%%", p.Loss*100)}
+}
+
+// transportInfoRequest builds GET /transport for the running client's local
+// UI. NewUIRequest sets only the path, so the details query is added here.
+func transportInfoRequest(uiURL string, details bool) (*http.Request, error) {
+	req, err := client.NewUIRequest(uiURL, http.MethodGet, "/transport", nil)
+	if err != nil || !details {
+		return req, err
+	}
+	req.URL.RawQuery = "details=1"
+	return req, nil
 }
 
 // pathMTUCell renders a candidate's confirmed datagram MTU for

@@ -586,3 +586,20 @@ func TestTransportInfoJSON_DetailsOmittedByDefault(t *testing.T) {
 		t.Fatalf("default TransportInfo JSON = %s, want no detail fields", b)
 	}
 }
+
+func TestTransportInfoRequest_DetailsQuery(t *testing.T) {
+	req, err := transportInfoRequest("http://127.0.0.1:4000/?token=abc", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Path != "/transport" || req.URL.Query().Get("details") != "1" {
+		t.Fatalf("detailed request URL = %s, want /transport?details=1", req.URL)
+	}
+	req, err = transportInfoRequest("http://127.0.0.1:4000/?token=abc", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.URL.Path != "/transport" || req.URL.RawQuery != "" {
+		t.Fatalf("default request URL = %s, want /transport", req.URL)
+	}
+}
