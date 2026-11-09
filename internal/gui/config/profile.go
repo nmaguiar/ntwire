@@ -17,12 +17,14 @@ import (
 // ToClientOptions needs to build a client.Options, plus GUI-only metadata
 // (ID, Name, ConnectOnStart).
 type Profile struct {
-	ID             string         `yaml:"id"`
-	Name           string         `yaml:"name"`
-	Server         string         `yaml:"server"`
-	IdentityFile   string         `yaml:"identity_file"`
-	ConnectOnStart bool           `yaml:"connect_on_start"`
-	Ports          map[string]int `yaml:"ports"`
+	BrowserAutomatic  bool           `yaml:"browser_automatic,omitempty"`
+	BrowserExecutable string         `yaml:"browser_executable,omitempty"`
+	ID                string         `yaml:"id"`
+	Name              string         `yaml:"name"`
+	Server            string         `yaml:"server"`
+	IdentityFile      string         `yaml:"identity_file"`
+	ConnectOnStart    bool           `yaml:"connect_on_start"`
+	Ports             map[string]int `yaml:"ports"`
 	// Hosts is a per-tunnel loopback address override; see
 	// client.Options.Hosts.
 	Hosts            map[string]string `yaml:"hosts"`
@@ -64,11 +66,12 @@ type Profile struct {
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any
 // one server profile's connection settings.
 type Settings struct {
-	UpdateChecksDisabled bool `yaml:"update_checks_disabled"`
-	AutomaticUpdates     bool `yaml:"automatic_updates"`
-	StartAtLogin         bool `yaml:"start_at_login"`
-	Notifications        bool `yaml:"notifications"`
-	ImportedCLIConfig    bool `yaml:"imported_cli_config"`
+	BrowserExecutable    string `yaml:"browser_executable,omitempty"`
+	UpdateChecksDisabled bool   `yaml:"update_checks_disabled"`
+	AutomaticUpdates     bool   `yaml:"automatic_updates"`
+	StartAtLogin         bool   `yaml:"start_at_login"`
+	Notifications        bool   `yaml:"notifications"`
+	ImportedCLIConfig    bool   `yaml:"imported_cli_config"`
 }
 
 // Config is the full contents of ~/.ntwire/gui.yaml.
