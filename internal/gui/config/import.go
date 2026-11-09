@@ -45,20 +45,23 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 		hosts[k] = v
 	}
 	cfg.Profiles = append(cfg.Profiles, Profile{
-		ID:             NewID(),
-		Name:           profileNameFor(settings.Server),
-		Server:         settings.Server,
-		IdentityFile:   settings.IdentityFile,
-		ConnectOnStart: false,
-		Ports:          ports,
-		Hosts:          hosts,
-		CAFile:         settings.CAFile,
-		Insecure:       settings.Insecure,
-		HTTPSProxy:     settings.HTTPSProxy,
-		NoSystemProxy:  settings.NoSystemProxy,
-		SSO:            settings.SSO,
-		Provider:       settings.Provider,
-		CollectExec:    settings.CollectExec,
+		BrowserArgs:       append([]string(nil), settings.BrowserArgs...),
+		BrowserArgsMode:   "replace",
+		BrowserExecutable: settings.BrowserExecutable,
+		ID:                NewID(),
+		Name:              profileNameFor(settings.Server),
+		Server:            settings.Server,
+		IdentityFile:      settings.IdentityFile,
+		ConnectOnStart:    false,
+		Ports:             ports,
+		Hosts:             hosts,
+		CAFile:            settings.CAFile,
+		Insecure:          settings.Insecure,
+		HTTPSProxy:        settings.HTTPSProxy,
+		NoSystemProxy:     settings.NoSystemProxy,
+		SSO:               settings.SSO,
+		Provider:          settings.Provider,
+		CollectExec:       settings.CollectExec,
 	})
 	return true, nil
 }

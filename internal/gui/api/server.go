@@ -443,6 +443,10 @@ func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := browseropen.ValidateExtraArgs(set.BrowserArgs); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := s.mgr.SetSettings(set); err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return

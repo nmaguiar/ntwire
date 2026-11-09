@@ -15,7 +15,7 @@ var wantSurface = map[string][]string{
 	"connect": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
 		"sso", "provider", "token-cache", "websocket", "collect-exec",
-		"browser-executable", "no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "promote", "tunnel-mtu", "mtu-aware", "udp-alt",
+		"browser-executable", "browser-arg", "no-browser-args", "no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "promote", "tunnel-mtu", "mtu-aware", "udp-alt",
 	},
 	"list": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
@@ -25,7 +25,7 @@ var wantSurface = map[string][]string{
 	"status":     {"status-file", "json", "no-color"},
 	"disconnect": {"status-file", "no-color"},
 	"port":       {"status-file", "no-color"},
-	"browser":    {"browser-executable", "status-file", "clean", "list", "clean-all", "no-color"},
+	"browser":    {"browser-executable", "browser-arg", "no-browser-args", "status-file", "clean", "list", "clean-all", "no-color"},
 	"transport":  {"status-file", "no-color", "v"},
 	"logout":     {"config", "token-cache", "no-color"},
 	"keygen":     {"o", "no-color"},

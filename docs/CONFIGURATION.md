@@ -728,3 +728,48 @@ reserves the network address, the server address (network plus one), native-peer
 addresses, active-session addresses, and the IPv4 broadcast address. Allocation
 wraps within the configured IPv4 or IPv6 prefix; exhausted pools reject new
 sessions rather than issuing a reserved or duplicate address.
+
+## Extra browser arguments
+
+SOCKS browser launches accept locally configured Chromium switches. In the GUI,
+open **Browser settings (advanced)** for global arguments, or a saved profile's
+advanced Connection fields for its arguments and effective preview. Add one
+literal `--flag` or `--flag=value` per row. Empty rows are ignored. Profile mode
+**inherit** (the default) uses global arguments, **append** adds profile arguments
+after globals, and **replace** uses only profile arguments. An empty replacement
+clears global extras for that profile. Settings apply to tunnel buttons, tray
+launches and SOCKS portal actions, including changes saved while connected.
+
+The CLI uses its separate `~/.ntwire/config.yaml` store:
+
+```yaml
+browser_args:
+  - --lang=en-GB
+  - --window-size=1200,800
+```
+
+```sh
+ntwire connect --browser-arg=--lang=pt-PT https://server.example
+ntwire browser --browser-arg='--custom=value with spaces' reports
+ntwire browser --no-browser-args reports
+```
+
+Repeat `--browser-arg` to supply multiple arguments. Explicit arguments replace
+the configured list; `--no-browser-args` clears it. These flags cannot be combined.
+The CLI settings page also provides an argument row editor. GUI profile YAML uses
+`browser_args` and `browser_args_mode: inherit|append|replace`; GUI globals live
+under `settings.browser_args` in `gui.yaml`.
+
+Values are literal process arguments: spaces are preserved, with no shell
+execution, quoting interpretation, variable expansion or tilde expansion. Order
+and duplicates are preserved. Arguments follow ntwire defaults and precede the
+URL separator and validated URLs. Close the existing isolated browser profile
+before relaunching for new arguments to reliably take effect; ntwire does not
+terminate it. SSO and dashboard browser launches are unaffected.
+
+Positional URLs, bare `--`, malformed switch names, NUL/newline characters and
+ntwire-managed proxy/profile switches are rejected at save and launch. Managed
+names are `proxy-server`, `proxy-pac-url`, `proxy-auto-detect`, `no-proxy-server`,
+`proxy-bypass-list`, `user-data-dir` and `profile-directory`. Unknown switches
+are allowed; support and duplicate interpretation depend on the browser. No
+extra switches are enabled by default.

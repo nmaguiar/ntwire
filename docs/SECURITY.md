@@ -784,3 +784,13 @@ A blank replacement field retains the saved URL. Supplying a complete replacemen
 URL explicitly replaces credentials; omitting userinfo clears them. Environment
 and direct modes clear the custom URL. Direct mode changes only ntwire's
 application proxy selection and does not override network security controls.
+
+### Locally configured SOCKS browser switches
+
+Extra browser arguments are an operator-controlled local setting, separate from
+server-provided portal URLs. They are passed literally without a shell, validated
+at save and launch, and cannot override ntwire's managed proxy and profile
+switches. Server-provided URLs still require absolute HTTP(S) validation and are
+placed after the flag terminator. Unknown browser switches are allowed, so local
+configuration must be trusted: validation does not guarantee prevention of every
+traffic leak or unsafe browser feature. See [configuration](CONFIGURATION.md#extra-browser-arguments).

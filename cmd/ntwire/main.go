@@ -407,6 +407,12 @@ func browser(args []string, u *ui.UI) {
 		"ntwire browser", "ntwire browser reports", "ntwire browser --clean reports",
 		"ntwire browser --list", "ntwire browser --clean-all")
 	fs.Parse(args)
+	browserArgs, err := fs.BrowserArgs(settings.BrowserArgs)
+	if err != nil {
+		u.Errorf("browser arguments: %v", err)
+		os.Exit(1)
+	}
+
 	path := fs.Str("status-file")
 	clean := fs.BoolVal("clean")
 	list := fs.BoolVal("list")
@@ -511,7 +517,7 @@ func browser(args []string, u *ui.UI) {
 		u.Info("removed browser profile for %s", tunnel.Name)
 		return
 	}
-	if err := browseropen.OpenSocksExecutable(fs.Str("browser-executable"), "cli-"+tunnel.Name, tunnel.LocalAddress); err != nil {
+	if err := browseropen.OpenSocksWithOptions(browseropen.LaunchOptions{Executable: fs.Str("browser-executable"), ExtraArgs: browserArgs}, "cli-"+tunnel.Name, tunnel.LocalAddress); err != nil {
 		u.Errorf("open browser: %v", err)
 		os.Exit(1)
 	}
@@ -816,6 +822,11 @@ func connect(args []string, u *ui.UI) {
 	httpsProxy := fs.Str("https-proxy")
 	noSystemProxy := fs.BoolVal("no-system-proxy")
 	known := fs.Str("known-servers")
+	browserArgs, argsErr := fs.BrowserArgs(settings.BrowserArgs)
+	if argsErr != nil {
+		u.Errorf("browser arguments: %v", argsErr)
+		os.Exit(1)
+	}
 	noBrowser := fs.BoolVal("no-browser")
 	sso := fs.BoolVal("sso")
 	sso = resolveSSO(sso, fs.WasSet("sso"), fs.WasSet("i"))
@@ -869,6 +880,7 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
+		BrowserArgs:       browserArgs,
 		BrowserExecutable: fs.Str("browser-executable"),
 		UDPAlt:            udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
 	}

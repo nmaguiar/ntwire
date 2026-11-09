@@ -41,6 +41,7 @@ var profileField = map[string]string{
 	"tunnel-mtu":         "TunnelMTU",
 	"mtu-aware":          "MTUAware",
 	"browser-executable": "BrowserExecutable",
+	"browser-arg":        "BrowserArgs",
 	"udp-alt":            "UDPAlt",
 }
 

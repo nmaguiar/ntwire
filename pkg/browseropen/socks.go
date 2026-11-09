@@ -99,6 +99,15 @@ func OpenSocks(key, localAddr string, targetURL ...string) error {
 
 // OpenSocksExecutable uses an explicit executable, or automatic detection when empty.
 func OpenSocksExecutable(executable, key, localAddr string, targetURL ...string) error {
+	return OpenSocksWithOptions(LaunchOptions{Executable: executable}, key, localAddr, targetURL...)
+}
+
+// OpenSocksWithOptions launches an isolated browser with validated literal arguments.
+func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetURL ...string) error {
+	if err := ValidateExtraArgs(options.ExtraArgs); err != nil {
+		return err
+	}
+	executable := options.Executable
 	bin, err := ResolveExecutable(executable)
 	if err != nil {
 		return err
@@ -111,6 +120,7 @@ func OpenSocksExecutable(executable, key, localAddr string, targetURL ...string)
 	if err != nil {
 		return err
 	}
+	args = insertExtraArgs(args, options.ExtraArgs)
 	return exec.Command(bin, args...).Start()
 }
 
@@ -274,4 +284,22 @@ func ResolveExecutable(path string) (string, error) {
 		return "", fmt.Errorf("browser executable is not executable: %s", path)
 	}
 	return path, nil
+}
+
+// insertExtraArgs keeps all switches before the positional URL separator.
+func insertExtraArgs(args, extra []string) []string {
+	index := len(args)
+	for i, arg := range args {
+		if arg == "--" {
+			index = i
+			break
+		}
+	}
+	out := append([]string(nil), args[:index]...)
+	for _, arg := range extra {
+		if strings.TrimSpace(arg) != "" {
+			out = append(out, arg)
+		}
+	}
+	return append(out, args[index:]...)
 }
