@@ -94,7 +94,12 @@ func ProfileDir(key string) (string, error) {
 // browser navigates to that URL upon launch. It starts the process and
 // returns immediately -- it does not wait for the browser to exit.
 func OpenSocks(key, localAddr string, targetURL ...string) error {
-	bin, err := FindChrome()
+	return OpenSocksExecutable("", key, localAddr, targetURL...)
+}
+
+// OpenSocksExecutable uses an explicit executable, or automatic detection when empty.
+func OpenSocksExecutable(executable, key, localAddr string, targetURL ...string) error {
+	bin, err := ResolveExecutable(executable)
 	if err != nil {
 		return err
 	}
@@ -240,4 +245,33 @@ func CleanProfilesForProfile(profileID string) error {
 		return fmt.Errorf("failed to clean browser profiles: %s", strings.Join(errs, ", "))
 	}
 	return nil
+}
+
+// ResolveExecutable validates a custom path without invoking a shell.
+func ResolveExecutable(path string) (string, error) {
+	if path == "" {
+		return FindChrome()
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, "~\\") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(home, path[2:])
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("browser executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("browser executable must be a regular file: %s", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("browser executable is not executable: %s", path)
+	}
+	return path, nil
 }

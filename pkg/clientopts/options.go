@@ -128,6 +128,14 @@ var registry = []Option{
 		Label:   "SSH private key", Group: "🪪 Identity", Widget: WidgetPath,
 	},
 	{
+		Name: "browser-executable", Kind: KindString, Usage: "Chromium-compatible browser executable (empty: automatic detection)",
+		Bind:    []Binding{{Command: "connect"}, {Command: "browser"}},
+		Default: strDefault(func(s client.Settings) string { return s.BrowserExecutable }),
+		Label:   "Chromium-compatible browser executable", Group: "🌐 Connection", Widget: WidgetPath, Advanced: true,
+		Help: "Leave empty to detect automatically. Select Chrome, Edge, Chromium, or Brave. Applies to SOCKS browser launches.",
+	},
+
+	{
 		Name: "ca", Kind: KindString, Usage: "PEM CA certificate",
 		Bind:    []Binding{{Command: "connect"}, {Command: "list"}},
 		Default: strDefault(func(s client.Settings) string { return s.CAFile }),

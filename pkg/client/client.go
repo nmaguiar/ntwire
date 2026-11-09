@@ -86,7 +86,8 @@ func Authenticate(url, keyPath string, info protocol.ClientInfo) (protocol.AuthR
 
 // Options controls the client-side TLS and connection lifecycle.
 type Options struct {
-	Ports map[string]int
+	BrowserExecutable string
+	Ports             map[string]int
 	// Hosts is a per-tunnel loopback address override (e.g.
 	// "127.70.0.1"), keyed by tunnel name. It is a strict override like
 	// Ports: an address that fails to bind aborts the connect. Empty
@@ -2683,7 +2684,7 @@ func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := openSocksBrowser(c.browserProfileKey(name), addr); err != nil {
+	if err := c.openConfiguredSocksBrowser(c.browserProfileKey(name), addr); err != nil {
 		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2843,7 +2844,7 @@ func (c *Connection) executePortalAction(ctx context.Context, w http.ResponseWri
 	}
 
 	if socksAddr != "" {
-		if err := openSocksBrowser(c.browserProfileKey(targetID), socksAddr, targetURL); err != nil {
+		if err := c.openConfiguredSocksBrowser(c.browserProfileKey(targetID), socksAddr, targetURL); err != nil {
 			http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -3406,4 +3407,11 @@ func (c *Connection) Close() {
 	if stack != nil {
 		_ = stack.Close()
 	}
+}
+
+func (c *Connection) openConfiguredSocksBrowser(key, addr string, urls ...string) error {
+	if c.options.BrowserExecutable == "" {
+		return openSocksBrowser(key, addr, urls...)
+	}
+	return browseropen.OpenSocksExecutable(c.options.BrowserExecutable, key, addr, urls...)
 }

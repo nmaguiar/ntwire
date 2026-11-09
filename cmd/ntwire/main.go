@@ -401,7 +401,8 @@ func transportCmd(args []string, u *ui.UI) {
 // survive between launches. --clean removes that profile directory instead
 // of opening it.
 func browser(args []string, u *ui.UI) {
-	fs := clientopts.NewFlagSet("browser", clientopts.Defaults{})
+	settings, _ := settingsFor(args)
+	fs := clientopts.NewFlagSet("browser", clientopts.Defaults{Settings: settings})
 	setUsage(fs.FlagSet, u, "open a browser configured for a SOCKS tunnel",
 		"ntwire browser", "ntwire browser reports", "ntwire browser --clean reports",
 		"ntwire browser --list", "ntwire browser --clean-all")
@@ -510,7 +511,7 @@ func browser(args []string, u *ui.UI) {
 		u.Info("removed browser profile for %s", tunnel.Name)
 		return
 	}
-	if err := browseropen.OpenSocks("cli-"+tunnel.Name, tunnel.LocalAddress); err != nil {
+	if err := browseropen.OpenSocksExecutable(fs.Str("browser-executable"), "cli-"+tunnel.Name, tunnel.LocalAddress); err != nil {
 		u.Errorf("open browser: %v", err)
 		os.Exit(1)
 	}
@@ -868,7 +869,8 @@ func connect(args []string, u *ui.UI) {
 		Ports: ports, Hosts: hosts, CAFile: ca, Insecure: insecure, HTTPSProxy: httpsProxy, NoSystemProxy: noSystemProxy, KnownServersFile: known, NoWebUI: noBrowser, UseWebSocket: websocket,
 		SSO: sso, Provider: provider, NoBrowser: noBrowser, TokenCacheFile: tokenCache, KeyPassphrase: passphrase,
 		BindAddress: bind, IPVersion: ipVersion, Transport: transport, SettingsURL: settingsURL,
-		UDPAlt: udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
+		BrowserExecutable: fs.Str("browser-executable"),
+		UDPAlt:            udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	c, e := client.ConnectWithOptions(server, key, info, o)

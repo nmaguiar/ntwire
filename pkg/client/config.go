@@ -56,9 +56,10 @@ func GenerateIdentity(path string) (string, error) {
 // Settings is the optional persistent configuration stored at
 // ~/.ntwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {
-	Server       string         `yaml:"server"`
-	IdentityFile string         `yaml:"identity_file"`
-	Ports        map[string]int `yaml:"ports"`
+	BrowserExecutable string         `yaml:"browser_executable"`
+	Server            string         `yaml:"server"`
+	IdentityFile      string         `yaml:"identity_file"`
+	Ports             map[string]int `yaml:"ports"`
 	// Hosts is a per-tunnel loopback address override; see
 	// client.Options.Hosts.
 	Hosts         map[string]string `yaml:"hosts"`
@@ -148,6 +149,7 @@ var settingsUIFields = []struct {
 }{
 	{Field: "Server", YAMLKey: "server"},
 	{Field: "IdentityFile", YAMLKey: "identity_file"},
+	{Field: "BrowserExecutable", YAMLKey: "browser_executable"},
 	{Field: "CAFile", YAMLKey: "ca_file"},
 	{Field: "Insecure", YAMLKey: "insecure", Bool: true},
 	{Field: "HTTPSProxy", YAMLKey: "https_proxy"},

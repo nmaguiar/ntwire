@@ -519,7 +519,13 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 		if !protocol.IsBrowserSocksTarget(t.TargetHint) {
 			return fmt.Errorf("gui: tunnel %q is not a SOCKS tunnel", tunnelName)
 		}
-		return browseropen.OpenSocks(id+"-"+tunnelName, t.LocalAddress)
+		executable := snap.Profile.BrowserExecutable
+		if snap.Profile.BrowserAutomatic {
+			executable = ""
+		} else if executable == "" {
+			executable = m.Settings().BrowserExecutable
+		}
+		return browseropen.OpenSocksExecutable(executable, id+"-"+tunnelName, t.LocalAddress)
 	}
 	return fmt.Errorf("gui: tunnel %q not found", tunnelName)
 }

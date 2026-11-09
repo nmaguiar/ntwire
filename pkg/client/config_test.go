@@ -114,6 +114,26 @@ func TestSaveSettingsWritesEveryFieldIncludingClearedOnes(t *testing.T) {
 	}
 }
 
+func TestSaveSettingsBrowserExecutable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	for _, executable := range []string{"/opt/browser with spaces/chrome", ""} {
+		changed, err := SaveSettings(path, Settings{BrowserExecutable: executable})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("SaveSettings reported no change")
+		}
+		got, err := LoadSettings(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.BrowserExecutable != executable {
+			t.Fatalf("BrowserExecutable = %q, want %q", got.BrowserExecutable, executable)
+		}
+	}
+}
+
 func TestSaveSettingsNoOpWhenNothingChanges(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	s := Settings{Server: "https://ntwire.example:8443", SSO: true}
