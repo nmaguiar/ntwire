@@ -89,6 +89,9 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   </section>
 
   <div id="regular-settings">
+  <section class="panel"><details><summary>Browser settings (advanced)</summary>
+  <div id="global-browser-args"></div><button id="save-browser-args" type="button">Save browser settings</button>
+  </details></section>
   <section class="panel">
     <h2>👤 Profiles</h2>
     <div id="profiles" class="empty">Loading…</div>
@@ -629,7 +632,47 @@ function renderTunnelSection(profileID, tunnels) {
 
 // --- generated form -------------------------------------------------------
 
+function browserArgumentsEditor(value, global = false, profile = null) {
+  const box = document.createElement('fieldset');
+  const legend = document.createElement('legend'); legend.textContent = 'Extra browser arguments'; box.append(legend);
+  const mode = document.createElement('select'); mode.name = 'BrowserArgsMode';
+  for (const key of ['inherit', 'append', 'replace']) { const o = document.createElement('option'); o.value = key; o.textContent = key; mode.append(o); }
+  mode.value = profile?.BrowserArgsMode || 'inherit';
+  if (!global) { const label = document.createElement('label'); label.textContent = 'Argument inheritance'; label.append(mode); box.append(label); }
+  const rows = document.createElement('div'); const preview = document.createElement('pre'); preview.style.whiteSpace = 'pre-wrap';
+  const values = () => [...rows.querySelectorAll('input')].map(el => el.value).filter(v => v.trim() !== '');
+  const update = () => { const own = values(); const inherited = globalBrowserSettings.BrowserArgs || [];
+    const effective = global || mode.value === 'replace' ? own : mode.value === 'append' ? [...inherited, ...own] : inherited;
+    preview.textContent = 'Effective arguments: ' + JSON.stringify(effective); };
+  const addRow = (value = '') => {
+    const row = document.createElement('div'); row.className = 'row';
+    const input = document.createElement('input'); input.value = value; input.placeholder = '--flag=value'; input.setAttribute('aria-label', 'Browser argument');
+    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove';
+    remove.onclick = () => { row.remove(); update(); }; input.oninput = update; row.append(input, remove); rows.append(row);
+  };
+  (value || []).forEach(addRow);
+  const add = document.createElement('button'); add.type = 'button'; add.textContent = 'Add argument'; add.onclick = () => { addRow(); update(); };
+  const help = document.createElement('p'); help.className = 'help';
+  help.textContent = 'One literal --flag or --flag=value per row. Spaces in values are preserved; shell quoting and expansion are not used. Managed proxy and profile flags are rejected. Close the isolated browser before relaunching for new flags to reliably take effect. Browser support varies; validation cannot prevent every traffic leak.';
+  mode.onchange = update; box.append(rows, add, help, preview); box.readArguments = values; box.refreshArguments = update; update(); return box;
+}
+let globalBrowserSettings = {};
+let globalBrowserEditor;
+async function loadBrowserSettings() {
+ globalBrowserSettings = await api('GET', '/api/settings');
+ globalBrowserEditor = browserArgumentsEditor(globalBrowserSettings.BrowserArgs, true);
+ document.getElementById('global-browser-args').replaceChildren(globalBrowserEditor);
+ form.querySelectorAll('[data-browser-args]').forEach(box => box.refreshArguments());
+}
+document.getElementById('save-browser-args').onclick = async () => {
+ try {
+  const current = await api('GET', '/api/settings');
+  await api('PUT', '/api/settings', {...current, BrowserArgs: globalBrowserEditor.readArguments()});
+  await loadBrowserSettings(); setMessage('Browser settings saved.', 'ok');
+ } catch (e) { setMessage(e.message); }
+};
 function fieldControl(f, value, profile) {
+  if (f.widget === 'stringlist') { const box = browserArgumentsEditor(value, false, profile); box.dataset.browserArgs = ''; return box; }
   if (f.widget === 'toggle') {
     const label = document.createElement('label');
     label.className = 'toggle';
@@ -911,6 +954,8 @@ form.addEventListener('submit', async (e) => {
       Server: form.Server.value,
       ConnectOnStart: form.ConnectOnStart.checked,
     };
+    body.BrowserArgs = form.querySelector('[data-browser-args]')?.readArguments() || [];
+    body.BrowserArgsMode = form.elements.BrowserArgsMode?.value || 'inherit';
     for (const f of schema) {
       const el = form.elements[f.field];
       if (!el) continue;
@@ -1426,6 +1471,7 @@ function connectEvents() {
     label.hidden = false;
   }).catch(() => {});
   try {
+    await loadBrowserSettings();
     await refreshSchema();
     await refreshProfiles();
     await refreshBrowserProfiles();

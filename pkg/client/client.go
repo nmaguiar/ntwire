@@ -52,8 +52,9 @@ type ExecCollector struct{ Command string }
 // These indirections keep the browser-launch boundary testable without
 // starting a desktop browser from a unit test.
 var (
-	openSocksBrowser = browseropen.OpenSocks
-	openBrowser      = browseropen.Open
+	openSocksWithOptions = browseropen.OpenSocksWithOptions
+	openSocksBrowser     = browseropen.OpenSocks
+	openBrowser          = browseropen.Open
 )
 
 func BuiltinInfo() protocol.ClientInfo {
@@ -86,8 +87,13 @@ func Authenticate(url, keyPath string, info protocol.ClientInfo) (protocol.AuthR
 
 // Options controls the client-side TLS and connection lifecycle.
 type Options struct {
-	BrowserExecutable string
-	Ports             map[string]int
+	// BrowserArgs supplies literal extra switches for SOCKS browser launches only.
+	BrowserArgs []string
+	// ResolveBrowserOptions, when set, resolves current local settings at each SOCKS
+	// launch. It must be safe for concurrent calls and return an owned argument slice.
+	ResolveBrowserOptions func() (browseropen.LaunchOptions, error)
+	BrowserExecutable     string
+	Ports                 map[string]int
 	// Hosts is a per-tunnel loopback address override (e.g.
 	// "127.70.0.1"), keyed by tunnel name. It is a strict override like
 	// Ports: an address that fails to bind aborts the connect. Empty
@@ -3410,8 +3416,19 @@ func (c *Connection) Close() {
 }
 
 func (c *Connection) openConfiguredSocksBrowser(key, addr string, urls ...string) error {
-	if c.options.BrowserExecutable == "" {
+	opts := browseropen.LaunchOptions{Executable: c.options.BrowserExecutable, ExtraArgs: c.options.BrowserArgs}
+	if c.options.ResolveBrowserOptions != nil {
+		var err error
+		opts, err = c.options.ResolveBrowserOptions()
+		if err != nil {
+			return err
+		}
+	}
+	if err := browseropen.ValidateExtraArgs(opts.ExtraArgs); err != nil {
+		return err
+	}
+	if opts.Executable == "" && len(opts.ExtraArgs) == 0 {
 		return openSocksBrowser(key, addr, urls...)
 	}
-	return browseropen.OpenSocksExecutable(c.options.BrowserExecutable, key, addr, urls...)
+	return openSocksWithOptions(opts, key, addr, urls...)
 }

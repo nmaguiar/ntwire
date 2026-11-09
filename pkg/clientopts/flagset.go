@@ -1,6 +1,10 @@
 package clientopts
 
-import "flag"
+import (
+	"flag"
+	"fmt"
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
+)
 
 // FlagSet wraps a *flag.FlagSet built from the registry, with typed
 // accessors so callers don't need to keep their own *string/*bool handles.
@@ -29,7 +33,7 @@ func NewFlagSet(command string, d Defaults) *FlagSet {
 			f.vals[o.Name] = f.String(o.Name, def, usage)
 		case KindBool:
 			f.vals[o.Name] = f.Bool(o.Name, def == "true", usage)
-		case KindKeyValue:
+		case KindStringList, KindKeyValue:
 			m := &MultiValue{}
 			f.Var(m, o.Name, usage)
 			f.vals[o.Name] = m
@@ -82,4 +86,23 @@ func (f *FlagSet) WasSet(name string) bool {
 func (f *FlagSet) Has(name string) bool {
 	_, ok := f.vals[name]
 	return ok
+}
+
+// BrowserArgs resolves explicit replacement and clearing flags over saved defaults.
+func (f *FlagSet) BrowserArgs(configured []string) ([]string, error) {
+	if f.BoolVal("no-browser-args") && f.WasSet("browser-arg") {
+		return nil, fmt.Errorf("--no-browser-args cannot be combined with --browser-arg")
+	}
+	args := append([]string(nil), configured...)
+	if f.BoolVal("no-browser-args") {
+		args = nil
+	} else if f.WasSet("browser-arg") {
+		args = append([]string(nil), f.Strings("browser-arg")...)
+	}
+	return args, browseropen.ValidateExtraArgs(args)
+}
+
+// Strings returns the literal values of a KindStringList option in their original order.
+func (f *FlagSet) Strings(name string) []string {
+	return append([]string(nil), (*f.vals[name].(*MultiValue))...)
 }

@@ -72,7 +72,13 @@ let schema=[],inputs={};
 function group(name){let s=document.createElement('section');s.className='card';let h=document.createElement('h2');h.textContent=name;s.append(h);return s}
 function fieldRow(f,value){
   let row=document.createElement('div');
-  if(f.kind==='bool'){
+  if(f.kind==='stringlist'){
+    const label=document.createElement('label');label.textContent=f.label;row.append(label);
+    const rows=document.createElement('div');row.append(rows);
+    const addRow=(value='')=>{const r=document.createElement('div');const input=document.createElement('input');input.value=value;input.placeholder='--flag=value';const remove=document.createElement('button');remove.type='button';remove.textContent='Remove';remove.onclick=()=>r.remove();r.append(input,remove);rows.append(r)};
+    (value||[]).forEach(addRow);const add=document.createElement('button');add.type='button';add.textContent='Add argument';add.onclick=()=>addRow();row.append(add);
+    inputs[f.field]={read:()=>[...rows.querySelectorAll('input')].map(e=>e.value).filter(v=>v.trim()!=='')};
+  }else if(f.kind==='bool'){
     row.className='field toggle';
     let input=document.createElement('input');input.type='checkbox';input.id='f-'+f.name;input.checked=!!value;
     let label=document.createElement('label');label.htmlFor=input.id;label.textContent=f.label;
@@ -122,7 +128,7 @@ saveBtn.addEventListener('click',async()=>{
   clearMessage();saveBtn.disabled=true;
   try{
     const body={};
-    for(const [field,{el,bool}] of Object.entries(inputs))body[field]=bool?el.checked:el.value.trim();
+    for(const [field,{el,bool,read}] of Object.entries(inputs))body[field]=read?read():bool?el.checked:el.value.trim();
     const r=await fetch('/api/values?token='+encodeURIComponent(token),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     if(!r.ok)throw Error(await r.text());
     setMessage('Saved.','ok');

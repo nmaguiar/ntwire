@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"gopkg.in/yaml.v3"
 )
@@ -56,6 +57,7 @@ func GenerateIdentity(path string) (string, error) {
 // Settings is the optional persistent configuration stored at
 // ~/.ntwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {
+	BrowserArgs       []string       `yaml:"browser_args,omitempty"`
 	BrowserExecutable string         `yaml:"browser_executable"`
 	Server            string         `yaml:"server"`
 	IdentityFile      string         `yaml:"identity_file"`
@@ -149,6 +151,7 @@ var settingsUIFields = []struct {
 }{
 	{Field: "Server", YAMLKey: "server"},
 	{Field: "IdentityFile", YAMLKey: "identity_file"},
+	{Field: "BrowserArgs", YAMLKey: "browser_args"},
 	{Field: "BrowserExecutable", YAMLKey: "browser_executable"},
 	{Field: "CAFile", YAMLKey: "ca_file"},
 	{Field: "Insecure", YAMLKey: "insecure", Bool: true},
@@ -177,11 +180,35 @@ var settingsUIFields = []struct {
 // Ports, Hosts, and any YAML this package does not model are preserved as
 // on-disk, the same as UpdateSettings.
 func SaveSettings(path string, s Settings) (bool, error) {
+	if err := browseropen.ValidateExtraArgs(s.BrowserArgs); err != nil {
+		return false, err
+	}
 	return editSettings(path, func(m *yaml.Node) bool {
 		changed := false
 		for _, f := range settingsUIFields {
 			v := reflect.ValueOf(s).FieldByName(f.Field)
-			if f.Bool {
+			if v.Kind() == reflect.Slice {
+				args := append([]string{}, s.BrowserArgs...)
+				var node yaml.Node
+				_ = node.Encode(args)
+				found := false
+				for i := 0; i < len(m.Content); i += 2 {
+					if m.Content[i].Value != f.YAMLKey {
+						continue
+					}
+					var saved []string
+					if err := m.Content[i+1].Decode(&saved); err != nil || !reflect.DeepEqual(saved, args) {
+						m.Content[i+1] = &node
+						changed = true
+					}
+					found = true
+					break
+				}
+				if !found {
+					m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: f.YAMLKey}, &node)
+					changed = true
+				}
+			} else if f.Bool {
 				changed = setYAMLBool(m, f.YAMLKey, v.Bool()) || changed
 			} else {
 				changed = setYAMLString(m, f.YAMLKey, v.String()) || changed

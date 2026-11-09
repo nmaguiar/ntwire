@@ -17,7 +17,9 @@ import (
 // ToClientOptions needs to build a client.Options, plus GUI-only metadata
 // (ID, Name, ConnectOnStart).
 type Profile struct {
+	BrowserArgsMode   string         `yaml:"browser_args_mode,omitempty"`
 	BrowserAutomatic  bool           `yaml:"browser_automatic,omitempty"`
+	BrowserArgs       []string       `yaml:"browser_args"`
 	BrowserExecutable string         `yaml:"browser_executable,omitempty"`
 	ID                string         `yaml:"id"`
 	Name              string         `yaml:"name"`
@@ -66,12 +68,13 @@ type Profile struct {
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any
 // one server profile's connection settings.
 type Settings struct {
-	BrowserExecutable    string `yaml:"browser_executable,omitempty"`
-	UpdateChecksDisabled bool   `yaml:"update_checks_disabled"`
-	AutomaticUpdates     bool   `yaml:"automatic_updates"`
-	StartAtLogin         bool   `yaml:"start_at_login"`
-	Notifications        bool   `yaml:"notifications"`
-	ImportedCLIConfig    bool   `yaml:"imported_cli_config"`
+	BrowserArgs          []string `yaml:"browser_args"`
+	BrowserExecutable    string   `yaml:"browser_executable,omitempty"`
+	UpdateChecksDisabled bool     `yaml:"update_checks_disabled"`
+	AutomaticUpdates     bool     `yaml:"automatic_updates"`
+	StartAtLogin         bool     `yaml:"start_at_login"`
+	Notifications        bool     `yaml:"notifications"`
+	ImportedCLIConfig    bool     `yaml:"imported_cli_config"`
 }
 
 // Config is the full contents of ~/.ntwire/gui.yaml.

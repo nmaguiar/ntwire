@@ -10,9 +10,10 @@ import "github.com/nmaguiar/ntwire/pkg/client"
 type Kind int
 
 const (
-	KindString   Kind = iota // fs.String
-	KindBool                 // fs.Bool
-	KindKeyValue             // fs.Var(&MultiValue{}) -- repeatable name=value
+	KindString     Kind = iota // fs.String
+	KindBool                   // fs.Bool
+	KindStringList             // fs.Var -- repeatable literal string
+	KindKeyValue               // fs.Var(&MultiValue{}) -- repeatable name=value
 )
 
 // Widget is a hint for how a GUI should render this option. It has no
@@ -20,10 +21,11 @@ const (
 type Widget string
 
 const (
-	WidgetText    Widget = "text"
-	WidgetPath    Widget = "path"
-	WidgetToggle  Widget = "toggle"
-	WidgetPortMap Widget = "portmap"
+	WidgetStringList Widget = "stringlist"
+	WidgetText       Widget = "text"
+	WidgetPath       Widget = "path"
+	WidgetToggle     Widget = "toggle"
+	WidgetPortMap    Widget = "portmap"
 )
 
 // Defaults is everything a flag's default value can depend on, mirroring
@@ -110,6 +112,8 @@ func boolDefault(f func(client.Settings) bool) func(Defaults) string {
 // subcommand. Order is not significant: flag.FlagSet.VisitAll (used by
 // ui.FlagsOf) sorts lexicographically regardless of registration order.
 var registry = []Option{
+	{Name: "browser-arg", Kind: KindStringList, Usage: "literal extra browser switch (repeatable; replaces configured extras)", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, Label: "Extra browser arguments", Group: "🌐 Connection", Widget: WidgetStringList, Advanced: true, Help: "One literal --flag or --flag=value per row. Close the isolated browser before relaunching to apply changes reliably."},
+	{Name: "no-browser-args", Kind: KindBool, Usage: "clear configured extra browser arguments", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, GUIHidden: true},
 	{
 		Name: "v", Kind: KindBool, Usage: "show connection diagnostics",
 		Bind:  []Binding{{Command: "connect"}, {Command: "list"}, {Command: "transport", Usage: "show per-path MTU and the transport switch history"}},
@@ -361,6 +365,8 @@ func kindName(k Kind) string {
 	switch k {
 	case KindBool:
 		return "bool"
+	case KindStringList:
+		return "stringlist"
 	case KindKeyValue:
 		return "keyvalue"
 	default:

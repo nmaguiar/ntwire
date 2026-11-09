@@ -151,7 +151,9 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 		promptTimeout: defaultPromptTimeout,
 	}
 	for _, p := range cfg.Profiles {
-		m.sessions[p.ID] = newSession(p)
+		stored := p
+		stored.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+		m.sessions[p.ID] = newSession(stored)
 	}
 	return m, nil
 }
@@ -207,11 +209,17 @@ func (m *Manager) pendingPromptCountLocked() int {
 func (m *Manager) Settings() config.Settings {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.settings
+	s := m.settings
+	s.BrowserArgs = append([]string(nil), s.BrowserArgs...)
+	return s
 }
 
 // SetSettings replaces ntwire-gui's app-wide preferences and persists them.
 func (m *Manager) SetSettings(s config.Settings) error {
+	if err := browseropen.ValidateExtraArgs(s.BrowserArgs); err != nil {
+		return err
+	}
+	s.BrowserArgs = append([]string(nil), s.BrowserArgs...)
 	m.mu.Lock()
 	m.settings = s
 	m.mu.Unlock()
@@ -228,7 +236,9 @@ func (m *Manager) Profiles() []config.Profile {
 func (m *Manager) profilesLocked() []config.Profile {
 	out := make([]config.Profile, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		out = append(out, s.profile)
+		p := s.profile
+		p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
@@ -236,6 +246,10 @@ func (m *Manager) profilesLocked() []config.Profile {
 
 // AddProfile saves a new profile, assigning it an ID if p.ID is empty.
 func (m *Manager) AddProfile(p config.Profile) (config.Profile, error) {
+	if err := validateBrowserProfile(p); err != nil {
+		return config.Profile{}, err
+	}
+	p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
 	if p.ID == "" {
 		p.ID = config.NewID()
 	}
@@ -244,7 +258,9 @@ func (m *Manager) AddProfile(p config.Profile) (config.Profile, error) {
 		m.mu.Unlock()
 		return config.Profile{}, fmt.Errorf("gui: profile %q already exists", p.ID)
 	}
-	m.sessions[p.ID] = newSession(p)
+	stored := p
+	stored.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+	m.sessions[p.ID] = newSession(stored)
 	m.mu.Unlock()
 	if err := m.persist(); err != nil {
 		return config.Profile{}, err
@@ -253,8 +269,13 @@ func (m *Manager) AddProfile(p config.Profile) (config.Profile, error) {
 }
 
 // UpdateProfile replaces an existing profile's settings. It does not affect
-// an in-progress or established connection; reconnect to pick up changes.
+// an in-progress or established connection; reconnect to pick up connection changes.
+// Browser launches resolve the latest saved browser settings independently.
 func (m *Manager) UpdateProfile(p config.Profile) error {
+	if err := validateBrowserProfile(p); err != nil {
+		return err
+	}
+	p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
 	m.mu.Lock()
 	s, ok := m.sessions[p.ID]
 	if !ok {
@@ -325,7 +346,9 @@ func (m *Manager) Snapshots() []Snapshot {
 }
 
 func snapshotOf(s *session) Snapshot {
-	snap := Snapshot{Profile: s.profile, State: s.state, Prompt: s.prompt}
+	p := s.profile
+	p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+	snap := Snapshot{Profile: p, State: s.state, Prompt: s.prompt}
 	if s.state != StateIdle && s.state != StateFailed {
 		snap.ProxyReconnectRequired = s.profile.HTTPSProxy != s.activeProfile.HTTPSProxy || s.profile.NoSystemProxy != s.activeProfile.NoSystemProxy
 	}
@@ -519,13 +542,11 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 		if !protocol.IsBrowserSocksTarget(t.TargetHint) {
 			return fmt.Errorf("gui: tunnel %q is not a SOCKS tunnel", tunnelName)
 		}
-		executable := snap.Profile.BrowserExecutable
-		if snap.Profile.BrowserAutomatic {
-			executable = ""
-		} else if executable == "" {
-			executable = m.Settings().BrowserExecutable
+		opts, err := m.browserOptions(id)
+		if err != nil {
+			return err
 		}
-		return browseropen.OpenSocksExecutable(executable, id+"-"+tunnelName, t.LocalAddress)
+		return openSocksWithOptions(opts, id+"-"+tunnelName, t.LocalAddress)
 	}
 	return fmt.Errorf("gui: tunnel %q not found", tunnelName)
 }
@@ -825,6 +846,7 @@ func (m *Manager) runConnect(id string, p config.Profile) {
 		m.setFailed(id, err)
 		return
 	}
+	opts.ResolveBrowserOptions = func() (browseropen.LaunchOptions, error) { return m.browserOptions(id) }
 	opts.OnEvent = func(e client.Event) { m.handleEvent(id, e) }
 
 	if err := m.reservePorts(id, p.Ports, p.Hosts, p.BindAddress); err != nil {
@@ -1046,4 +1068,33 @@ func (m *Manager) SetUpdatePreferences(disabled, automatic bool) error {
 	m.settings.AutomaticUpdates = automatic
 	m.mu.Unlock()
 	return m.persist()
+}
+
+var openSocksWithOptions = browseropen.OpenSocksWithOptions
+
+func validateBrowserProfile(p config.Profile) error {
+	if err := browseropen.ValidateExtraArgs(p.BrowserArgs); err != nil {
+		return err
+	}
+	_, err := browseropen.ResolveExtraArgs(nil, p.BrowserArgs, p.BrowserArgsMode)
+	return err
+}
+
+// browserOptions reads the saved profile and global settings together at launch time.
+func (m *Manager) browserOptions(id string) (browseropen.LaunchOptions, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return browseropen.LaunchOptions{}, fmt.Errorf("gui: no such profile %q", id)
+	}
+	p := s.profile
+	args, err := browseropen.ResolveExtraArgs(m.settings.BrowserArgs, p.BrowserArgs, p.BrowserArgsMode)
+	executable := p.BrowserExecutable
+	if p.BrowserAutomatic {
+		executable = ""
+	} else if executable == "" {
+		executable = m.settings.BrowserExecutable
+	}
+	return browseropen.LaunchOptions{Executable: executable, ExtraArgs: args}, err
 }

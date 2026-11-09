@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 )
 
@@ -58,6 +59,10 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 	if statusFile == "" {
 		return client.Options{}, fmt.Errorf("gui: profile %q has no status file", p.Name)
 	}
+	args, err := browseropen.ResolveExtraArgs(nil, p.BrowserArgs, p.BrowserArgsMode)
+	if err != nil {
+		return client.Options{}, err
+	}
 	tunnelMTU, err := client.ParseTunnelMTU(p.TunnelMTU)
 	if err != nil {
 		return client.Options{}, fmt.Errorf("gui: profile %q: %w", p.Name, err)
@@ -94,6 +99,7 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		UDPAlt:            p.UDPAlt,
 		MTUAware:          p.MTUAware,
 		BrowserExecutable: ExpandHome(p.BrowserExecutable),
+		BrowserArgs:       args,
 		Promote:           p.Promote,
 		TunnelMTU:         tunnelMTU,
 		SettingsURL:       settingsURL,
