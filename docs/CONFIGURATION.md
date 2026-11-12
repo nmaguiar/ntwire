@@ -315,6 +315,36 @@ the `authorizer:` webhook/exec hook, per-source rate limiting, and
 `audit.log_file` all still apply exactly as they do to a fixed-target tunnel;
 `socks:` only adds a second, per-destination filtering layer inside it.
 
+### HTTP proxy on the client port
+
+The local client listener for a browser-capable `target: socks` tunnel accepts
+SOCKS5 and HTTP/1.x proxy connections automatically on the same port. No new
+configuration is required. Ordinary HTTP requests use absolute `http://` URLs;
+HTTPS uses `CONNECT host:port` and retains end-to-end TLS to the destination.
+For example, with local port 1080:
+
+```sh
+curl --proxy http://127.0.0.1:1080 http://internal.example/
+curl --proxy http://127.0.0.1:1080 https://internal.example/
+```
+
+Every HTTP destination is reached through the existing WireGuard SOCKS tunnel,
+with hostnames resolved remotely and the same server-side destination policy.
+The bind address (loopback by default), browser launch behavior, and server
+protocol are unchanged. Fixed-target and transparent upstream tunnels do not
+perform HTTP proxy dispatch. The server's virtual port still speaks SOCKS.
+
+Streaming bodies, trailers, keep-alive, and WebSocket upgrades are supported.
+Proxy credentials are stripped; no local HTTP authentication is introduced.
+Initial input and request headers have a 10-second timeout; upstream setup and
+response headers have a 30-second timeout. Idle HTTP connections expire after
+90 seconds, and request headers are limited to 64 KiB (plus Go HTTP parser
+buffer allowance). Established streams have no whole-request timeout.
+Disconnect/reconnect closes existing proxy connections and their upstream pools.
+
+TLS-to-proxy, HTTP/2 proxy requests, and HTTP/3 or UDP over HTTP are unsupported.
+Existing SOCKS UDP ASSOCIATE support remains available.
+
 ### Transparent upstream SOCKS5 tunnels
 
 Use `target: socks` with `socks.transparent: true` when the SOCKS5 server
