@@ -37,24 +37,20 @@ func proxyCloseWrite(c net.Conn) error {
 	return c.Close()
 }
 
-// Peek only enough bytes to distinguish a method from opaque passthrough.
+// Peek through the method token without consuming bytes needed by either protocol.
 func isHTTPProxy(br *bufio.Reader) (bool, error) {
-	methods := []string{"GET ", "HEAD ", "POST ", "PUT ", "DELETE ", "CONNECT ", "OPTIONS ", "TRACE ", "PATCH ", "PRI "}
 	for n := 1; ; n++ {
 		b, err := br.Peek(n)
 		if err != nil {
 			return false, err
 		}
-		candidate := false
-		for _, m := range methods {
-			if string(b) == m {
-				return true, nil
-			}
-			if strings.HasPrefix(m, string(b)) {
-				candidate = true
-			}
+		c := b[n-1]
+		if c == ' ' {
+			return n > 1, nil
 		}
-		if !candidate {
+		// HTTP methods use the RFC token grammar, including extension methods.
+		if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+			(c >= '0' && c <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c))) {
 			return false, nil
 		}
 	}
@@ -204,6 +200,8 @@ func (c *Connection) serveHTTPProxy(parent context.Context, in net.Conn, t *loca
 		Transport: transport, FlushInterval: -1, ErrorLog: log.New(io.Discard, "", 0),
 		Rewrite: func(p *httputil.ProxyRequest) {
 			p.Out.Host = p.Out.URL.Host
+			// Forward the exact query; ReverseProxy normalizes it before Rewrite.
+			p.Out.URL.RawQuery = p.In.URL.RawQuery
 			if p.Out.Body != nil && len(p.In.Trailer) > 0 {
 				p.Out.Body = &proxyTrailerBody{ReadCloser: p.Out.Body, source: p.In.Trailer, target: p.Out.Trailer}
 			}

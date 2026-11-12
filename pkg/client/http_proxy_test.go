@@ -110,6 +110,36 @@ func TestHTTPProxy_ForwardStreamingTrailersAndKeepAlive(t *testing.T) {
 	}
 }
 
+func TestHTTPProxy_PreservesMethodAndRawQuery(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, r.Method+" "+r.RequestURI)
+	}))
+	defer origin.Close()
+	socksServer := startTestSOCKS5Server(t, "", "")
+	defer socksServer.Close()
+	addr, _, _ := startLocalHTTPProxy(t, (&net.Dialer{}).DialContext, socksServer.Addr())
+	client := proxyTestClient(addr)
+	defer client.CloseIdleConnections()
+	for _, method := range []string{"GET", "PROPFIND", "MKCOL", "LOCK", "custom-method"} {
+		t.Run(method, func(t *testing.T) {
+			const path = "/?value=one;two&sig=abc&escaped=%2f%3B&duplicate=1&duplicate=2"
+			req, err := http.NewRequest(method, origin.URL+path, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || resp.StatusCode != http.StatusOK || string(body) != method+" "+path {
+				t.Fatalf("status=%d body=%q err=%v", resp.StatusCode, body, err)
+			}
+		})
+	}
+}
+
 func TestHTTPProxy_ValidationAndErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name, request string
@@ -249,7 +279,7 @@ func TestHTTPProxy_CONNECTBufferedAndHalfClose(t *testing.T) {
 }
 
 func TestHTTPProxy_SniffFragmented(t *testing.T) {
-	for _, input := range []string{"CONNECT ", "GET ", "POST ", "\x05", "\x04", "opaque"} {
+	for _, input := range []string{"CONNECT ", "GET ", "POST ", "PROPFIND ", "MKCOL ", "LOCK ", "custom-method ", "\x05", "\x04", "opaque\x00", " "} {
 		a, b := net.Pipe()
 		go func() {
 			defer a.Close()
@@ -261,7 +291,7 @@ func TestHTTPProxy_SniffFragmented(t *testing.T) {
 		}()
 		br := bufio.NewReader(b)
 		got, err := isHTTPProxy(br)
-		want := strings.HasSuffix(input, " ")
+		want := len(input) > 1 && strings.HasSuffix(input, " ")
 		if err != nil || got != want {
 			t.Fatalf("%q: %v %v", input, got, err)
 		}
