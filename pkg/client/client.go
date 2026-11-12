@@ -3036,7 +3036,7 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			}
 			c.mu.Unlock()
 			if socks {
-				c.forwardSocksUDPAssociateOn(tunnel, in, destination, stack, stop)
+				c.forwardMixedProxy(tunnel, in, destination, stack, stop)
 				return
 			}
 			if stack == nil {
@@ -3183,18 +3183,33 @@ func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, 
 }
 
 func (c *Connection) forwardSocksUDPAssociateOn(tunnel *localTunnel, in net.Conn, target string, stack *wgnet.Stack, stop chan struct{}) {
+	tunnel.connections.Add(1)
+	tunnel.active.Add(1)
+	defer tunnel.active.Add(-1)
+	c.forwardSocksStream(tunnel, in, target, stack, stop)
+}
+
+func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target string, stack *wgnet.Stack, stop chan struct{}) {
 	if stack == nil {
 		return
 	}
-	out, err := stack.DialContext(context.Background(), "tcp", target)
+	ctx, cancel := context.WithTimeout(context.Background(), proxySetupTimeout)
+	defer cancel()
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-c.stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	out, err := stack.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return
 	}
 	defer out.Close()
 	defer c.watchForward(stop, in, out)()
-	tunnel.connections.Add(1)
-	tunnel.active.Add(1)
-	defer tunnel.active.Add(-1)
 	br := bufio.NewReader(in)
 	first, err := br.ReadByte()
 	if err != nil {

@@ -794,3 +794,22 @@ switches. Server-provided URLs still require absolute HTTP(S) validation and are
 placed after the flag terminator. Unknown browser switches are allowed, so local
 configuration must be trusted: validation does not guarantee prevention of every
 traffic leak or unsafe browser feature. See [configuration](CONFIGURATION.md#extra-browser-arguments).
+
+## Mixed local proxy listener
+
+Browser-capable SOCKS tunnel client ports also accept HTTP/1.x forward-proxy
+requests and CONNECT. HTTP destinations are dialed only via the captured
+WireGuard stack and the granted server SOCKS endpoint; hostnames are passed
+unchanged for remote resolution. Environment proxies are not used for these
+requests. Server-side SOCKS destination authorization applies equally to HTTP
+and SOCKS, including denied destinations. Fixed and transparent tunnels retain
+their existing behavior.
+
+The listener retains its configured bind address and loopback default. There
+is no additional HTTP authentication: exposing a client proxy port allows
+reachable users to exercise that client's granted destination access. Proxy
+credentials and hop-by-hop headers are removed before forwarding (upgrade
+headers are preserved as required). No forwarded identity headers are added.
+HTTP errors do not reveal raw upstream errors or internal tunnel addresses.
+TLS-to-proxy and HTTP/2/3 proxy protocols are not supported; HTTPS destinations
+use CONNECT without TLS interception.

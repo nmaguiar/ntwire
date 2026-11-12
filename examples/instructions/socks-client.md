@@ -77,3 +77,17 @@ Instead of setting manual proxy settings on every app, configure your operating 
   - **iOS:** Settings → Wi-Fi (or Cellular) → tap your network's **(i)** info icon → **Configure Proxy** → select **Automatic** → enter the iOS PAC URL.
   - Safari and iOS apps will route internal domains (`*.svc`, `*.cluster.local`, `*.local`, `10.0.0.0/8`, etc.) through the WireGuard SOCKS proxy at `100.64.0.1:{{.VirtualPort}}` and access external internet sites directly.
 
+
+## HTTP and HTTPS proxy clients
+
+The same local client port also accepts HTTP/1.x proxy requests automatically:
+
+```sh
+curl --proxy http://{{.LocalHost}}:{{.LocalPort}} http://internal.example/
+curl --proxy http://{{.LocalHost}}:{{.LocalPort}} https://internal.example/
+```
+
+HTTPS uses CONNECT. Both forms retain remote DNS and server destination
+restrictions. This applies to the ntwire client listener, not the server's
+virtual SOCKS port. TLS-to-proxy, HTTP/2 proxy requests, and UDP over HTTP are
+not supported; SOCKS UDP support is unchanged.
