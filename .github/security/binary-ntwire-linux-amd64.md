@@ -1,8 +1,8 @@
 # binary-ntwire-linux-amd64 — linux/amd64
 
-- Scanned: 2026-11-09 19:16 UTC
-- Source commit: `13641f5c2339aeb84c6c2eb444bc0d84918859d7`
-- Artifact: `sha256:dc1b8faac3b1a5a71abfce305d6fb1927b62a23b21fe62fef0421db2a18a84ad`
+- Scanned: 2026-11-12 14:27 UTC
+- Source commit: `ac14c5cc2a5c70fd9ce687bf75ec178179292719`
+- Artifact: `sha256:8c1d8beaca6c677d3a235b22d480e4d70629e892364635837b428b4ef5a6769a`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -22,7 +22,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "scanner_name": "govulncheck",
     "scanner_version": "v1.9.0",
     "db": "https://vuln.go.dev",
-    "db_last_modified": "2026-11-05T23:49:57Z",
+    "db_last_modified": "2026-11-11T02:51:11Z",
     "scan_level": "symbol",
     "scan_mode": "binary"
   }
@@ -34,11 +34,11 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 }
 {
   "SBOM": {
-    "go_version": "go1.27.3",
+    "go_version": "go1.27.4",
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.88"
+        "version": "v0.0.89"
       },
       {
         "path": "github.com/coder/websocket",
@@ -114,7 +114,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       },
       {
         "path": "stdlib",
-        "version": "go1.27.3"
+        "version": "go1.27.4"
       }
     ],
     "roots": [
@@ -28715,6 +28715,227 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   }
 }
 {
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6859",
+    "modified": "2026-11-11T02:51:11Z",
+    "published": "2026-11-11T02:51:11Z",
+    "aliases": [
+      "CVE-2026-97054"
+    ],
+    "summary": "HTTP/1 server crash due to MaxBytesReader header race in net/http",
+    "details": "For HTTP/1 servers, when MaxBytesReader's limit is exceeded, \"Connection: close\" header is automatically set without synchronization, which might race with another header being set explicitly in the server handler. As a result, an HTTP/1 server that utilizes MaxBytesReader or MaxBytesHandler can crash due to runtime panic if its handler reads the request body concurrently with writing the response header.",
+    "affected": [
+      {
+        "package": {
+          "name": "stdlib",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "1.26.11"
+              },
+              {
+                "introduced": "1.27.0-0"
+              },
+              {
+                "fixed": "1.27.4"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "net/http",
+              "symbols": [
+                "CanonicalHeaderKey",
+                "Client.CloseIdleConnections",
+                "Client.Do",
+                "Client.Get",
+                "Client.Head",
+                "Client.Post",
+                "Client.PostForm",
+                "ClientConn.Close",
+                "ClientConn.RoundTrip",
+                "Cookie.String",
+                "Cookie.Valid",
+                "CrossOriginProtection.AddInsecureBypassPattern",
+                "CrossOriginProtection.AddTrustedOrigin",
+                "CrossOriginProtection.Check",
+                "Dir.Open",
+                "Error",
+                "Get",
+                "Handle",
+                "HandleFunc",
+                "HandlerFunc.ServeHTTP",
+                "Head",
+                "Header.Add",
+                "Header.Del",
+                "Header.Get",
+                "Header.Set",
+                "Header.Values",
+                "Header.Write",
+                "Header.WriteSubset",
+                "ListenAndServe",
+                "ListenAndServeTLS",
+                "NewRequest",
+                "NewRequestWithContext",
+                "NotFound",
+                "ParseCookie",
+                "ParseSetCookie",
+                "ParseTime",
+                "Post",
+                "PostForm",
+                "ProxyFromEnvironment",
+                "ReadRequest",
+                "ReadResponse",
+                "Redirect",
+                "Request.AddCookie",
+                "Request.BasicAuth",
+                "Request.Cookie",
+                "Request.Cookies",
+                "Request.CookiesNamed",
+                "Request.FormFile",
+                "Request.FormValue",
+                "Request.MultipartReader",
+                "Request.ParseForm",
+                "Request.ParseMultipartForm",
+                "Request.PostFormValue",
+                "Request.Referer",
+                "Request.SetBasicAuth",
+                "Request.UserAgent",
+                "Request.Write",
+                "Request.WriteProxy",
+                "Response.Cookies",
+                "Response.Location",
+                "Response.Write",
+                "ResponseController.EnableFullDuplex",
+                "ResponseController.Flush",
+                "ResponseController.Hijack",
+                "ResponseController.SetReadDeadline",
+                "ResponseController.SetWriteDeadline",
+                "Serve",
+                "ServeContent",
+                "ServeFile",
+                "ServeFileFS",
+                "ServeMux.Handle",
+                "ServeMux.HandleFunc",
+                "ServeMux.ServeHTTP",
+                "ServeTLS",
+                "Server.Close",
+                "Server.ListenAndServe",
+                "Server.ListenAndServeTLS",
+                "Server.Serve",
+                "Server.ServeTLS",
+                "Server.SetKeepAlivesEnabled",
+                "Server.Shutdown",
+                "SetCookie",
+                "Transport.CancelRequest",
+                "Transport.Clone",
+                "Transport.CloseIdleConnections",
+                "Transport.NewClientConn",
+                "Transport.RoundTrip",
+                "body.Close",
+                "body.Read",
+                "bodyEOFSignal.Close",
+                "bodyEOFSignal.Read",
+                "bodyLocked.Read",
+                "bufioFlushWriter.Write",
+                "cancelTimerBody.Close",
+                "cancelTimerBody.Read",
+                "checkConnErrorWriter.Write",
+                "chunkWriter.Write",
+                "connReader.Read",
+                "connectMethodKey.String",
+                "expectContinueReader.Close",
+                "expectContinueReader.Read",
+                "extraHeader.Write",
+                "fileHandler.ServeHTTP",
+                "fileTransport.RoundTrip",
+                "globalOptionsHandler.ServeHTTP",
+                "gzipReader.Close",
+                "gzipReader.Read",
+                "http1ClientConn.Close",
+                "http1ClientConn.RoundTrip",
+                "http2ClientConn.RoundTrip",
+                "http2Handler.ServeHTTP",
+                "http2ResponseWriter.Flush",
+                "http2ResponseWriter.FlushError",
+                "http2ResponseWriter.Push",
+                "http2RoundTripper.RoundTrip",
+                "http3ServerHandler.ServeHTTP",
+                "initALPNRequest.ServeHTTP",
+                "loggingConn.Close",
+                "loggingConn.Read",
+                "loggingConn.Write",
+                "maxBytesReader.Close",
+                "maxBytesReader.Read",
+                "onceCloseListener.Close",
+                "persistConn.Read",
+                "persistConnWriter.ReadFrom",
+                "persistConnWriter.Write",
+                "populateResponse.Write",
+                "populateResponse.WriteHeader",
+                "readTrackingBody.Close",
+                "readTrackingBody.Read",
+                "readWriteCloserBody.CloseWrite",
+                "readWriteCloserBody.Read",
+                "redirectHandler.ServeHTTP",
+                "response.Flush",
+                "response.FlushError",
+                "response.Hijack",
+                "response.ReadFrom",
+                "response.Write",
+                "response.WriteHeader",
+                "response.WriteString",
+                "serverHandler.ServeHTTP",
+                "socksDialer.DialWithConn",
+                "socksUsernamePassword.Authenticate",
+                "stringWriter.WriteString",
+                "timeoutHandler.ServeHTTP",
+                "timeoutWriter.Write",
+                "timeoutWriter.WriteHeader",
+                "transportReadFromServerError.Error",
+                "unencryptedHTTP2Request.ServeHTTP"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/862185"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://go.dev/issue/82563"
+      },
+      {
+        "type": "WEB",
+        "url": "https://groups.google.com/g/golang-announce/c/iY8TY0wWgbM"
+      }
+    ],
+    "credits": [
+      {
+        "name": "Jakub Ciolek (https://ciolek.dev)"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-6859",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
   "progress": {
     "message": "Checking the binary against the vulnerabilities..."
   }
@@ -28727,19 +28948,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k"
       }
     ]
   }
@@ -28830,6 +29038,64 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k",
+        "function": "org/x/crypto/openpgp/s2k/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp",
+        "function": "org/x/crypto/openpgp/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/packet",
+        "function": "org/x/crypto/openpgp/packet/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/armor",
         "function": "org/x/crypto/openpgp/armor/*",
         "receiver": "golang"
@@ -28877,51 +29143,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/elgamal",
         "function": "org/x/crypto/openpgp/elgamal/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k",
-        "function": "org/x/crypto/openpgp/s2k/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp",
-        "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet",
-        "function": "org/x/crypto/openpgp/packet/*",
         "receiver": "golang"
       }
     ]
