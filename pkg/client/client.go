@@ -496,7 +496,21 @@ func configureProxy(o Options) (func(*http.Request) (*urlpkg.URL, error), func(c
 	}, nil
 }
 
-func httpClient(url string, o Options) (*http.Client, error) {
+func httpClient(url string, o Options) (h *http.Client, err error) {
+	// SOCKS routing lives in DialContext rather than Transport.Proxy. Retain
+	// its endpoint classification so the plaintext exception cannot use a
+	// remote proxy, including after an HTTPS redirect or WebSocket upgrade.
+	defer func() {
+		if h != nil && o.HTTPSProxy != "" {
+			proxy, parseErr := urlpkg.Parse(o.HTTPSProxy)
+			if parseErr != nil || !numericLoopbackURL(proxy) {
+				h.Transport.(*secureControlTransport).remoteProxy = true
+			}
+		}
+	}()
+	if _, err := NormalizeServerURL(url); err != nil {
+		return nil, err
+	}
 	if o.IPVersion != "" && o.IPVersion != "4" && o.IPVersion != "6" {
 		return nil, fmt.Errorf("invalid IP version %q: must be \"4\" or \"6\"", o.IPVersion)
 	}
@@ -569,7 +583,60 @@ func resilientHTTPClient(tlsConfig *tls.Config, proxy func(*http.Request) (*urlp
 	// network can leave TCP open indefinitely and otherwise stall renewLoop
 	// before it ever reaches its retry path. WebSocket Dial uses this timeout
 	// only for its handshake, not the lifetime of the upgraded connection.
-	return &http.Client{Transport: transport, Timeout: 15 * time.Second}
+	return &http.Client{Transport: &secureControlTransport{Transport: transport}, Timeout: 15 * time.Second}
+}
+
+// secureControlTransport checks every request, including redirects and WebSocket
+// handshakes (whose ws/wss schemes are converted to http/https by the dialer).
+// Numeric loopback HTTP is an explicit local-development exception; DNS names
+// are never resolved to decide whether plaintext is safe.
+type secureControlTransport struct {
+	*http.Transport
+	remoteProxy bool
+}
+
+func (t *secureControlTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if err := validateControlURL(req.URL); err != nil {
+		return nil, err
+	}
+	if req.URL.Scheme == "http" {
+		if t.remoteProxy {
+			return nil, fmt.Errorf("loopback HTTP must not use a remote proxy")
+		}
+		if t.Proxy != nil {
+			proxy, err := t.Proxy(req)
+			if err != nil {
+				return nil, err
+			}
+			if proxy != nil && !numericLoopbackURL(proxy) {
+				return nil, fmt.Errorf("loopback HTTP must not use a remote proxy")
+			}
+		}
+	}
+	return t.Transport.RoundTrip(req)
+}
+
+func numericLoopbackURL(u *urlpkg.URL) bool {
+	if u == nil {
+		return false
+	}
+	ip := net.ParseIP(u.Hostname())
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateControlURL(u *urlpkg.URL) error {
+	if u == nil || u.Hostname() == "" || u.User != nil {
+		return fmt.Errorf("control-plane URL requires a host and must not contain credentials")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" {
+		if numericLoopbackURL(u) {
+			return nil
+		}
+	}
+	return fmt.Errorf("control-plane URL requires HTTPS; HTTP is allowed only for numeric loopback addresses")
 }
 
 // filterIPVersion drops every address not of the family named by ipVersion
@@ -707,7 +774,8 @@ func AuthenticateWithOptions(url, keyPath string, info protocol.ClientInfo, opti
 }
 
 // NormalizeServerURL accepts host[:port] and applies HTTPS's standard port
-// when no port is supplied. Paths and non-HTTP schemes are deliberately not
+// when no port is supplied. HTTP is restricted to numeric loopback addresses.
+// Paths and non-HTTP schemes are deliberately not
 // accepted because ntwire owns the control-plane path.
 func NormalizeServerURL(raw string) (string, error) {
 	v := strings.TrimSpace(strings.TrimRight(raw, "/"))
@@ -723,6 +791,9 @@ func NormalizeServerURL(raw string) (string, error) {
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", fmt.Errorf("server URL scheme must be http or https")
+	}
+	if err := validateControlURL(u); err != nil {
+		return "", err
 	}
 	if u.Path != "" && u.Path != "/" {
 		return "", fmt.Errorf("server URL must not include a path")

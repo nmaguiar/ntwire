@@ -39,7 +39,7 @@ func InspectCertificate(ctx context.Context, server string, o Options) (*Certifi
 	if err != nil {
 		return nil, err
 	}
-	transport := hc.Transport.(*http.Transport)
+	transport := hc.Transport.(*secureControlTransport).Transport
 	defer transport.CloseIdleConnections()
 	verifier := transport.TLSClientConfig.VerifyConnection
 	// HTTPS proxies have their own TLS handshake before CONNECT. Do not

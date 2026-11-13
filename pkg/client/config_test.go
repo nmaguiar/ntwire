@@ -50,7 +50,7 @@ func TestDefaultIdentityFilePrefersNTWire(t *testing.T) {
 }
 
 func TestNormalizeServerURL(t *testing.T) {
-	for in, want := range map[string]string{" example.test/ ": "https://example.test", "http://example.test:8080/": "http://example.test:8080"} {
+	for in, want := range map[string]string{" example.test/ ": "https://example.test", "http://127.0.0.1:8080/": "http://127.0.0.1:8080"} {
 		got, err := NormalizeServerURL(in)
 		if err != nil || got != want {
 			t.Fatalf("NormalizeServerURL(%q) = %q, %v", in, got, err)
