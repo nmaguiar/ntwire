@@ -22,8 +22,8 @@ type Config struct {
 	Filter FilterConfig
 
 	// ASNLookup resolves destination IPs to ASNs for Filter.ASNs. Pass an
-	// *ASNIndex kept warm by ASNIndex.Refresh, or nil to disable ASN
-	// filtering even if Filter.ASNs is non-empty.
+	// *ASNIndex kept warm by ASNIndex.Refresh. A nil lookup produces no ASN match, so an
+	// ASN-only network restriction cannot allow a destination.
 	ASNLookup ASNLookup
 
 	// Authorize, when supplied, is called after DNS resolution and before the

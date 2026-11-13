@@ -71,3 +71,24 @@ func TestNativePeerConfigValidation(t *testing.T) {
 		t.Fatal("native peer not loaded")
 	}
 }
+
+type policyASNLookup struct{ asn uint32 }
+
+func (a policyASNLookup) Lookup(netip.Addr) (uint32, bool) { return a.asn, true }
+
+func TestDestinationPolicyASNAndDomain(t *testing.T) {
+	for _, protocol := range []string{"tcp", "udp"} {
+		for _, asn := range []uint32{15169, 64512} {
+			p, err := compilePolicy(DestinationPolicy{ASNFilters: []uint32{15169}, DomainFilters: []string{".example.com"}}, policyASNLookup{asn})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, host := range []string{"foo.example.com", "foo.other.com"} {
+				want := asn == 15169 && host == "foo.example.com"
+				if got := p.decide(DestinationContext{Hostname: host, IP: netip.MustParseAddr("203.0.113.1"), Protocol: protocol, Port: 443}).Allowed; got != want {
+					t.Errorf("protocol=%s asn=%d host=%s: got %v, want %v", protocol, asn, host, got, want)
+				}
+			}
+		}
+	}
+}

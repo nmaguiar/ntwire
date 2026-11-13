@@ -125,13 +125,9 @@ func NewFilter(cfg FilterConfig, asnLookup ASNLookup) (*Filter, error) {
 // domain requests). Both are consulted, matching socksd: CIDR/ASN filters
 // match the resolved IP, domain filters match the requested hostname.
 //
-// This ports socksd's getNetFilter/getLocalNetFilter algorithm faithfully,
-// including one non-obvious interaction: when both CIDR and domain filters
-// are configured, a CIDR/ASN miss short-circuits to deny without consulting
-// the domain filters, but a CIDR/ASN *hit* does not by itself allow the
-// connection -- the domain suffix check still runs and is decisive. ASN-only
-// (no CIDR) configurations do not gate the domain check at all, mirroring
-// socksd's use of `filters.length > 0` (the CIDR list only) for that veto.
+// CIDR and ASN filters form one network gate: either may match the resolved
+// IP. When domains are configured too, both the network gate (if configured)
+// and the hostname suffix must match. Reverse mode inverts the combined result.
 func (f *Filter) Allowed(hostname string, ip netip.Addr) bool {
 	// Evaluated before onlyLocal, allowAll and invert, so no configuration can
 	// reach these destinations by accident and invert cannot turn the floor
@@ -159,7 +155,7 @@ func (f *Filter) Allowed(hostname string, ip netip.Addr) bool {
 	switch {
 	case len(f.domains) == 0:
 		match = netMatch
-	case len(f.cidrs) > 0 && !netMatch:
+	case (len(f.cidrs) > 0 || len(f.asns) > 0) && !netMatch:
 		match = false
 	default:
 		match = matchesDomainSuffix(hostname, f.domains)
