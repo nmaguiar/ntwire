@@ -9,15 +9,16 @@ import (
 	"time"
 )
 
-// Session identifies a principal by (Method, Identity): for SSH, Identity is
-// the key fingerprint (mirrored in Fingerprint for existing callers); for
-// OIDC, Identity is the verified email and Issuer/Groups are also populated.
+// Session retains the display identity separately from OIDC quota identity.
+// SSH quotas use Identity (the key fingerprint); OIDC quotas use the verified
+// OIDCIssuer and OIDCSubject, while Identity remains the verified email.
 type Session struct {
 	ID, Token                                 string
 	Method                                    string // "ssh" or "oidc"
 	Identity                                  string
 	Fingerprint, WireGuardPublicKey, TunnelIP string
 	Issuer                                    string
+	OIDCIssuer, OIDCSubject                   string
 	Groups                                    []string
 	Tunnels                                   []protocol.Tunnel
 	LatencyMillis, Reconnections              uint64
@@ -54,6 +55,7 @@ type CreateParams struct {
 	Identity                     string
 	Fingerprint                  string
 	Issuer                       string
+	OIDCIssuer, OIDCSubject      string
 	Groups                       []string
 	WireGuardPublicKey, TunnelIP string
 	Tunnels                      []protocol.Tunnel
@@ -74,7 +76,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 	v := Session{
 		ID: token(), Token: token(),
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
-		Issuer: p.Issuer, Groups: p.Groups,
+		Issuer: p.Issuer, Groups: p.Groups, OIDCIssuer: p.OIDCIssuer, OIDCSubject: p.OIDCSubject,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
 		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
@@ -153,9 +155,9 @@ func (s *Sessions) DeleteByID(id string) (Session, bool) {
 	return Session{}, false
 }
 
-// CountIdentity counts live sessions for one principal, scoped by method so
-// an SSH fingerprint and an OIDC email can never collide in the count.
-func (s *Sessions) CountIdentity(method, identity string) int {
+// CountIdentity counts live sessions by SSH fingerprint or verified OIDC
+// issuer and subject. Email changes and issuer aliases do not reset OIDC quotas.
+func (s *Sessions) CountIdentity(method, identity, oidcIssuer, oidcSubject string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
@@ -164,7 +166,11 @@ func (s *Sessions) CountIdentity(method, identity string) int {
 		if now.After(v.Expires) {
 			continue
 		}
-		if v.Method == method && v.Identity == identity {
+		sameIdentity := v.Identity == identity
+		if method == "oidc" {
+			sameIdentity = v.OIDCIssuer == oidcIssuer && v.OIDCSubject == oidcSubject
+		}
+		if v.Method == method && sameIdentity {
 			n++
 		}
 	}
