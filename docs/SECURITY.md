@@ -305,8 +305,9 @@ automatically" workarounds; instead, use one of:
   listener, so it inherits the same "bind to loopback or place it behind an
   authenticating proxy" guidance.
 - **Per-identity session cap.** `max_sessions_per_key` applies per identity
-  for OIDC too (the verified email), independent of the SSH fingerprint
-  namespace.
+  for OIDC too (the verified issuer URL and stable subject), independent of
+  the SSH fingerprint namespace. Email changes or configured issuer aliases
+  do not reset the quota.
 - **`require_verified_email`** defaults to `true`; disabling it (per issuer)
   should only be done for IdPs known not to set `email_verified`, since an
   unverified email is not a reliable identity claim.

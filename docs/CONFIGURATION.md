@@ -157,7 +157,7 @@ auth:
         groups_claim: ""                 # ID-token claim holding group membership, e.g. "groups"; empty disables group: grants
         require_verified_email: true     # reject tokens without email_verified=true; default true, see SECURITY.md
   session_ttl: 15m                       # bearer-token session lifetime before renewal is required; default: 15m
-  max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc email); 0 = unlimited
+  max_sessions_per_key: 5                # concurrent-session cap per identity (ssh fingerprint or oidc issuer+subject); 0 = unlimited
 admin:
   web_ui_token: ""                       # optional secret, min 32 chars: enables the server dashboard on listen.metrics at http://server:9090/?token=... (exchanged once for a cookie); leave empty to disable it
 network:

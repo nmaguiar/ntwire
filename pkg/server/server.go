@@ -627,7 +627,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	succeeded = s.establishSession(w, r, sessionRequest{
-		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups,
+		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups, OIDCIssuer: identity.Issuer, OIDCSubject: identity.Subject,
 		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
@@ -636,15 +636,16 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 // once a request has already been authenticated (SSH signature verified, or
 // OIDC ID token verified).
 type sessionRequest struct {
-	Method                string
-	Identity              string
-	Fingerprint           string   // ssh only
-	Comment               string   // ssh only
-	Issuer                string   // oidc only
-	Groups                []string // oidc only
-	WireGuardPublicKey    string
-	Info                  protocol.ClientInfo
-	TransportCapabilities []string
+	Method                  string
+	Identity                string
+	Fingerprint             string   // ssh only
+	Comment                 string   // ssh only
+	Issuer                  string   // oidc configured alias
+	OIDCIssuer, OIDCSubject string   // verified oidc quota identity
+	Groups                  []string // oidc only
+	WireGuardPublicKey      string
+	Info                    protocol.ClientInfo
+	TransportCapabilities   []string
 	// QueryOnly: see protocol.AuthRequest.QueryOnly.
 	QueryOnly bool
 	// TunnelMTU: see protocol.AuthRequest.TunnelMTU.
@@ -658,7 +659,7 @@ type sessionRequest struct {
 // (e.g. `ntwire list`) never occupies a max_sessions_per_key slot or a
 // WireGuard peer/IP.
 func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req sessionRequest, grants []TunnelConfig) bool {
-	if !req.QueryOnly && s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity) >= s.Config.Auth.MaxSessionsPerKey {
+	if !req.QueryOnly && s.Config.Auth.MaxSessionsPerKey > 0 && s.sessions.CountIdentity(req.Method, req.Identity, req.OIDCIssuer, req.OIDCSubject) >= s.Config.Auth.MaxSessionsPerKey {
 		fail(w, 429, protocol.ErrorMaxSessions, "maximum sessions for key reached")
 		return false
 	}
@@ -741,7 +742,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	pathMTU = multipath && pathMTU
 	promote := multipath && protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathPromoteV1)
 	session := s.sessions.Create(CreateParams{
-		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups,
+		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups, OIDCIssuer: req.OIDCIssuer, OIDCSubject: req.OIDCSubject,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
 		Multipath: multipath, PathMTU: pathMTU, Promote: promote, ClientInfo: req.Info,
@@ -1039,7 +1040,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	// public key (not the session ID/token that just changed), so they stay
 	// valid across renewal without being torn down and reopened.
 	n := s.sessions.Create(CreateParams{
-		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups,
+		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups, OIDCIssuer: old.OIDCIssuer, OIDCSubject: old.OIDCSubject,
 		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
 		Multipath: old.Multipath, PathMTU: old.PathMTU, Promote: old.Promote, ClientInfo: body.Info,

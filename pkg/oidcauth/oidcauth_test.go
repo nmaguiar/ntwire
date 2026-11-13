@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -144,5 +145,38 @@ func TestVerifyUnknownIssuer(t *testing.T) {
 	v := NewVerifiers(nil, nil)
 	if _, err := v.Verify(context.Background(), "nope", "x"); err == nil {
 		t.Fatal("expected unknown issuer error")
+	}
+}
+
+func TestVerifyMissingSubject(t *testing.T) {
+	idp := newFakeIdP(t)
+	v := NewVerifiers([]IssuerConfig{{Name: "test", Issuer: idp.server.URL, ClientID: "client-1", RequireVerifiedEmail: true}}, nil)
+	for _, subject := range []any{nil, ""} {
+		claims := map[string]any{"aud": "client-1", "email": "alice@corp.com", "email_verified": true}
+		if subject != nil {
+			claims["sub"] = subject
+		}
+		if _, err := v.Verify(context.Background(), "test", idp.token(t, claims)); err == nil {
+			t.Fatal("accepted token without a stable subject")
+		}
+	}
+}
+
+func TestVerifyGoogleIssuerQuotaIdentity(t *testing.T) {
+	idp := newFakeIdP(t)
+	const issuer = "https://accounts.google.com"
+	// Use a real signature verifier and local JWKS without external discovery.
+	cfg := IssuerConfig{Name: "google", Issuer: issuer, ClientID: "client-1", RequireVerifiedEmail: true}
+	verifier := oidc.NewVerifier(issuer, oidc.NewRemoteKeySet(context.Background(), idp.server.URL+"/jwks"), &oidc.Config{ClientID: cfg.ClientID})
+	v := &Verifiers{issuers: map[string]*issuerEntry{"google": {cfg: cfg, verifier: verifier}}}
+	for _, claim := range []string{issuer, "accounts.google.com"} {
+		tok := idp.token(t, map[string]any{"iss": claim, "sub": "user-1", "aud": "client-1", "email": "alice@corp.com", "email_verified": true})
+		id, err := v.Verify(context.Background(), "google", tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id.Issuer != issuer || id.Subject != "user-1" {
+			t.Fatalf("quota identity for %q: %+v", claim, id)
+		}
 	}
 }

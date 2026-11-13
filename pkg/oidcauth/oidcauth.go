@@ -24,6 +24,7 @@ type IssuerConfig struct {
 // Identity is a verified OIDC principal.
 type Identity struct {
 	IssuerName string
+	Issuer     string // verified provider issuer URL, independent of the configured alias
 	Subject    string
 	Email      string
 	Domain     string // includes the leading "@", e.g. "@corp.com"
@@ -92,6 +93,9 @@ func (v *Verifiers) Verify(ctx context.Context, issuerName, rawToken string) (Id
 	if err != nil {
 		return Identity{}, err
 	}
+	if idToken.Subject == "" {
+		return Identity{}, fmt.Errorf("id token missing subject claim")
+	}
 	var claims struct {
 		Email         string `json:"email"`
 		EmailVerified bool   `json:"email_verified"`
@@ -122,5 +126,7 @@ func (v *Verifiers) Verify(ctx context.Context, issuerName, rawToken string) (Id
 	if i := strings.LastIndex(claims.Email, "@"); i >= 0 {
 		domain = claims.Email[i:]
 	}
-	return Identity{IssuerName: issuerName, Subject: idToken.Subject, Email: claims.Email, Domain: domain, Groups: groups}, nil
+	// Verification binds the token to this provider. Use its issuer URL rather
+	// than the raw claim: go-oidc also accepts Google's issuer without a scheme.
+	return Identity{IssuerName: issuerName, Issuer: e.cfg.Issuer, Subject: idToken.Subject, Email: claims.Email, Domain: domain, Groups: groups}, nil
 }

@@ -238,7 +238,7 @@ func TestAuthHandlerSSHQueryOnly(t *testing.T) {
 			t.Fatalf("call %d: tunnels = %+v", i, out.Tunnels)
 		}
 	}
-	if n := s.sessions.CountIdentity("ssh", sshkey.Fingerprint(mustParseKey(t, authLine))); n != 0 {
+	if n := s.sessions.CountIdentity("ssh", sshkey.Fingerprint(mustParseKey(t, authLine)), "", ""); n != 0 {
 		t.Fatalf("query-only calls left %d live sessions, want 0", n)
 	}
 

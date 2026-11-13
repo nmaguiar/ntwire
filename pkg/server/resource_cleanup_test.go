@@ -25,7 +25,9 @@ func TestSessionsExpiredLookupsPreserveCleanup(t *testing.T) {
 		"id":        func(s *Sessions, v Session) bool { _, ok := s.FindID(v.ID); return ok },
 		"peer":      func(s *Sessions, v Session) bool { _, ok := s.FindWireGuardPublicKey(v.WireGuardPublicKey); return ok },
 		"delete_id": func(s *Sessions, v Session) bool { _, ok := s.DeleteByID(v.ID); return ok },
-		"count":     func(s *Sessions, v Session) bool { return s.CountIdentity(v.Method, v.Identity) != 0 },
+		"count": func(s *Sessions, v Session) bool {
+			return s.CountIdentity(v.Method, v.Identity, v.OIDCIssuer, v.OIDCSubject) != 0
+		},
 	}
 	for name, check := range checks {
 		t.Run(name, func(t *testing.T) {
