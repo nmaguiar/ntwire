@@ -1,8 +1,8 @@
 # binary-ntwire-windows-arm64 — windows/arm64
 
-- Scanned: 2026-11-12 14:27 UTC
-- Source commit: `ac14c5cc2a5c70fd9ce687bf75ec178179292719`
-- Artifact: `sha256:ca8bd8602680375d87e21522012dd8fe6f1cfd0286cfead74c628ed4036bd992`
+- Scanned: 2026-11-14 02:46 UTC
+- Source commit: `85709f769424c05fdfa60b87f67199d5565ec2ac`
+- Artifact: `sha256:8fa15776e2c4d8be6fd3a470e946d0183a33dde7fce83f8c5d8013b025c46af6`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.89"
+        "version": "v0.0.0-20261113030123-85709f769424"
       },
       {
         "path": "github.com/coder/websocket",
