@@ -500,7 +500,7 @@ func TestProxy_SOCKS5_Auth_Failure(t *testing.T) {
 
 // 6. socks5:// performs destination DNS locally.
 func TestProxy_SOCKS5_LocalDNS(t *testing.T) {
-	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	targetServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
@@ -508,7 +508,7 @@ func TestProxy_SOCKS5_LocalDNS(t *testing.T) {
 	socksServer := startTestSOCKS5Server(t, "", "")
 	defer socksServer.Close()
 
-	client, err := httpClient(targetServer.URL, Options{
+	client, err := httpClient(targetServer.URL, Options{Insecure: true,
 		HTTPSProxy: "socks5://" + socksServer.Addr(),
 	})
 	if err != nil {
@@ -516,7 +516,7 @@ func TestProxy_SOCKS5_LocalDNS(t *testing.T) {
 	}
 
 	_, portStr, _ := net.SplitHostPort(targetServer.Listener.Addr().String())
-	localhostURL := fmt.Sprintf("http://localhost:%s/test", portStr)
+	localhostURL := fmt.Sprintf("https://localhost:%s/test", portStr)
 
 	resp, err := client.Get(localhostURL)
 	if err != nil {
@@ -541,7 +541,7 @@ func TestProxy_SOCKS5_LocalDNS(t *testing.T) {
 
 // 7. socks5h:// passes the hostname to the SOCKS server for remote resolution.
 func TestProxy_SOCKS5h_RemoteDNS(t *testing.T) {
-	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	targetServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
@@ -549,7 +549,7 @@ func TestProxy_SOCKS5h_RemoteDNS(t *testing.T) {
 	socksServer := startTestSOCKS5Server(t, "", "")
 	defer socksServer.Close()
 
-	client, err := httpClient(targetServer.URL, Options{
+	client, err := httpClient(targetServer.URL, Options{Insecure: true,
 		HTTPSProxy: "socks5h://" + socksServer.Addr(),
 	})
 	if err != nil {
@@ -557,7 +557,7 @@ func TestProxy_SOCKS5h_RemoteDNS(t *testing.T) {
 	}
 
 	_, portStr, _ := net.SplitHostPort(targetServer.Listener.Addr().String())
-	localhostURL := fmt.Sprintf("http://localhost:%s/test", portStr)
+	localhostURL := fmt.Sprintf("https://localhost:%s/test", portStr)
 
 	resp, err := client.Get(localhostURL)
 	if err != nil {
@@ -709,13 +709,13 @@ func TestProxy_SOCKS5h_WSSTraffic(t *testing.T) {
 		}
 	})
 
-	targetServer := httptest.NewServer(handler)
+	targetServer := httptest.NewTLSServer(handler)
 	defer targetServer.Close()
 
 	socksServer := startTestSOCKS5Server(t, "", "")
 	defer socksServer.Close()
 
-	clientHTTP, err := httpClient(targetServer.URL, Options{
+	clientHTTP, err := httpClient(targetServer.URL, Options{Insecure: true,
 		HTTPSProxy: "socks5h://" + socksServer.Addr(),
 	})
 	if err != nil {
@@ -723,7 +723,7 @@ func TestProxy_SOCKS5h_WSSTraffic(t *testing.T) {
 	}
 
 	_, portStr, _ := net.SplitHostPort(targetServer.Listener.Addr().String())
-	wsURL := fmt.Sprintf("ws://localhost:%s", portStr)
+	wsURL := fmt.Sprintf("wss://localhost:%s", portStr)
 
 	clientBind := wstransport.NewClient(wsURL, clientHTTP, nil)
 	_, _, err = clientBind.Open(0)
@@ -952,7 +952,7 @@ func TestProxy_SOCKS5_CertificatePinning(t *testing.T) {
 
 // 14. --ip-version 4 behaves correctly with SOCKS5/local DNS.
 func TestProxy_SOCKS5_IPVersion4(t *testing.T) {
-	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	targetServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
@@ -960,7 +960,7 @@ func TestProxy_SOCKS5_IPVersion4(t *testing.T) {
 	socksServer := startTestSOCKS5Server(t, "", "")
 	defer socksServer.Close()
 
-	client, err := httpClient(targetServer.URL, Options{
+	client, err := httpClient(targetServer.URL, Options{Insecure: true,
 		HTTPSProxy: "socks5://" + socksServer.Addr(),
 		IPVersion:  "4",
 	})
@@ -969,7 +969,7 @@ func TestProxy_SOCKS5_IPVersion4(t *testing.T) {
 	}
 
 	_, portStr, _ := net.SplitHostPort(targetServer.Listener.Addr().String())
-	localhostURL := fmt.Sprintf("http://localhost:%s/test", portStr)
+	localhostURL := fmt.Sprintf("https://localhost:%s/test", portStr)
 
 	resp, err := client.Get(localhostURL)
 	if err != nil {
@@ -1167,13 +1167,13 @@ func TestProxy_PasswordRedaction(t *testing.T) {
 
 	// Error when connection to unreachable proxy fails
 	unreachableURL := fmt.Sprintf("socks5://alice:%s@127.0.0.1:1", secretPass)
-	client, err := httpClient("http://server.example:8443", Options{
+	client, err := httpClient("http://127.0.0.1:8443", Options{
 		HTTPSProxy: unreachableURL,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.Get("http://server.example:8443/test")
+	_, err = client.Get("http://127.0.0.1:8443/test")
 	if err == nil {
 		t.Fatal("expected connection to port 1 to fail")
 	}

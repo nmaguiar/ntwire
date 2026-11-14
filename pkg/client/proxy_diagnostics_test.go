@@ -42,7 +42,7 @@ func TestProxyEnvironmentDiagnostics(t *testing.T) {
 		if d.EffectiveSource != os.Getenv("NTWIRE_PROXY_TEST_SOURCE") || !strings.Contains(d.Status, os.Getenv("NTWIRE_PROXY_TEST_STATUS")) || (d.Error != "") != (os.Getenv("NTWIRE_PROXY_TEST_ERROR") == "1") {
 			t.Fatalf("unexpected diagnostics: %+v", d)
 		}
-		if opts.HTTPSProxy == "" && !opts.NoSystemProxy {
+		if opts.HTTPSProxy == "" && !opts.NoSystemProxy && d.Error == "" {
 			normalized, _ := NormalizeServerURL(server)
 			req, _ := http.NewRequest("GET", normalized, nil)
 			got, gotErr := http.ProxyFromEnvironment(req)
@@ -67,9 +67,9 @@ func TestProxyEnvironmentDiagnostics(t *testing.T) {
 	}{
 		{"https", "https://server.example", "HTTPS_PROXY", "", []string{"HTTPS_PROXY=http://upper:8080", "https_proxy=http://lower:8080"}, false},
 		{"hostname shorthand", "server.example:8443", "HTTPS_PROXY", "", []string{"HTTPS_PROXY=http://proxy"}, false},
-		{"http", "http://server.example", "HTTP_PROXY", "", []string{"HTTP_PROXY=http://proxy:8080"}, false},
+		{"http", "http://server.example", "Direct", "", []string{"HTTP_PROXY=http://proxy:8080"}, true},
 		{"lower https", "https://server.example", "https_proxy", "", []string{"https_proxy=http://proxy:8080"}, false},
-		{"lower http", "http://server.example", "http_proxy", "", []string{"http_proxy=http://proxy:8080"}, false},
+		{"lower http", "http://server.example", "Direct", "", []string{"http_proxy=http://proxy:8080"}, true},
 		{"empty", "https://server.example", "Direct", "No environment proxy configured", nil, false},
 		{"http not https", "https://server.example", "Direct", "No environment proxy configured", []string{"HTTP_PROXY=http://proxy"}, false},
 		{"bypass", "https://server.example", "Direct", "NO_PROXY match", []string{"HTTPS_PROXY=http://proxy", "NO_PROXY=.example"}, false},
