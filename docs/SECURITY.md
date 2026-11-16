@@ -42,6 +42,13 @@ server egress by default.
 
 ## Current boundary
 
+Client server URLs require HTTPS, except for explicit numeric loopback HTTP
+URLs used in local development (for example, `http://127.0.0.1:8080`).
+DNS names, including `localhost`, cannot opt into plaintext. Loopback HTTP
+cannot be routed through a remote proxy. The same policy
+applies to redirects and advertised WebSocket endpoints before credentials are sent.
+`--insecure` changes certificate verification only; it does not permit remote HTTP.
+
 ntwire protects control-plane requests with TLS and data-plane traffic with
 WireGuard. The server can use configured TLS files or a self-signed
 certificate it persists across restarts; clients pin the latter on first use.

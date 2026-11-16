@@ -277,7 +277,7 @@ func TestWSSRedialUsesSamePinVerifier(t *testing.T) {
 	}
 	defer hc.CloseIdleConnections()
 	// Observe the actual shared verifier, including errors raised on redial.
-	transport := hc.Transport.(*http.Transport)
+	transport := hc.Transport.(*secureControlTransport).Transport
 	verify := transport.TLSClientConfig.VerifyConnection
 	failures := make(chan error, 20)
 	transport.TLSClientConfig.VerifyConnection = func(cs tls.ConnectionState) error {
