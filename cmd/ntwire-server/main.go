@@ -35,6 +35,9 @@ func main() {
 		runList(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "clients" {
+		os.Exit(runClients(os.Args[2:], ui.New(os.Stdout, os.Stderr, false)))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "portal" {
 		runPortal(os.Args[2:], ui.New(os.Stdout, os.Stderr, false))
 		return
@@ -46,6 +49,8 @@ func main() {
 				runPortal([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
 			case "list":
 				runList([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
+			case "clients":
+				runClients([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
 			case "completion":
 				runCompletion([]string{"-h"}, ui.New(os.Stdout, os.Stderr, false))
 			default:
@@ -87,6 +92,7 @@ func main() {
 			Commands: []ui.Command{
 				{Name: "portal", Summary: "portal template inspection, prompt generation, validation, and rendering"},
 				{Name: "list", Summary: "show configured server tunnels and proxy PAC endpoints"},
+				{Name: "clients", Summary: "show live sessions and native WireGuard peers"},
 				{Name: "completion", Summary: "generate shell completion script"},
 			},
 			Flags: ui.FlagsOf(flag.CommandLine),
@@ -98,6 +104,7 @@ func main() {
 				"ntwire-server portal validate -config ntwire.yaml",
 				"ntwire-server portal render -config ntwire.yaml",
 				"ntwire-server list -config ntwire.yaml",
+				"ntwire-server clients -config ntwire.yaml",
 				"ntwire-server -print-sample-config > ntwire.yaml",
 				"ntwire-server -print-config-guide > docs/server-config-guide.md",
 				"ntwire-server -print-config-guide -config-guide-format=json-schema > server-config.schema.json",
