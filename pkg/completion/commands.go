@@ -99,6 +99,14 @@ func ServerCommand() Command {
 			},
 		},
 		{
+			Name:    "clients",
+			Summary: "show live sessions and native WireGuard peers",
+			Flags: []Flag{
+				{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+				{Name: "json", Usage: "output in JSON format"},
+			},
+		},
+		{
 			Name:       "completion",
 			Summary:    "generate shell completion script",
 			ArgChoices: SupportedShells,

@@ -500,7 +500,9 @@ available to any external link the page rendered via `Referer`.
 Both now work the same way:
 
 - **Presented as `Authorization: Bearer …`** by programmatic callers (`curl`,
-  `ntwire status`, `ntwire list`).
+  `ntwire status`, `ntwire list`, `ntwire-server clients`). The server client
+  inventory route accepts the bearer header and is available on the metrics
+  listener only. The CLI queries it over loopback.
 - **Exchanged once at `GET /`** for an `HttpOnly; SameSite=Lax` cookie, with
   an immediate redirect that drops the parameter from the address bar before
   the page loads. This is why the URL `ntwire connect` prints still contains a

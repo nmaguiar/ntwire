@@ -205,18 +205,39 @@ func (s *Stack) UpdateEndpoint(publicKey, addr string) error {
 // A known peer that has never completed a handshake reports found=true with
 // the zero Unix time (1970-01-01), not a zero time.Time -- callers comparing
 // against "how long ago" should treat any implausibly old value the same way.
-func (s *Stack) LastHandshake(publicKey string) (t time.Time, found bool, err error) {
-	public, err := decodeKey(publicKey)
+func (s *Stack) LastHandshake(publicKey string) (time.Time, bool, error) {
+	public, err := CanonicalPublicKey(publicKey)
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("invalid peer public key: %w", err)
 	}
-	want := hex.EncodeToString(public)
-	raw, err := s.device.IpcGet()
+	handshakes, err := s.LastHandshakes()
 	if err != nil {
 		return time.Time{}, false, err
 	}
+	t, found := handshakes[public]
+	return t, found, nil
+}
+
+// LastHandshakes reads all peers in one device snapshot, keyed by canonical
+// public key. An installed peer without a completed handshake has a Unix epoch time.
+func (s *Stack) LastHandshakes() (map[string]time.Time, error) {
+	raw, err := s.device.IpcGet()
+	if err != nil {
+		return nil, err
+	}
+	return parseLastHandshakes(raw), nil
+}
+
+func parseLastHandshakes(raw string) map[string]time.Time {
+	out := make(map[string]time.Time)
 	var sec, nsec int64
-	cur := ""
+	var key string
+	var hasTimestamp bool
+	save := func() {
+		if key != "" && hasTimestamp {
+			out[key] = time.Unix(sec, nsec)
+		}
+	}
 	for _, line := range strings.Split(raw, "\n") {
 		k, v, ok := strings.Cut(line, "=")
 		if !ok {
@@ -224,22 +245,21 @@ func (s *Stack) LastHandshake(publicKey string) (t time.Time, found bool, err er
 		}
 		switch k {
 		case "public_key":
-			cur = v
+			save()
+			key, sec, nsec, hasTimestamp = "", 0, 0, false
+			if decoded, err := hex.DecodeString(v); err == nil && len(decoded) == 32 {
+				key = base64.StdEncoding.EncodeToString(decoded)
+			}
 		case "last_handshake_time_sec":
-			if cur == want {
-				found = true
-				sec, _ = strconv.ParseInt(v, 10, 64)
-			}
+			var err error
+			sec, err = strconv.ParseInt(v, 10, 64)
+			hasTimestamp = err == nil
 		case "last_handshake_time_nsec":
-			if cur == want {
-				nsec, _ = strconv.ParseInt(v, 10, 64)
-			}
+			nsec, _ = strconv.ParseInt(v, 10, 64)
 		}
 	}
-	if !found {
-		return time.Time{}, false, nil
-	}
-	return time.Unix(sec, nsec), true, nil
+	save()
+	return out
 }
 
 // PeerEndpoint returns wireguard-go's current endpoint address for the peer

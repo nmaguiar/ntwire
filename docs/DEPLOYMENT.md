@@ -167,6 +167,27 @@ kubectl get pods -l app=ntwire-server
 kubectl logs -f deployment/ntwire-server
 ```
 
+To list current clients on a running server, configure `listen.metrics`
+(for example, `127.0.0.1:9090`) and `admin.web_ui_token` in the server YAML.
+Run the command where the server is running. The CLI reads that YAML and
+queries the local metrics listener, so Docker and Kubernetes do not need to
+publish the metrics port for this command.
+
+```sh
+ntwire-server clients -config ntwire.yaml
+docker compose -f deploy/docker/docker-compose.yml exec ntwire-server \
+  /ntwire-server clients -config /etc/ntwire/ntwire.yaml
+kubectl exec deployment/ntwire-server -c server -- \
+  /ntwire-server clients -config /etc/ntwire/ntwire.yaml -json
+```
+
+The output includes every unexpired SSH or OIDC session, even with zero
+tunnel grants, and every enabled, configured native WireGuard peer.
+A peer's handshake status is `recent` within three minutes, `stale`
+afterward, `never` before its first handshake, or `unavailable` if the
+server cannot read it. The snapshot describes one server process.
+Use `-json` for the `sessions` and `wireguard_peers` arrays.
+
 When `listen.metrics` (e.g. `:9090` or `127.0.0.1:9090`) and `admin.web_ui_token` are configured in `ntwire.yaml` and published to the host:
 
 ```sh

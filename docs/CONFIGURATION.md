@@ -627,6 +627,12 @@ requester.
 
 ## Server dashboard
 
+Run `ntwire-server clients -config ntwire.yaml` on the server host or in the
+server container or pod to list unexpired sessions and native WireGuard
+peers. The command uses the configured metrics port over loopback and sends
+the configured token as a bearer header to `GET /v1/admin/clients`. See
+[deployment examples](DEPLOYMENT.md#3-viewing-server-status-metrics-and-logs-status).
+
 Set a long random `admin.web_ui_token` (at least 32 characters; the server
 refuses to start with a shorter one) to enable the operator dashboard on the
 metrics listener. Open `http://server:9090/?token=TOKEN` (using the address in

@@ -18,6 +18,7 @@ func (s *Server) MetricsHandler() http.Handler {
 	m.HandleFunc("GET /metrics", s.metrics)
 	m.HandleFunc("GET /", s.dashboard)
 	m.HandleFunc("GET /v1/dashboard", s.dashboardStatus)
+	m.HandleFunc("GET "+AdminClientsPath, s.adminClients)
 	m.HandleFunc("POST /v1/admin/sessions/{id}/revoke", s.revokeSession)
 	// Per-source cap on the whole admin surface. The operator token is the only
 	// thing guarding live identities and session revocation, and it is chosen by
