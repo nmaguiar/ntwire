@@ -265,7 +265,7 @@ func (r *Registry) Register(req protocol.RelayRegisterRequest) (name, fingerprin
 // protocol. Unknown optional server offers are ignored; only an explicit
 // RequiredCapabilities request reaches the failure path above.
 func relayCapabilities() []string {
-	return []string{protocol.CapabilityMultipathV3, protocol.CapabilityNativeWireGuardRelay}
+	return []string{protocol.CapabilityMultipathV3, protocol.CapabilityNativeWireGuardRelay, protocol.CapabilityRelayUDPStatsChunks}
 }
 
 // RegisterAgent binds agent as the live control connection for name,

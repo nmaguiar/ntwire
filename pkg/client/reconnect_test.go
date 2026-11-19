@@ -308,3 +308,62 @@ func udpRoundTrip(t *testing.T, c net.Conn) {
 		t.Fatalf("UDP response %q", b[:n])
 	}
 }
+
+func TestFixedUDPFlowStaysOpenWhileSendingWithoutReplies(t *testing.T) {
+	f := newReconnectFixture(t)
+	target, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	f.udpTarget = target.LocalAddr().String()
+	f.current.Store(f.startServer("100.70.0.0/24", 18080, true, false))
+	c := f.connect()
+	// Establish the WireGuard path before starting the UDP idle clock.
+	// The first handshake may take longer than the test's short timeout.
+	tcpRoundTrip(t, c.LocalAddresses[0])
+	const idle = 750 * time.Millisecond
+	c.mu.Lock()
+	tunnel := c.tunnels[1]
+	tunnel.idleTimeout = idle
+	address := tunnel.localAddr
+	c.mu.Unlock()
+	sender, err := net.Dial("udp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sender.Close()
+	buf := make([]byte, 1)
+	var from *net.UDPAddr
+	until := time.Now().Add(3 * idle)
+	for {
+		if _, err := sender.Write([]byte{1}); err != nil {
+			t.Fatal(err)
+		}
+		_ = target.SetReadDeadline(time.Now().Add(3 * time.Second))
+		if _, from, err = target.ReadFromUDP(buf); err != nil {
+			t.Fatal(err)
+		}
+		if time.Now().After(until) {
+			break
+		}
+		time.Sleep(idle / 5)
+	}
+	if got := tunnel.connections.Load(); got != 1 {
+		t.Fatalf("one-way traffic created %d flows, want one", got)
+	}
+	if _, err := target.WriteToUDP([]byte{2}, from); err != nil {
+		t.Fatal(err)
+	}
+	_ = sender.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := sender.Read(buf); err != nil || buf[0] != 2 {
+		t.Fatalf("delayed reply = %v, %v", buf, err)
+	}
+	expires := time.Now().Add(3 * idle)
+	for tunnel.active.Load() != 0 && time.Now().Before(expires) {
+		time.Sleep(idle / 10)
+	}
+	if tunnel.active.Load() != 0 {
+		t.Fatal("inactive flow did not expire")
+	}
+}

@@ -148,23 +148,21 @@ func (u *udpRelay) stopAll() {
 // allocated. Missing reports are harmless; repeated complete snapshots can
 // identify an allocation the relay has reclaimed.
 func (u *udpRelay) recordStats(report protocol.RelayUDPStatsReport) {
+	samples := make(map[string]protocol.RelayUDPStats, len(report.Sessions))
+	for _, sample := range report.Sessions {
+		samples[sample.Token] = sample
+	}
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	seen := make(map[string]bool, len(report.Sessions))
-	for _, sample := range report.Sessions {
-		seen[sample.Token] = true
-		for _, st := range u.sessions {
-			if st.token == sample.Token {
-				st.stats = sample
-				st.missingReports = 0
-				break
-			}
-		}
-	}
 	// Allow for snapshots taken before allocation was published and require
 	// two consecutive reports before forgetting an absent allocation.
 	for key, st := range u.sessions {
-		if seen[st.token] || st.allocatedAt.IsZero() || time.Since(st.allocatedAt) < 90*time.Second {
+		if sample, ok := samples[st.token]; ok {
+			st.stats = sample
+			st.missingReports = 0
+			continue
+		}
+		if st.allocatedAt.IsZero() || time.Since(st.allocatedAt) < 90*time.Second {
 			continue
 		}
 		st.missingReports++

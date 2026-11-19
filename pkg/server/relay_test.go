@@ -11,7 +11,11 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -193,7 +197,7 @@ func TestRelayAgentHandleControlMessage_DeliversUDPStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.handleControlMessage(context.Background(), b)
+	a.handleControlMessage(context.Background(), b, nil)
 	if got.Type != "udp_stats" || len(got.Sessions) != 1 || got.Sessions[0].Token != "token" || got.Sessions[0].ClientBytesReceived != 12 {
 		t.Fatalf("OnUDPStats got %+v, want decoded report", got)
 	}
@@ -202,7 +206,7 @@ func TestRelayAgentHandleControlMessage_DeliversUDPStats(t *testing.T) {
 func TestRelayAgentHandleControlMessage_DeliversEmptyUDPStats(t *testing.T) {
 	called := false
 	a := &RelayAgent{OnUDPStats: func(report protocol.RelayUDPStatsReport) { called = true }}
-	a.handleControlMessage(context.Background(), []byte(`{"type":"udp_stats","sessions":[]}`))
+	a.handleControlMessage(context.Background(), []byte(`{"type":"udp_stats","sessions":[]}`), nil)
 	if !called {
 		t.Fatal("empty relay snapshot was ignored")
 	}
@@ -616,5 +620,146 @@ func TestRelayAgent_ReconnectsWhenRelayStopsRespondingToPings(t *testing.T) {
 	case <-connectAttempts:
 	case <-time.After(45 * time.Second):
 		t.Fatal("agent never reconnected after the relay stopped responding to pings")
+	}
+}
+
+func TestUDPStatsAssemblyDiscardsIncompleteAndRepeatedSnapshots(t *testing.T) {
+	var a udpStatsAssembly
+	samples := []protocol.RelayUDPStats{{Token: token()}}
+	chunks := []struct {
+		snapshot uint64
+		index    uint32
+		final    bool
+		samples  []protocol.RelayUDPStats
+		complete bool
+	}{
+		{1, 0, false, samples, false},
+		{1, 2, true, samples, false},
+		{1, 1, true, samples, false},
+		{2, 0, false, samples, false},
+		{2, 0, false, samples, false},
+		{2, 1, true, samples, false},
+		{3, 0, false, samples, false},
+		{4, 0, false, samples, false},
+		{4, 1, true, samples, true},
+		{4, 0, true, nil, false},
+		{5, 0, true, nil, true},
+	}
+	for i, tc := range chunks {
+		report, complete := a.add(protocol.RelayUDPStatsChunk{Snapshot: tc.snapshot, Index: tc.index, Final: tc.final, Sessions: tc.samples})
+		if complete != tc.complete {
+			t.Fatalf("message %d completed = %v, want %v", i, complete, tc.complete)
+		}
+		if complete && tc.snapshot == 4 && len(report.Sessions) != 2 {
+			t.Fatalf("assembled %d samples, want 2", len(report.Sessions))
+		}
+	}
+}
+
+func TestRelayAgentChunkedStatsOverWebSocket(t *testing.T) {
+	signer, _, err := sshkey.GenerateEd25519()
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := t.TempDir() + "/id"
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	capability := protocol.CapabilityRelayUDPStatsChunks
+	samples := make([]protocol.RelayUDPStats, 128)
+	for i := range samples {
+		samples[i].Token = token()
+	}
+	var connections atomic.Int32
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer ws.CloseNow()
+		read := func(v any) error {
+			_, msg, err := ws.Read(ctx)
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(msg, v)
+		}
+		write := func(v any) error {
+			data, err := json.Marshal(v)
+			if err != nil {
+				return err
+			}
+			return ws.Write(ctx, websocket.MessageText, data)
+		}
+		var registration protocol.RelayRegisterRequest
+		if err := read(&registration); err != nil || !slices.Contains(registration.Capabilities, capability) {
+			t.Errorf("missing capability in registration: %v", err)
+			return
+		}
+		if err := write(protocol.RelayRegisterResponse{Version: protocol.Version, Capabilities: []string{capability}}); err != nil {
+			t.Error(err)
+			return
+		}
+		connection := connections.Add(1)
+		for i := range 2 {
+			chunk := protocol.RelayUDPStatsChunk{Type: "udp_stats_chunk", Snapshot: 1, Index: uint32(i), Final: i == 1, Sessions: samples[i*64 : (i+1)*64]}
+			if err := write(chunk); err != nil {
+				t.Error(err)
+				return
+			}
+			if connection == 1 {
+				return
+			}
+		}
+		var req protocol.RelayUDPAllocateRequest
+		if err := read(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := write(protocol.RelayUDPAllocateResponse{Type: "udp_allocate_reply", RequestID: req.RequestID, Token: "allocated", ServerAddr: "127.0.0.1:1234"}); err != nil {
+			t.Error(err)
+		}
+		<-ctx.Done()
+	}))
+	defer ts.Close()
+	defer cancel()
+	report := make(chan protocol.RelayUDPStatsReport, 2)
+	agent, err := NewRelayAgent(RelayConfig{URL: "wss" + strings.TrimPrefix(ts.URL, "https"), Name: "home", IdentityFile: path}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent.client = ts.Client()
+	agent.OnUDPStats = func(stats protocol.RelayUDPStatsReport) { report <- stats }
+	if registered, err := agent.runOnce(ctx); !registered || err == nil {
+		t.Fatalf("partial snapshot connection = registered %v, error %v", registered, err)
+	}
+	select {
+	case <-report:
+		t.Fatal("incomplete snapshot was published")
+	default:
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = agent.runOnce(ctx)
+	}()
+	defer func() { cancel(); <-done }()
+	select {
+	case got := <-report:
+		if !slices.Equal(got.Sessions, samples) {
+			t.Fatalf("report contained %d sessions", len(got.Sessions))
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if got, _, err := agent.AllocateUDPSession(ctx); err != nil || got != "allocated" {
+		t.Fatalf("allocation after large telemetry report = %q, %v", got, err)
 	}
 }

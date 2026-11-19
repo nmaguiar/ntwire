@@ -495,6 +495,18 @@ discard an older cached allocation after it is absent from two consecutive
 snapshots and allocate again on the client's next retry. Older relays may
 omit empty snapshots; an absent report alone is not evidence of expiry.
 
+When registration negotiates `udp-stats-chunks-v1`, the relay sends the
+same snapshot as ordered `udp_stats_chunk` messages of at most 32 KiB
+each. Every chunk carries `snapshot` (an increasing positive integer
+within the control connection), `index` (starting at zero), `final`, and
+`sessions` (the same records as in `udp_stats`). An empty snapshot is a
+single final chunk with an empty list. Other control messages may
+interleave between chunks. The server applies only complete snapshots,
+discarding incomplete snapshots on a sequence error, the start of a newer
+snapshot, or disconnect. Without the capability, upgraded relays send a
+legacy snapshot when it fits and skip oversized reports. Upgrade the
+relay first for deployments exceeding the legacy message limit.
+
 `POST /v1/udp-relay` (Bearer token, same session as `/v1/wg`) is the
 client-facing endpoint that triggers this allocation — empty request body
 (`UDPRelayRequest`), keyed server-side by the client's WireGuard public key

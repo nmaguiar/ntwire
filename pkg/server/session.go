@@ -3,10 +3,12 @@ package server
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"github.com/nmaguiar/ntwire/pkg/protocol"
-	"github.com/nmaguiar/ntwire/pkg/wgnet"
+	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/wgnet"
 )
 
 // Session retains the display identity separately from OIDC quota identity.
@@ -37,9 +39,17 @@ type Session struct {
 type Sessions struct {
 	mu      sync.Mutex
 	byToken map[string]Session
+	byIP    map[string]sessionPrincipal
 }
 
-func NewSessions() *Sessions { return &Sessions{byToken: map[string]Session{}} }
+type sessionPrincipal struct {
+	token     string
+	principal DataPlanePrincipal
+}
+
+func NewSessions() *Sessions {
+	return &Sessions{byToken: map[string]Session{}, byIP: map[string]sessionPrincipal{}}
+}
 func token() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
@@ -81,6 +91,16 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
 	s.byToken[v.Token] = v
+	if v.TunnelIP != "" {
+		addr, _ := netip.ParseAddr(v.TunnelIP)
+		grants := make(map[string]bool, len(v.Tunnels))
+		for _, t := range v.Tunnels {
+			grants[t.Name] = true
+		}
+		s.byIP[v.TunnelIP] = sessionPrincipal{token: v.Token, principal: DataPlanePrincipal{
+			Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
+		}}
+	}
 	return v
 }
 
@@ -133,7 +153,32 @@ func (s *Sessions) FindID(id string) (Session, bool) {
 	}
 	return Session{}, false
 }
-func (s *Sessions) Delete(t string) { s.mu.Lock(); defer s.mu.Unlock(); delete(s.byToken, t) }
+
+// principalForIP returns a principal whose grant map is read-only.
+func (s *Sessions) principalForIP(ip string) (DataPlanePrincipal, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.byIP[ip]
+	if !ok || !time.Now().Before(s.byToken[entry.token].Expires) {
+		return DataPlanePrincipal{}, false
+	}
+	return entry.principal, true
+}
+
+func (s *Sessions) Delete(t string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v, ok := s.byToken[t]; ok {
+		s.deleteLocked(v)
+	}
+}
+
+func (s *Sessions) deleteLocked(v Session) {
+	delete(s.byToken, v.Token)
+	if s.byIP[v.TunnelIP].token == v.Token {
+		delete(s.byIP, v.TunnelIP)
+	}
+}
 
 // DeleteByID finds a live session by its ID (distinct from its bearer
 // Token, which admin callers -- unlike the session's own owner -- never
@@ -148,7 +193,7 @@ func (s *Sessions) DeleteByID(id string) (Session, bool) {
 			continue
 		}
 		if v.ID == id {
-			delete(s.byToken, v.Token)
+			s.deleteLocked(v)
 			return v, true
 		}
 	}
@@ -181,10 +226,10 @@ func (s *Sessions) Reap() []Session {
 	defer s.mu.Unlock()
 	now := time.Now()
 	var dead []Session
-	for k, v := range s.byToken {
+	for _, v := range s.byToken {
 		if now.After(v.Expires) {
 			dead = append(dead, v)
-			delete(s.byToken, k)
+			s.deleteLocked(v)
 		}
 	}
 	return dead
