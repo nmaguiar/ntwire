@@ -3172,8 +3172,8 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 		}
 		mu.Unlock()
 	}()
+	buf := make([]byte, 65535)
 	for {
-		buf := make([]byte, 65535)
 		n, src, err := pc.ReadFrom(buf)
 		if err != nil {
 			return
@@ -3205,6 +3205,7 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 				continue
 			}
 			f = flow{conn: out, stack: stack, target: destination}
+			_ = out.SetReadDeadline(time.Now().Add(timeout))
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
@@ -3222,11 +3223,11 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 				}()
 				b := make([]byte, 65535)
 				for {
-					_ = out.SetReadDeadline(time.Now().Add(timeout))
 					n, e := out.Read(b)
 					if e != nil {
 						return
 					}
+					_ = out.SetReadDeadline(time.Now().Add(timeout))
 					if _, e = pc.WriteTo(b[:n], src); e != nil {
 						return
 					}
@@ -3234,6 +3235,7 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 				}
 			}(key, src, out, timeout)
 		}
+		_ = f.conn.SetReadDeadline(time.Now().Add(timeout))
 		if n, e := f.conn.Write(buf[:n]); e == nil {
 			tunnel.toTunnel.Add(uint64(n))
 		}

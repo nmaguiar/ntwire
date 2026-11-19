@@ -555,6 +555,24 @@ type RelayUDPStatsReport struct {
 	Sessions []RelayUDPStats `json:"sessions"`
 }
 
+// CapabilityRelayUDPStatsChunks enables bounded relay statistics snapshots.
+const CapabilityRelayUDPStatsChunks = "udp-stats-chunks-v1"
+
+// RelayUDPStatsMessageLimit matches the legacy control reader's message limit.
+const RelayUDPStatsMessageLimit = 32 << 10
+
+// MaxRelayUDPStatsSessions bounds a snapshot by the UDP port space.
+const MaxRelayUDPStatsSessions = 65535
+
+// RelayUDPStatsChunk carries one ordered piece of a connection-local snapshot.
+type RelayUDPStatsChunk struct {
+	Type     string          `json:"type"`
+	Snapshot uint64          `json:"snapshot"`
+	Index    uint32          `json:"index"`
+	Final    bool            `json:"final"`
+	Sessions []RelayUDPStats `json:"sessions"`
+}
+
 // RelayRegisterPayload is a byte-exact, length-prefixed encoding, structured
 // identically to SigningPayload, over [PublicKey, Name, Timestamp, Nonce].
 // It intentionally uses its own domain separator rather than reusing

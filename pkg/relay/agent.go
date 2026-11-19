@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -428,7 +429,8 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 	a.log.Info("server registered", "name", name, "fingerprint", fingerprint, "remote", remote, "reflect_addr", reflectAddr, "udp_relay_addr", udpRelayAddr)
 	defer a.log.Info("server disconnected", "name", name, "fingerprint", fingerprint)
 
-	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr, NativeWireGuardAddr: nativeAddr, NativeWireGuardToken: nativeToken, RelayVersion: buildinfo.String(), Capabilities: protocol.IntersectCapabilities(req.Capabilities, relayCapabilities())})
+	capabilities := protocol.IntersectCapabilities(req.Capabilities, relayCapabilities())
+	b, _ := json.Marshal(protocol.RelayRegisterResponse{Version: protocol.Version, Name: name, Domain: a.domain, ReflectAddr: reflectAddr, UDPRelayAddr: udpRelayAddr, NativeWireGuardAddr: nativeAddr, NativeWireGuardToken: nativeToken, RelayVersion: buildinfo.String(), Capabilities: capabilities})
 	writeMu.Lock()
 	err = ws.Write(ctx, websocket.MessageText, b)
 	writeMu.Unlock()
@@ -450,6 +452,8 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
+	var snapshot uint64
+	chunkedStats := slices.Contains(capabilities, protocol.CapabilityRelayUDPStatsChunks)
 	for {
 		select {
 		case <-ticker.C:
@@ -464,14 +468,16 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 			// Send complete snapshots, including empty ones, so the server can
 			// eventually recover allocations removed by the idle sweep.
 			if sessions := a.getUDPSessions(); sessions != nil {
-				stats := sessions.StatsForTenant(name)
-				report, _ := json.Marshal(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: stats})
-				if len(report) > 0 {
-					rctx, rcancel := context.WithTimeout(ctx, 5*time.Second)
+				snapshot++
+				err := writeUDPStats(sessions.StatsForTenant(name), chunkedStats, snapshot, func(data []byte) error {
 					writeMu.Lock()
-					_ = ws.Write(rctx, websocket.MessageText, report)
-					writeMu.Unlock()
-					rcancel()
+					defer writeMu.Unlock()
+					rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					defer cancel()
+					return ws.Write(rctx, websocket.MessageText, data)
+				})
+				if err != nil {
+					return
 				}
 			}
 		case <-readErr:
@@ -479,6 +485,36 @@ func (a *agentServer) handleControl(w http.ResponseWriter, r *http.Request) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func writeUDPStats(stats []protocol.RelayUDPStats, chunked bool, snapshot uint64, write func([]byte) error) error {
+	if !chunked {
+		data, err := json.Marshal(protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: stats})
+		if err != nil || len(data) > protocol.RelayUDPStatsMessageLimit {
+			return err
+		}
+		return write(data)
+	}
+	// A record has a fixed-length token and eight uint64 counters. Even
+	// at full counter width, 64 records leave room for the envelope.
+	const batchSize = 64
+	for index := uint32(0); ; index++ {
+		n := min(batchSize, len(stats))
+		final := n == len(stats)
+		data, err := json.Marshal(protocol.RelayUDPStatsChunk{
+			Type: "udp_stats_chunk", Snapshot: snapshot, Index: index, Final: final, Sessions: stats[:n],
+		})
+		if err != nil {
+			return err
+		}
+		if len(data) > protocol.RelayUDPStatsMessageLimit {
+			return errors.New("relay UDP statistics chunk exceeds control message limit")
+		}
+		if err := write(data); err != nil || final {
+			return err
+		}
+		stats = stats[n:]
 	}
 }
 

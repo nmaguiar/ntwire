@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -79,26 +80,58 @@ func (g *MASQUEGateway) connect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer out.Close()
-	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+	controller := http.NewResponseController(w)
+	if err := controller.EnableFullDuplex(); err != nil {
 		http.Error(w, "relay request rejected", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+	if err := controller.Flush(); err != nil {
+		return
+	}
+
+	stop := context.AfterFunc(r.Context(), func() { _ = out.Close() })
+	defer stop()
+	stopUpload := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(out, r.Body)
-		// A CONNECT stream can be half-closed by the client while the target
-		// still has a response to send. Closing the entire TCP connection here
-		// would lose that response for request/response protocols.
-		if closer, ok := out.(interface{ CloseWrite() error }); ok {
-			_ = closer.CloseWrite()
-		} else {
+		defer close(done)
+		if _, err := io.Copy(out, r.Body); err != nil {
 			_ = out.Close()
+			select {
+			case <-stopUpload:
+				// Download completion already unblocked the writer.
+			default:
+				_ = controller.SetWriteDeadline(time.Now())
+			}
+			return
 		}
-		close(done)
+		// Keep the download open after a clean upload EOF.
+		if closer, ok := out.(interface{ CloseWrite() error }); ok {
+			if err := closer.CloseWrite(); err == nil {
+				return
+			}
+		}
+		_ = out.Close()
 	}()
-	_, _ = io.Copy(w, out)
+	_, _ = io.Copy(masqueFlushWriter{w, controller}, out)
+	close(stopUpload)
+	_ = out.Close()
+	_ = r.Body.Close()
 	<-done
+}
+
+type masqueFlushWriter struct {
+	writer     http.ResponseWriter
+	controller *http.ResponseController
+}
+
+func (w masqueFlushWriter) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if err == nil {
+		err = w.controller.Flush()
+	}
+	return n, err
 }
 
 func sessionHasTunnel(session Session, name string) bool {

@@ -586,8 +586,8 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 		}
 		mu.Unlock()
 	}()
+	buf := make([]byte, 65535)
 	for {
-		buf := make([]byte, 65535)
 		n, src, err := pc.ReadFrom(buf)
 		if err != nil {
 			return
@@ -689,8 +689,8 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		}
 		mu.Unlock()
 	}()
+	b := make([]byte, 65535)
 	for {
-		b := make([]byte, 65535)
 		n, src, e := pc.ReadFrom(b)
 		if e != nil {
 			return
@@ -998,15 +998,8 @@ func principalFromContext(ctx context.Context) (DataPlanePrincipal, bool) {
 func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, v := range s.sessions.All() {
-		if time.Now().Before(v.Expires) && v.TunnelIP == ip {
-			addr, _ := netip.ParseAddr(ip)
-			grants := map[string]bool{}
-			for _, t := range v.Tunnels {
-				grants[t.Name] = true
-			}
-			return DataPlanePrincipal{Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants}, true
-		}
+	if principal, ok := s.sessions.principalForIP(ip); ok {
+		return principal, true
 	}
 	for _, peer := range s.Config.NativeWireGuard.Peers {
 		if peer.TunnelIP == ip {

@@ -1,9 +1,10 @@
 package server
 
 import (
-	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"testing"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
 func TestSessionsExpireAndCount(t *testing.T) {
@@ -59,5 +60,32 @@ func TestSessionsFindWireGuardPublicKey(t *testing.T) {
 	}
 	if _, ok := s.FindWireGuardPublicKey("other-key"); ok {
 		t.Fatal("unexpected session for unknown WireGuard key")
+	}
+}
+
+func TestSessionPrincipalFollowsIPOwnership(t *testing.T) {
+	s := New(Config{}, nil)
+	const ip = "100.64.0.2"
+	old := s.sessions.Create(CreateParams{TunnelIP: ip, TTL: -time.Second})
+	if _, ok := s.principalForIP(ip); ok {
+		t.Fatal("expired session still authorizes traffic")
+	}
+	current := s.sessions.Create(CreateParams{TunnelIP: ip, TTL: time.Minute, Tunnels: []protocol.Tunnel{{Name: "new"}}})
+	if got := s.sessions.Reap(); len(got) != 1 || got[0].Token != old.Token {
+		t.Fatalf("unexpected reaping result: %v", len(got))
+	}
+	s.sessions.Delete(old.Token)
+	if p, ok := s.principalForIP(ip); !ok || !p.Tunnels["new"] {
+		t.Fatal("current grant lost during old-session cleanup")
+	}
+	if _, ok := s.sessions.DeleteByID(current.ID); !ok {
+		t.Fatal("admin revoke failed")
+	}
+	if _, ok := s.principalForIP(ip); ok {
+		t.Fatal("revoked grant still authorizes traffic")
+	}
+	s.Reload(Config{NativeWireGuard: NativeWireGuardConfig{Peers: []NativeWireGuardPeer{{Name: "native", TunnelIP: ip, Tunnels: []string{"native-grant"}}}}})
+	if p, ok := s.principalForIP(ip); !ok || !p.Tunnels["native-grant"] || p.Method != "native-wireguard" {
+		t.Fatal("native peer unavailable after reload")
 	}
 }

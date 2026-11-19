@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -251,7 +252,7 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	if resp.Version != protocol.Version {
 		return false, fmt.Errorf("relay uses unsupported protocol version %d", resp.Version)
 	}
-	if err := protocol.ValidateRequiredCapabilities([]string{protocol.CapabilityMultipathV3}, resp.RequiredCapabilities); err != nil {
+	if err := protocol.ValidateRequiredCapabilities(relayAgentCapabilities(), resp.RequiredCapabilities); err != nil {
 		return false, fmt.Errorf("relay requires an unsupported capability: %w", err)
 	}
 	a.log.Info("relay registered", "name", resp.Name, "domain", resp.Domain)
@@ -291,13 +292,17 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	// notice, rather than promptly triggering Run's reconnect.
 	readErr := make(chan error, 1)
 	go func() {
+		var stats *udpStatsAssembly
+		if slices.Contains(resp.Capabilities, protocol.CapabilityRelayUDPStatsChunks) {
+			stats = &udpStatsAssembly{}
+		}
 		for {
 			_, data, err := ws.Read(ctx)
 			if err != nil {
 				readErr <- err
 				return
 			}
-			a.handleControlMessage(ctx, data)
+			a.handleControlMessage(ctx, data, stats)
 		}
 	}()
 
@@ -322,16 +327,59 @@ func (a *RelayAgent) runOnce(ctx context.Context) (registered bool, err error) {
 	}
 }
 
+func relayAgentCapabilities() []string {
+	return []string{protocol.CapabilityMultipathV3, protocol.CapabilityNativeWireGuardRelay, protocol.CapabilityRelayUDPStatsChunks}
+}
+
+// udpStatsAssembly belongs to a single control reader. Keep the last snapshot
+// ID after completion or rejection so a replay cannot count as another report.
+type udpStatsAssembly struct {
+	snapshot uint64
+	next     uint32
+	sessions []protocol.RelayUDPStats
+}
+
+func (a *udpStatsAssembly) add(chunk protocol.RelayUDPStatsChunk) (protocol.RelayUDPStatsReport, bool) {
+	if chunk.Index == 0 && chunk.Snapshot > a.snapshot {
+		a.snapshot, a.next, a.sessions = chunk.Snapshot, 0, []protocol.RelayUDPStats{}
+	}
+	if a.sessions == nil || chunk.Snapshot != a.snapshot || chunk.Index != a.next ||
+		len(chunk.Sessions) > protocol.MaxRelayUDPStatsSessions-len(a.sessions) ||
+		(len(chunk.Sessions) == 0 && (!chunk.Final || chunk.Index != 0)) {
+		a.sessions = nil
+		return protocol.RelayUDPStatsReport{}, false
+	}
+	for _, sample := range chunk.Sessions {
+		// Allocation tokens encode 32 bytes as unpadded base64url.
+		if len(sample.Token) != base64.RawURLEncoding.EncodedLen(32) {
+			a.sessions = nil
+			return protocol.RelayUDPStatsReport{}, false
+		}
+	}
+	a.sessions = append(a.sessions, chunk.Sessions...)
+	a.next++
+	if !chunk.Final {
+		return protocol.RelayUDPStatsReport{}, false
+	}
+	report := protocol.RelayUDPStatsReport{Type: "udp_stats", Sessions: a.sessions}
+	a.sessions = nil
+	return report, true
+}
+
 // handleControlMessage dispatches one message read from the relay's control
 // connection. A typed "udp_allocate_reply" is delivered to the matching
 // AllocateUDPSession call; anything else is dispatched as an untyped
 // RelayOpen push, exactly as before this feature existed -- RelayOpen
 // carries no "type" field by design, see docs/PROTOCOL.md.
-func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte) {
+func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte, stats *udpStatsAssembly) {
 	var msg struct {
 		Type string `json:"type"`
 	}
-	if json.Unmarshal(data, &msg) == nil && msg.Type == "udp_allocate_reply" {
+	if json.Unmarshal(data, &msg) != nil {
+		return
+	}
+	switch msg.Type {
+	case "udp_allocate_reply":
 		var resp protocol.RelayUDPAllocateResponse
 		if json.Unmarshal(data, &resp) != nil {
 			return
@@ -344,11 +392,25 @@ func (a *RelayAgent) handleControlMessage(ctx context.Context, data []byte) {
 			ch <- resp
 		}
 		return
-	}
-	if json.Unmarshal(data, &msg) == nil && msg.Type == "udp_stats" {
+	case "udp_stats":
+		if stats != nil {
+			return
+		}
 		var report protocol.RelayUDPStatsReport
 		if json.Unmarshal(data, &report) == nil && a.OnUDPStats != nil {
 			a.OnUDPStats(report)
+		}
+		return
+	case "udp_stats_chunk":
+		if stats != nil {
+			var chunk protocol.RelayUDPStatsChunk
+			if json.Unmarshal(data, &chunk) != nil {
+				stats.sessions = nil
+				return
+			}
+			if report, ok := stats.add(chunk); ok && a.OnUDPStats != nil {
+				a.OnUDPStats(report)
+			}
 		}
 		return
 	}
@@ -527,7 +589,7 @@ func (a *RelayAgent) registerRequest() (protocol.RelayRegisterRequest, error) {
 	req := protocol.RelayRegisterRequest{
 		Version: protocol.Version, PublicKey: pub, Name: a.cfg.Name,
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Nonce: base64.RawURLEncoding.EncodeToString(n),
-		ServerVersion: buildinfo.String(), Capabilities: []string{protocol.CapabilityMultipathV3, protocol.CapabilityNativeWireGuardRelay},
+		ServerVersion: buildinfo.String(), Capabilities: relayAgentCapabilities(),
 		SocksTargets: a.getSocksTargets(),
 	}
 	payload, err := protocol.RelayRegisterPayload(req)

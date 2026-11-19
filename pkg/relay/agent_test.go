@@ -345,3 +345,55 @@ func TestAgentServer_DataConnUnknownConnID(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+func TestWriteUDPStats_ChunkBoundsAndLegacyFallback(t *testing.T) {
+	sample := protocol.RelayUDPStats{
+		Token:                 strings.Repeat("x", 43),
+		ClientPacketsReceived: ^uint64(0), ClientBytesReceived: ^uint64(0),
+		ServerPacketsReceived: ^uint64(0), ServerBytesReceived: ^uint64(0),
+		ClientPacketsForwarded: ^uint64(0), ClientBytesForwarded: ^uint64(0),
+		ServerPacketsForwarded: ^uint64(0), ServerBytesForwarded: ^uint64(0),
+	}
+	stats := make([]protocol.RelayUDPStats, 129)
+	for i := range stats {
+		stats[i] = sample
+	}
+	for _, input := range [][]protocol.RelayUDPStats{stats, stats[:0]} {
+		var count, messages int
+		if err := writeUDPStats(input, true, ^uint64(0), func(data []byte) error {
+			if len(data) > protocol.RelayUDPStatsMessageLimit {
+				t.Fatalf("encoded chunk contains %d bytes", len(data))
+			}
+			var chunk protocol.RelayUDPStatsChunk
+			if err := json.Unmarshal(data, &chunk); err != nil {
+				t.Fatal(err)
+			}
+			count += len(chunk.Sessions)
+			if chunk.Index != uint32(messages) || chunk.Final != (count == len(input)) || chunk.Snapshot != ^uint64(0) {
+				t.Fatalf("invalid chunk envelope at message %d", messages)
+			}
+			messages++
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if count != len(input) || messages == 0 {
+			t.Fatalf("delivered %d records in %d messages", count, messages)
+		}
+	}
+	writes := 0
+	for _, input := range [][]protocol.RelayUDPStats{stats, stats[:64]} {
+		if err := writeUDPStats(input, false, 1, func(data []byte) error {
+			writes++
+			if len(data) > protocol.RelayUDPStatsMessageLimit {
+				t.Fatalf("oversized legacy report: %d", len(data))
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if writes != 1 {
+		t.Fatalf("legacy sender wrote %d reports, want 1", writes)
+	}
+}
