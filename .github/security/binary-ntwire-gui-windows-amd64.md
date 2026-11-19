@@ -1,8 +1,8 @@
 # binary-ntwire-gui-windows-amd64 — windows/amd64
 
-- Scanned: 2026-11-14 02:46 UTC
-- Source commit: `85709f769424c05fdfa60b87f67199d5565ec2ac`
-- Artifact: `sha256:698fe46eae738efad1883b587daee57a04b598d14b15cee50e6993e011b5c7d1`
+- Scanned: 2026-11-19 03:28 UTC
+- Source commit: `d335fdfed661cf3cc7fe1b8579c2bb28202e87fe`
+- Artifact: `sha256:73e26ae3aa1116c64459088d2c8d568a075ff823c93c6e1ed77f054688b2240c`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -20,7 +20,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "config": {
     "protocol_version": "v1.0.0",
     "scanner_name": "govulncheck",
-    "scanner_version": "v1.9.0",
+    "scanner_version": "v1.10.0",
     "db": "https://vuln.go.dev",
     "db_last_modified": "2026-11-11T02:51:11Z",
     "scan_level": "symbol",
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261113030123-85709f769424"
+        "version": "v0.0.90"
       },
       {
         "path": "fyne.io/systray",
@@ -28968,19 +28968,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/packet"
       }
     ]
@@ -29059,39 +29046,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/elgamal",
-        "function": "org/x/crypto/openpgp/elgamal/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k",
-        "function": "org/x/crypto/openpgp/s2k/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp",
-        "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
+        "package": "golang.org/x/crypto/openpgp"
       }
     ]
   }
@@ -29151,6 +29106,51 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/errors",
         "function": "org/x/crypto/openpgp/errors/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/elgamal",
+        "function": "org/x/crypto/openpgp/elgamal/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k",
+        "function": "org/x/crypto/openpgp/s2k/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp",
+        "function": "org/x/crypto/openpgp/*",
         "receiver": "golang"
       }
     ]
