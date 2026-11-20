@@ -10,6 +10,7 @@ package config
 import (
 	"encoding/json"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 )
 
@@ -17,16 +18,17 @@ import (
 // ToClientOptions needs to build a client.Options, plus GUI-only metadata
 // (ID, Name, ConnectOnStart).
 type Profile struct {
-	BrowserArgsMode   string         `yaml:"browser_args_mode,omitempty"`
-	BrowserAutomatic  bool           `yaml:"browser_automatic,omitempty"`
-	BrowserArgs       []string       `yaml:"browser_args"`
-	BrowserExecutable string         `yaml:"browser_executable,omitempty"`
-	ID                string         `yaml:"id"`
-	Name              string         `yaml:"name"`
-	Server            string         `yaml:"server"`
-	IdentityFile      string         `yaml:"identity_file"`
-	ConnectOnStart    bool           `yaml:"connect_on_start"`
-	Ports             map[string]int `yaml:"ports"`
+	BrowserProfiles   map[string]browseropen.ProfileSettings `yaml:"browser_profiles,omitempty"`
+	BrowserArgsMode   string                                 `yaml:"browser_args_mode,omitempty"`
+	BrowserAutomatic  bool                                   `yaml:"browser_automatic,omitempty"`
+	BrowserArgs       []string                               `yaml:"browser_args"`
+	BrowserExecutable string                                 `yaml:"browser_executable,omitempty"`
+	ID                string                                 `yaml:"id"`
+	Name              string                                 `yaml:"name"`
+	Server            string                                 `yaml:"server"`
+	IdentityFile      string                                 `yaml:"identity_file"`
+	ConnectOnStart    bool                                   `yaml:"connect_on_start"`
+	Ports             map[string]int                         `yaml:"ports"`
 	// Hosts is a per-tunnel loopback address override; see
 	// client.Options.Hosts.
 	Hosts            map[string]string `yaml:"hosts"`
@@ -68,6 +70,7 @@ type Profile struct {
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any
 // one server profile's connection settings.
 type Settings struct {
+	BrowserProfilesDir   string   `yaml:"browser_profiles_dir,omitempty"`
 	BrowserArgs          []string `yaml:"browser_args"`
 	BrowserExecutable    string   `yaml:"browser_executable,omitempty"`
 	UpdateChecksDisabled bool     `yaml:"update_checks_disabled"`

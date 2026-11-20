@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"os"
@@ -153,6 +154,7 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 	for _, p := range cfg.Profiles {
 		stored := p
 		stored.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+		stored.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 		m.sessions[p.ID] = newSession(stored)
 	}
 	return m, nil
@@ -216,6 +218,9 @@ func (m *Manager) Settings() config.Settings {
 
 // SetSettings replaces ntwire-gui's app-wide preferences and persists them.
 func (m *Manager) SetSettings(s config.Settings) error {
+	if err := browseropen.ValidateStorage(s.BrowserProfilesDir, nil); err != nil {
+		return err
+	}
 	if err := browseropen.ValidateExtraArgs(s.BrowserArgs); err != nil {
 		return err
 	}
@@ -238,6 +243,7 @@ func (m *Manager) profilesLocked() []config.Profile {
 	for _, s := range m.sessions {
 		p := s.profile
 		p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+		p.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 		out = append(out, p)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -260,6 +266,7 @@ func (m *Manager) AddProfile(p config.Profile) (config.Profile, error) {
 	}
 	stored := p
 	stored.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+	stored.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 	m.sessions[p.ID] = newSession(stored)
 	m.mu.Unlock()
 	if err := m.persist(); err != nil {
@@ -281,6 +288,11 @@ func (m *Manager) UpdateProfile(p config.Profile) error {
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("gui: no such profile %q", p.ID)
+	}
+	if p.BrowserProfiles == nil {
+		p.BrowserProfiles = s.profile.BrowserProfiles
+	} else {
+		p.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 	}
 	s.profile = p
 	m.mu.Unlock()
@@ -348,6 +360,7 @@ func (m *Manager) Snapshots() []Snapshot {
 func snapshotOf(s *session) Snapshot {
 	p := s.profile
 	p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
+	p.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 	snap := Snapshot{Profile: p, State: s.state, Prompt: s.prompt}
 	if s.state != StateIdle && s.state != StateFailed {
 		snap.ProxyReconnectRequired = s.profile.HTTPSProxy != s.activeProfile.HTTPSProxy || s.profile.NoSystemProxy != s.activeProfile.NoSystemProxy
@@ -546,7 +559,7 @@ func (m *Manager) OpenBrowser(id, tunnelName string) error {
 		if err != nil {
 			return err
 		}
-		return openSocksWithOptions(opts, id+"-"+tunnelName, t.LocalAddress)
+		return openSocksWithOptions(opts.ForTunnel(tunnelName), id+"-"+tunnelName, t.LocalAddress)
 	}
 	return fmt.Errorf("gui: tunnel %q not found", tunnelName)
 }
@@ -566,13 +579,64 @@ func (m *Manager) ResetBrowserProfile(id, tunnelName string) error {
 		if !protocol.IsBrowserSocksTarget(t.TargetHint) {
 			return fmt.Errorf("gui: tunnel %q is not a SOCKS tunnel", tunnelName)
 		}
-		return browseropen.CleanProfile(id + "-" + tunnelName)
+		opts, err := m.browserOptions(id)
+		if err != nil {
+			return err
+		}
+		return browseropen.CleanConfiguredProfile(id+"-"+tunnelName, opts.ForTunnel(tunnelName).Profile)
 	}
 	return fmt.Errorf("gui: tunnel %q not found", tunnelName)
 }
 
-// ListBrowserProfiles returns all browser profile directories under
-// ~/.ntwire/browser-profiles, sorted by key.
+// TunnelBrowserProfile reads or updates the local settings for a connected SOCKS tunnel.
+func (m *Manager) TunnelBrowserProfile(id, name string, update *browseropen.ProfileSettings) (browseropen.ProfileSettings, string, error) {
+	snap, ok := m.Snapshot(id)
+	if !ok || snap.Connection == nil {
+		return browseropen.ProfileSettings{}, "", fmt.Errorf("gui: profile %q is not connected", id)
+	}
+	for _, t := range snap.Connection.Tunnels {
+		if t.Name == name && protocol.IsBrowserSocksTarget(t.TargetHint) {
+			return m.tunnelBrowserProfile(id, name, update)
+		}
+	}
+	return browseropen.ProfileSettings{}, "", fmt.Errorf("gui: SOCKS tunnel %q not found", name)
+}
+
+func (m *Manager) tunnelBrowserProfile(id, name string, update *browseropen.ProfileSettings) (browseropen.ProfileSettings, string, error) {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok {
+		return browseropen.ProfileSettings{}, "", fmt.Errorf("gui: no such profile %q", id)
+	}
+	p := s.profile.BrowserProfiles[name]
+	if update != nil {
+		p = *update
+	}
+	path, err := browseropen.ProfilePath(id+"-"+name, browseropen.SelectProfile(m.settings.BrowserProfilesDir, p))
+	if err != nil || update == nil {
+		return p, path, err
+	}
+	profiles := make(map[string]browseropen.ProfileSettings)
+	maps.Copy(profiles, s.profile.BrowserProfiles)
+	if p == (browseropen.ProfileSettings{}) {
+		delete(profiles, name)
+	} else {
+		profiles[name] = p
+	}
+	previous := s.profile.BrowserProfiles
+	s.profile.BrowserProfiles = profiles
+	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
+	if err := config.Save(m.configPath, cfg); err != nil {
+		s.profile.BrowserProfiles = previous
+		return p, path, err
+	}
+	return p, path, nil
+}
+
+// ListBrowserProfiles lists legacy and registered custom browser profiles.
 func (m *Manager) ListBrowserProfiles() ([]browseropen.ProfileEntry, error) {
 	return browseropen.ListProfiles()
 }
@@ -1073,6 +1137,9 @@ func (m *Manager) SetUpdatePreferences(disabled, automatic bool) error {
 var openSocksWithOptions = browseropen.OpenSocksWithOptions
 
 func validateBrowserProfile(p config.Profile) error {
+	if err := browseropen.ValidateStorage("", p.BrowserProfiles); err != nil {
+		return err
+	}
 	if err := browseropen.ValidateExtraArgs(p.BrowserArgs); err != nil {
 		return err
 	}
@@ -1096,5 +1163,6 @@ func (m *Manager) browserOptions(id string) (browseropen.LaunchOptions, error) {
 	} else if executable == "" {
 		executable = m.settings.BrowserExecutable
 	}
-	return browseropen.LaunchOptions{Executable: executable, ExtraArgs: args}, err
+	return browseropen.LaunchOptions{Executable: executable, ExtraArgs: args,
+		ProfilesDir: m.settings.BrowserProfilesDir, TunnelProfiles: maps.Clone(p.BrowserProfiles)}, err
 }

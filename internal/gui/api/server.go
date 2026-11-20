@@ -141,6 +141,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PUT /api/profiles/{id}/tunnels/{name}", s.requireToken(s.handleReplacePort))
 	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/open-browser", s.requireToken(s.handleOpenBrowser))
 	s.mux.HandleFunc("POST /api/profiles/{id}/tunnels/{name}/reset-browser-profile", s.requireToken(s.handleResetBrowserProfile))
+	s.mux.HandleFunc("GET /api/profiles/{id}/tunnels/{name}/browser-profile", s.requireToken(s.handleTunnelBrowserProfile))
+	s.mux.HandleFunc("PUT /api/profiles/{id}/tunnels/{name}/browser-profile", s.requireToken(s.handleTunnelBrowserProfile))
 	s.mux.HandleFunc("GET /api/browser-profiles", s.requireToken(s.handleListBrowserProfiles))
 	s.mux.HandleFunc("POST /api/browser-profiles/clean", s.requireToken(s.handleCleanBrowserProfiles))
 	s.mux.HandleFunc("POST /api/prompts/{id}/trust", s.requireToken(s.handleAnswerTrust))
@@ -307,6 +309,26 @@ func (s *Server) handleResetBrowserProfile(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleTunnelBrowserProfile(w http.ResponseWriter, r *http.Request) {
+	var update *browseropen.ProfileSettings
+	if r.Method == http.MethodPut {
+		update = new(browseropen.ProfileSettings)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(update); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	profile, path, err := s.mgr.TunnelBrowserProfile(r.PathValue("id"), r.PathValue("name"), update)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct {
+		browseropen.ProfileSettings
+		Path string
+	}{profile, path})
+}
+
 func (s *Server) handleListBrowserProfiles(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.mgr.ListBrowserProfiles()
 	if err != nil {
@@ -440,6 +462,10 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSetSettings(w http.ResponseWriter, r *http.Request) {
 	var set config.Settings
 	if err := json.NewDecoder(r.Body).Decode(&set); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := browseropen.ValidateStorage(set.BrowserProfilesDir, nil); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}

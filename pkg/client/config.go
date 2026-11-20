@@ -57,11 +57,13 @@ func GenerateIdentity(path string) (string, error) {
 // Settings is the optional persistent configuration stored at
 // ~/.ntwire/config.yaml. Command-line flags take precedence over these values.
 type Settings struct {
-	BrowserArgs       []string       `yaml:"browser_args,omitempty"`
-	BrowserExecutable string         `yaml:"browser_executable"`
-	Server            string         `yaml:"server"`
-	IdentityFile      string         `yaml:"identity_file"`
-	Ports             map[string]int `yaml:"ports"`
+	BrowserProfilesDir string                                 `yaml:"browser_profiles_dir,omitempty"`
+	BrowserProfiles    map[string]browseropen.ProfileSettings `yaml:"browser_profiles,omitempty"`
+	BrowserArgs        []string                               `yaml:"browser_args,omitempty"`
+	BrowserExecutable  string                                 `yaml:"browser_executable"`
+	Server             string                                 `yaml:"server"`
+	IdentityFile       string                                 `yaml:"identity_file"`
+	Ports              map[string]int                         `yaml:"ports"`
 	// Hosts is a per-tunnel loopback address override; see
 	// client.Options.Hosts.
 	Hosts         map[string]string `yaml:"hosts"`
@@ -152,6 +154,8 @@ var settingsUIFields = []struct {
 	{Field: "Server", YAMLKey: "server"},
 	{Field: "IdentityFile", YAMLKey: "identity_file"},
 	{Field: "BrowserArgs", YAMLKey: "browser_args"},
+	{Field: "BrowserProfilesDir", YAMLKey: "browser_profiles_dir"},
+	{Field: "BrowserProfiles", YAMLKey: "browser_profiles"},
 	{Field: "BrowserExecutable", YAMLKey: "browser_executable"},
 	{Field: "CAFile", YAMLKey: "ca_file"},
 	{Field: "Insecure", YAMLKey: "insecure", Bool: true},
@@ -183,21 +187,29 @@ func SaveSettings(path string, s Settings) (bool, error) {
 	if err := browseropen.ValidateExtraArgs(s.BrowserArgs); err != nil {
 		return false, err
 	}
+	if err := browseropen.ValidateStorage(s.BrowserProfilesDir, s.BrowserProfiles); err != nil {
+		return false, err
+	}
 	return editSettings(path, func(m *yaml.Node) bool {
 		changed := false
 		for _, f := range settingsUIFields {
 			v := reflect.ValueOf(s).FieldByName(f.Field)
-			if v.Kind() == reflect.Slice {
-				args := append([]string{}, s.BrowserArgs...)
+			if v.Kind() == reflect.Slice || v.Kind() == reflect.Map {
+				value := v.Interface()
+				if v.Kind() == reflect.Slice {
+					value = append([]string{}, s.BrowserArgs...)
+				} else if v.IsNil() {
+					value = map[string]browseropen.ProfileSettings{}
+				}
 				var node yaml.Node
-				_ = node.Encode(args)
+				_ = node.Encode(value)
 				found := false
 				for i := 0; i < len(m.Content); i += 2 {
 					if m.Content[i].Value != f.YAMLKey {
 						continue
 					}
-					var saved []string
-					if err := m.Content[i+1].Decode(&saved); err != nil || !reflect.DeepEqual(saved, args) {
+					saved := reflect.New(v.Type())
+					if err := m.Content[i+1].Decode(saved.Interface()); err != nil || !reflect.DeepEqual(saved.Elem().Interface(), value) {
 						m.Content[i+1] = &node
 						changed = true
 					}

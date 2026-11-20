@@ -65,6 +65,8 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 .ports-toggle summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text)}
 .ports-list{margin-top:.5rem}
 .setup{max-width:34rem;margin:8vh auto}.setup label{font-size:1rem}.setup input{font-size:1rem;padding:.7rem}.setup .help{margin:.1rem 0 1rem}
+.browser-profile-dialog{width:min(36rem,calc(100% - 2rem));padding:1.25rem;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text)}
+.browser-profile-dialog code{overflow-wrap:anywhere;user-select:all}
 </style>
 <main id="main">
   <div class="brand-lockup"><svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="logo-cyan" x1="9" y1="37" x2="39" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#0755ed"/><stop offset="1" stop-color="#18dcff"/></linearGradient><linearGradient id="logo-indigo" x1="10" y1="11" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#1650e7"/><stop offset=".5" stop-color="#8f72ff"/><stop offset="1" stop-color="#2638bf"/></linearGradient></defs><path d="M13 36V16c0-3 3.6-4.5 5.7-2.4l12.5 12.5a3 3 0 0 0 4.2 0l4.8-4.8" fill="none" stroke="url(#logo-cyan)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m8.7 34.6 10.7-10.7a3.2 3.2 0 0 1 4.5 0l12.5 12.5c1.9 1.9 5.1.6 5.1-2.2V25" fill="none" stroke="url(#logo-indigo)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="20" r="2.7" fill="#16d9ff"/></svg><h1><span class="brand-nt">nt</span>wire settings</h1></div>
@@ -90,6 +92,10 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 
   <div id="regular-settings">
   <section class="panel"><details><summary>Browser settings (advanced)</summary>
+  <label for="global-browser-folder">Browser profiles folder</label>
+  <input id="global-browser-folder" type="text" placeholder="Default location">
+  <p class="help">Enter an absolute local path. Folder changes apply to future launches. Existing browser data stays in its current folder.</p>
+  <p><a target="_blank" rel="noopener noreferrer" href="https://github.com/nmaguiar/ntwire/blob/main/docs/CONFIGURATION.md#socks-browser-profiles">Copy an existing browser profile</a></p>
   <div id="global-browser-args"></div><button id="save-browser-args" type="button">Save browser settings</button>
   </details></section>
   <section class="panel">
@@ -134,7 +140,7 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
 
   <section class="panel">
     <h2>🧹 Browser profile cleanup</h2>
-    <p class="lede">Persistent Chrome profiles created by tunnels' "Open browser" action. Profiles still open in Chrome are shown but can't be deleted until closed.</p>
+    <p class="lede">Saved SOCKS browser profiles, including previous storage locations. Close the browser before deleting its profile.</p>
     <div id="browser-profiles" class="empty">Loading…</div>
     <div class="row" style="margin-top:1rem">
       <button class="danger" id="delete-browser-profiles-btn" disabled>🗑️ Delete selected</button>
@@ -622,7 +628,11 @@ function renderTunnelSection(profileID, tunnels) {
           await refreshBrowserProfiles();
         } catch (e) { setMessage(e.message); }
       });
-      line.append(openBrowser, resetProfile);
+      const settings = document.createElement('button');
+      settings.className = 'secondary';
+      settings.textContent = 'Browser profile settings';
+      settings.onclick = () => editTunnelBrowserProfile(profileID, t.name);
+      line.append(openBrowser, settings, resetProfile);
     }
     list.append(line);
   }
@@ -632,6 +642,62 @@ function renderTunnelSection(profileID, tunnels) {
 
 // --- generated form -------------------------------------------------------
 
+async function editTunnelBrowserProfile(profileID, tunnel) {
+  const url = `/api/profiles/${profileID}/tunnels/${encodeURIComponent(tunnel)}/browser-profile`;
+  try {
+    let current = await api('GET', url);
+    const dialog = document.createElement('dialog');
+    dialog.className = 'browser-profile-dialog';
+    dialog.setAttribute('aria-labelledby', 'tunnel-browser-profile-title');
+    const title = document.createElement('h3');
+    title.id = 'tunnel-browser-profile-title';
+    title.textContent = `Browser profile for ${tunnel}`;
+    const name = document.createElement('input');
+    const folder = document.createElement('input');
+    name.value = current.Name;
+    folder.value = current.Folder;
+    folder.placeholder = 'Use the app-wide folder';
+    const nameLabel = document.createElement('label');
+    nameLabel.append('Profile name', name);
+    const folderLabel = document.createElement('label');
+    folderLabel.append('Storage folder override', folder);
+    const help = document.createElement('p');
+    help.textContent = 'Enter an absolute local path. Folder changes apply to future launches and leave existing data in its current folder.';
+    const path = document.createElement('code');
+    path.textContent = current.Path;
+    const copy = document.createElement('button');
+    copy.textContent = 'Copy saved profile path';
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(current.Path);
+        status.textContent = 'Copied.';
+      } catch { status.textContent = 'Select and copy the displayed path.'; }
+    };
+    const save = document.createElement('button');
+    save.textContent = 'Save';
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        current = await api('PUT', url, {Name: name.value.trim(), Folder: folder.value.trim()});
+        path.textContent = current.Path;
+        status.textContent = 'Saved.';
+      } catch (e) { status.textContent = e.message; }
+      finally { save.disabled = false; }
+    };
+    const close = document.createElement('button');
+    close.textContent = 'Close';
+    close.onclick = () => dialog.close();
+    dialog.addEventListener('close', () => dialog.remove());
+    const actions = document.createElement('div');
+    actions.className = 'row';
+    actions.append(save, copy, close);
+    dialog.append(title, nameLabel, folderLabel, help, path, status, actions);
+    document.body.append(dialog);
+    dialog.showModal();
+  } catch (e) { setMessage(e.message); }
+}
 function browserArgumentsEditor(value, global = false, profile = null) {
   const box = document.createElement('fieldset');
   const legend = document.createElement('legend'); legend.textContent = 'Extra browser arguments'; box.append(legend);
@@ -660,6 +726,7 @@ let globalBrowserSettings = {};
 let globalBrowserEditor;
 async function loadBrowserSettings() {
  globalBrowserSettings = await api('GET', '/api/settings');
+ document.getElementById('global-browser-folder').value = globalBrowserSettings.BrowserProfilesDir || '';
  globalBrowserEditor = browserArgumentsEditor(globalBrowserSettings.BrowserArgs, true);
  document.getElementById('global-browser-args').replaceChildren(globalBrowserEditor);
  form.querySelectorAll('[data-browser-args]').forEach(box => box.refreshArguments());
@@ -667,7 +734,7 @@ async function loadBrowserSettings() {
 document.getElementById('save-browser-args').onclick = async () => {
  try {
   const current = await api('GET', '/api/settings');
-  await api('PUT', '/api/settings', {...current, BrowserArgs: globalBrowserEditor.readArguments()});
+  await api('PUT', '/api/settings', {...current, BrowserArgs: globalBrowserEditor.readArguments(), BrowserProfilesDir: document.getElementById('global-browser-folder').value.trim()});
   await loadBrowserSettings(); setMessage('Browser settings saved.', 'ok');
  } catch (e) { setMessage(e.message); }
 };
@@ -1345,14 +1412,16 @@ function renderBrowserProfileRow(p) {
   const name = document.createElement('span');
   name.className = 'server';
   name.style.fontWeight = '600';
-  name.textContent = p.Key;
+  name.textContent = p.Name || p.TunnelKey || p.Key;
+  const path = document.createElement('code');
+  path.textContent = p.Path;
 
-  left.append(cb, name);
+  left.append(cb, name, path);
 
   if (p.InUse) {
     const badge = document.createElement('span');
     badge.className = 'badge connected';
-    badge.textContent = 'Chrome running';
+    badge.textContent = 'Browser in use';
     left.append(badge);
   }
 

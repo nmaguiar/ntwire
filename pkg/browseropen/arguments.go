@@ -8,8 +8,17 @@ import (
 
 // LaunchOptions configures a Chromium SOCKS browser launch.
 type LaunchOptions struct {
-	Executable string
-	ExtraArgs  []string
+	Executable     string
+	ExtraArgs      []string
+	Profile        ProfileSettings
+	ProfilesDir    string
+	TunnelProfiles map[string]ProfileSettings
+}
+
+// ForTunnel selects the profile settings for a specific SOCKS tunnel.
+func (o LaunchOptions) ForTunnel(name string) LaunchOptions {
+	o.Profile = SelectProfile(o.ProfilesDir, o.TunnelProfiles[name])
+	return o
 }
 
 var browserSwitchName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*$`)

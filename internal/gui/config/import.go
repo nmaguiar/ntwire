@@ -36,6 +36,9 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 	if settings.Server == "" {
 		return false, nil
 	}
+	if cfg.Settings.BrowserProfilesDir == "" {
+		cfg.Settings.BrowserProfilesDir = settings.BrowserProfilesDir
+	}
 	ports := make(map[string]int, len(settings.Ports))
 	for k, v := range settings.Ports {
 		ports[k] = v
@@ -45,6 +48,7 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 		hosts[k] = v
 	}
 	cfg.Profiles = append(cfg.Profiles, Profile{
+		BrowserProfiles:   settings.BrowserProfiles,
 		BrowserArgs:       append([]string(nil), settings.BrowserArgs...),
 		BrowserArgsMode:   "replace",
 		BrowserExecutable: settings.BrowserExecutable,

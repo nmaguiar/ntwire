@@ -20,9 +20,9 @@ func TestBrowserArgsLiveResolver(t *testing.T) {
 		return nil
 	}
 	args := []string{"--first"}
-	c := &Connection{options: Options{ResolveBrowserOptions: func() (browseropen.LaunchOptions, error) { return browseropen.LaunchOptions{ExtraArgs: args}, nil }}}
+	c := &Connection{options: Options{Profile: "profile", ResolveBrowserOptions: func() (browseropen.LaunchOptions, error) { return browseropen.LaunchOptions{ExtraArgs: args}, nil }}}
 	launch := func() error {
-		return c.openConfiguredSocksBrowser("profile-socks", "127.0.0.1:1080", "https://example.com")
+		return c.launchTunnelBrowser("socks", "127.0.0.1:1080", "https://example.com")
 	}
 	if err := launch(); err != nil {
 		t.Fatal(err)
