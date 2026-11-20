@@ -23,6 +23,7 @@ func TestSanitizeReplacesUnsafeChars(t *testing.T) {
 }
 
 func TestProfileDirIsUnderNtwireBrowserProfiles(t *testing.T) {
+	isolatedProfileHome(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Skipf("no home directory: %v", err)
@@ -43,12 +44,14 @@ func TestProfileDirIsUnderNtwireBrowserProfiles(t *testing.T) {
 }
 
 func TestCleanProfileOnMissingDirIsNoop(t *testing.T) {
+	isolatedProfileHome(t)
 	if err := CleanProfile("does-not-exist-" + t.Name()); err != nil {
 		t.Errorf("CleanProfile() on missing dir error = %v, want nil", err)
 	}
 }
 
 func TestCleanProfileRemovesDirWithoutLock(t *testing.T) {
+	isolatedProfileHome(t)
 	key := "cleanup-test-" + t.Name()
 	dir, err := ProfileDir(key)
 	if err != nil {
@@ -66,6 +69,7 @@ func TestCleanProfileRemovesDirWithoutLock(t *testing.T) {
 }
 
 func TestCleanProfileRefusesWhenLocked(t *testing.T) {
+	isolatedProfileHome(t)
 	key := "locked-test-" + t.Name()
 	dir, err := ProfileDir(key)
 	if err != nil {

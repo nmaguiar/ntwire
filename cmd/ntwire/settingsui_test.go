@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
 )
@@ -79,7 +80,10 @@ func TestStartSettingsUIRoundTrip(t *testing.T) {
 	}
 
 	valuesURL := strings.Replace(url, "/?token=", "/api/values?token=", 1)
-	body, err := json.Marshal(client.Settings{Server: "https://ntwire.example:8443", SSO: true})
+	profiles := map[string]browseropen.ProfileSettings{"reports": {Name: "Work", Folder: t.TempDir()}}
+	browserFolder := t.TempDir()
+	body, err := json.Marshal(client.Settings{Server: "https://ntwire.example:8443", SSO: true,
+		BrowserProfilesDir: browserFolder, BrowserProfiles: profiles})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +110,7 @@ func TestStartSettingsUIRoundTrip(t *testing.T) {
 	if err := json.NewDecoder(getResp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Server != "https://ntwire.example:8443" || !got.SSO {
+	if got.Server != "https://ntwire.example:8443" || !got.SSO || got.BrowserProfilesDir != browserFolder || !reflect.DeepEqual(got.BrowserProfiles, profiles) {
 		t.Fatalf("GET /api/values after save = %+v", got)
 	}
 }

@@ -112,6 +112,9 @@ func boolDefault(f func(client.Settings) bool) func(Defaults) string {
 // subcommand. Order is not significant: flag.FlagSet.VisitAll (used by
 // ui.FlagsOf) sorts lexicographically regardless of registration order.
 var registry = []Option{
+	{Name: "browser-profiles-dir", GUIHidden: true, Kind: KindString, Usage: "absolute default folder for SOCKS browser profiles", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, Default: strDefault(func(s client.Settings) string { return s.BrowserProfilesDir }), Label: "Browser profiles folder", Group: "Browser profiles", Widget: WidgetPath, Help: "Leave blank for the standard location. A different folder is used for future launches. Existing data stays in its previous folder."},
+	{Name: "browser-profile-dir", Kind: KindKeyValue, Usage: "SOCKS browser folder override (TUNNEL=PATH, repeatable)", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, GUIHidden: true},
+	{Name: "browser-profile-name", Kind: KindKeyValue, Usage: "SOCKS browser profile label (TUNNEL=NAME, repeatable)", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, GUIHidden: true},
 	{Name: "browser-arg", Kind: KindStringList, Usage: "literal extra browser switch (repeatable; replaces configured extras)", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, Label: "Extra browser arguments", Group: "🌐 Connection", Widget: WidgetStringList, Advanced: true, Help: "One literal --flag or --flag=value per row. Close the isolated browser before relaunching to apply changes reliably."},
 	{Name: "no-browser-args", Kind: KindBool, Usage: "clear configured extra browser arguments", Bind: []Binding{{Command: "connect"}, {Command: "browser"}}, GUIHidden: true},
 	{
@@ -121,7 +124,7 @@ var registry = []Option{
 	},
 	{
 		Name: "config", Kind: KindString, Usage: "persistent client configuration",
-		Bind:      []Binding{{Command: "connect"}, {Command: "list"}, {Command: "logout"}},
+		Bind:      []Binding{{Command: "connect"}, {Command: "list"}, {Command: "logout"}, {Command: "browser"}},
 		Default:   func(d Defaults) string { return d.ConfigPath },
 		Discarded: true, GUIHidden: true,
 	},

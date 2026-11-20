@@ -16,6 +16,9 @@ h1{font-size:clamp(1.8rem,5vw,2.6rem);margin:.15rem 0}
 .card h2{font-size:1.02rem;margin:0 0 .9rem}
 .field{display:grid;gap:.3rem;margin-bottom:1rem}
 .field:last-child{margin-bottom:0}
+.profile-path-row{min-width:0;margin:1rem 0;padding:1rem;border:1px solid var(--border);border-radius:12px}
+.profile-path-actions{display:flex;gap:.5rem;flex-wrap:wrap}
+.profile-path-row output{display:block;color:var(--muted);overflow-wrap:anywhere;user-select:all}
 .field label{font-weight:600;font-size:.9rem}
 .field .help{color:var(--muted);font-size:.8rem}
 .field input[type=text],.field input[type=password]{width:100%;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text);padding:.55rem .65rem;font:inherit}
@@ -94,6 +97,61 @@ function fieldRow(f,value){
   if(f.help){let help=document.createElement('div');help.className='help';help.textContent=f.help;row.append(help)}
   return row;
 }
+function tunnelProfilesEditor(saved) {
+  const section=group('SOCKS tunnel profiles'), rows=document.createElement('div');
+  const help=document.createElement('p');
+  help.textContent='Enter the tunnel name shown on the dashboard. Folder overrides need an absolute local path. Saved settings take effect on the next connection. Existing browser data stays in its current folder.';
+  const guide=document.createElement('a');
+  guide.textContent='Copy an existing browser profile';
+  guide.href='https://github.com/nmaguiar/ntwire/blob/main/docs/CONFIGURATION.md#socks-browser-profiles';
+  guide.target='_blank'; guide.rel='noopener noreferrer';
+  const read=()=>{
+    const entries=new Map();
+    for(const row of rows.children){
+      const [tunnel,name,folder]=[...row.querySelectorAll('input')].map(input=>input.value.trim());
+      if(!tunnel&&!name&&!folder)continue;
+      if(!tunnel||entries.has(tunnel))throw Error('Enter a unique tunnel name for each browser profile.');
+      entries.set(tunnel,{Name:name,Folder:folder});
+    }
+    return Object.fromEntries(entries);
+  };
+  const addRow=(tunnel='', profile={})=>{
+    const row=document.createElement('fieldset'), output=document.createElement('output');
+    row.className='profile-path-row';
+    for(const [labelText,value] of [['Tunnel name',tunnel],['Profile name',profile.Name],['Storage folder override',profile.Folder]]){
+      const label=document.createElement('label'), input=document.createElement('input');
+      input.type='text'; input.value=value||''; label.className='field'; label.append(labelText,input); row.append(label);
+    }
+    const preview=document.createElement('button'), remove=document.createElement('button'), copy=document.createElement('button');
+    preview.type=remove.type=copy.type='button';
+    preview.textContent='Show profile path'; remove.textContent='Remove'; copy.textContent='Copy profile path'; copy.hidden=true;
+    row.invalidatePath=()=>{output.textContent='';copy.hidden=true};
+    row.oninput=row.invalidatePath;
+    remove.onclick=()=>row.remove();
+    preview.onclick=async()=>{
+      try{
+        const key=row.querySelector('input').value.trim();
+        const data={BrowserProfilesDir:inputs.BrowserProfilesDir.el.value.trim(),BrowserProfiles:read()};
+        const r=await fetch('/api/browser-profile-paths?token='+encodeURIComponent(token),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        if(!r.ok)throw Error(await r.text());
+        const paths=await r.json();
+        output.textContent=Object.hasOwn(paths,key)?paths[key]:'Enter a tunnel name first.';
+        copy.hidden=!Object.hasOwn(paths,key);
+      }catch(e){output.textContent=e.message;copy.hidden=true}
+    };
+    copy.onclick=async()=>{
+      try{await navigator.clipboard.writeText(output.textContent);setMessage('Copied profile path.','ok')}
+      catch{setMessage('Select and copy the displayed path.','err')}
+    };
+    const actions=document.createElement('div'); actions.className='profile-path-actions';
+    actions.append(preview,copy,remove); row.append(actions,output); rows.append(row);
+  };
+  Object.entries(saved||{}).forEach(([tunnel,profile])=>addRow(tunnel,profile));
+  const add=document.createElement('button'); add.type='button'; add.textContent='Add tunnel profile'; add.onclick=()=>addRow();
+  section.append(help,guide,rows,add);
+  inputs.BrowserProfiles={read};
+  return section;
+}
 async function load(){
   const q='?token='+encodeURIComponent(token);
   const [schemaResp,valuesResp]=await Promise.all([fetch('/api/schema'+q),fetch('/api/values'+q)]);
@@ -122,7 +180,11 @@ async function load(){
       g.append(toggle,adv);
     }
     groupsEl.append(g);
+    if(name==='Browser profiles')groupsEl.append(tunnelProfilesEditor(values.BrowserProfiles));
   }
+  inputs.BrowserProfilesDir.el.addEventListener('input',()=>{
+    for(const row of groupsEl.querySelectorAll('fieldset'))row.invalidatePath?.();
+  });
 }
 saveBtn.addEventListener('click',async()=>{
   clearMessage();saveBtn.disabled=true;

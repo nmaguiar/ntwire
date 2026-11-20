@@ -77,15 +77,11 @@ func sanitize(key string) string {
 // its own directory under ~/.ntwire/browser-profiles so cookies and logins
 // for one SOCKS egress target never leak into another's session.
 func ProfileDir(key string) (string, error) {
-	home, err := os.UserHomeDir()
+	path, err := ProfilePath(key, ProfileSettings{})
 	if err != nil {
 		return "", err
 	}
-	base := filepath.Join(home, ".ntwire", "browser-profiles")
-	if err := os.MkdirAll(base, 0o700); err != nil {
-		return "", err
-	}
-	return filepath.Join(base, sanitize(key)), nil
+	return path, os.MkdirAll(filepath.Dir(path), 0o700)
 }
 
 // OpenSocks launches Chrome/Chromium against localAddr ("host:port") via
@@ -112,7 +108,7 @@ func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetUR
 	if err != nil {
 		return err
 	}
-	dir, err := ProfileDir(key)
+	dir, err := prepareProfile(key, options.Profile)
 	if err != nil {
 		return err
 	}
@@ -168,42 +164,72 @@ func OpenSocksURL(key, localAddr, targetURL string) error {
 // the profile's SingletonLock indicates a Chrome instance is still running
 // against it, the same check newChrome.sh itself makes before deleting.
 func CleanProfile(key string) error {
-	dir, err := ProfileDir(key)
+	if strings.HasPrefix(key, "custom:") {
+		records, err := managedProfiles()
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			if key == "custom:"+storageID(record.Path) {
+				err := cleanManagedProfile(record)
+				if os.IsNotExist(err) {
+					return nil
+				}
+				// Keep the record as a stable lookup if another launch
+				// recreates this profile. The inventory skips absent directories.
+				return err
+			}
+		}
+		return nil
+	}
+	dir, err := ProfilePath(key, ProfileSettings{})
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+	root, err := os.OpenRoot(filepath.Dir(dir))
+	if os.IsNotExist(err) {
 		return nil
 	}
-	if _, err := os.Lstat(filepath.Join(dir, "SingletonLock")); err == nil {
-		return fmt.Errorf("browser profile still in use (close the browser first)")
+	if err != nil {
+		return err
 	}
-	return os.RemoveAll(dir)
+	defer root.Close()
+	name := filepath.Base(dir)
+	info, err := root.Lstat(name)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("browser profile path is not a directory: %s", dir)
+	}
+	if _, err := root.Lstat(filepath.Join(name, "SingletonLock")); !os.IsNotExist(err) {
+		return fmt.Errorf("browser profile still in use or cannot be checked (close the browser first)")
+	}
+	return root.RemoveAll(name)
 }
 
 // ProfileEntry describes a persistent browser profile directory under
 // ~/.ntwire/browser-profiles.
 type ProfileEntry struct {
-	Key     string // directory name = the sanitized key CleanProfile/ProfileDir use
-	Path    string
-	InUse   bool // SingletonLock present
-	ModTime time.Time
+	Key       string // selection ID used by CleanProfile
+	Name      string
+	TunnelKey string
+	Path      string
+	InUse     bool // SingletonLock present
+	ModTime   time.Time
 }
 
-// ListProfiles returns all browser profile directories under
-// ~/.ntwire/browser-profiles, sorted by Key. If the base directory does not
-// exist, it returns (nil, nil).
+// ListProfiles returns legacy and registered custom browser profiles, sorted by Key.
 func ListProfiles() ([]ProfileEntry, error) {
-	home, err := os.UserHomeDir()
+	base, err := defaultFolder()
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(home, ".ntwire", "browser-profiles")
 	entries, err := os.ReadDir(base)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+	if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
 	var profiles []ProfileEntry
@@ -217,11 +243,32 @@ func ListProfiles() ([]ProfileEntry, error) {
 			modTime = info.ModTime()
 		}
 		_, lstatErr := os.Lstat(filepath.Join(p, "SingletonLock"))
+		record, _ := readProfileRecord(filepath.Join(p, profileMarker))
 		profiles = append(profiles, ProfileEntry{
+			Name: record.Name, TunnelKey: entry.Name(),
 			Key:     entry.Name(),
 			Path:    p,
 			InUse:   lstatErr == nil,
 			ModTime: modTime,
+		})
+	}
+	records, err := managedProfiles()
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		info, err := os.Lstat(record.Path)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		owner, err := profileOwner(record)
+		if err != nil {
+			continue
+		}
+		_, lockErr := os.Lstat(filepath.Join(record.Path, "SingletonLock"))
+		profiles = append(profiles, ProfileEntry{
+			Key: "custom:" + storageID(record.Path), TunnelKey: sanitize(record.Key),
+			Name: owner.Name, Path: record.Path, InUse: !os.IsNotExist(lockErr), ModTime: info.ModTime(),
 		})
 	}
 	sort.Slice(profiles, func(i, j int) bool {
@@ -245,7 +292,7 @@ func CleanProfilesForProfile(profileID string) error {
 	}
 	var errs []string
 	for _, p := range profiles {
-		if p.Key == prefix || strings.HasPrefix(p.Key, prefix+"-") {
+		if p.TunnelKey == prefix || strings.HasPrefix(p.TunnelKey, prefix+"-") {
 			if err := CleanProfile(p.Key); err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %v", p.Key, err))
 			}

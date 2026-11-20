@@ -88,7 +88,9 @@ func Authenticate(url, keyPath string, info protocol.ClientInfo) (protocol.AuthR
 // Options controls the client-side TLS and connection lifecycle.
 type Options struct {
 	// BrowserArgs supplies literal extra switches for SOCKS browser launches only.
-	BrowserArgs []string
+	BrowserArgs        []string
+	BrowserProfilesDir string
+	BrowserProfiles    map[string]browseropen.ProfileSettings
 	// ResolveBrowserOptions, when set, resolves current local settings at each SOCKS
 	// launch. It must be safe for concurrent calls and return an owned argument slice.
 	ResolveBrowserOptions func() (browseropen.LaunchOptions, error)
@@ -2325,22 +2327,26 @@ func parsePortalBlocks(markdown string) []instructions.Block {
 // WebTunnel is the live status of one tunnel on a running connect process,
 // as reported by its local status UI's /status endpoint.
 type WebTunnel struct {
-	Name         string      `json:"name"`
-	VirtualPort  int         `json:"virtual_port"`
-	Description  string      `json:"description"`
-	LocalAddress string      `json:"local_address"`
-	Stats        TunnelStats `json:"stats"`
-	TargetHint   string      `json:"target_hint,omitempty"`
-	PACURL       string      `json:"pac_url,omitempty"`
-	PACURLiOS    string      `json:"pac_url_ios,omitempty"`
+	BrowserProfile               *browseropen.ProfileSettings `json:"browser_profile,omitempty"`
+	BrowserProfileFolderOverride string                       `json:"browser_profile_folder_override,omitempty"`
+	BrowserProfilePath           string                       `json:"browser_profile_path,omitempty"`
+	Name                         string                       `json:"name"`
+	VirtualPort                  int                          `json:"virtual_port"`
+	Description                  string                       `json:"description"`
+	LocalAddress                 string                       `json:"local_address"`
+	Stats                        TunnelStats                  `json:"stats"`
+	TargetHint                   string                       `json:"target_hint,omitempty"`
+	PACURL                       string                       `json:"pac_url,omitempty"`
+	PACURLiOS                    string                       `json:"pac_url_ios,omitempty"`
 }
 
 // WebStatus is the JSON reported by a running connect process's local
 // status UI (see Connection.webStatus and FetchWebStatus), exported so
 // other callers (e.g. the CLI's list/status commands) can decode it.
 type WebStatus struct {
-	Connected bool   `json:"connected"`
-	Server    string `json:"server"`
+	BrowserProfilesDir string `json:"browser_profiles_dir,omitempty"`
+	Connected          bool   `json:"connected"`
+	Server             string `json:"server"`
 	// ServerName is Connection.DisplayName(): the operator-configured
 	// listen.name, or the host:port connected to when that was left unset.
 	// It is what the status UI shows to tell several running clients apart.
@@ -2509,8 +2515,8 @@ func (c *Connection) State() ConnectionState {
 func (c *Connection) Status() WebStatus { return c.webStatus() }
 
 func (c *Connection) webStatus() WebStatus {
+	opts, browserErr := c.browserOptions()
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	granted := c.grantedByName()
 	tunnels := make([]WebTunnel, 0, len(c.tunnels))
 	for _, t := range c.tunnels {
@@ -2522,7 +2528,7 @@ func (c *Connection) webStatus() WebStatus {
 		}
 		tunnels = append(tunnels, wt)
 	}
-	status := WebStatus{Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), PortalEnabled: c.Response.PortalEnabled, SettingsURL: c.options.SettingsURL}
+	status := WebStatus{BrowserProfilesDir: opts.ProfilesDir, Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), PortalEnabled: c.Response.PortalEnabled, SettingsURL: c.options.SettingsURL}
 	if c.multipath != nil {
 		status.Paths = c.multipath.Paths()
 		primary, _, dup := c.multipath.Scheduler().Select()
@@ -2536,6 +2542,18 @@ func (c *Connection) webStatus() WebStatus {
 		}
 	}
 	status.RelayUDP = c.relayHopStats.Load()
+	c.mu.Unlock()
+	if browserErr == nil {
+		for i := range tunnels {
+			t := &tunnels[i]
+			if protocol.IsBrowserSocksTarget(t.TargetHint) {
+				profile := opts.ForTunnel(t.Name).Profile
+				t.BrowserProfile = &profile
+				t.BrowserProfileFolderOverride = opts.TunnelProfiles[t.Name].Folder
+				t.BrowserProfilePath, _ = browseropen.ProfilePath(c.browserProfileKey(t.Name), profile)
+			}
+		}
+	}
 	return status
 }
 
@@ -2761,7 +2779,7 @@ func (c *Connection) openTunnelBrowser(w http.ResponseWriter, name string) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := c.openConfiguredSocksBrowser(c.browserProfileKey(name), addr); err != nil {
+	if err := c.launchTunnelBrowser(name, addr); err != nil {
 		http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2777,7 +2795,11 @@ func (c *Connection) resetTunnelBrowserProfile(w http.ResponseWriter, name strin
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := browseropen.CleanProfile(c.browserProfileKey(name)); err != nil {
+	opts, err := c.browserOptions()
+	if err == nil {
+		err = browseropen.CleanConfiguredProfile(c.browserProfileKey(name), opts.ForTunnel(name).Profile)
+	}
+	if err != nil {
 		http.Error(w, "cannot reset browser profile: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -2921,7 +2943,7 @@ func (c *Connection) executePortalAction(ctx context.Context, w http.ResponseWri
 	}
 
 	if socksAddr != "" {
-		if err := c.openConfiguredSocksBrowser(c.browserProfileKey(targetID), socksAddr, targetURL); err != nil {
+		if err := c.launchTunnelBrowser(targetID, socksAddr, targetURL); err != nil {
 			http.Error(w, "cannot open browser: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -3503,19 +3525,30 @@ func (c *Connection) Close() {
 	}
 }
 
-func (c *Connection) openConfiguredSocksBrowser(key, addr string, urls ...string) error {
-	opts := browseropen.LaunchOptions{Executable: c.options.BrowserExecutable, ExtraArgs: c.options.BrowserArgs}
+func (c *Connection) browserOptions() (browseropen.LaunchOptions, error) {
+	opts := browseropen.LaunchOptions{Executable: c.options.BrowserExecutable, ExtraArgs: c.options.BrowserArgs,
+		ProfilesDir: c.options.BrowserProfilesDir, TunnelProfiles: c.options.BrowserProfiles}
 	if c.options.ResolveBrowserOptions != nil {
 		var err error
 		opts, err = c.options.ResolveBrowserOptions()
 		if err != nil {
-			return err
+			return opts, err
 		}
 	}
+	return opts, nil
+}
+
+func (c *Connection) launchTunnelBrowser(name, addr string, urls ...string) error {
+	opts, err := c.browserOptions()
+	if err != nil {
+		return err
+	}
+	opts = opts.ForTunnel(name)
+	key := c.browserProfileKey(name)
 	if err := browseropen.ValidateExtraArgs(opts.ExtraArgs); err != nil {
 		return err
 	}
-	if opts.Executable == "" && len(opts.ExtraArgs) == 0 {
+	if opts.Executable == "" && len(opts.ExtraArgs) == 0 && opts.Profile == (browseropen.ProfileSettings{}) {
 		return openSocksBrowser(key, addr, urls...)
 	}
 	return openSocksWithOptions(opts, key, addr, urls...)

@@ -809,3 +809,78 @@ names are `proxy-server`, `proxy-pac-url`, `proxy-auto-detect`, `no-proxy-server
 `proxy-bypass-list`, `user-data-dir` and `profile-directory`. Unknown switches
 are allowed; support and duplicate interpretation depend on the browser. No
 extra switches are enabled by default.
+
+## SOCKS browser profiles
+
+Both clients use separate Chromium-family browser data for SOCKS tunnels. In
+`ntwire-gui`, set the optional **Browser profiles folder** in the app's browser
+settings. On a connected SOCKS tunnel, open **Browser profile settings** to set a
+friendly name or a folder override and copy the resulting path. In `ntwire`, use
+the dashboard's **Settings** tab and add a row under **SOCKS tunnel profiles**
+using the tunnel name shown on the dashboard. Reconnect to apply saved CLI
+settings.
+
+The tunnel's folder override takes precedence over the client-wide folder. Leave
+both blank to use the built-in location under `~/.ntwire/browser-profiles`.
+Folder values must be absolute paths. ntwire creates a dedicated child directory
+for each tunnel in the selected folder. A profile's name is a label. Renaming it
+keeps its data in place. Changing the storage folder leaves the previous profile
+where it was. Review existing and previous locations in **Browser profile
+cleanup** or with `ntwire browser --list`.
+
+For the CLI, the equivalent settings in `~/.ntwire/config.yaml` are:
+
+```yaml
+browser_profiles_dir: /Users/alex/Browser Profiles
+browser_profiles:
+  reports:
+    name: Work reports
+    folder: /Users/alex/Private Browser Profiles
+```
+
+Use `--browser-profiles-dir PATH` to set the default for a command.
+`--browser-profile-dir TUNNEL=PATH` and `--browser-profile-name TUNNEL=NAME` are
+repeatable on `connect` and `browser`. Quote values that contain spaces.
+
+```sh
+ntwire connect --browser-profile-name 'reports=Work reports' \
+  --browser-profile-dir 'reports=/Users/alex/Private Browser Profiles' server.example
+ntwire browser reports
+ntwire browser --list
+```
+
+When no browser profile settings are supplied, standalone `ntwire browser`
+retains its historical `cli-<tunnel>` directory. Opting into a named or custom
+profile makes the command use the same profile as the dashboard.
+
+### Copy an existing browser profile once
+
+Use the same browser product and release channel, on the same machine and OS
+account. The browser may require you to sign in again. Extensions and
+browser-protected data can depend on the installation and OS account.
+
+1. Open the everyday profile and visit `chrome://version` in Chrome, Chromium,
+   or Brave. Use `edge://version` in Edge. Record **Profile Path**. The last
+   component is the individual profile (often `Default`). Its parent is the
+   browser's user-data directory. For another Chromium-compatible executable,
+   use its version page to identify the same field.
+2. Launch a fresh SOCKS profile once with the same browser. Visit its version
+   page to confirm its **Profile Path** is beneath the ntwire path shown in
+   settings or by `ntwire browser --list`. Quit both browser instances
+   completely, including background processes.
+3. Move the fresh tunnel's individual profile folder out of its user-data
+   directory and keep it as a backup. Copy the source profile to the exact individual
+   profile path you recorded for the tunnel, using the destination's original
+   folder name. Keep the tunnel's outer directory, its ntwire marker if present,
+   and its root browser state. Copy only into a fresh tunnel profile and keep
+   the source intact.
+4. Reopen the tunnel browser and verify that your bookmarks appear. If the
+   browser cannot use the copied data, close it and restore the backup.
+
+For bookmarks or favorites alone, use the browser's HTML export and import
+features. ntwire launches SOCKS browsers with account sync disabled. To
+refresh bookmarks later, sync your everyday browser using its account settings
+where available, then repeat the HTML export and import. Keep each live
+browser instance in its own local user-data directory.
+
+[Chromium user-data directory documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/user_data_dir.md) · [Edge sync and privacy](https://learn.microsoft.com/en-us/legal/microsoft-edge/privacy)

@@ -32,6 +32,12 @@ func TestBrowserArgsSavedChangesWhileConnected(t *testing.T) {
 	}
 	waitForState(t, m, p.ID, StateConnected, time.Second*5)
 	opts := <-captured
+	profile := browseropen.ProfileSettings{Name: "Reports", Folder: t.TempDir()}
+	if _, resolved, err := m.TunnelBrowserProfile(p.ID, "socks", &profile); err != nil || resolved == "" {
+		t.Fatalf("save SOCKS browser profile: %q, %v", resolved, err)
+	}
+	p.BrowserProfiles = nil // General editor leaves the saved per-tunnel map alone.
+
 	for _, mode := range []string{"inherit", "append", "replace"} {
 		p.BrowserArgsMode = mode
 		if err = m.UpdateProfile(p); err != nil {
@@ -56,6 +62,9 @@ func TestBrowserArgsSavedChangesWhileConnected(t *testing.T) {
 		if err = m.OpenBrowser(p.ID, "socks"); err != nil {
 			t.Fatal(err)
 		}
+		if launched.Profile != profile || got.ForTunnel("socks").Profile != profile {
+			t.Fatalf("stale SOCKS browser profile: launch %+v, dashboard %+v", launched, got)
+		}
 		if !reflect.DeepEqual(launched.ExtraArgs, want) {
 			t.Fatalf("manager launched %q want %q", launched.ExtraArgs, want)
 		}
@@ -72,7 +81,7 @@ func TestBrowserArgsSavedChangesWhileConnected(t *testing.T) {
 		t.Fatalf("empty replace %+v %v", got, err)
 	}
 	cfg, err := config.Load(path)
-	if err != nil || cfg.Profiles[0].BrowserArgsMode != "replace" {
+	if err != nil || cfg.Profiles[0].BrowserArgsMode != "replace" || cfg.Profiles[0].BrowserProfiles["socks"] != profile {
 		t.Fatalf("persisted %+v %v", cfg, err)
 	}
 	p.BrowserArgsMode = "bad"

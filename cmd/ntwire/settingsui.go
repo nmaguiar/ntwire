@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
 )
@@ -27,24 +28,25 @@ var settingsUIFiles embed.FS
 // stays the job of `ntwire port` and the local status UI's per-tunnel
 // "Replace" control; see settingsUIFields in pkg/client/config.go.
 var settingsField = map[string]string{
-	"browser-executable": "BrowserExecutable",
-	"browser-arg":        "BrowserArgs",
-	"i":                  "IdentityFile",
-	"ca":                 "CAFile",
-	"insecure":           "Insecure",
-	"https-proxy":        "HTTPSProxy",
-	"no-system-proxy":    "NoSystemProxy",
-	"no-browser":         "NoBrowser",
-	"sso":                "SSO",
-	"provider":           "Provider",
-	"collect-exec":       "CollectExec",
-	"bind":               "BindAddress",
-	"ip-version":         "IPVersion",
-	"transport":          "Transport",
-	"promote":            "Promote",
-	"tunnel-mtu":         "TunnelMTU",
-	"mtu-aware":          "MTUAware",
-	"udp-alt":            "UDPAlt",
+	"browser-profiles-dir": "BrowserProfilesDir",
+	"browser-executable":   "BrowserExecutable",
+	"browser-arg":          "BrowserArgs",
+	"i":                    "IdentityFile",
+	"ca":                   "CAFile",
+	"insecure":             "Insecure",
+	"https-proxy":          "HTTPSProxy",
+	"no-system-proxy":      "NoSystemProxy",
+	"no-browser":           "NoBrowser",
+	"sso":                  "SSO",
+	"provider":             "Provider",
+	"collect-exec":         "CollectExec",
+	"bind":                 "BindAddress",
+	"ip-version":           "IPVersion",
+	"transport":            "Transport",
+	"promote":              "Promote",
+	"tunnel-mtu":           "TunnelMTU",
+	"mtu-aware":            "MTUAware",
+	"udp-alt":              "UDPAlt",
 }
 
 // schemaField mirrors internal/gui/api's wire shape so the two settings
@@ -116,6 +118,27 @@ func startSettingsUI(configPath string) (string, func(), error) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(settingsSchema())
+	})
+	mux.HandleFunc("POST /api/browser-profile-paths", func(w http.ResponseWriter, r *http.Request) {
+		if !allowed(r) {
+			http.NotFound(w, r)
+			return
+		}
+		var s client.Settings
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&s); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		paths := make(map[string]string, len(s.BrowserProfiles))
+		for name, profile := range s.BrowserProfiles {
+			path, err := browseropen.ProfilePath("client-"+name, browseropen.SelectProfile(s.BrowserProfilesDir, profile))
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			paths[name] = path
+		}
+		_ = json.NewEncoder(w).Encode(paths)
 	})
 	mux.HandleFunc("/api/values", func(w http.ResponseWriter, r *http.Request) {
 		if !allowed(r) {
