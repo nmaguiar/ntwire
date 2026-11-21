@@ -1,8 +1,8 @@
 # binary-ntwire-linux-amd64 — linux/amd64
 
-- Scanned: 2026-11-19 03:28 UTC
-- Source commit: `d335fdfed661cf3cc7fe1b8579c2bb28202e87fe`
-- Artifact: `sha256:c1b580042f4adbf547029df8fd56ca8429d41b715483bd321bff12ca0e302f61`
+- Scanned: 2026-11-21 02:46 UTC
+- Source commit: `fe66cf5763229ba6c27cf66800203c56d2e75faf`
+- Artifact: `sha256:f0f941f7f85dd931e960308dc80cca23052e62aee69911b8ecdee140def425ac`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.90"
+        "version": "v0.0.0-20261120012017-fe66cf576322"
       },
       {
         "path": "github.com/coder/websocket",
@@ -28960,6 +28960,45 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/errors"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/elgamal"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp"
       }
     ]
@@ -29012,7 +29051,9 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/errors"
+        "package": "golang.org/x/crypto/openpgp/armor",
+        "function": "org/x/crypto/openpgp/armor/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -29025,20 +29066,9 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/elgamal"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k"
+        "package": "golang.org/x/crypto/openpgp/clearsign",
+        "function": "org/x/crypto/openpgp/clearsign/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -29113,36 +29143,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/packet",
         "function": "org/x/crypto/openpgp/packet/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor",
-        "function": "org/x/crypto/openpgp/armor/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/clearsign",
-        "function": "org/x/crypto/openpgp/clearsign/*",
         "receiver": "golang"
       }
     ]
