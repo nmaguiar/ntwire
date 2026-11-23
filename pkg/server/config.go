@@ -17,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/tcptune"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
@@ -228,6 +229,7 @@ type TunnelConfig struct {
 	LocalHost         string   `yaml:"local_host"`
 	Allow             []string `yaml:"allow"`
 	DestinationPolicy string   `yaml:"destination_policy"`
+	EgressClass       string   `yaml:"egress_class"`
 
 	// Instructions is optional Markdown shown to clients in their local
 	// status UI, describing how to point a tool at this tunnel. It is
@@ -612,6 +614,7 @@ tunnels:
 # - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
 #   target      : socks                   # required sentinel value that selects the SOCKS target type
 #   virtual_port: 11080
+#   egress_class: internet-v1             # optional Smart Egress enrollment label for equivalent governed SOCKS policies
 #   allow       :
 #   - group:engineering
 #   socks       :
@@ -1108,6 +1111,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 		if t.DocsURL != "" && !instructions.SafeURL(t.DocsURL) {
 			return c, fmt.Errorf("tunnel %q requires an absolute http(s) docs_url", t.Name)
 		}
+		if t.EgressClass != "" && (!protocol.ValidEgressClass(t.EgressClass) || !t.IsSocks() || t.Socks == nil || t.Socks.Transparent) {
+			return c, fmt.Errorf("tunnel %q: egress_class requires an embedded SOCKS tunnel and a lowercase class identifier", t.Name)
+		}
 		if t.IsSocks() {
 			if t.Socks == nil {
 				return c, fmt.Errorf("tunnel %q: target: socks requires a socks: block", t.Name)
@@ -1279,4 +1285,16 @@ func containsDomain(domains []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// egressUDP reports native UDP support with no TCP-only upstream boundary.
+func (t TunnelConfig) egressUDP() bool {
+	return t.IsSocks() && t.Socks != nil && !t.Socks.Transparent && t.Socks.Upstream == ""
+}
+
+func (t TunnelConfig) egressClass() string {
+	if !t.IsSocks() || t.Socks == nil || t.Socks.Transparent || !protocol.ValidEgressClass(t.EgressClass) {
+		return ""
+	}
+	return t.EgressClass
 }

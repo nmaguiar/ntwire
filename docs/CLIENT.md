@@ -4,6 +4,8 @@ This guide covers the `ntwire` command-line client, its local state, the GUI,
 and SSO. For a first connection or an official WireGuard client, start with
 [CONNECTING.md](CONNECTING.md).
 
+See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) for a stable local SOCKS5/HTTP endpoint backed by multiple active client processes.
+
 ## Commands
 
 | Command | Behavior |

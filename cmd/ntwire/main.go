@@ -6,11 +6,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/nmaguiar/ntwire/internal/egressattach"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/clientopts"
 	"github.com/nmaguiar/ntwire/pkg/completion"
+	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/pac"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
@@ -26,8 +28,10 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 )
 
@@ -56,6 +60,11 @@ func main() {
 		keygen(os.Args[2:], u)
 	case "list":
 		list(os.Args[2:], u)
+	case "proxy":
+		if err := proxyCommand(os.Args[2:], u); err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
 	case "connect":
 		connect(os.Args[2:], u)
 	case "status":
@@ -81,6 +90,8 @@ func main() {
 				certCmd([]string{"inspect", "-h"})
 			case "keygen":
 				keygen([]string{"-h"}, u)
+			case "proxy":
+				_ = proxyCommand([]string{"-h"}, u)
 			case "connect":
 				connect([]string{"-h"}, u)
 			case "list":
@@ -131,6 +142,7 @@ func usage(u *ui.UI) {
 			{Name: "cert", Summary: "inspect a presented TLS certificate without trusting it"},
 			{Name: "keygen", Summary: "create an SSH identity"},
 			{Name: "connect", Summary: "connect tunnels"},
+			{Name: "proxy", Summary: "run the Smart Egress Proxy"},
 			{Name: "list", Summary: "show allowed tunnels"},
 			{Name: "status", Summary: "show the running connection"},
 			{Name: "disconnect", Summary: "stop the running connection"},
@@ -925,19 +937,67 @@ func connect(args []string, u *ui.UI) {
 		UDPAlt:             udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
+	o.StatusFile = fs.Str("status-file")
+	publishID := fs.Str("publish-egress")
+	var publisher *egressattach.Service
+	var published atomic.Pointer[client.Connection]
+	if publishID != "" {
+		root, err := egressattach.Root()
+		if err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
+		path, err := egressattach.ProfilePath(root, publishID)
+		if err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
+		if o.StatusFile == "" {
+			o.StatusFile = filepath.Join(path, "status.json")
+		}
+		publisher, err = egressattach.StartWithDiscovery(path, func(member egressrouter.Member) egressrouter.Candidate {
+			if member.ProfileID != publishID {
+				return egressrouter.Candidate{Reason: "profile_mismatch"}
+			}
+			c := published.Load()
+			if c == nil {
+				return egressrouter.Candidate{Reason: "transport"}
+			}
+			return c.EgressCandidate(member)
+		}, nil, func(enrollment egressrouter.Enrollment) []string {
+			c := published.Load()
+			if c == nil || enrollment.ProfileID != publishID {
+				return nil
+			}
+			return c.DiscoverEgress(enrollment)
+		})
+		if err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
+		defer publisher.Close()
+	}
+	closePublisher := func() {
+		if publisher != nil {
+			publisher.Close()
+		}
+	}
 	c, e := client.ConnectWithOptions(server, key, info, o)
 	var unknown *client.UnknownCertificateError
 	if errors.As(e, &unknown) {
 		if !trustPrompt(unknown, known) {
 			u.Errorf("server certificate was not trusted")
+			closePublisher()
 			os.Exit(1)
 		}
 		c, e = client.ConnectWithOptions(server, key, info, o)
 	}
 	if e != nil {
 		u.Errorf("%v", e)
+		closePublisher()
 		os.Exit(1)
 	}
+	published.Store(c)
 	if !insecure {
 		if changed, err := client.UpdateSettings(configPath, client.Settings{Server: server, IdentityFile: key, SSO: c.AuthMethod() == "oidc", Provider: provider}); err != nil {
 			u.Warn("could not save connection settings: %v", err)
@@ -945,12 +1005,13 @@ func connect(args []string, u *ui.UI) {
 			u.Info("saved connection settings to %s (next time just run: ntwire connect)", configPath)
 		}
 	}
-	if len(c.Response.Tunnels) == 0 {
-		u.WarnOut("authenticated as %s but no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.", c.Response.Identity)
+	startupState := c.State()
+	if len(startupState.Tunnels) == 0 {
+		u.WarnOut("no tunnels are allowed for this identity; ask the admin to add it to a tunnel's allow list.")
 	}
 	defer c.Close()
-	for i, t := range c.Response.Tunnels {
-		fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(t.Name), c.LocalAddresses[i])
+	for _, t := range startupState.Tunnels {
+		fmt.Fprintf(u.Out, "%s  %s\n", u.OutPal.Highlight.Sprint(t.Name), t.LocalAddress)
 	}
 	u.Success("connected to %s; press Ctrl-C to disconnect", c.DisplayName())
 	if reason := c.TransportReason(); reason != "" {

@@ -25,6 +25,7 @@ type DestinationPolicy struct {
 }
 
 type DataPlanePrincipal struct {
+	sessionID        string
 	Method, Identity string
 	TunnelIP         netip.Addr
 	Tunnels          map[string]bool

@@ -98,7 +98,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 			grants[t.Name] = true
 		}
 		s.byIP[v.TunnelIP] = sessionPrincipal{token: v.Token, principal: DataPlanePrincipal{
-			Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
+			sessionID: v.ID, Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
 		}}
 	}
 	return v

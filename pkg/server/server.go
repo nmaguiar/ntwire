@@ -677,7 +677,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
-		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, Protocol: t.Protocol, UDPIdleTimeout: t.UDPIdleTimeout, LocalPort: t.LocalPort, LocalHost: t.LocalHost, TargetHint: t.Target,
+		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, Protocol: t.Protocol, UDPIdleTimeout: t.UDPIdleTimeout, LocalPort: t.LocalPort, LocalHost: t.LocalHost, TargetHint: t.Target, EgressClass: t.egressClass(), EgressUDP: t.egressUDP(),
 			Instructions: t.Instructions, DocsURL: t.DocsURL})
 	}
 	if req.QueryOnly {
@@ -1030,7 +1030,7 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, g := range grants {
-		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, Protocol: g.Protocol, UDPIdleTimeout: g.UDPIdleTimeout, LocalPort: g.LocalPort, LocalHost: g.LocalHost, TargetHint: g.Target,
+		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, Protocol: g.Protocol, UDPIdleTimeout: g.UDPIdleTimeout, LocalPort: g.LocalPort, LocalHost: g.LocalHost, TargetHint: g.Target, EgressClass: g.egressClass(), EgressUDP: g.egressUDP(),
 			Instructions: g.Instructions, DocsURL: g.DocsURL})
 	}
 	s.sessions.Delete(t)

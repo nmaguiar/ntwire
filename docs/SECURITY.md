@@ -6,6 +6,8 @@ type: reference
 
 # Security notes
 
+[Smart Egress Proxy](SMART-EGRESS-PROXY.md#select-the-group) describes the local attachment trust boundary, group policy requirements, and failover rules.
+
 ## In-tunnel DNS forwarding
 
 DNS forwarding is disabled by default. When enabled, ntwire continues to bind

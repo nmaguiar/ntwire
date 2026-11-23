@@ -70,6 +70,8 @@ native macOS GUI build/test check. Run `ojob tasks.yaml op=release` before a
 release; record any missing desktop toolchain as environment-blocked rather
 than treating it as a passing GUI validation ([RELEASE.md](RELEASE.md)).
 
+See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) to aggregate explicitly approved SOCKS tunnels from connected profiles in the tray or headless app.
+
 ## Profiles and storage
 
 `ntwire-gui` owns its own store, `~/.ntwire/gui.yaml`, holding N server

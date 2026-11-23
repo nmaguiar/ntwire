@@ -91,6 +91,65 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   </section>
 
   <div id="regular-settings">
+  <section class="panel" id="smart-proxy-panel">
+    <details>
+      <summary>Smart Egress Proxy</summary>
+      <div class="row">
+        <label>Proxy group <select id="smart-proxy-group"></select></label>
+        <label>New group name <input id="smart-proxy-group-name" placeholder="office"></label>
+        <button type="button" class="secondary" id="smart-proxy-add-group">Add group</button>
+        <button type="button" class="secondary" id="smart-proxy-remove-group" hidden>Remove group</button>
+      </div>
+      <p id="smart-proxy-state" role="status"></p>
+      <form id="smart-proxy-form">
+        <label class="toggle"><input type="checkbox" id="smart-proxy-enabled"> Enable Smart Egress Proxy</label>
+        <div class="row">
+          <label>Loopback address <input id="smart-proxy-listen" required placeholder="127.0.0.1:1080"></label>
+          <label>Routing strategy <select id="smart-proxy-strategy">
+            <option value="sticky-fastest">Sticky fastest</option>
+            <option value="fastest-healthy">Fastest healthy</option>
+            <option value="destination-aware">Destination aware</option>
+            <option value="priority">Priority</option>
+            <option value="round-robin">Round robin</option>
+          </select></label>
+        </div>
+        <p class="help">Add only tunnels with equivalent destination access and trust. Destination rules can limit which traffic uses the group.</p>
+        <div class="row">
+          <label>SOCKS tunnel <select id="smart-proxy-available"></select></label>
+          <button type="button" class="secondary" id="smart-proxy-add">Add tunnel</button>
+        </div>
+        <div id="smart-proxy-members"></div>
+        <label class="toggle"><input type="checkbox" id="smart-proxy-approve"> I approve these tunnels for the same egress group</label>
+        <details>
+          <summary>Advanced routing</summary>
+          <label>Affinity scope <select id="smart-proxy-affinity">
+            <option value="host">Destination hostname</option>
+            <option value="group">Whole group</option>
+          </select></label>
+          <label class="toggle"><input type="checkbox" id="smart-proxy-racing"> Race TCP service setup</label>
+          <label class="toggle"><input type="checkbox" id="smart-proxy-udp"> Enable SOCKS5 UDP ASSOCIATE</label>
+          <label>Destination rules (JSON array) <textarea id="smart-proxy-rules" rows="4"></textarea></label>
+          <label>Unmatched destinations <select id="smart-proxy-unmatched">
+            <option value="">Deny when rules exist</option>
+            <option value="allow">Allow</option>
+            <option value="deny">Deny</option>
+          </select></label>
+          <label>Approved server classes (JSON array) <textarea id="smart-proxy-enroll" rows="4"></textarea></label>
+          <label>PAC loopback address for all groups <input id="smart-proxy-pac" placeholder="127.0.0.1:1082"></label>
+        </details>
+        <div class="row"><button type="submit">Save Smart Egress Proxy</button></div>
+      </form>
+      <div class="row" id="smart-proxy-actions" hidden>
+        <button type="button" class="secondary" data-copy-proxy="socks5h">Copy SOCKS5 URL</button>
+        <button type="button" class="secondary" data-copy-proxy="http">Copy HTTP proxy URL</button>
+        <button type="button" class="secondary" id="smart-proxy-copy-pac" hidden>Copy PAC URL</button>
+        <button type="button" class="secondary" id="smart-proxy-browser">Open isolated browser</button>
+        <button type="button" class="secondary" id="smart-proxy-clear-preferred">Clear preference</button>
+      </div>
+      <p class="help" id="smart-proxy-summary" hidden></p>
+      <div id="smart-proxy-health"></div>
+    </details>
+  </section>
   <section class="panel"><details><summary>Browser settings (advanced)</summary>
   <label for="global-browser-folder">Browser profiles folder</label>
   <input id="global-browser-folder" type="text" placeholder="Default location">
@@ -1505,17 +1564,327 @@ function showReconnectBanner() {
   document.body.prepend(reconnectBanner);
 }
 
+const smartProxyForm = document.getElementById('smart-proxy-form');
+const smartProxySelect = document.getElementById('smart-proxy-available');
+const smartProxyApproval = document.getElementById('smart-proxy-approve');
+let smartProxyConfig;
+let smartProxyStatus;
+let allSmartProxyStatus;
+let smartProxyGroup = 'default';
+let smartProxyDirty = false;
+const smartProxyGroupSelect = document.getElementById('smart-proxy-group');
+const smartField = name => document.getElementById('smart-proxy-' + name);
+let smartProxyOffers = [];
+let smartProxyMembers = [];
+
+function smartProxyMemberLabel(member) {
+  const profile = profiles.get(member.profile_id)?.profile;
+  return (profile?.Name || profile?.name || member.profile_id) + ' / ' + member.tunnel;
+}
+
+function smartProxyMemberKey(member) {
+  return JSON.stringify([member.profile_id, member.tunnel]);
+}
+
+function refreshSmartProxyOffers() {
+  const selected = smartProxySelect.value;
+  smartProxyOffers = [];
+  for (const [profileID, snapshot] of profiles.entries()) {
+    for (const tunnel of snapshot.connection?.tunnels || []) {
+      if (tunnel.target_hint !== 'socks' || smartProxyMembers.some(member =>
+          member.profile_id === profileID && member.tunnel === tunnel.name)) continue;
+      smartProxyOffers.push({
+        profile_id: profileID, tunnel: tunnel.name, expected_server: snapshot.connection.server, priority: 100
+      });
+    }
+  }
+  smartProxySelect.replaceChildren();
+  for (const member of smartProxyOffers) {
+    const option = document.createElement('option');
+    option.value = smartProxyMemberKey(member);
+    option.textContent = smartProxyMemberLabel(member);
+    smartProxySelect.append(option);
+  }
+  if (smartProxyOffers.some(member => smartProxyMemberKey(member) === selected)) smartProxySelect.value = selected;
+  document.getElementById('smart-proxy-add').disabled = smartProxyOffers.length === 0;
+}
+
+function renderSmartProxyMembers() {
+  const list = document.getElementById('smart-proxy-members');
+  list.replaceChildren();
+  for (const member of smartProxyMembers) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const name = document.createElement('span');
+    name.textContent = smartProxyMemberLabel(member);
+    const priority = document.createElement('label');
+    priority.textContent = 'Priority ';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.required = true;
+    input.value = member.priority;
+    input.addEventListener('input', () => { member.priority = input.valueAsNumber; });
+    priority.append(input);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'secondary';
+    remove.textContent = 'Remove';
+    remove.onclick = () => {
+      smartProxyMembers = smartProxyMembers.filter(other => other !== member);
+      smartProxyApproval.checked = false;
+      smartProxyDirty = true;
+      renderSmartProxyMembers();
+    };
+    row.append(name, priority, remove);
+    list.append(row);
+  }
+  refreshSmartProxyOffers();
+}
+
+function currentSmartGroup() {
+  return smartProxyGroup === 'default' ? smartProxyConfig : smartProxyConfig?.groups?.[smartProxyGroup];
+}
+
+function loadSmartProxyConfig(cfg) {
+  smartProxyConfig = cfg;
+  if (!currentSmartGroup()) smartProxyGroup = 'default';
+  smartProxyGroupSelect.replaceChildren();
+  for (const name of ['default', ...Object.keys(cfg.groups || {}).sort()]) {
+    const option = document.createElement('option');
+    option.value = name;
+    option.textContent = name === 'default' ? 'Default' : name;
+    smartProxyGroupSelect.append(option);
+  }
+  smartProxyGroupSelect.value = smartProxyGroup;
+  smartField('remove-group').hidden = smartProxyGroup === 'default';
+  const group = currentSmartGroup();
+  smartField('enabled').checked = group.enabled;
+  smartField('listen').value = group.listen;
+  smartField('strategy').value = group.egress.selection;
+  smartField('affinity').value = group.routing?.affinity_scope || 'host';
+  smartField('racing').checked = !!group.failover?.racing;
+  smartField('udp').checked = !!group.routing?.udp_associate;
+  smartField('rules').value = JSON.stringify(group.routing?.rules || [], null, 2);
+  smartField('unmatched').value = group.routing?.unmatched || '';
+  smartField('enroll').value = JSON.stringify(group.egress.enroll || [], null, 2);
+  smartField('pac').value = cfg.pac_listen || '';
+  smartProxyMembers = (group.egress.members || []).map(member => ({...member}));
+  smartProxyApproval.checked = smartProxyMembers.length > 0 || !!group.egress.enroll?.length;
+  smartProxyDirty = false;
+  renderSmartProxyMembers();
+}
+
+function renderSmartProxyStatus(root) {
+  allSmartProxyStatus = root;
+  const status = smartProxyGroup === 'default' ? root : root.groups?.[smartProxyGroup] || {};
+  smartProxyStatus = status;
+  smartField('state').textContent = root.error || status.error ||
+    (status.listening ? 'Listening on ' + status.listening : 'Disabled');
+  smartField('actions').hidden = !status.listening;
+  smartField('copy-pac').hidden = !root.pac_listen || !status.listening;
+  for (const button of document.querySelectorAll('[data-copy-proxy]')) {
+    const protocol = button.dataset.copyProxy === 'http' ? 'http' : 'socks5';
+    button.hidden = !(currentSmartGroup()?.protocols || []).includes(protocol);
+  }
+  const summary = smartField('summary');
+  summary.hidden = !status.listening;
+  summary.textContent = [
+    (status.active || 0) + ' active',
+    (status.recovered || 0) + ' recovered / ' + (status.failovers || 0) + ' failover attempts',
+    status.last_selected && 'Last selected ' + smartProxyMemberLabel(status.last_selected) +
+      (status.selection_reason ? ' (' + status.selection_reason.replaceAll('_', ' ') + ')' : ''),
+    status.race_preparations && (status.race_backup_wins || 0) + ' backup wins / ' + status.race_preparations + ' race preparations'
+  ].filter(Boolean).join(' · ');
+  const health = document.getElementById('smart-proxy-health');
+  const expanded = new Set([...health.querySelectorAll('details[open]')].map(detail => detail.dataset.member));
+  health.replaceChildren();
+  for (const member of status.members || []) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const info = document.createElement('span');
+    const rtt = member.carrier_rtt ? ' · ' + (member.carrier_rtt / 1e6).toFixed(1) + ' ms RTT' : '';
+    const timing = member.connect_millis ? ' · ' + member.connect_millis.toFixed(1) + ' ms CONNECT' : '';
+    const rate = member.recent_samples ? ' · ' + ((member.success_rate || 0) * 100).toFixed(1) + '% recent success' : '';
+    const failures = member.recent_destination_failures ? ' · ' + member.recent_destination_failures + ' destination failures' : '';
+    info.textContent = smartProxyMemberLabel(member) + ' · ' +
+      (member.reason || (member.eligible ? 'Eligible' : 'Unavailable')).replaceAll('_', ' ') +
+      (member.transport ? ' · ' + member.transport : '') + rtt + timing + rate + failures;
+    const preference = document.createElement('button');
+    preference.type = 'button';
+    preference.className = 'secondary';
+    preference.textContent = 'Prefer';
+    preference.disabled = !member.eligible;
+    preference.onclick = () => setSmartPreference(member);
+    const exclude = document.createElement('button');
+    exclude.type = 'button';
+    exclude.className = 'secondary';
+    exclude.textContent = member.reason === 'excluded' ? 'Include' : 'Exclude temporarily';
+    exclude.onclick = () => setSmartPreference(member, member.reason !== 'excluded');
+    row.append(info, preference, exclude);
+    const details = document.createElement('details');
+    details.className = 'advanced';
+    details.dataset.member = JSON.stringify([member.profile_id, member.tunnel]);
+    details.open = expanded.has(details.dataset.member);
+    const label = document.createElement('summary');
+    label.textContent = 'Performance details for ' + smartProxyMemberLabel(member);
+    const data = document.createElement('p');
+    data.className = 'help';
+    const millis = (value, name) => value ? value.toFixed(1) + ' ms ' + name : '';
+    data.textContent = [
+      'Circuit ' + (member.circuit || 'unknown'),
+      (member.active || 0) + ' active',
+      (member.sent || 0) + ' bytes sent, ' + (member.received || 0) + ' received',
+      (member.attempts || 0) + ' attempts',
+      (member.reconnections || 0) + ' reconnects',
+      member.carrier_loss !== undefined && (member.carrier_loss * 100).toFixed(1) + '% carrier loss',
+      millis(member.control_latency_millis, 'control RTT'),
+      millis(member.socks_connect_millis, 'SOCKS'),
+      millis(member.virtual_service_millis, 'service setup'),
+      millis(member.attachment_overhead_millis, 'local attachment'),
+      millis(member.https_ttfb_millis, 'HTTPS probe TTFB'),
+      millis(member.variability_millis, 'CONNECT variation'),
+      member.recent_samples && member.recent_samples + ' recent samples',
+      member.consecutive_infrastructure_failures && member.consecutive_infrastructure_failures + ' consecutive infrastructure failures',
+      member.last_failure && 'Last failure ' + member.last_failure.replaceAll('_', ' ') +
+        (member.last_failure_stage ? ' at ' + member.last_failure_stage.replaceAll('_', ' ') : ''),
+      member.last_success && 'Last success ' + new Date(member.last_success).toLocaleString(),
+      member.last_probe && 'Last probe ' + new Date(member.last_probe).toLocaleString()
+    ].filter(Boolean).join(' · ');
+    details.append(label, data);
+    health.append(row, details);
+  }
+}
+
+async function setSmartPreference(member, exclude) {
+  try {
+    await api('POST', '/api/smart-proxy/preference', {
+      group: smartProxyGroup, member: {profile_id: member.profile_id || '', tunnel: member.tunnel || ''}, exclude
+    });
+    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
+  } catch (e) { setMessage(e.message); }
+}
+
+document.getElementById('smart-proxy-add').onclick = () => {
+  const member = smartProxyOffers.find(offer => smartProxyMemberKey(offer) === smartProxySelect.value);
+  if (!member) return;
+  smartProxyMembers.push(member);
+  smartProxyDirty = true;
+  smartProxyApproval.checked = false;
+  renderSmartProxyMembers();
+};
+smartProxyForm.addEventListener('input', event => {
+  smartProxyDirty = true;
+  if (event.target === smartField('enroll')) smartProxyApproval.checked = false;
+});
+
+function canSwitchSmartGroup() {
+  if (!smartProxyDirty) return true;
+  setMessage('Save your current group changes first.');
+  return false;
+}
+
+smartProxyGroupSelect.onchange = () => {
+  if (!canSwitchSmartGroup()) {
+    smartProxyGroupSelect.value = smartProxyGroup;
+    return;
+  }
+  smartProxyGroup = smartProxyGroupSelect.value;
+  loadSmartProxyConfig(smartProxyConfig);
+  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
+};
+
+smartField('add-group').onclick = () => {
+  if (!smartProxyConfig || !canSwitchSmartGroup()) return;
+  const name = smartField('group-name').value.trim();
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || name === 'default' || Object.hasOwn(smartProxyConfig.groups || {}, name)) {
+    setMessage('Enter a unique group name using lowercase letters, digits, hyphens, or underscores.');
+    return;
+  }
+  smartProxyGroup = name;
+  loadSmartProxyConfig({...smartProxyConfig, groups: {
+    ...(smartProxyConfig.groups || {}), [name]: {enabled: false, listen: '', protocols: ['socks5', 'http'],
+      egress: {selection: 'sticky-fastest', members: []}}
+  }});
+  smartProxyDirty = true;
+  smartField('group-name').value = '';
+  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
+};
+
+smartField('remove-group').onclick = () => {
+  if (!smartProxyConfig || smartProxyGroup === 'default') return;
+  const groups = {...smartProxyConfig.groups};
+  delete groups[smartProxyGroup];
+  smartProxyGroup = 'default';
+  loadSmartProxyConfig({...smartProxyConfig, groups});
+  smartProxyDirty = true;
+  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
+};
+
+smartProxyForm.onsubmit = async event => {
+  event.preventDefault();
+  if (!smartProxyConfig) return;
+  try {
+    const rules = JSON.parse(smartField('rules').value || '[]');
+    const enroll = JSON.parse(smartField('enroll').value || '[]');
+    if (!Array.isArray(rules) || !Array.isArray(enroll)) throw new Error('Rules and approved classes must use JSON arrays.');
+    if ((smartProxyMembers.length || enroll.length) && !smartProxyApproval.checked) {
+      setMessage('Approve the egress group before saving.');
+      return;
+    }
+    const prior = currentSmartGroup();
+    const group = {...prior,
+      enabled: smartField('enabled').checked,
+      listen: smartField('listen').value.trim(),
+      egress: {...prior.egress, selection: smartField('strategy').value, members: smartProxyMembers, enroll},
+      failover: {...prior.failover, racing: smartField('racing').checked},
+      routing: {...prior.routing, rules, unmatched: smartField('unmatched').value,
+        affinity_scope: smartField('affinity').value, udp_associate: smartField('udp').checked}
+    };
+    const cfg = smartProxyGroup === 'default' ? group : {...smartProxyConfig,
+      groups: {...smartProxyConfig.groups, [smartProxyGroup]: group}};
+    cfg.pac_listen = smartField('pac').value.trim();
+    loadSmartProxyConfig(await api('PUT', '/api/smart-proxy', cfg));
+    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
+    setMessage('Smart Egress Proxy settings saved.', 'ok');
+  } catch (e) { setMessage(e.message); }
+};
+smartField('copy-pac').onclick = async () => {
+  if (!allSmartProxyStatus?.pac_listen) return;
+  try {
+    await navigator.clipboard.writeText('http://' + allSmartProxyStatus.pac_listen + '/' + smartProxyGroup + '.pac');
+    setMessage('PAC URL copied.', 'ok');
+  } catch (e) { setMessage(e.message); }
+};
+document.getElementById('smart-proxy-clear-preferred').onclick = () => setSmartPreference({});
+document.getElementById('smart-proxy-browser').onclick = async () => {
+  try { await api('POST', '/api/smart-proxy/open-browser?group=' + encodeURIComponent(smartProxyGroup)); }
+  catch (e) { setMessage(e.message); }
+};
+for (const button of document.querySelectorAll('[data-copy-proxy]')) {
+  button.onclick = async () => {
+    if (!smartProxyStatus?.listening) return;
+    try {
+      await navigator.clipboard.writeText(button.dataset.copyProxy + '://' + smartProxyStatus.listening);
+      setMessage('Proxy URL copied.', 'ok');
+    } catch (e) { setMessage(e.message); }
+  };
+}
+
 function connectEvents() {
   let failures = 0;
   if (eventSource) eventSource.close();
   eventSource = new EventSource(q('/api/events'));
   eventSource.onopen = () => { failures = 0; hideReconnectBanner(); };
+  eventSource.addEventListener('smart-proxy', event => {
+    try { renderSmartProxyStatus(JSON.parse(event.data)); } catch {}
+  });
   eventSource.onmessage = (ev) => {
     failures = 0;
     hideReconnectBanner();
     try {
       const update = JSON.parse(ev.data);
       profiles.set(update.ProfileID, update.Snapshot);
+      refreshSmartProxyOffers();
       renderProfiles();
       renderSetup();
       renderPrompts();
@@ -1544,6 +1913,8 @@ function connectEvents() {
     await refreshSchema();
     await refreshProfiles();
     await refreshBrowserProfiles();
+    loadSmartProxyConfig(await api('GET', '/api/smart-proxy'));
+    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
     if (setupMode) setupCancelBtn.classList.remove('hidden');
   } catch (e) {
     setMessage('Could not load settings: ' + e.message);

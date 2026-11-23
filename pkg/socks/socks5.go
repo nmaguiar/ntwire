@@ -41,72 +41,10 @@ const (
 // IPv4/IPv6/domain address types. Version byte 0x05 was already consumed by
 // ServeConn.
 func (s *Server) serveSocks5(ctx context.Context, conn net.Conn, br *bufio.Reader) {
-	nmethods, err := br.ReadByte()
+	cmd, hostname, ip, port, err := readRequest(conn, br, false)
 	if err != nil {
 		return
 	}
-	methods := make([]byte, nmethods)
-	if _, err := io.ReadFull(br, methods); err != nil {
-		return
-	}
-	noAuth := false
-	for _, m := range methods {
-		if m == socks5NoAuth {
-			noAuth = true
-			break
-		}
-	}
-	if !noAuth {
-		_, _ = conn.Write([]byte{socks5Version, socks5NoAcceptableMethods})
-		return
-	}
-	if _, err := conn.Write([]byte{socks5Version, socks5NoAuth}); err != nil {
-		return
-	}
-
-	hdr := make([]byte, 4)
-	if _, err := io.ReadFull(br, hdr); err != nil {
-		return
-	}
-	ver, cmd, atyp := hdr[0], hdr[1], hdr[3]
-	if ver != socks5Version {
-		return
-	}
-
-	var hostname string
-	var ip netip.Addr
-	switch atyp {
-	case socks5AtypIPv4:
-		var b [4]byte
-		if _, err := io.ReadFull(br, b[:]); err != nil {
-			return
-		}
-		ip = netip.AddrFrom4(b)
-	case socks5AtypIPv6:
-		var b [16]byte
-		if _, err := io.ReadFull(br, b[:]); err != nil {
-			return
-		}
-		ip = netip.AddrFrom16(b)
-	case socks5AtypDomain:
-		l, err := br.ReadByte()
-		if err != nil {
-			return
-		}
-		buf := make([]byte, l)
-		if _, err := io.ReadFull(br, buf); err != nil {
-			return
-		}
-		hostname = string(buf)
-	default:
-		writeSocks5Reply(conn, socks5RepAtypNotSupported, netip.IPv4Unspecified(), 0)
-		return
-	}
-	var portBuf [2]byte
-	if _, err := io.ReadFull(br, portBuf[:]); err != nil {
-		return
-	}
-	port := binary.BigEndian.Uint16(portBuf[:])
 
 	switch cmd {
 	case socks5CmdConnect:

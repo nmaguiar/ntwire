@@ -16,6 +16,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
@@ -73,6 +74,11 @@ func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
 // fans out state changes to subscribers (the tray, the settings window's
 // SSE stream). All exported methods are safe for concurrent use.
 type Manager struct {
+	smartRouter     *egressrouter.GroupSet
+	smartConfig     egressrouter.Config
+	smartConfigured bool
+	smartError      string
+
 	persistMu  sync.Mutex
 	connector  Connector
 	configPath string
@@ -157,12 +163,23 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 		stored.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 		m.sessions[p.ID] = newSession(stored)
 	}
+	m.smartRouter = egressrouter.NewDiscoveredGroupSet(m.smartCandidate, m.discoverEgress)
+	if cfg.SmartProxy != nil {
+		m.smartConfigured = true
+		m.smartConfig = *cfg.SmartProxy
+	}
+	if err := m.smartRouter.Apply(m.smartConfig, nil); err != nil {
+		m.smartError = err.Error()
+	}
 	return m, nil
 }
 
 // Close disconnects every connected profile. It does not remove profiles
 // from gui.yaml.
 func (m *Manager) Close() {
+	if m.smartRouter != nil {
+		m.smartRouter.Close()
+	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
 	for id, s := range m.sessions {
@@ -330,6 +347,10 @@ func (m *Manager) persist() error {
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
 	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
+	if m.smartConfigured {
+		saved := m.smartConfig
+		cfg.SmartProxy = &saved
+	}
 	m.mu.Unlock()
 	return config.Save(m.configPath, cfg)
 }
@@ -629,6 +650,10 @@ func (m *Manager) tunnelBrowserProfile(id, name string, update *browseropen.Prof
 	previous := s.profile.BrowserProfiles
 	s.profile.BrowserProfiles = profiles
 	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
+	if m.smartConfigured {
+		saved := m.smartConfig
+		cfg.SmartProxy = &saved
+	}
 	if err := config.Save(m.configPath, cfg); err != nil {
 		s.profile.BrowserProfiles = previous
 		return p, path, err
@@ -789,6 +814,9 @@ func (m *Manager) reservePorts(id string, ports map[string]int, hosts map[string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, addr := range requested {
+		if m.smartError == "" && smartAddressConflict(m.smartConfig, addr) {
+			return fmt.Errorf("gui: local address %s (tunnel %q) conflicts with the Smart Egress Proxy", addr, name)
+		}
 		for otherID, res := range m.reservations {
 			if otherID == id {
 				continue

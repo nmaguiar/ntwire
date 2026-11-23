@@ -629,13 +629,22 @@ func TestEventsStreamsInitialSnapshotThenUpdate(t *testing.T) {
 
 	reader := bufio.NewReader(eventsResp.Body)
 	readEvent := func() manager.Update {
+		event := ""
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				t.Fatalf("reading SSE stream: %v", err)
 			}
 			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "data: ") {
+			if strings.HasPrefix(line, "event: ") {
+				event = strings.TrimPrefix(line, "event: ")
+				continue
+			}
+			if line == "" {
+				event = ""
+				continue
+			}
+			if event != "" || !strings.HasPrefix(line, "data: ") {
 				continue
 			}
 			var u manager.Update

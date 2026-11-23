@@ -107,6 +107,7 @@ type menu struct {
 	startAtLogin *systray.MenuItem
 	update       *systray.MenuItem
 	quit         *systray.MenuItem
+	smart        *systray.MenuItem
 }
 
 func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
@@ -209,6 +210,18 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 			_ = mgr.SetSettings(settings)
 		}
 	}
+	m.smart = systray.AddMenuItem("Smart Egress Proxy", "Open the isolated browser when the proxy is running")
+	go func() {
+		for range m.smart.ClickedCh {
+			if mgr.SmartProxyStatus().Listening != "" {
+				if err := mgr.OpenSmartProxyBrowser(); err != nil && openSettings != nil {
+					openSettings()
+				}
+			} else if openSettings != nil {
+				openSettings()
+			}
+		}
+	}()
 	m.update = systray.AddMenuItem("Check for updates…", "Open update settings")
 	m.quit = systray.AddMenuItem("Quit", "Disconnect every profile and exit")
 
@@ -242,6 +255,14 @@ func (m *menu) render(snaps []manager.Snapshot) {
 		shown++
 	}
 
+	if m.smart != nil {
+		smart := m.mgr.SmartProxyStatus()
+		title := "Smart Egress Proxy settings…"
+		if smart.Listening != "" {
+			title = "Smart Egress Proxy · " + smart.Listening + " · Open browser…"
+		}
+		m.smart.SetTitle(title)
+	}
 	m.setIcon(aggregateState(snaps))
 }
 

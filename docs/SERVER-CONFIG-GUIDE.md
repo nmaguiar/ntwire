@@ -242,6 +242,7 @@ tunnels:
 # - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
 #   target      : socks                   # required sentinel value that selects the SOCKS target type
 #   virtual_port: 11080
+#   egress_class: internet-v1             # optional Smart Egress enrollment label for equivalent governed SOCKS policies
 #   allow       :
 #   - group:engineering
 #   socks       :
@@ -788,6 +789,9 @@ audit:
             "type": "string"
           },
           "docs_url": {
+            "type": "string"
+          },
+          "egress_class": {
             "type": "string"
           },
           "instructions": {

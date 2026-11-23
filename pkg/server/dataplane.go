@@ -675,11 +675,15 @@ func (s *Server) dialFixedUDP(principal DataPlanePrincipal, t TunnelConfig) (*ne
 // association. The listener is private to that association and accepts only
 // the authenticated tunnel IP that opened its TCP control connection.
 func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, t TunnelConfig, sv *socks.Server, stop <-chan struct{}) {
+	defer pc.Close()
 	idle := t.Socks.UDPIdleTimeout
 	if idle <= 0 {
 		idle = 2 * time.Minute
 	}
-	type flow struct{ c *net.UDPConn }
+	type flow struct {
+		c  *net.UDPConn
+		ip netip.Addr
+	}
 	flows := map[string]flow{}
 	var mu sync.Mutex
 	defer func() {
@@ -708,23 +712,42 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		if !ok {
 			continue
 		}
+		current, granted := s.principalForIP(host)
+		if !granted || !current.Tunnels[t.Name] || current.sessionID != principal.sessionID ||
+			current.Identity != principal.Identity || current.Method != principal.Method {
+			return
+		}
+		tunnel, configured := s.tunnelConfig(t.Name)
+		if !configured || !tunnel.IsSocks() || !reflect.DeepEqual(tunnel.Socks, t.Socks) || tunnel.VirtualPort != t.VirtualPort {
+			return
+		}
+		ctx := context.WithValue(context.Background(), principalContextKey{}, current)
 		key := net.JoinHostPort(ip.String(), fmt.Sprint(port))
 		if hostname != "" {
 			key = hostname + ":" + fmt.Sprint(port)
 		}
 		mu.Lock()
 		f, exists := flows[key]
+		count := len(flows)
 		mu.Unlock()
-		if !exists {
-			resolved, allowed := sv.AuthorizeUDP(context.Background(), hostname, ip, port)
+		if exists {
+			if !s.destinationAllowed(ctx, current, tunnel, hostname, f.ip, port, "udp") {
+				continue
+			}
+		} else {
+			const maxSOCKSUDPFlows = 64
+			if count >= maxSOCKSUDPFlows {
+				continue
+			}
+			resolved, allowed := sv.AuthorizeUDP(ctx, hostname, ip, port)
 			if !allowed {
 				continue
 			}
-			out, e := s.dialSocksUDP(principal, t, "", resolved, port)
+			out, e := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(resolved.Unmap(), port)))
 			if e != nil {
 				continue
 			}
-			f = flow{out}
+			f = flow{c: out, ip: resolved}
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
@@ -748,28 +771,6 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		_ = f.c.SetReadDeadline(time.Now().Add(idle))
 		_, _ = f.c.Write(payload)
 	}
-}
-
-func (s *Server) dialSocksUDP(p DataPlanePrincipal, t TunnelConfig, hostname string, ip netip.Addr, port uint16) (*net.UDPConn, error) {
-	if !ip.IsValid() {
-		var e error
-		ips, e := net.DefaultResolver.LookupNetIP(context.Background(), "ip", hostname)
-		if e != nil {
-			return nil, e
-		}
-		for _, candidate := range ips {
-			if s.destinationAllowed(context.Background(), p, t, hostname, candidate, port, "udp") {
-				ip = candidate
-				break
-			}
-		}
-	} else if !s.destinationAllowed(context.Background(), p, t, "", ip, port, "udp") {
-		return nil, fmt.Errorf("destination policy denied")
-	}
-	if !ip.IsValid() {
-		return nil, fmt.Errorf("no permitted destination")
-	}
-	return net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), port)))
 }
 
 func parseSocksUDP(b []byte) (string, netip.Addr, uint16, []byte, bool) {

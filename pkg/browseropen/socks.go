@@ -2,6 +2,8 @@ package browseropen
 
 import (
 	"fmt"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +102,24 @@ func OpenSocksExecutable(executable, key, localAddr string, targetURL ...string)
 
 // OpenSocksWithOptions launches an isolated browser with validated literal arguments.
 func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetURL ...string) error {
+	return openProxy(options, key, "socks5://"+localAddr, false, targetURL)
+}
+
+// OpenSmartProxy launches the isolated aggregate browser using a numeric loopback proxy.
+func OpenSmartProxy(options LaunchOptions, key, proxy string) error {
+	u, err := url.Parse(proxy)
+	if err != nil || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" ||
+		(u.Scheme != "http" && u.Scheme != "socks5") {
+		return fmt.Errorf("invalid smart proxy URL")
+	}
+	address, err := netip.ParseAddrPort(u.Host)
+	if err != nil || !address.Addr().IsLoopback() || address.Port() == 0 {
+		return fmt.Errorf("smart browser proxy must use a numeric loopback address")
+	}
+	return openProxy(options, key, u.String(), true, nil)
+}
+
+func openProxy(options LaunchOptions, key, proxy string, forceLoopbackProxy bool, targetURL []string) error {
 	if err := ValidateExtraArgs(options.ExtraArgs); err != nil {
 		return err
 	}
@@ -112,9 +132,12 @@ func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetUR
 	if err != nil {
 		return err
 	}
-	args, err := socksArgs(dir, localAddr, targetURL)
+	args, err := proxyArgs(dir, proxy, targetURL)
 	if err != nil {
 		return err
+	}
+	if forceLoopbackProxy {
+		args = insertExtraArgs(args, []string{"--proxy-bypass-list=<-loopback>"})
 	}
 	args = insertExtraArgs(args, options.ExtraArgs)
 	return exec.Command(bin, args...).Start()
@@ -129,9 +152,13 @@ func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetUR
 // it outright, and terminate flag parsing with "--" so anything after can only
 // be read as a positional URL.
 func socksArgs(dir, localAddr string, targetURL []string) ([]string, error) {
+	return proxyArgs(dir, "socks5://"+localAddr, targetURL)
+}
+
+func proxyArgs(dir, proxy string, targetURL []string) ([]string, error) {
 	args := []string{
 		"--user-data-dir=" + dir,
-		"--proxy-server=socks5://" + localAddr,
+		"--proxy-server=" + proxy,
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--disable-sync",

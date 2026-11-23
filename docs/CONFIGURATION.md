@@ -345,6 +345,10 @@ Disconnect/reconnect closes existing proxy connections and their upstream pools.
 TLS-to-proxy, HTTP/2 proxy requests, and HTTP/3 or UDP over HTTP are unsupported.
 Existing SOCKS UDP ASSOCIATE support remains available.
 
+For a client-side proxy over several SOCKS grants, configure [Smart Egress Proxy](SMART-EGRESS-PROXY.md) in the GUI or standalone router configuration.
+
+For automatic enrollment, a governed SOCKS tunnel can declare `egress_class: internet-v1` at the tunnel level. Use the same label only for equivalent destination policies. The client must separately approve the server and class. Transparent tunnels use explicit membership. See [automatic enrollment](SMART-EGRESS-PROXY.md#automatic-enrollment).
+
 ### Transparent upstream SOCKS5 tunnels
 
 Use `target: socks` with `socks.transparent: true` when the SOCKS5 server

@@ -119,6 +119,7 @@ func (s *Server) routes() {
 	}))
 
 	s.updateRoutes()
+	s.smartProxyRoutes()
 	// The settings UI itself. Token-gated like every other route -- the
 	// page's own script reads its token back out of location.search for
 	// subsequent /api/* fetches, the same convention pkg/client's status
@@ -501,12 +502,26 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for _, snap := range s.mgr.Snapshots() {
 		writeSSE(w, manager.Update{ProfileID: snap.Profile.ID, Snapshot: snap})
 	}
+	var lastSmart string
+	sendSmart := func() {
+		b, err := json.Marshal(s.mgr.SmartProxyStatus())
+		if err == nil && string(b) != lastSmart {
+			lastSmart = string(b)
+			fmt.Fprintf(w, "event: smart-proxy\ndata: %s\n\n", b)
+		}
+	}
+	sendSmart()
 	flusher.Flush()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case u := <-updates:
 			writeSSE(w, u)
+			flusher.Flush()
+		case <-ticker.C:
+			sendSmart()
 			flusher.Flush()
 		case <-r.Context().Done():
 			return

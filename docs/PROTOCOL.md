@@ -4,6 +4,12 @@ This is the implemented control-plane protocol. It authenticates a client and
 returns tunnel grants and the values needed to establish a WireGuard netstack
 session and forward TCP traffic.
 
+[Smart Egress Proxy](SMART-EGRESS-PROXY.md) uses existing SOCKS and authenticated WireGuard sessions. Its local-only client attachment channel is separate from the server and relay interfaces below.
+
+### Smart Egress Proxy grant metadata
+
+An authenticated SOCKS tunnel grant can include the optional `egress_class` string. Servers use the configured label on governed SOCKS tunnels in authentication and renewal responses. Clients require a verified HTTPS connection and explicit approval of the profile, server and class before automatic enrollment. This metadata does not grant additional destinations. An optional `egress_udp: true` advertises native SOCKS UDP handling on a governed tunnel with no upstream proxy. Aggregate clients require this field before starting UDP ASSOCIATE. Older clients continue to use individual tunnels.
+
 ## Endpoints
 
 The reference server serves HTTPS.

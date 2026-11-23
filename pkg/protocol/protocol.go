@@ -214,8 +214,10 @@ type Tunnel struct {
 	// local listener (e.g. "127.70.0.1"), letting distinct tunnels share a
 	// memorable port without colliding. The client may override it, and
 	// falls back to 127.0.0.1 if the address cannot be bound.
-	LocalHost  string `json:"local_host,omitempty"`
-	TargetHint string `json:"target_hint,omitempty"`
+	LocalHost   string `json:"local_host,omitempty"`
+	TargetHint  string `json:"target_hint,omitempty"`
+	EgressClass string `json:"egress_class,omitempty"`
+	EgressUDP   bool   `json:"egress_udp,omitempty"`
 	// Instructions is optional Markdown describing how to use this tunnel,
 	// expanded as a Go template by the client (see pkg/instructions) so that
 	// the real loopback port can appear in the commands it documents.
