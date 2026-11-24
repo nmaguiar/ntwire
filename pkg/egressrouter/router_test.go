@@ -34,6 +34,17 @@ func testConfig(t testing.TB) Config {
 	}}}
 }
 
+func TestSmartProxyConnectionLimit(t *testing.T) {
+	for _, tc := range []struct{ configured, want int }{{0, 1024}, {256, 256}, {4096, 4096}} {
+		cfg := testConfig(t)
+		cfg.Limits.Connections = tc.configured
+		got, err := cfg.Normalized()
+		if err != nil || got.Limits.Connections != tc.want {
+			t.Errorf("configured %d: got %d, want %d, err %v", tc.configured, got.Limits.Connections, tc.want, err)
+		}
+	}
+}
+
 func TestSmartProxyFailurePolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name string

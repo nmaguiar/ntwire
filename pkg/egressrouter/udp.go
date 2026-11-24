@@ -38,13 +38,16 @@ func (r *Router) serveUDP(ctx context.Context, in net.Conn, client netip.AddrPor
 		r.serveRoutedUDP(ctx, in, state, client)
 		return
 	}
-	if !claim(&r.attempts, state.config.Limits.ConcurrentAttempts) {
+	setupLimits := r.acquireSetup()
+	if setupLimits == nil {
 		socks.Reply(in, 1)
 		return
 	}
 	setup, cancel := context.WithCancel(ctx)
 	stopWatch := localproxy.WatchSetupDisconnect(in, cancel)
+	started := time.Now()
 	out, chosen, h, err := r.openUDP(setup, state, Destination{}, Decision{Action: Proxy})
+	setupLimits.observe(started, err)
 	stopWatch()
 	canceled := setup.Err() != nil
 	cancel()

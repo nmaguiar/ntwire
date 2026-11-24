@@ -845,7 +845,9 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     field('add-group').disabled = Object.keys(draft.groups || {}).length >= 16;
     for (const control of controls) {
       const path = control.dataset.smartField;
-      setControl(control, read(rootSetting(path) ? draft : group(), path));
+      let value = read(rootSetting(path) ? draft : group(), path);
+      if (path === 'limits.concurrent_attempts' && value === undefined && group().limits?.auto) value = 128;
+      setControl(control, value);
     }
     for (const input of protocolInputs) {
       input.checked = (group().protocols ?? defaultProtocols).includes(input.dataset.smartProtocol);
@@ -978,6 +980,7 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
         }
         renderResolverMembers();
       }
+      if (path === 'limits.auto') renderGroup();
       if (path === 'egress.selection') strategyDetails();
       edited();
     });

@@ -54,6 +54,8 @@ func TestAttachmentIdentityAndHalfClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer service.Close()
+	// Model an already busy publisher while exercising a real additional stream.
+	service.streams.Store(256)
 	if duplicate, err := Start(path, source, nil); err == nil {
 		duplicate.Close()
 		t.Fatal("second publisher acquired the same ID")

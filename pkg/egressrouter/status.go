@@ -16,6 +16,7 @@ type DirectStatus struct {
 }
 
 type Status struct {
+	Limits             *LimitStatus      `json:"limits,omitempty"`
 	Direct             *DirectStatus     `json:"direct,omitempty"`
 	ASNDatabase        *ASNStatus        `json:"asn_database,omitempty"`
 	Denied             uint64            `json:"destination_denied,omitempty"`
@@ -77,6 +78,8 @@ func (r *Router) Status() Status {
 	defer r.mu.Unlock()
 	status := Status{Enabled: state.config.Enabled, Listen: state.config.Listen, Selection: state.config.Egress.Selection,
 		RaceAttempts: r.raceAttempts.Load(), RaceBackups: r.raceBackups.Load(), Active: r.active.Load(), Failovers: r.failovers.Load(), Recovered: r.recovered.Load()}
+	effective := state.admission.status(int(status.Active), &processBudget, r.now())
+	status.Limits = &effective
 	status.ASNDatabase = state.asn.status(r.now())
 	status.Denied, status.Indeterminate = r.denied.Load(), r.indeterminate.Load()
 	status.ASNMatches, status.ASNFailures = r.asnHits.Load(), r.asnMisses.Load()

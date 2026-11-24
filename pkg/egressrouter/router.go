@@ -105,6 +105,7 @@ type Router struct {
 }
 
 type routeState struct {
+	admission    *admission
 	asn          *asnDatabase
 	probeCtx     context.Context
 	cancelProbes context.CancelFunc
@@ -183,7 +184,11 @@ func (r *Router) commit(cfg Config, next net.Listener) {
 	if !cfg.Routing.usesASN() {
 		db = nil
 	}
-	r.state = &routeState{asn: db, probeCtx: probeCtx, cancelProbes: cancelProbes, config: cfg, health: map[MemberID]*memberHealth{}, affinity: map[string]affinity{}}
+	limits := newAdmission(cfg.Limits)
+	if previous != nil && previous.config.Limits == cfg.Limits && previous.config.Enabled == cfg.Enabled {
+		limits = previous.admission
+	}
+	r.state = &routeState{admission: limits, asn: db, probeCtx: probeCtx, cancelProbes: cancelProbes, config: cfg, health: map[MemberID]*memberHealth{}, affinity: map[string]affinity{}}
 	if previous != nil {
 		previous.cancelProbes()
 		for _, member := range cfg.Egress.Members {
@@ -271,7 +276,13 @@ func (r *Router) serve(listener net.Listener) {
 		}
 		r.mu.Lock()
 		state := r.state
-		if state == nil || r.listener != listener || !claim(&r.active, state.config.Limits.Connections) {
+		if state == nil || r.listener != listener || !state.admission.take(&r.active, false, r.now()) {
+			r.mu.Unlock()
+			_ = in.Close()
+			continue
+		}
+		if !processBudget.acquire(state.config.Limits.Auto, r.now()) {
+			r.active.Add(-1)
 			r.mu.Unlock()
 			_ = in.Close()
 			continue
@@ -282,6 +293,7 @@ func (r *Router) serve(listener net.Listener) {
 		r.inbound.Store(in, cancel)
 		r.mu.Unlock()
 		r.wg.Go(func() {
+			defer processBudget.release()
 			defer r.active.Add(-1)
 			defer r.inbound.Delete(in)
 			defer cancel()
@@ -466,7 +478,18 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 	return r.dialDestination(ctx, dst)
 }
 
-func (r *Router) dialDestination(ctx context.Context, dst Destination) (net.Conn, error) {
+// Associations can survive reloads. Admit new setup work against the current
+// group limits even when its routing decision belongs to an older generation.
+func (r *Router) acquireSetup() *admission {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == nil || !r.state.config.Enabled || !r.state.admission.take(&r.attempts, true, r.now()) {
+		return nil
+	}
+	return r.state.admission
+}
+
+func (r *Router) dialDestination(ctx context.Context, dst Destination) (conn net.Conn, resultErr error) {
 	r.lastActive.Store(r.now().UnixNano())
 	r.mu.Lock()
 	state := r.state
@@ -482,10 +505,15 @@ func (r *Router) dialDestination(ctx context.Context, dst Destination) (net.Conn
 	}
 	ctx, cancel := context.WithTimeout(ctx, state.config.Failover.TotalTimeout)
 	defer cancel()
-	if !claim(&r.attempts, state.config.Limits.ConcurrentAttempts) {
+	setupLimits := r.acquireSetup()
+	if setupLimits == nil {
 		return nil, &Failure{Class: "capacity"}
 	}
 	defer r.attempts.Add(-1)
+	if setupLimits.ceilings.Auto {
+		started := time.Now()
+		defer func() { setupLimits.observe(started, resultErr) }()
+	}
 	if decision.Action == Indeterminate {
 		return r.dialClassifiedHostname(ctx, state, dst, snapshot)
 	}
@@ -501,7 +529,7 @@ func (r *Router) dialDestination(ctx context.Context, dst Destination) (net.Conn
 	var last error = &Failure{Class: "unavailable"}
 	var prepared preparation
 	if state.config.Failover.Racing && limit >= 2 && len(ordered) >= 2 && r.canRace(state, ordered[:2]) &&
-		claim(&r.attempts, state.config.Limits.ConcurrentAttempts) {
+		r.acquireSetup() != nil {
 		winner, launched, failures := r.raceService(ctx, state, ordered[:2])
 		r.attempts.Add(-1)
 		for _, f := range failures {

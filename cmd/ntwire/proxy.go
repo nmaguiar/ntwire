@@ -231,6 +231,9 @@ func printProxyMembers(u *ui.UI, status egressrouter.Status) {
 	if status.Listening != "" {
 		fmt.Fprintf(u.Out, "  %d active, %d/%d failovers recovered\n", status.Active, status.Recovered, status.Failovers)
 	}
+	if l := status.Limits; l != nil && l.Auto {
+		fmt.Fprintf(u.Out, "  Auto limits: %d connections, %d simultaneous setups (%s)\n", l.Connections, l.ConcurrentAttempts, l.Reason)
+	}
 	if status.Selected != nil {
 		fmt.Fprintf(u.Out, "  last selected %s/%s (%s)\n", status.Selected.ProfileID, status.Selected.Tunnel, status.SelectionReason)
 	}

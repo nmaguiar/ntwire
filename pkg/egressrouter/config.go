@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// MaxConnections is the largest supported connection limit for a smart proxy group.
+const MaxConnections = 4096
+
 type Config struct {
 	ASNDatabase *ASNDatabaseConfig `yaml:"asn_database,omitempty" json:"asn_database,omitempty"`
 	Groups      map[string]Config  `yaml:"groups,omitempty" json:"groups,omitempty"`
@@ -72,8 +75,9 @@ type Routing struct {
 	HysteresisPercent int           `yaml:"hysteresis_percent" json:"hysteresis_percent"`
 }
 type Limits struct {
-	Connections        int `yaml:"connections" json:"connections"`
-	ConcurrentAttempts int `yaml:"concurrent_attempts" json:"concurrent_attempts"`
+	Auto               bool `yaml:"auto,omitempty" json:"auto,omitempty"`
+	Connections        int  `yaml:"connections" json:"connections"`
+	ConcurrentAttempts int  `yaml:"concurrent_attempts" json:"concurrent_attempts"`
 }
 
 var profileID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -229,12 +233,16 @@ func (c Config) normalizedGroup() (Config, error) {
 		enabled = *c.Failover.Enabled
 	}
 	c.Failover.Enabled = &enabled
+	setupDefault := 32
+	if c.Limits.Auto {
+		setupDefault = 128
+	}
 	defaults := []struct {
 		value         *int
 		fallback, max int
 	}{
 		{&c.Failover.MaxAttempts, 3, 64}, {&c.Health.FailureThreshold, 3, 32},
-		{&c.Routing.HysteresisPercent, 20, 99}, {&c.Limits.Connections, 256, 4096}, {&c.Limits.ConcurrentAttempts, 32, 1024},
+		{&c.Routing.HysteresisPercent, 20, 99}, {&c.Limits.Connections, 1024, MaxConnections}, {&c.Limits.ConcurrentAttempts, setupDefault, 1024},
 	}
 	for _, d := range defaults {
 		if *d.value == 0 {

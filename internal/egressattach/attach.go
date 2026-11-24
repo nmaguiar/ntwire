@@ -32,7 +32,7 @@ import (
 const (
 	version    = 1
 	frameLimit = 4096
-	maxStreams = 288
+	maxStreams = egressrouter.MaxConnections + 32 // Leave room for discovery and control requests.
 )
 
 type record struct {
@@ -296,7 +296,7 @@ func (s *Service) handle(ctx context.Context, conn net.Conn, source egressrouter
 		_ = writeFrame(conn, response{Failure: f})
 		return
 	}
-	if s.streams.Add(1) > 256 {
+	if s.streams.Add(1) > egressrouter.MaxConnections {
 		s.streams.Add(-1)
 		_ = writeFrame(conn, response{Failure: &egressrouter.Failure{Class: "capacity", Retry: true}})
 		return

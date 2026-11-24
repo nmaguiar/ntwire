@@ -186,6 +186,7 @@ function config() {
 test('Saving all fields retains scoped settings, enrollment order, and exact durations', () => {
   const draft = config();
   draft.groups.office.browser_block_local_dns = true;
+  draft.groups.office.limits = {auto: true, connections: 900, concurrent_attempts: 64};
   const payload = JSON.parse(JSON.stringify(buildRequest(draft, [], new Set())));
   assert.deepEqual(payload, {
     ...draft,

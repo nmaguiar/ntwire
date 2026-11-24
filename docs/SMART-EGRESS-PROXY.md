@@ -101,10 +101,13 @@ smart_proxy:
     affinity_ttl: 5m
     hysteresis_percent: 20
   limits:
-    connections: 256
+    connections: 1024
     concurrent_attempts: 32
 ```
 
+- Each group accepts up to 1,024 active connections by default. To change a saved limit, set **Maximum connections** in the group settings or edit `limits.connections` in YAML. The maximum is 4,096. Once the group is full, it closes new connections until a slot opens.
+- **Automatically adjust connection and setup limits** in the group's **Limits** tab enables Auto mode. In YAML, set `limits.auto: true`. Both numeric settings become ceilings. Auto starts at up to 512 connections and 32 simultaneous setups. To allow setup concurrency to grow above 32, raise **Maximum simultaneous setup attempts** (for example, to 128). YAML with Auto enabled and no explicit setup ceiling defaults to 128.
+- Auto uses recent demand to grow limits. It reduces setup concurrency when measured setups slow down or repeatedly encounter transport failures. Groups share a process budget of up to 4,096 inbound connections, constrained by memory and, on Linux and macOS, available file descriptors. Fixed groups count toward the budget and retain their configured limits. Changes affect new admissions. The dashboard and `ntwire proxy status` show effective Auto limits and the reason for the latest adjustment or resource constraint.
 - **Sticky fastest** uses recent successful setup latency, variability and infrastructure failures, with a five-minute hostname affinity. Source IP can change between connections. Choose one member for workflows that require a fixed egress identity.
 - **Fastest healthy** ranks by measurements without hostname affinity. **Priority** tries higher numbers first, using list order for ties. **Round robin** rotates eligible members.
 - **Probes** default off. Configure operator-approved `host:port` destinations or HTTPS URLs. HTTPS uses validated certificates, a bounded HEAD request and no redirect following. Use a common test destination for comparable measurements. Probes suspend during idle periods.

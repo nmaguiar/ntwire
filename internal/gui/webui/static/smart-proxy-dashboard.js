@@ -401,6 +401,7 @@ export function startDashboard(url) {
     updateText(el('state'), [detail, state.error || live.error, error, historyError].filter(Boolean).join(' · '));
     const summary = [count(state.active ?? 0) + ' active connections',
       count(state.recovered ?? 0) + ' of ' + count(state.failovers ?? 0) + ' failovers recovered'];
+    if (state.limits?.auto) summary.push(`Auto limits · ${state.limits.connections} connections · ${state.limits.concurrent_attempts} simultaneous setups · ${state.limits.reason}`);
     if (state.last_selected) summary.push('Last selected ' + label(state.last_selected) +
       (state.selection_reason ? ' (' + readable(state.selection_reason) + ')' : ''));
     if (state.race_preparations) summary.push(count(state.race_backup_wins ?? 0) + ' backup wins in ' +

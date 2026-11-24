@@ -350,7 +350,8 @@ details.advanced > fieldset{margin-top:.5rem}
             <p class="help">UDP needs SOCKS5. Tunneled UDP also needs a server that advertises UDP support.</p>
             <div class="smart-fields smart-after">
               <label>UDP idle timeout (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.udp_idle_timeout" data-unit="seconds" data-default="120"></label>
-              <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="256"></label>
+              <label class="toggle"><input type="checkbox" data-smart-field="limits.auto"> Automatically adjust connection and setup limits</label>
+              <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="1024"></label>
               <label>Maximum simultaneous setup attempts <input type="number" min="1" max="1024" data-smart-field="limits.concurrent_attempts" data-default="32"></label>
             </div>
             <label>PAC address for all groups <input id="smart-proxy-pac" type="text" data-smart-field="pac_listen" placeholder="127.0.0.1:1082" aria-describedby="smart-proxy-pac-help"></label>

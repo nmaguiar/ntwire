@@ -180,10 +180,13 @@ func (r *Router) serveRoutedUDP(parent context.Context, in net.Conn, state *rout
 			return
 		}
 		if upstream == nil {
-			if !claim(&r.attempts, state.config.Limits.ConcurrentAttempts) {
+			setupLimits := r.acquireSetup()
+			if setupLimits == nil {
 				continue
 			}
+			started := time.Now()
 			out, chosen, health, err := r.openUDP(ctx, state, dst, decision)
+			setupLimits.observe(started, err)
 			r.attempts.Add(-1)
 			if err != nil {
 				continue
