@@ -35,6 +35,7 @@ type memberHealth struct {
 	attempts       uint64
 	failureClass   string
 	active         atomic.Int64
+	routed         atomic.Uint64
 	sent, received atomic.Uint64
 }
 type affinity struct {

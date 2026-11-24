@@ -76,6 +76,7 @@ func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
 type Manager struct {
 	smartRouter     *egressrouter.GroupSet
 	smartConfig     egressrouter.Config
+	smartEnabled    bool
 	smartConfigured bool
 	smartError      string
 
@@ -168,7 +169,8 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 		m.smartConfigured = true
 		m.smartConfig = *cfg.SmartProxy
 	}
-	if err := m.smartRouter.Apply(m.smartConfig, nil); err != nil {
+	m.smartEnabled = cfg.SmartProxyEnabled
+	if err := m.smartRouter.Apply(runningSmartProxyConfig(m.smartConfig, m.smartEnabled), nil); err != nil {
 		m.smartError = err.Error()
 	}
 	return m, nil
@@ -346,13 +348,19 @@ func (m *Manager) persist() error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
-	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
+	cfg := m.configLocked()
+	m.mu.Unlock()
+	return config.Save(m.configPath, cfg)
+}
+
+func (m *Manager) configLocked() config.Config {
+	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings,
+		Profiles: m.profilesLocked(), SmartProxyEnabled: m.smartEnabled}
 	if m.smartConfigured {
 		saved := m.smartConfig
 		cfg.SmartProxy = &saved
 	}
-	m.mu.Unlock()
-	return config.Save(m.configPath, cfg)
+	return cfg
 }
 
 // Snapshot returns one profile's current state.
@@ -649,12 +657,7 @@ func (m *Manager) tunnelBrowserProfile(id, name string, update *browseropen.Prof
 	}
 	previous := s.profile.BrowserProfiles
 	s.profile.BrowserProfiles = profiles
-	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
-	if m.smartConfigured {
-		saved := m.smartConfig
-		cfg.SmartProxy = &saved
-	}
-	if err := config.Save(m.configPath, cfg); err != nil {
+	if err := config.Save(m.configPath, m.configLocked()); err != nil {
 		s.profile.BrowserProfiles = previous
 		return p, path, err
 	}
@@ -814,8 +817,8 @@ func (m *Manager) reservePorts(id string, ports map[string]int, hosts map[string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, addr := range requested {
-		if m.smartError == "" && smartAddressConflict(m.smartConfig, addr) {
-			return fmt.Errorf("gui: local address %s (tunnel %q) conflicts with the Smart Egress Proxy", addr, name)
+		if m.smartEnabled && m.smartError == "" && smartAddressConflict(m.smartConfig, addr) {
+			return fmt.Errorf("gui: local address %s (tunnel %q) conflicts with the Smart Proxy", addr, name)
 		}
 		for otherID, res := range m.reservations {
 			if otherID == id {

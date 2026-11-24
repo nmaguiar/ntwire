@@ -8,22 +8,26 @@
 @media (prefers-color-scheme:dark){:root{--bg:#0b1120;--panel:#111a2e;--panel-2:#15223a;--text:#edf4ff;--muted:#9fb0ca;--brand:#79a7ff;--brand-strong:#a9c5ff;--accent:#4ade80;--danger:#fb923c;--danger-strong:#fdba74;--border:#263753;--shadow:0 20px 60px rgba(0,0,0,.35)}}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--text);background:var(--bg)}
-main{width:min(64rem,calc(100% - 2rem));margin:0 auto;padding:2.5rem 0}
+main{width:min(64rem,calc(100% - 2rem));margin:0 auto;padding:clamp(1.25rem,4vw,2.5rem) 0}
 h1{font-size:1.9rem;margin:0 0 .25rem}.brand-lockup{display:flex;align-items:center;gap:.55rem}.brand-mark{flex:none;width:1.9rem;height:1.9rem;filter:drop-shadow(0 .12rem .25rem color-mix(in srgb,var(--brand) 18%,transparent))}.brand-lockup h1{margin:0}.brand-nt{color:#008bff}
 .lede{color:var(--muted);margin:0 0 1.5rem}
 .build-version{color:var(--muted);font-size:.75rem;text-align:right;overflow-wrap:anywhere}
-.panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:1.25rem;margin-bottom:1.25rem}
+.panel{background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow);padding:clamp(.9rem,3vw,1.25rem);margin-bottom:1.25rem}
 .row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
 .row + .row{margin-top:.6rem}
+.panel-actions{margin-top:.9rem}
+.panel > details > summary{cursor:pointer;font-weight:700;font-size:1.1rem}
+summary:focus-visible{outline:2px solid var(--brand);outline-offset:3px;border-radius:4px}
 h2{font-size:1.1rem;margin:0 0 .75rem}
 .profile{display:flex;flex-direction:column;gap:.5rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
-.profile:last-child{border-bottom:none}
+.profile:first-child{padding-top:.15rem}
+.profile:last-child{border-bottom:none;padding-bottom:0}
 .profile .name{font-weight:700}
-.profile .server{color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Consolas,monospace}
+.profile .server{overflow-wrap:anywhere;color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Consolas,monospace}
 .profile .live{color:var(--muted);font-size:.8rem;margin-top:.15rem}
 .profile .info{flex:1;min-width:0}
-.badge{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);border-radius:999px;padding:.25rem .6rem;font-size:.78rem;font-weight:700;background:var(--panel-2)}
-.badge::before{content:"";width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}
+.badge{max-width:100%;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);border-radius:999px;padding:.25rem .6rem;font-size:.78rem;font-weight:700;background:var(--panel-2)}
+.badge::before{content:"";flex:none;width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}
 .badge.connected::before,.badge.reconnecting::before{background:var(--accent)}
 .badge.failed::before,.badge.awaiting_trust::before,.badge.awaiting_passphrase::before{background:var(--danger)}
 button,a.button{border:0;border-radius:10px;background:var(--brand);color:var(--bg);padding:.5rem .8rem;font-weight:700;font-size:.85rem;cursor:pointer;display:inline-block;text-decoration:none;line-height:1.4}
@@ -31,14 +35,17 @@ button.secondary,a.button.secondary{background:var(--panel-2);color:var(--text);
 button.danger{background:var(--danger)}
 button:hover,button:focus-visible{filter:brightness(1.08)}
 button:disabled{cursor:not-allowed;opacity:.5}
-input[type=text],input[type=password],input[type=number],textarea,select{width:100%;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text);padding:.5rem .6rem;font:inherit}
+input:not([type]),input[type=text],input[type=url],input[type=password],input[type=number],textarea,select{width:100%;min-width:0;border:1px solid var(--border);border-radius:10px;background:var(--panel);color:var(--text);padding:.5rem .6rem;font:inherit}
 textarea{min-height:4.5rem;font:.85rem ui-monospace,SFMono-Regular,Consolas,monospace}
 label{display:grid;gap:.3rem;font-size:.85rem;color:var(--muted);margin-bottom:.75rem}
 label.toggle{display:flex;flex-direction:row;align-items:center;gap:.5rem;font-size:.9rem;color:var(--text)}
-label.toggle input{width:auto}
-fieldset{border:1px solid var(--border);border-radius:12px;padding:.9rem;margin:0 0 .9rem}
+label.toggle input{width:auto;flex:none;margin:0}
+input[type=file]{max-width:100%;font:inherit;font-size:.85rem}
+fieldset{min-width:0;border:1px solid var(--border);border-radius:12px;padding:.9rem;margin:0 0 .9rem}
 legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em}
-.help{color:var(--muted);font-size:.78rem;margin:-.15rem 0 0}
+.help{color:var(--muted);font-size:.8rem;margin:0;overflow-wrap:anywhere}
+.help + .help,button + .help{margin-top:.45rem}
+.help + label,.help + .row{margin-top:.75rem}
 #message{display:none;min-height:1.3em;font-weight:600;align-items:center;gap:.4rem}
 #message:not(:empty){display:inline-flex}
 #message.ok{color:var(--accent)}
@@ -60,13 +67,73 @@ legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-
 .reconnect-banner{position:sticky;top:0;z-index:100;display:flex;gap:.75rem;align-items:center;justify-content:center;flex-wrap:wrap;padding:.7rem 1rem;background:#fee2e2;color:#7f1d1d;border-bottom:1px solid #fca5a5;font-weight:700;box-shadow:0 2px 8px rgba(127,29,29,.12)}
 .reconnect-banner button{border:1px solid #fca5a5;border-radius:10px;background:#fff1f2;color:#9f1239;padding:.4rem .75rem;font-weight:700;cursor:pointer}
 .reconnect-banner button:hover,.reconnect-banner button:focus-visible{background:#ffe4e6}
-details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:.5rem 0}
+details.advanced{margin:.65rem 0}
+details.advanced > summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:.18rem 0}
+details.advanced > fieldset{margin-top:.5rem}
 .ports-toggle{border:1px solid var(--border);border-radius:12px;margin-top:.6rem;padding:.5rem .7rem}
 .ports-toggle summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text)}
-.ports-list{margin-top:.5rem}
+.ports-list{display:grid;gap:.7rem;margin-top:.6rem}
+.port-line .server{flex:0 1 auto}
+.port-edit{display:flex;gap:.45rem;align-items:center;max-width:100%;min-width:0}
+.port-edit input{width:10rem}
+.port-line + .port-line{margin-top:0}
+.argument-row input{flex:1 1 12rem;width:auto}
+.argument-row button{flex:none}
+.argument-list:not(:empty){margin-bottom:.65rem}
+.diagnostic-text{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.85rem;margin:.7rem 0}
+#update-notes{max-height:14rem;overflow:auto}
+#update-version,#update-status{margin:.75rem 0;overflow-wrap:anywhere}
+#update-notes:empty,#update-status:empty,.identity-status:empty,#smart-proxy-action-status:empty,#smart-proxy-group-status:empty,#smart-proxy-master-status:empty{display:none}
+.browser-profile-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:.4rem .75rem;padding:.65rem 0;border-bottom:1px solid var(--border)}
+.browser-profile-row input{margin:0}
+.browser-profile-data{min-width:0}
+.browser-profile-data code{display:block;overflow-wrap:anywhere;color:var(--muted);font-size:.8rem}
+.browser-profile-meta{font-size:.8rem;color:var(--muted)}
+@media (max-width:38rem){
+  .browser-profile-meta{grid-column:2}
+  .profile .info{flex-basis:100%}
+}
 .setup{max-width:34rem;margin:8vh auto}.setup label{font-size:1rem}.setup input{font-size:1rem;padding:.7rem}.setup .help{margin:.1rem 0 1rem}
 .browser-profile-dialog{width:min(36rem,calc(100% - 2rem));padding:1.25rem;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text)}
 .browser-profile-dialog code{overflow-wrap:anywhere;user-select:all}
+#smart-proxy-unsaved{font-size:.8rem;font-weight:500;color:var(--muted)}
+.smart-contents{margin:0;padding:0;border:0;min-width:0}
+#smart-proxy-group-controls{margin-top:1rem}
+.smart-master{margin-top:.85rem;padding-bottom:.6rem;border-bottom:1px solid var(--border)}
+.smart-master .toggle{margin-bottom:.25rem}
+.smart-tabs{display:flex;flex-wrap:wrap;gap:.35rem;margin:1rem 0 0;padding-bottom:.6rem;border-bottom:1px solid var(--border)}
+.smart-tabs button{background:transparent;color:var(--muted);border:1px solid transparent;text-align:left}
+.smart-tabs button[aria-selected="true"]{background:var(--panel-2);color:var(--brand-strong);border-color:var(--border)}
+.smart-tabs button:focus-visible,.smart-section[role="tabpanel"]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.smart-section[role="tabpanel"]{border-top:0}
+.smart-section{border-top:1px solid var(--border);padding:1rem 0;min-width:0}
+.smart-section h3{font-size:1rem;margin:0 0 .65rem}
+.smart-section h4{font-size:.9rem;margin:1rem 0 .4rem}
+.smart-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:.25rem 1rem}
+.smart-fields label{min-width:0;align-content:end}
+.smart-protocols{margin:.7rem 0;padding:.35rem .75rem}
+.smart-protocols label,.smart-picker label{margin-bottom:0}
+.smart-picker{margin:.75rem 0;align-items:end}
+.smart-picker label{min-width:0;flex:1 1 14rem}
+.smart-after,.smart-approval,.smart-action-help{margin-top:.65rem}
+.smart-card{padding:.8rem;margin:.75rem 0;border:1px solid var(--border);border-radius:10px;min-width:0;overflow-wrap:anywhere}
+.smart-card legend{max-width:100%;text-transform:none;font-weight:600;font-size:.85rem;letter-spacing:normal;color:var(--text)}
+.smart-table-wrap{max-width:100%;overflow-x:auto;margin:.75rem 0;border:1px solid var(--border);border-radius:10px}
+.smart-table{width:100%;border-collapse:collapse;font-size:.85rem;text-align:left}
+.smart-table th,.smart-table td{padding:.55rem .65rem;vertical-align:top;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
+.smart-table thead th{background:var(--panel-2);font-weight:700;white-space:nowrap}
+.smart-table tbody tr:last-child>*{border-bottom:0}
+.smart-table-actions{display:flex;gap:.3rem;flex-wrap:wrap;min-width:9rem}
+.smart-table-actions button{padding:.28rem .48rem;white-space:nowrap}
+.smart-editor{width:min(40rem,calc(100% - 2rem));max-height:calc(100dvh - 2rem);overflow:auto}
+.smart-editor::backdrop{background:rgba(11,17,32,.55)}
+.smart-targets{display:flex;flex-wrap:wrap;gap:0 .75rem;padding:.45rem .65rem}
+.smart-targets legend{font-weight:500}
+.smart-targets label{margin:.15rem 0}
+.smart-warning{margin:.35rem 0;font-size:.85rem;color:var(--danger-strong)}
+.smart-warning:empty{display:none}
+.smart-save{border-top:1px solid var(--border);padding:.75rem 0;align-items:center}
+#smart-proxy-save-status{margin:0;font-size:.85rem;overflow-wrap:anywhere}
 </style>
 <main id="main">
   <div class="brand-lockup"><svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="logo-cyan" x1="9" y1="37" x2="39" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#0755ed"/><stop offset="1" stop-color="#18dcff"/></linearGradient><linearGradient id="logo-indigo" x1="10" y1="11" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#1650e7"/><stop offset=".5" stop-color="#8f72ff"/><stop offset="1" stop-color="#2638bf"/></linearGradient></defs><path d="M13 36V16c0-3 3.6-4.5 5.7-2.4l12.5 12.5a3 3 0 0 0 4.2 0l4.8-4.8" fill="none" stroke="url(#logo-cyan)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m8.7 34.6 10.7-10.7a3.2 3.2 0 0 1 4.5 0l12.5 12.5c1.9 1.9 5.1.6 5.1-2.2V25" fill="none" stroke="url(#logo-indigo)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="20" r="2.7" fill="#16d9ff"/></svg><h1><span class="brand-nt">nt</span>wire settings</h1></div>
@@ -91,79 +158,21 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
   </section>
 
   <div id="regular-settings">
-  <section class="panel" id="smart-proxy-panel">
-    <details>
-      <summary>Smart Egress Proxy</summary>
-      <div class="row">
-        <label>Proxy group <select id="smart-proxy-group"></select></label>
-        <label>New group name <input id="smart-proxy-group-name" placeholder="office"></label>
-        <button type="button" class="secondary" id="smart-proxy-add-group">Add group</button>
-        <button type="button" class="secondary" id="smart-proxy-remove-group" hidden>Remove group</button>
-      </div>
-      <p id="smart-proxy-state" role="status"></p>
-      <form id="smart-proxy-form">
-        <label class="toggle"><input type="checkbox" id="smart-proxy-enabled"> Enable Smart Egress Proxy</label>
-        <div class="row">
-          <label>Loopback address <input id="smart-proxy-listen" required placeholder="127.0.0.1:1080"></label>
-          <label>Routing strategy <select id="smart-proxy-strategy">
-            <option value="sticky-fastest">Sticky fastest</option>
-            <option value="fastest-healthy">Fastest healthy</option>
-            <option value="destination-aware">Destination aware</option>
-            <option value="priority">Priority</option>
-            <option value="round-robin">Round robin</option>
-          </select></label>
-        </div>
-        <p class="help">Add only tunnels with equivalent destination access and trust. Destination rules can limit which traffic uses the group.</p>
-        <div class="row">
-          <label>SOCKS tunnel <select id="smart-proxy-available"></select></label>
-          <button type="button" class="secondary" id="smart-proxy-add">Add tunnel</button>
-        </div>
-        <div id="smart-proxy-members"></div>
-        <label class="toggle"><input type="checkbox" id="smart-proxy-approve"> I approve these tunnels for the same egress group</label>
-        <details>
-          <summary>Advanced routing</summary>
-          <label>Affinity scope <select id="smart-proxy-affinity">
-            <option value="host">Destination hostname</option>
-            <option value="group">Whole group</option>
-          </select></label>
-          <label class="toggle"><input type="checkbox" id="smart-proxy-racing"> Race TCP service setup</label>
-          <label class="toggle"><input type="checkbox" id="smart-proxy-udp"> Enable SOCKS5 UDP ASSOCIATE</label>
-          <label>Destination rules (JSON array) <textarea id="smart-proxy-rules" rows="4"></textarea></label>
-          <label>Unmatched destinations <select id="smart-proxy-unmatched">
-            <option value="">Deny when rules exist</option>
-            <option value="allow">Allow</option>
-            <option value="deny">Deny</option>
-          </select></label>
-          <label>Approved server classes (JSON array) <textarea id="smart-proxy-enroll" rows="4"></textarea></label>
-          <label>PAC loopback address for all groups <input id="smart-proxy-pac" placeholder="127.0.0.1:1082"></label>
-        </details>
-        <div class="row"><button type="submit">Save Smart Egress Proxy</button></div>
-      </form>
-      <div class="row" id="smart-proxy-actions" hidden>
-        <button type="button" class="secondary" data-copy-proxy="socks5h">Copy SOCKS5 URL</button>
-        <button type="button" class="secondary" data-copy-proxy="http">Copy HTTP proxy URL</button>
-        <button type="button" class="secondary" id="smart-proxy-copy-pac" hidden>Copy PAC URL</button>
-        <button type="button" class="secondary" id="smart-proxy-browser">Open isolated browser</button>
-        <button type="button" class="secondary" id="smart-proxy-clear-preferred">Clear preference</button>
-      </div>
-      <p class="help" id="smart-proxy-summary" hidden></p>
-      <div id="smart-proxy-health"></div>
-    </details>
-  </section>
-  <section class="panel"><details><summary>Browser settings (advanced)</summary>
-  <label for="global-browser-folder">Browser profiles folder</label>
-  <input id="global-browser-folder" type="text" placeholder="Default location">
+  <section class="panel"><details><summary><span aria-hidden="true">🌐</span> Browser settings (advanced)</summary>
+  <label class="panel-actions">Browser profiles folder <input id="global-browser-folder" type="text" placeholder="Default location"></label>
   <p class="help">Enter an absolute local path. Folder changes apply to future launches. Existing browser data stays in its current folder.</p>
   <p><a target="_blank" rel="noopener noreferrer" href="https://github.com/nmaguiar/ntwire/blob/main/docs/CONFIGURATION.md#socks-browser-profiles">Copy an existing browser profile</a></p>
   <div id="global-browser-args"></div><button id="save-browser-args" type="button">Save browser settings</button>
   </details></section>
   <section class="panel">
-    <h2>👤 Profiles</h2>
-    <div id="profiles" class="empty">Loading…</div>
-    <div class="row" style="margin-top:1rem">
-      <button id="add-profile-btn">➕ Add profile…</button>
-      <button class="secondary" id="keygen-btn">🔑 Generate new identity…</button>
-    </div>
+    <details id="profiles-disclosure" open>
+      <summary><span aria-hidden="true">👤</span> Profiles</summary>
+      <div id="profiles" class="empty panel-actions">Loading…</div>
+      <div class="row panel-actions">
+        <button id="add-profile-btn">➕ Add profile…</button>
+        <button class="secondary" id="keygen-btn">🔑 Generate new identity…</button>
+      </div>
+    </details>
   </section>
 
   <section class="panel hidden" id="form-panel">
@@ -180,31 +189,181 @@ details.advanced summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-
     </form>
   </section>
 
+  <section class="panel" id="smart-proxy-panel">
+    <details id="smart-proxy-disclosure">
+      <summary><span aria-hidden="true">🔀</span> Smart Proxy <span id="smart-proxy-unsaved" hidden>· Unsaved changes</span></summary>
+      <div class="smart-master">
+        <label class="toggle"><input type="checkbox" id="smart-proxy-master" aria-describedby="smart-proxy-master-help" disabled> Enable Smart Proxy</label>
+        <p class="help" id="smart-proxy-master-help">Applies immediately. Turning this off stops all proxy groups and hides Smart Proxy from the tray.</p>
+        <p class="help" id="smart-proxy-master-status" role="status"></p>
+      </div>
+      <fieldset id="smart-proxy-group-controls" class="smart-contents" disabled>
+        <div class="smart-fields">
+          <label>Proxy group <select id="smart-proxy-group"></select></label>
+          <label>New group name <input id="smart-proxy-group-name" type="text" placeholder="office"></label>
+        </div>
+        <div class="row">
+          <button type="button" class="secondary" id="smart-proxy-add-group">Add group</button>
+          <button type="button" class="secondary" id="smart-proxy-remove-group">Remove group</button>
+          <a class="button secondary" id="smart-proxy-export" hidden>Export saved settings</a>
+          <button type="button" class="secondary" id="smart-proxy-import">Import settings…</button>
+          <input type="file" id="smart-proxy-import-file" accept=".json,application/json" hidden>
+        </div>
+        <label class="toggle smart-after"><input type="checkbox" id="smart-proxy-group-enabled" aria-describedby="smart-proxy-group-enabled-help"> Activate this group</label>
+        <p class="help" id="smart-proxy-group-enabled-help">Select Save changes to apply. The group runs only while Smart Proxy is enabled.</p>
+        <p class="help smart-after" id="smart-proxy-group-status" role="status"></p>
+      </fieldset>
+      <p id="smart-proxy-state" role="status">Loading proxy settings…</p>
+      <div class="row" id="smart-proxy-actions" aria-describedby="smart-proxy-action-help">
+        <button type="button" class="secondary" data-copy-proxy="socks5" disabled>Copy SOCKS5 URL</button>
+        <button type="button" class="secondary" data-copy-proxy="http" disabled>Copy HTTP URL</button>
+        <button type="button" class="secondary" data-copy-proxy="pac" disabled>Copy PAC URL</button>
+        <button type="button" class="secondary" id="smart-proxy-browser" disabled><span aria-hidden="true">🌐</span> Open isolated browser</button>
+        <a class="button secondary" id="smart-proxy-open-live" target="_blank" rel="noopener noreferrer" hidden><span aria-hidden="true">📊</span> Open live dashboard</a>
+      </div>
+      <p class="help smart-action-help" id="smart-proxy-action-help"></p>
+      <p class="help" id="smart-proxy-action-status" role="status"></p>
+      <div class="smart-tabs" id="smart-proxy-tabs" role="tablist" aria-label="Smart Proxy settings">
+        <button type="button" id="smart-proxy-setup-tab" role="tab" aria-controls="smart-proxy-setup" aria-selected="true"><span aria-hidden="true">⚙️</span> Setup</button>
+        <button type="button" id="smart-proxy-tunnels-tab" role="tab" aria-controls="smart-proxy-tunnels" aria-selected="false" tabindex="-1"><span aria-hidden="true">🔗</span> Tunnels</button>
+        <button type="button" id="smart-proxy-destinations-tab" role="tab" aria-controls="smart-proxy-destinations" aria-selected="false" tabindex="-1"><span aria-hidden="true">🧭</span> Destination rules</button>
+        <button type="button" id="smart-proxy-health-settings-tab" role="tab" aria-controls="smart-proxy-health-settings" aria-selected="false" tabindex="-1"><span aria-hidden="true">🩺</span> Failover and health</button>
+        <button type="button" id="smart-proxy-limits-tab" role="tab" aria-controls="smart-proxy-limits" aria-selected="false" tabindex="-1"><span aria-hidden="true">🎛️</span> Limits and PAC</button>
+      </div>
+      <form id="smart-proxy-form" novalidate>
+        <fieldset id="smart-proxy-fields" class="smart-contents" disabled>
+          <section class="smart-section" id="smart-proxy-setup" role="tabpanel" aria-labelledby="smart-proxy-setup-tab" tabindex="0">
+            <div class="smart-fields">
+              <label>Local address <input type="text" data-smart-field="listen" placeholder="127.0.0.1:1080"></label>
+              <label>Routing strategy
+                <select data-smart-field="egress.selection" data-default="sticky-fastest" aria-describedby="smart-proxy-strategy-help">
+                  <option value="sticky-fastest">Sticky fastest</option>
+                  <option value="fastest-healthy">Fastest healthy</option>
+                  <option value="destination-aware">Destination aware</option>
+                  <option value="priority">Priority</option>
+                  <option value="round-robin">Round robin</option>
+                </select>
+              </label>
+            </div>
+            <p class="help" id="smart-proxy-strategy-help"></p>
+            <fieldset class="smart-protocols">
+              <legend>Protocols</legend>
+              <div class="row">
+                <label class="toggle"><input type="checkbox" data-smart-protocol="socks5"> SOCKS5</label>
+                <label class="toggle"><input type="checkbox" data-smart-protocol="http"> HTTP</label>
+              </div>
+            </fieldset>
+            <label class="toggle smart-after"><input type="checkbox" data-smart-field="browser_block_local_dns" aria-describedby="smart-proxy-browser-dns-help"> Block local DNS in the isolated browser</label>
+            <p class="help" id="smart-proxy-browser-dns-help">Requires a Chromium browser that supports host resolver rules. Save changes, then restart the isolated browser to apply.</p>
+            <div class="smart-fields">
+              <label>Keep the same tunnel for
+                <select data-smart-field="routing.affinity_scope" data-default="host">
+                  <option value="host">Each destination hostname</option>
+                  <option value="group">The whole group</option>
+                </select>
+              </label>
+              <label>Keep tunnel preference (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.affinity_ttl" data-unit="seconds" data-default="300"></label>
+              <label>Speed improvement needed to switch (%) <input type="number" min="1" max="99" data-smart-field="routing.hysteresis_percent" data-default="20"></label>
+            </div>
+            <p class="help">Tunnel preference applies to Sticky fastest. Whole-group preference keeps one exit across destinations when possible.</p>
+          </section>
+          <section class="smart-section" id="smart-proxy-tunnels" role="tabpanel" aria-labelledby="smart-proxy-tunnels-tab" tabindex="0" hidden>
+            <p class="help">Group only tunnels with equivalent destination access and trust. Higher priority wins under Priority routing.</p>
+            <div class="row smart-picker">
+              <label>Connected SOCKS tunnel <select id="smart-proxy-available"></select></label>
+              <button type="button" class="secondary" id="smart-proxy-add">Add selected tunnel</button>
+              <button type="button" class="secondary" id="smart-proxy-add-manual">Add tunnel manually</button>
+            </div>
+            <div id="smart-proxy-members"></div>
+            <h4><span aria-hidden="true">🛡️</span> Automatic enrollment</h4>
+            <p class="help">Approve a profile, its HTTPS server, and the policy class advertised by that server.</p>
+            <div id="smart-proxy-enrollments"></div>
+            <button type="button" class="secondary" id="smart-proxy-add-enrollment">Add enrollment</button>
+            <label class="toggle smart-approval"><input type="checkbox" id="smart-proxy-approve"> I approve these tunnels and enrollments for this group</label>
+          </section>
+          <section class="smart-section" id="smart-proxy-destinations" role="tabpanel" aria-labelledby="smart-proxy-destinations-tab" tabindex="0" hidden>
+            <p class="help">The first matching rule wins. Enter multiple values separated by commas. Leave a field empty to match any value of that type.</p>
+            <p class="help">IP ranges match literal IP addresses. Add a hostname or domain suffix to match requests by name. A matching rule that selects specific tunnels uses only those tunnels.</p>
+            <div id="smart-proxy-rules"></div>
+            <button type="button" class="secondary" id="smart-proxy-add-rule">Add rule</button>
+            <label class="smart-after">When no rule matches
+              <select data-smart-field="routing.unmatched">
+                <option value="">Block when rules exist</option>
+                <option value="allow">Allow through the group</option>
+                <option value="deny">Block</option>
+              </select>
+            </label>
+          </section>
+          <section class="smart-section" id="smart-proxy-health-settings" role="tabpanel" aria-labelledby="smart-proxy-health-settings-tab" tabindex="0" hidden>
+            <label class="toggle"><input type="checkbox" data-smart-field="failover.enabled" data-default="true"> Try another tunnel when connection setup fails</label>
+            <label class="toggle"><input type="checkbox" data-smart-field="failover.racing"> Start preparing a backup TCP connection before the first attempt finishes</label>
+            <div class="smart-fields">
+              <label>Maximum attempts <input type="number" min="1" max="64" data-smart-field="failover.max_attempts" data-default="3"></label>
+              <label>Per-attempt timeout (seconds) <input type="number" step="any" min="0.001" max="60" data-smart-field="failover.attempt_timeout" data-unit="seconds" data-default="3"></label>
+              <label>Total setup timeout (seconds) <input type="number" step="any" min="0.001" max="120" data-smart-field="failover.total_timeout" data-unit="seconds" data-default="10"></label>
+              <label>Backup start delay (milliseconds) <input type="number" step="any" min="1" max="5000" data-smart-field="failover.race_delay" data-unit="milliseconds" data-default="200"></label>
+            </div>
+            <p class="help">Backup preparation needs failover and at least two attempts. Only the winning connection receives the destination request.</p>
+            <label class="smart-after">Health probe targets
+              <textarea rows="2" data-smart-field="health.probe_targets" data-list aria-describedby="smart-proxy-probe-help" placeholder="probe.example.net:443"></textarea>
+            </label>
+            <p class="help" id="smart-proxy-probe-help">Enter one host:port or HTTPS URL per line. Leave empty to turn off active probes.</p>
+            <div class="smart-fields smart-after">
+              <label>Probe interval (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.interval" data-unit="seconds" data-default="30"></label>
+              <label>Consecutive failures before pausing a tunnel <input type="number" min="1" max="32" data-smart-field="health.failure_threshold" data-default="3"></label>
+              <label>Wait before retrying a paused tunnel (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.recovery_interval" data-unit="seconds" data-default="30"></label>
+            </div>
+          </section>
+          <section class="smart-section" id="smart-proxy-limits" role="tabpanel" aria-labelledby="smart-proxy-limits-tab" tabindex="0" hidden>
+            <label class="toggle"><input type="checkbox" data-smart-field="routing.udp_associate"> Enable SOCKS5 UDP ASSOCIATE</label>
+            <p class="help">UDP needs SOCKS5 and a server that advertises UDP support.</p>
+            <div class="smart-fields smart-after">
+              <label>UDP idle timeout (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.udp_idle_timeout" data-unit="seconds" data-default="120"></label>
+              <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="256"></label>
+              <label>Maximum simultaneous setup attempts <input type="number" min="1" max="1024" data-smart-field="limits.concurrent_attempts" data-default="32"></label>
+            </div>
+            <label>PAC address for all groups <input id="smart-proxy-pac" type="text" data-smart-field="pac_listen" placeholder="127.0.0.1:1082" aria-describedby="smart-proxy-pac-help"></label>
+            <p class="help" id="smart-proxy-pac-help">Leave empty to turn off proxy auto-configuration (PAC). Use a different port from the proxy listener.</p>
+          </section>
+          <div class="row smart-save">
+            <button type="submit" id="smart-proxy-save" disabled>Save changes</button>
+            <button type="button" class="secondary" id="smart-proxy-discard" disabled>Discard changes</button>
+            <p id="smart-proxy-save-status" role="status"></p>
+          </div>
+        </fieldset>
+      </form>
+    </details>
+  </section>
+
   <section class="panel" id="updates-panel">
-    <h2>🔄 Application updates</h2>
-    <p id="update-version">Loading update status…</p>
-    <label class="toggle"><input type="checkbox" id="update-checks">Check for updates automatically</label>
-    <label class="toggle"><input type="checkbox" id="update-automatic">Download and verify updates automatically; install when I quit</label>
-    <p class="help">Updates apply to this app only. Quitting disconnects tunnels. The app will be ready on your next launch.</p>
-    <p id="update-status" role="status"></p>
-    <progress id="update-progress" class="hidden" max="1" value="0"></progress>
-    <pre id="update-notes" style="white-space:pre-wrap;max-height:14rem;overflow:auto"></pre>
-    <div class="row">
-      <button class="secondary" id="update-check-btn">Check now</button>
-      <button id="update-download-btn" hidden>Download update</button>
-      <button id="update-install-btn" hidden>Quit and install</button>
-      <button id="update-admin-btn" hidden>Authorize administrator install and quit…</button>
-    </div>
+    <details id="updates-disclosure">
+      <summary><span aria-hidden="true">🔄</span> Application updates</summary>
+      <p id="update-version" class="panel-actions">Loading update status…</p>
+      <label class="toggle"><input type="checkbox" id="update-checks">Check for updates automatically</label>
+      <label class="toggle"><input type="checkbox" id="update-automatic">Download and verify updates automatically; install when I quit</label>
+      <p class="help">Updates apply to this app only. Quitting disconnects tunnels. The app will be ready on your next launch.</p>
+      <p id="update-status" role="status"></p>
+      <progress id="update-progress" class="hidden" max="1" value="0"></progress>
+      <pre id="update-notes" class="diagnostic-text"></pre>
+      <div class="row">
+        <button class="secondary" id="update-check-btn">Check now</button>
+        <button id="update-download-btn" hidden>Download update</button>
+        <button id="update-install-btn" hidden>Quit and install</button>
+        <button id="update-admin-btn" hidden>Authorize administrator install and quit…</button>
+      </div>
+    </details>
   </section>
 
   <section class="panel">
-    <h2>🧹 Browser profile cleanup</h2>
-    <p class="lede">Saved SOCKS browser profiles, including previous storage locations. Close the browser before deleting its profile.</p>
-    <div id="browser-profiles" class="empty">Loading…</div>
-    <div class="row" style="margin-top:1rem">
-      <button class="danger" id="delete-browser-profiles-btn" disabled>🗑️ Delete selected</button>
-      <button class="secondary" id="refresh-browser-profiles-btn">🔄 Refresh</button>
-    </div>
+    <details id="browser-cleanup-disclosure">
+      <summary><span aria-hidden="true">🧹</span> Browser profile cleanup</summary>
+      <p class="lede panel-actions">Saved SOCKS browser profiles, including previous storage locations. Close the browser before deleting its profile.</p>
+      <div id="browser-profiles" class="empty">Loading…</div>
+      <div class="row panel-actions">
+        <button class="danger" id="delete-browser-profiles-btn" disabled>🗑️ Delete selected</button>
+        <button class="secondary" id="refresh-browser-profiles-btn">🔄 Refresh</button>
+      </div>
+    </details>
   </section>
 </div>
   <footer id="build-version" class="build-version" hidden></footer>
@@ -384,12 +543,12 @@ function renderProfiles() {
   }
   const list = [...profiles.values()].sort((a, b) => a.profile.Name.localeCompare(b.profile.Name));
   if (!list.length) {
-    profilesEl.className = 'empty';
+    profilesEl.classList.add('empty');
     profilesEl.textContent = 'No profiles yet.';
     renderSetup();
     return;
   }
-  profilesEl.className = '';
+  profilesEl.classList.remove('empty');
   profilesEl.replaceChildren(...list.map(renderProfileRow));
   renderSetup();
 }
@@ -639,14 +798,13 @@ function renderTunnelSection(profileID, tunnels) {
   list.className = 'ports-list';
   for (const t of tunnels) {
     const line = document.createElement('div');
-    line.className = 'row';
-    line.style.margin = '.3rem 0';
+    line.className = 'row port-line';
     const label = document.createElement('span');
     label.className = 'server';
     label.textContent = `${t.name} → ${t.local_address}`;
     const input = document.createElement('input');
     input.type = 'text';
-    input.style.width = '10rem';
+    input.setAttribute('aria-label', 'Local address for ' + t.name);
     input.title = 'port, or host:port (e.g. 127.70.0.1:5432)';
     input.value = t.local_address;
     const apply = document.createElement('button');
@@ -666,7 +824,10 @@ function renderTunnelSection(profileID, tunnels) {
         setMessage(`Rebound "${t.name}".`, 'ok');
       } catch (e) { setMessage(e.message); }
     });
-    line.append(label, input, apply);
+    const edit = document.createElement('div');
+    edit.className = 'port-edit';
+    edit.append(input, apply);
+    line.append(label, edit);
     if (t.target_hint === 'socks') {
       const openBrowser = document.createElement('button');
       openBrowser.className = 'secondary';
@@ -764,15 +925,16 @@ function browserArgumentsEditor(value, global = false, profile = null) {
   for (const key of ['inherit', 'append', 'replace']) { const o = document.createElement('option'); o.value = key; o.textContent = key; mode.append(o); }
   mode.value = profile?.BrowserArgsMode || 'inherit';
   if (!global) { const label = document.createElement('label'); label.textContent = 'Argument inheritance'; label.append(mode); box.append(label); }
-  const rows = document.createElement('div'); const preview = document.createElement('pre'); preview.style.whiteSpace = 'pre-wrap';
+  const rows = document.createElement('div'); rows.className = 'argument-list';
+  const preview = document.createElement('pre'); preview.className = 'diagnostic-text';
   const values = () => [...rows.querySelectorAll('input')].map(el => el.value).filter(v => v.trim() !== '');
   const update = () => { const own = values(); const inherited = globalBrowserSettings.BrowserArgs || [];
     const effective = global || mode.value === 'replace' ? own : mode.value === 'append' ? [...inherited, ...own] : inherited;
     preview.textContent = 'Effective arguments: ' + JSON.stringify(effective); };
   const addRow = (value = '') => {
-    const row = document.createElement('div'); row.className = 'row';
-    const input = document.createElement('input'); input.value = value; input.placeholder = '--flag=value'; input.setAttribute('aria-label', 'Browser argument');
-    const remove = document.createElement('button'); remove.type = 'button'; remove.textContent = 'Remove';
+    const row = document.createElement('div'); row.className = 'row argument-row';
+    const input = document.createElement('input'); input.type = 'text'; input.value = value; input.placeholder = '--flag=value'; input.setAttribute('aria-label', 'Browser argument');
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'secondary'; remove.textContent = 'Remove';
     remove.onclick = () => { row.remove(); update(); }; input.oninput = update; row.append(input, remove); rows.append(row);
   };
   (value || []).forEach(addRow);
@@ -920,7 +1082,7 @@ function proxySettingsControl(profile) {
     <p class="help">Supports http://, https://, socks5:// and socks5h://, optional username/password, and bracketed IPv6. Default ports are supported. Enter a complete URL to replace saved credentials; enter a URL without credentials to clear them. Leave blank to keep a saved URL.</p></div>
     <p class="help">Proxy settings apply to the HTTPS control channel and WebSocket Secure (WSS) transport. Direct UDP and UDP-relay paths do not use the configured HTTP/SOCKS proxy. Auto transport may select native UDP.</p>
     <p class="help">Direct mode ignores HTTP_PROXY, HTTPS_PROXY and NO_PROXY for HTTPS/WSS. It does not change firewall policies or operating-system network controls.</p>
-    <pre data-proxy-status role="status" style="white-space:pre-wrap;overflow-wrap:anywhere"></pre>
+    <pre data-proxy-status role="status" class="diagnostic-text"></pre>
     <button type="button" class="secondary" data-refresh-proxy>Refresh proxy diagnostics</button>
     <p class="help">Inherited values are read-only defaults from the ntwire-gui core process and are not stored in this profile. Restart ntwire-gui after changing its launch environment. This describes saved or proposed configuration, not an established proxy connection.</p>`;
   const mode = fs.querySelector('select');
@@ -1328,8 +1490,7 @@ function trustModal(snap) {
   }
 
   const actions = document.createElement('div');
-  actions.className = 'row';
-  actions.style.marginTop = '1rem';
+  actions.className = 'row panel-actions';
   const reject = document.createElement('button');
   reject.className = '';
   reject.textContent = 'Reject';
@@ -1370,8 +1531,7 @@ function passphraseModal(snap) {
   label.append('Passphrase', input);
 
   const actions = document.createElement('div');
-  actions.className = 'row';
-  actions.style.marginTop = '1rem';
+  actions.className = 'row panel-actions';
   const connect = document.createElement('button');
   connect.textContent = 'Connect';
   connect.addEventListener('click', () => answerPassphrase(snap.profile.ID, input.value, false));
@@ -1443,22 +1603,18 @@ function renderBrowserProfiles() {
 
 function renderBrowserProfileRow(p) {
   const row = document.createElement('div');
-  row.className = 'row';
-  row.style.padding = '.4rem 0';
-  row.style.borderBottom = '1px solid var(--border)';
-  if (p.InUse) {
-    row.style.opacity = '0.65';
-  }
-
-  const left = document.createElement('div');
-  left.className = 'row';
-  left.style.flex = '1';
-  left.style.minWidth = '0';
+  row.className = 'browser-profile-row';
+  const data = document.createElement('div');
+  data.className = 'browser-profile-data';
+  const nameLine = document.createElement('div');
+  nameLine.className = 'row';
+  const profileName = p.Name || p.TunnelKey || p.Key;
 
   const cb = document.createElement('input');
   cb.type = 'checkbox';
   cb.checked = selectedBrowserProfiles.has(p.Key);
   cb.disabled = p.InUse;
+  cb.setAttribute('aria-label', 'Select ' + profileName);
   cb.addEventListener('change', () => {
     if (cb.checked) {
       selectedBrowserProfiles.add(p.Key);
@@ -1469,23 +1625,23 @@ function renderBrowserProfileRow(p) {
   });
 
   const name = document.createElement('span');
-  name.className = 'server';
-  name.style.fontWeight = '600';
-  name.textContent = p.Name || p.TunnelKey || p.Key;
+  name.className = 'name';
+  name.textContent = profileName;
   const path = document.createElement('code');
   path.textContent = p.Path;
 
-  left.append(cb, name, path);
+  nameLine.append(name);
+  data.append(nameLine, path);
 
   if (p.InUse) {
     const badge = document.createElement('span');
     badge.className = 'badge connected';
     badge.textContent = 'Browser in use';
-    left.append(badge);
+    nameLine.append(badge);
   }
 
   const right = document.createElement('div');
-  right.className = 'live';
+  right.className = 'browser-profile-meta';
   if (p.ModTime) {
     const d = new Date(p.ModTime);
     if (!isNaN(d.getTime())) {
@@ -1493,7 +1649,7 @@ function renderBrowserProfileRow(p) {
     }
   }
 
-  row.append(left, right);
+  row.append(cb, data, right);
   return row;
 }
 
@@ -1564,311 +1720,7 @@ function showReconnectBanner() {
   document.body.prepend(reconnectBanner);
 }
 
-const smartProxyForm = document.getElementById('smart-proxy-form');
-const smartProxySelect = document.getElementById('smart-proxy-available');
-const smartProxyApproval = document.getElementById('smart-proxy-approve');
-let smartProxyConfig;
-let smartProxyStatus;
-let allSmartProxyStatus;
-let smartProxyGroup = 'default';
-let smartProxyDirty = false;
-const smartProxyGroupSelect = document.getElementById('smart-proxy-group');
-const smartField = name => document.getElementById('smart-proxy-' + name);
-let smartProxyOffers = [];
-let smartProxyMembers = [];
-
-function smartProxyMemberLabel(member) {
-  const profile = profiles.get(member.profile_id)?.profile;
-  return (profile?.Name || profile?.name || member.profile_id) + ' / ' + member.tunnel;
-}
-
-function smartProxyMemberKey(member) {
-  return JSON.stringify([member.profile_id, member.tunnel]);
-}
-
-function refreshSmartProxyOffers() {
-  const selected = smartProxySelect.value;
-  smartProxyOffers = [];
-  for (const [profileID, snapshot] of profiles.entries()) {
-    for (const tunnel of snapshot.connection?.tunnels || []) {
-      if (tunnel.target_hint !== 'socks' || smartProxyMembers.some(member =>
-          member.profile_id === profileID && member.tunnel === tunnel.name)) continue;
-      smartProxyOffers.push({
-        profile_id: profileID, tunnel: tunnel.name, expected_server: snapshot.connection.server, priority: 100
-      });
-    }
-  }
-  smartProxySelect.replaceChildren();
-  for (const member of smartProxyOffers) {
-    const option = document.createElement('option');
-    option.value = smartProxyMemberKey(member);
-    option.textContent = smartProxyMemberLabel(member);
-    smartProxySelect.append(option);
-  }
-  if (smartProxyOffers.some(member => smartProxyMemberKey(member) === selected)) smartProxySelect.value = selected;
-  document.getElementById('smart-proxy-add').disabled = smartProxyOffers.length === 0;
-}
-
-function renderSmartProxyMembers() {
-  const list = document.getElementById('smart-proxy-members');
-  list.replaceChildren();
-  for (const member of smartProxyMembers) {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const name = document.createElement('span');
-    name.textContent = smartProxyMemberLabel(member);
-    const priority = document.createElement('label');
-    priority.textContent = 'Priority ';
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.required = true;
-    input.value = member.priority;
-    input.addEventListener('input', () => { member.priority = input.valueAsNumber; });
-    priority.append(input);
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'secondary';
-    remove.textContent = 'Remove';
-    remove.onclick = () => {
-      smartProxyMembers = smartProxyMembers.filter(other => other !== member);
-      smartProxyApproval.checked = false;
-      smartProxyDirty = true;
-      renderSmartProxyMembers();
-    };
-    row.append(name, priority, remove);
-    list.append(row);
-  }
-  refreshSmartProxyOffers();
-}
-
-function currentSmartGroup() {
-  return smartProxyGroup === 'default' ? smartProxyConfig : smartProxyConfig?.groups?.[smartProxyGroup];
-}
-
-function loadSmartProxyConfig(cfg) {
-  smartProxyConfig = cfg;
-  if (!currentSmartGroup()) smartProxyGroup = 'default';
-  smartProxyGroupSelect.replaceChildren();
-  for (const name of ['default', ...Object.keys(cfg.groups || {}).sort()]) {
-    const option = document.createElement('option');
-    option.value = name;
-    option.textContent = name === 'default' ? 'Default' : name;
-    smartProxyGroupSelect.append(option);
-  }
-  smartProxyGroupSelect.value = smartProxyGroup;
-  smartField('remove-group').hidden = smartProxyGroup === 'default';
-  const group = currentSmartGroup();
-  smartField('enabled').checked = group.enabled;
-  smartField('listen').value = group.listen;
-  smartField('strategy').value = group.egress.selection;
-  smartField('affinity').value = group.routing?.affinity_scope || 'host';
-  smartField('racing').checked = !!group.failover?.racing;
-  smartField('udp').checked = !!group.routing?.udp_associate;
-  smartField('rules').value = JSON.stringify(group.routing?.rules || [], null, 2);
-  smartField('unmatched').value = group.routing?.unmatched || '';
-  smartField('enroll').value = JSON.stringify(group.egress.enroll || [], null, 2);
-  smartField('pac').value = cfg.pac_listen || '';
-  smartProxyMembers = (group.egress.members || []).map(member => ({...member}));
-  smartProxyApproval.checked = smartProxyMembers.length > 0 || !!group.egress.enroll?.length;
-  smartProxyDirty = false;
-  renderSmartProxyMembers();
-}
-
-function renderSmartProxyStatus(root) {
-  allSmartProxyStatus = root;
-  const status = smartProxyGroup === 'default' ? root : root.groups?.[smartProxyGroup] || {};
-  smartProxyStatus = status;
-  smartField('state').textContent = root.error || status.error ||
-    (status.listening ? 'Listening on ' + status.listening : 'Disabled');
-  smartField('actions').hidden = !status.listening;
-  smartField('copy-pac').hidden = !root.pac_listen || !status.listening;
-  for (const button of document.querySelectorAll('[data-copy-proxy]')) {
-    const protocol = button.dataset.copyProxy === 'http' ? 'http' : 'socks5';
-    button.hidden = !(currentSmartGroup()?.protocols || []).includes(protocol);
-  }
-  const summary = smartField('summary');
-  summary.hidden = !status.listening;
-  summary.textContent = [
-    (status.active || 0) + ' active',
-    (status.recovered || 0) + ' recovered / ' + (status.failovers || 0) + ' failover attempts',
-    status.last_selected && 'Last selected ' + smartProxyMemberLabel(status.last_selected) +
-      (status.selection_reason ? ' (' + status.selection_reason.replaceAll('_', ' ') + ')' : ''),
-    status.race_preparations && (status.race_backup_wins || 0) + ' backup wins / ' + status.race_preparations + ' race preparations'
-  ].filter(Boolean).join(' · ');
-  const health = document.getElementById('smart-proxy-health');
-  const expanded = new Set([...health.querySelectorAll('details[open]')].map(detail => detail.dataset.member));
-  health.replaceChildren();
-  for (const member of status.members || []) {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const info = document.createElement('span');
-    const rtt = member.carrier_rtt ? ' · ' + (member.carrier_rtt / 1e6).toFixed(1) + ' ms RTT' : '';
-    const timing = member.connect_millis ? ' · ' + member.connect_millis.toFixed(1) + ' ms CONNECT' : '';
-    const rate = member.recent_samples ? ' · ' + ((member.success_rate || 0) * 100).toFixed(1) + '% recent success' : '';
-    const failures = member.recent_destination_failures ? ' · ' + member.recent_destination_failures + ' destination failures' : '';
-    info.textContent = smartProxyMemberLabel(member) + ' · ' +
-      (member.reason || (member.eligible ? 'Eligible' : 'Unavailable')).replaceAll('_', ' ') +
-      (member.transport ? ' · ' + member.transport : '') + rtt + timing + rate + failures;
-    const preference = document.createElement('button');
-    preference.type = 'button';
-    preference.className = 'secondary';
-    preference.textContent = 'Prefer';
-    preference.disabled = !member.eligible;
-    preference.onclick = () => setSmartPreference(member);
-    const exclude = document.createElement('button');
-    exclude.type = 'button';
-    exclude.className = 'secondary';
-    exclude.textContent = member.reason === 'excluded' ? 'Include' : 'Exclude temporarily';
-    exclude.onclick = () => setSmartPreference(member, member.reason !== 'excluded');
-    row.append(info, preference, exclude);
-    const details = document.createElement('details');
-    details.className = 'advanced';
-    details.dataset.member = JSON.stringify([member.profile_id, member.tunnel]);
-    details.open = expanded.has(details.dataset.member);
-    const label = document.createElement('summary');
-    label.textContent = 'Performance details for ' + smartProxyMemberLabel(member);
-    const data = document.createElement('p');
-    data.className = 'help';
-    const millis = (value, name) => value ? value.toFixed(1) + ' ms ' + name : '';
-    data.textContent = [
-      'Circuit ' + (member.circuit || 'unknown'),
-      (member.active || 0) + ' active',
-      (member.sent || 0) + ' bytes sent, ' + (member.received || 0) + ' received',
-      (member.attempts || 0) + ' attempts',
-      (member.reconnections || 0) + ' reconnects',
-      member.carrier_loss !== undefined && (member.carrier_loss * 100).toFixed(1) + '% carrier loss',
-      millis(member.control_latency_millis, 'control RTT'),
-      millis(member.socks_connect_millis, 'SOCKS'),
-      millis(member.virtual_service_millis, 'service setup'),
-      millis(member.attachment_overhead_millis, 'local attachment'),
-      millis(member.https_ttfb_millis, 'HTTPS probe TTFB'),
-      millis(member.variability_millis, 'CONNECT variation'),
-      member.recent_samples && member.recent_samples + ' recent samples',
-      member.consecutive_infrastructure_failures && member.consecutive_infrastructure_failures + ' consecutive infrastructure failures',
-      member.last_failure && 'Last failure ' + member.last_failure.replaceAll('_', ' ') +
-        (member.last_failure_stage ? ' at ' + member.last_failure_stage.replaceAll('_', ' ') : ''),
-      member.last_success && 'Last success ' + new Date(member.last_success).toLocaleString(),
-      member.last_probe && 'Last probe ' + new Date(member.last_probe).toLocaleString()
-    ].filter(Boolean).join(' · ');
-    details.append(label, data);
-    health.append(row, details);
-  }
-}
-
-async function setSmartPreference(member, exclude) {
-  try {
-    await api('POST', '/api/smart-proxy/preference', {
-      group: smartProxyGroup, member: {profile_id: member.profile_id || '', tunnel: member.tunnel || ''}, exclude
-    });
-    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
-  } catch (e) { setMessage(e.message); }
-}
-
-document.getElementById('smart-proxy-add').onclick = () => {
-  const member = smartProxyOffers.find(offer => smartProxyMemberKey(offer) === smartProxySelect.value);
-  if (!member) return;
-  smartProxyMembers.push(member);
-  smartProxyDirty = true;
-  smartProxyApproval.checked = false;
-  renderSmartProxyMembers();
-};
-smartProxyForm.addEventListener('input', event => {
-  smartProxyDirty = true;
-  if (event.target === smartField('enroll')) smartProxyApproval.checked = false;
-});
-
-function canSwitchSmartGroup() {
-  if (!smartProxyDirty) return true;
-  setMessage('Save your current group changes first.');
-  return false;
-}
-
-smartProxyGroupSelect.onchange = () => {
-  if (!canSwitchSmartGroup()) {
-    smartProxyGroupSelect.value = smartProxyGroup;
-    return;
-  }
-  smartProxyGroup = smartProxyGroupSelect.value;
-  loadSmartProxyConfig(smartProxyConfig);
-  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
-};
-
-smartField('add-group').onclick = () => {
-  if (!smartProxyConfig || !canSwitchSmartGroup()) return;
-  const name = smartField('group-name').value.trim();
-  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) || name === 'default' || Object.hasOwn(smartProxyConfig.groups || {}, name)) {
-    setMessage('Enter a unique group name using lowercase letters, digits, hyphens, or underscores.');
-    return;
-  }
-  smartProxyGroup = name;
-  loadSmartProxyConfig({...smartProxyConfig, groups: {
-    ...(smartProxyConfig.groups || {}), [name]: {enabled: false, listen: '', protocols: ['socks5', 'http'],
-      egress: {selection: 'sticky-fastest', members: []}}
-  }});
-  smartProxyDirty = true;
-  smartField('group-name').value = '';
-  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
-};
-
-smartField('remove-group').onclick = () => {
-  if (!smartProxyConfig || smartProxyGroup === 'default') return;
-  const groups = {...smartProxyConfig.groups};
-  delete groups[smartProxyGroup];
-  smartProxyGroup = 'default';
-  loadSmartProxyConfig({...smartProxyConfig, groups});
-  smartProxyDirty = true;
-  if (allSmartProxyStatus) renderSmartProxyStatus(allSmartProxyStatus);
-};
-
-smartProxyForm.onsubmit = async event => {
-  event.preventDefault();
-  if (!smartProxyConfig) return;
-  try {
-    const rules = JSON.parse(smartField('rules').value || '[]');
-    const enroll = JSON.parse(smartField('enroll').value || '[]');
-    if (!Array.isArray(rules) || !Array.isArray(enroll)) throw new Error('Rules and approved classes must use JSON arrays.');
-    if ((smartProxyMembers.length || enroll.length) && !smartProxyApproval.checked) {
-      setMessage('Approve the egress group before saving.');
-      return;
-    }
-    const prior = currentSmartGroup();
-    const group = {...prior,
-      enabled: smartField('enabled').checked,
-      listen: smartField('listen').value.trim(),
-      egress: {...prior.egress, selection: smartField('strategy').value, members: smartProxyMembers, enroll},
-      failover: {...prior.failover, racing: smartField('racing').checked},
-      routing: {...prior.routing, rules, unmatched: smartField('unmatched').value,
-        affinity_scope: smartField('affinity').value, udp_associate: smartField('udp').checked}
-    };
-    const cfg = smartProxyGroup === 'default' ? group : {...smartProxyConfig,
-      groups: {...smartProxyConfig.groups, [smartProxyGroup]: group}};
-    cfg.pac_listen = smartField('pac').value.trim();
-    loadSmartProxyConfig(await api('PUT', '/api/smart-proxy', cfg));
-    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
-    setMessage('Smart Egress Proxy settings saved.', 'ok');
-  } catch (e) { setMessage(e.message); }
-};
-smartField('copy-pac').onclick = async () => {
-  if (!allSmartProxyStatus?.pac_listen) return;
-  try {
-    await navigator.clipboard.writeText('http://' + allSmartProxyStatus.pac_listen + '/' + smartProxyGroup + '.pac');
-    setMessage('PAC URL copied.', 'ok');
-  } catch (e) { setMessage(e.message); }
-};
-document.getElementById('smart-proxy-clear-preferred').onclick = () => setSmartPreference({});
-document.getElementById('smart-proxy-browser').onclick = async () => {
-  try { await api('POST', '/api/smart-proxy/open-browser?group=' + encodeURIComponent(smartProxyGroup)); }
-  catch (e) { setMessage(e.message); }
-};
-for (const button of document.querySelectorAll('[data-copy-proxy]')) {
-  button.onclick = async () => {
-    if (!smartProxyStatus?.listening) return;
-    try {
-      await navigator.clipboard.writeText(button.dataset.copyProxy + '://' + smartProxyStatus.listening);
-      setMessage('Proxy URL copied.', 'ok');
-    } catch (e) { setMessage(e.message); }
-  };
-}
+let smartProxy;
 
 function connectEvents() {
   let failures = 0;
@@ -1876,7 +1728,7 @@ function connectEvents() {
   eventSource = new EventSource(q('/api/events'));
   eventSource.onopen = () => { failures = 0; hideReconnectBanner(); };
   eventSource.addEventListener('smart-proxy', event => {
-    try { renderSmartProxyStatus(JSON.parse(event.data)); } catch {}
+    try { smartProxy?.updateStatus(JSON.parse(event.data)); } catch {}
   });
   eventSource.onmessage = (ev) => {
     failures = 0;
@@ -1884,7 +1736,7 @@ function connectEvents() {
     try {
       const update = JSON.parse(ev.data);
       profiles.set(update.ProfileID, update.Snapshot);
-      refreshSmartProxyOffers();
+      smartProxy?.refreshOffers();
       renderProfiles();
       renderSetup();
       renderPrompts();
@@ -1913,8 +1765,10 @@ function connectEvents() {
     await refreshSchema();
     await refreshProfiles();
     await refreshBrowserProfiles();
-    loadSmartProxyConfig(await api('GET', '/api/smart-proxy'));
-    renderSmartProxyStatus(await api('GET', '/api/smart-proxy/status'));
+    const {createSmartProxy} = await import(q('/smart-proxy.js'));
+    smartProxy = createSmartProxy({api, exportURL: q('/api/smart-proxy/export'),
+      dashboardURL: group => q('/smart-proxy-dashboard.html?group=' + encodeURIComponent(group)), getProfiles: () => profiles});
+    await smartProxy.load();
     if (setupMode) setupCancelBtn.classList.remove('hidden');
   } catch (e) {
     setMessage('Could not load settings: ' + e.message);

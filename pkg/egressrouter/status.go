@@ -40,6 +40,7 @@ type MemberStatus struct {
 	LastProbe         *time.Time `json:"last_probe,omitempty"`
 	LastSuccess       *time.Time `json:"last_success,omitempty"`
 	Active            int64      `json:"active"`
+	Routed            uint64     `json:"routed"`
 	Sent              uint64     `json:"sent"`
 	Received          uint64     `json:"received"`
 }
@@ -120,6 +121,7 @@ func (r *Router) Status() Status {
 				item.LastSuccess = &t
 			}
 			item.Active = h.active.Load()
+			item.Routed = h.routed.Load()
 			item.Sent = h.sent.Load()
 			item.Received = h.received.Load()
 		}

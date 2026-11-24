@@ -104,14 +104,19 @@ type menu struct {
 	currentIcon icons.State
 	iconSetOnce bool
 
-	startAtLogin *systray.MenuItem
-	update       *systray.MenuItem
-	quit         *systray.MenuItem
-	smart        *systray.MenuItem
+	openSmartDashboard func(string) error
+
+	startAtLogin  *systray.MenuItem
+	update        *systray.MenuItem
+	quit          *systray.MenuItem
+	smartProxy    *smartProxySlot
+	smartGroup    string
+	lastSmartName string
+	lastSmart     []manager.SmartProxyGroupState
 }
 
-func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
-	m := &menu{mgr: mgr, openSettings: openSettings, openSetup: openSetup, lastState: map[string]manager.State{}}
+func newMenu(mgr *manager.Manager, openSettings, openSetup func(), openSmartDashboard func(string) error) *menu {
+	m := &menu{mgr: mgr, openSettings: openSettings, openSetup: openSetup, openSmartDashboard: openSmartDashboard, lastState: map[string]manager.State{}}
 
 	profileItems := make([]Slot, maxProfiles)
 	for i := range m.slots {
@@ -171,6 +176,8 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 	m.profiles = newSlotPool(profileItems)
 
 	systray.AddSeparator()
+	m.smartProxy = newSmartProxySlot()
+	systray.AddSeparator()
 	addConnection := systray.AddMenuItem("Add connection…", "Set up a new ntwire server or relay connection")
 	if openSetup != nil {
 		go func() {
@@ -210,18 +217,6 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 			_ = mgr.SetSettings(settings)
 		}
 	}
-	m.smart = systray.AddMenuItem("Smart Egress Proxy", "Open the isolated browser when the proxy is running")
-	go func() {
-		for range m.smart.ClickedCh {
-			if mgr.SmartProxyStatus().Listening != "" {
-				if err := mgr.OpenSmartProxyBrowser(); err != nil && openSettings != nil {
-					openSettings()
-				}
-			} else if openSettings != nil {
-				openSettings()
-			}
-		}
-	}()
 	m.update = systray.AddMenuItem("Check for updates…", "Open update settings")
 	m.quit = systray.AddMenuItem("Quit", "Disconnect every profile and exit")
 
@@ -255,14 +250,6 @@ func (m *menu) render(snaps []manager.Snapshot) {
 		shown++
 	}
 
-	if m.smart != nil {
-		smart := m.mgr.SmartProxyStatus()
-		title := "Smart Egress Proxy settings…"
-		if smart.Listening != "" {
-			title = "Smart Egress Proxy · " + smart.Listening + " · Open browser…"
-		}
-		m.smart.SetTitle(title)
-	}
 	m.setIcon(aggregateState(snaps))
 }
 

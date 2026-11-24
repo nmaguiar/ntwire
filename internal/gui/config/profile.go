@@ -83,10 +83,11 @@ type Settings struct {
 
 // Config is the full contents of ~/.ntwire/gui.yaml.
 type Config struct {
-	Version    int                  `yaml:"version"`
-	Settings   Settings             `yaml:"settings"`
-	Profiles   []Profile            `yaml:"profiles"`
-	SmartProxy *egressrouter.Config `yaml:"smart_proxy,omitempty"`
+	Version           int                  `yaml:"version"`
+	Settings          Settings             `yaml:"settings"`
+	Profiles          []Profile            `yaml:"profiles"`
+	SmartProxyEnabled bool                 `yaml:"smart_proxy_enabled,omitempty"`
+	SmartProxy        *egressrouter.Config `yaml:"smart_proxy,omitempty"`
 }
 
 // CurrentVersion is the Config.Version this package reads and writes.

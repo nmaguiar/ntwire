@@ -506,6 +506,7 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 		}
 		r.mu.Unlock()
 		r.remember(state, dst, candidate.ID())
+		h.routed.Add(1)
 		h.active.Add(1)
 		return &routedConn{Conn: conn, destination: dst, member: candidate.Member, generation: candidate.Generation, health: h}, nil
 	}

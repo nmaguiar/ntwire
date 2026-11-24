@@ -102,7 +102,7 @@ func OpenSocksExecutable(executable, key, localAddr string, targetURL ...string)
 
 // OpenSocksWithOptions launches an isolated browser with validated literal arguments.
 func OpenSocksWithOptions(options LaunchOptions, key, localAddr string, targetURL ...string) error {
-	return openProxy(options, key, "socks5://"+localAddr, false, targetURL)
+	return openProxy(options, key, "socks5://"+localAddr, targetURL)
 }
 
 // OpenSmartProxy launches the isolated aggregate browser using a numeric loopback proxy.
@@ -116,10 +116,15 @@ func OpenSmartProxy(options LaunchOptions, key, proxy string) error {
 	if err != nil || !address.Addr().IsLoopback() || address.Port() == 0 {
 		return fmt.Errorf("smart browser proxy must use a numeric loopback address")
 	}
-	return openProxy(options, key, u.String(), true, nil)
+	managedArgs := []string{"--proxy-bypass-list=<-loopback>"}
+	if options.BlockLocalDNS {
+		// Chromium can pass the proxy's IP through its host resolver too.
+		managedArgs = append(managedArgs, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE "+address.Addr().String())
+	}
+	return openProxy(options, key, u.String(), nil, managedArgs...)
 }
 
-func openProxy(options LaunchOptions, key, proxy string, forceLoopbackProxy bool, targetURL []string) error {
+func openProxy(options LaunchOptions, key, proxy string, targetURL []string, managedArgs ...string) error {
 	if err := ValidateExtraArgs(options.ExtraArgs); err != nil {
 		return err
 	}
@@ -136,10 +141,9 @@ func openProxy(options LaunchOptions, key, proxy string, forceLoopbackProxy bool
 	if err != nil {
 		return err
 	}
-	if forceLoopbackProxy {
-		args = insertExtraArgs(args, []string{"--proxy-bypass-list=<-loopback>"})
-	}
 	args = insertExtraArgs(args, options.ExtraArgs)
+	// Chromium uses the last value of a repeated switch.
+	args = insertExtraArgs(args, managedArgs)
 	return exec.Command(bin, args...).Start()
 }
 

@@ -20,9 +20,6 @@ type Rule struct {
 }
 
 func normalizeRules(routing Routing, members map[MemberID]bool) (Routing, error) {
-	if routing.Unmatched == "" && len(routing.Rules) > 0 {
-		routing.Unmatched = "deny"
-	}
 	if routing.Unmatched != "" && routing.Unmatched != "allow" && routing.Unmatched != "deny" {
 		return routing, errors.New("routing.unmatched must be allow or deny")
 	}
@@ -108,7 +105,9 @@ func (r Routing) destinationMembers(dst Destination) ([]MemberID, bool) {
 			return rule.Members, !rule.Deny
 		}
 	}
-	return nil, r.Unmatched != "deny"
+	// An unset policy is automatic. Keep it distinct from an explicit deny
+	// so removing the last rule restores the ordinary group routing.
+	return nil, r.Unmatched == "allow" || (r.Unmatched == "" && len(r.Rules) == 0)
 }
 
 func (r Routing) permits(dst Destination, id MemberID) bool {

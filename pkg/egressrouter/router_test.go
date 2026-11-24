@@ -81,6 +81,15 @@ func TestSmartProxyFailurePolicy(t *testing.T) {
 			if !slices.Equal(calls, tc.want) {
 				t.Fatalf("attempts %v want %v", calls, tc.want)
 			}
+			for _, member := range r.Status().Members {
+				var want uint64
+				if tc.code == 0 && member.ProfileID == "b" {
+					want = 1
+				}
+				if member.Routed != want {
+					t.Errorf("%s routed %d connections, want %d", member.ProfileID, member.Routed, want)
+				}
+			}
 		})
 	}
 }

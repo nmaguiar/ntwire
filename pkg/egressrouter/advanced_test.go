@@ -6,10 +6,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
 type testSelector func(time.Time, Destination, []RankedCandidate) []MemberID
@@ -54,6 +57,86 @@ func TestDestinationRulesApplyBeforeSelector(t *testing.T) {
 	}
 	if got := router.Status().Members[1]; got.DestinationFailures != 1 || got.RecentSamples != 1 || got.SuccessRate != 0 {
 		t.Fatalf("missing bounded telemetry: %+v", got)
+	}
+}
+
+func TestUnmatchedPolicyStaysAutomaticAfterNormalization(t *testing.T) {
+	dst := Destination{Host: "other.example", Port: 443}
+	for _, tc := range []struct {
+		name, policy        string
+		withRule, afterDrop bool
+	}{
+		{"automatic", "", false, true},
+		{"explicit block", "deny", false, false},
+		{"explicit allow", "allow", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := (Config{Routing: Routing{Unmatched: tc.policy, Rules: []Rule{
+				{Hosts: []string{"internal.example"}},
+			}}}).Normalized()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Routing.Unmatched != tc.policy {
+				t.Fatalf("normalization rewrote unmatched policy from %q to %q", tc.policy, cfg.Routing.Unmatched)
+			}
+			if _, allowed := cfg.Routing.destinationMembers(dst); allowed != tc.withRule {
+				t.Fatalf("unmatched destination allowed with rule = %v, want %v", allowed, tc.withRule)
+			}
+			cfg.Routing.Rules = nil
+			if _, allowed := cfg.Routing.destinationMembers(dst); allowed != tc.afterDrop {
+				t.Fatalf("unmatched destination allowed after removing rule = %v, want %v", allowed, tc.afterDrop)
+			}
+		})
+	}
+}
+
+func TestSOCKSCIDRRuleSelectsTunnelBeforeGroupFallback(t *testing.T) {
+	cfg := testConfig(t)
+	primary, selected := cfg.Egress.Members[0], cfg.Egress.Members[1]
+	cfg.Routing.Unmatched = "allow"
+	cfg.Routing.Rules = []Rule{{
+		CIDRs:   []string{"192.0.2.0/24", "2001:db8::/32"},
+		Members: []MemberID{selected.ID()},
+	}}
+	groups := NewGroupSet(func(member Member) Candidate {
+		return Candidate{Generation: "1", Dialer: dialFunc(func(context.Context, Destination) (net.Conn, error) {
+			client, peer := net.Pipe()
+			go func() {
+				defer peer.Close()
+				_, _ = io.WriteString(peer, member.ProfileID)
+			}()
+			return client, nil
+		})}
+	})
+	t.Cleanup(groups.Close)
+	if err := groups.Apply(cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ destination, want string }{
+		{"192.0.2.30:443", selected.ProfileID},
+		{"[2001:db8::30]:443", selected.ProfileID},
+		{"[::ffff:192.0.2.30]:443", selected.ProfileID},
+		{"198.51.100.50:443", primary.ProfileID},
+		{"service.example:443", primary.ProfileID},
+	} {
+		t.Run(tc.destination, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", cfg.Listen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := socks.Connect(ctx, conn, tc.destination); err != nil {
+				t.Fatal(err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+			got := make([]byte, len(tc.want))
+			if _, err := io.ReadFull(conn, got); err != nil || string(got) != tc.want {
+				t.Fatalf("selected tunnel %q, want %q (%v)", got, tc.want, err)
+			}
+		})
 	}
 }
 
@@ -129,6 +212,13 @@ func TestNamedGroupsAndPACApplyAtomically(t *testing.T) {
 	if got := g.Status(); got.Groups["office"].Listening != cfg.Groups["office"].Listen || got.Listening != cfg.Listen {
 		t.Fatalf("unexpected status %+v", got)
 	}
+	if got := strings.Join(g.ListeningGroups(), ","); got != "default,office" {
+		t.Fatalf("listening groups = %q", got)
+	}
+	exclude := true
+	if err := g.SetPreference("office", cfg.Groups["office"].Egress.Members[0].ID(), &exclude); err != nil {
+		t.Fatal(err)
+	}
 	res, err := http.Get("http://" + cfg.PACListen + "/office.pac")
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +236,19 @@ func TestNamedGroupsAndPACApplyAtomically(t *testing.T) {
 	}
 	if got := g.Status().Groups["office"].Listening; got != cfg.Groups["office"].Listen {
 		t.Fatalf("listener changed: %s", got)
+	}
+	next.Enabled = false
+	next.Groups = cfg.Groups
+	if err := g.Apply(next, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(g.ListeningGroups(), ","); got != "office" {
+		t.Fatalf("listening groups after disabling default = %q", got)
+	}
+	if got := g.Status().Groups["office"].Members; !slices.ContainsFunc(got, func(member MemberStatus) bool {
+		return member.ProfileID == "a" && member.Reason == "excluded"
+	}) {
+		t.Fatalf("office exclusion lost when toggling default: %+v", got)
 	}
 }
 

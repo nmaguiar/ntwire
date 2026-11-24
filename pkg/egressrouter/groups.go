@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -109,7 +110,11 @@ func (g *GroupSet) Apply(config Config, save func(Config) error) error {
 	old := g.groups
 	g.groups = make(map[string]*Router, len(staged))
 	for name, p := range staged {
-		p.router.commit(p.cfg, p.listener)
+		// A change to one group should not reset the preferences or routing
+		// history of groups with the same configuration and listener.
+		if p.router.state == nil || !reflect.DeepEqual(p.router.state.config, p.cfg) || p.router.listener != p.listener {
+			p.router.commit(p.cfg, p.listener)
+		}
 		g.groups[name] = p.router
 	}
 	g.config = cfg
@@ -187,6 +192,24 @@ func (g *GroupSet) Group(group string) (Status, Config, bool) {
 	}
 	return router.Status(), cfg, true
 }
+
+// ListeningGroups returns the names of groups that can accept connections.
+func (g *GroupSet) ListeningGroups() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	names := make([]string, 0, len(g.groups))
+	for name, router := range g.groups {
+		router.mu.Lock()
+		listening := router.listener != nil
+		router.mu.Unlock()
+		if listening {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
 func (g *GroupSet) Status() Status {
 	g.mu.RLock()
 	defer g.mu.RUnlock()

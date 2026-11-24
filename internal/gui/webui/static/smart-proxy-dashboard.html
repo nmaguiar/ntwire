@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Smart Proxy live dashboard · ntwire</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f9fc;--panel:#fff;--track:#e8eef8;--text:#162033;--muted:#51647e;--border:#d9e2f1;--blue:#245ee0;--green:#087b63;--purple:#7140c8;--comparison-lightness:39%;--shadow:0 20px 60px rgba(22,32,51,.12)}
+@media(prefers-color-scheme:dark){:root{--bg:#0b1120;--panel:#111a2e;--track:#21314c;--text:#edf4ff;--muted:#a8b9d1;--border:#2c3d5a;--blue:#82afff;--green:#45d8ad;--purple:#c2a3ff;--comparison-lightness:70%;--shadow:0 20px 60px rgba(0,0,0,.35)}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}
+main{width:min(72rem,calc(100% - 2rem));margin:auto;padding:clamp(1rem,4vw,3rem) 0}
+header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.6rem;margin-bottom:.8rem}
+h1,h2,h3,h4,p{margin:0} h1{font-size:clamp(1.4rem,4vw,2rem)} h2{font-size:1.1rem} h3{font-size:.95rem}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:clamp(.8rem,3vw,1.3rem);margin-bottom:1rem;min-width:0}
+.grid,.smart-metrics{display:grid;gap:0 1rem}
+.grid{grid-template-columns:minmax(0,1fr)}
+@media(min-width:48rem){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.chart-traffic,.chart-latency{grid-column:span 2}}
+@media(min-width:58rem){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}.chart-traffic{grid-column:span 1}.chart-activity{grid-column:span 2}}
+.smart-metrics{grid-template-columns:repeat(auto-fit,minmax(min(100%,11rem),1fr));margin-top:.85rem}
+.row,.legend{display:flex;align-items:center;flex-wrap:wrap;gap:.45rem .9rem}
+.legend{margin:.6rem 0;font-size:.82rem}
+.legend span{display:inline-flex;align-items:center;gap:.35rem;min-width:0;overflow-wrap:anywhere}
+.legend i{display:inline-block;flex:none;width:.65rem;height:.65rem;border-radius:50%;background:currentColor}
+.out,.primary{color:var(--blue)} .in,.secondary-series{color:var(--green)} .tertiary{color:var(--purple)}
+.help,.axis,dt{color:var(--muted)} .help,.axis{font-size:.82rem}
+.panel p+p{margin-top:.35rem} main > .help{margin:0 0 1rem}
+select,button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:.35rem .6rem}
+select{max-width:100%}
+button{cursor:pointer} button:disabled{cursor:default;opacity:.55}
+a{color:var(--blue)}
+.chart-head{display:flex;justify-content:space-between;gap:.3rem .8rem;align-items:baseline;flex-wrap:wrap}
+.chart-head select{max-width:min(100%,18rem)}
+.plot{display:block;width:100%;height:7rem;background:var(--bg);border-radius:8px}
+.chart-tooltip{position:fixed;z-index:60;display:none;max-width:min(14rem,calc(100vw - 16px));background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:.45rem .6rem;font-size:.78rem;line-height:1.4;box-shadow:var(--shadow);overflow-wrap:anywhere;pointer-events:none}
+.chart-tooltip>div:first-child{color:var(--muted);font-size:.7rem;margin-bottom:.2rem}
+.chart-guide{stroke:var(--muted);stroke-width:1;stroke-dasharray:2 2;vector-effect:non-scaling-stroke;pointer-events:none}
+.axis{display:flex;justify-content:space-between;gap:.4rem;margin-top:.15rem}
+.chart-empty{padding:.8rem 0}
+.bars{list-style:none;margin:.65rem 0 0;padding:0}
+.bars li+li{margin-top:.55rem}
+.bar-label{display:flex;justify-content:space-between;gap:.5rem;font-size:.85rem;overflow-wrap:anywhere}
+.bar-label span:last-child{flex:none;font-variant-numeric:tabular-nums}
+.bar-track{height:.45rem;margin-top:.2rem;overflow:hidden;border-radius:999px;background:var(--track)}
+.bar-track svg{display:block;width:100%;height:100%;color:var(--purple)}
+.smart-card{border-top:1px solid var(--border);padding:.75rem 0;overflow-wrap:anywhere}
+.smart-card h4{margin:.2rem 0} .smart-card .row{margin-top:.45rem}
+.smart-metrics dl{margin:.25rem 0;font-size:.82rem} .smart-metrics dt{margin-top:.2rem} .smart-metrics dd{margin:0}
+#tunnel-status{margin-bottom:.6rem} #action-status:empty{display:none}
+</style>
+<main>
+  <header>
+    <h1><span aria-hidden="true">📊</span> Smart Proxy live dashboard</h1>
+    <label>Proxy group <select id="group" disabled></select></label>
+  </header>
+  <section class="panel" aria-label="Proxy status">
+    <p id="state" role="status">Loading Smart Proxy status…</p>
+    <p id="summary" class="help"></p>
+  </section>
+  <div class="grid">
+    <section class="panel chart-traffic" aria-labelledby="traffic-title">
+      <div class="chart-head">
+        <h2 id="traffic-title">Traffic sent and received</h2>
+        <select id="traffic-tunnel" aria-label="Tunnel for traffic chart" disabled><option value="">All tunnels</option></select>
+      </div>
+      <p class="help" id="traffic-total"></p>
+      <div id="traffic"></div>
+    </section>
+    <section class="panel chart-latency" aria-labelledby="latency-title">
+      <div class="chart-head">
+        <h2 id="latency-title">Tunnel latency</h2>
+        <select id="latency-tunnel" aria-label="Tunnel for latency chart" disabled><option value="">All tunnels</option></select>
+      </div>
+      <p class="help" id="latency-comparison">Setup latency by tunnel</p>
+      <div id="latency"></div>
+    </section>
+    <section class="panel" aria-labelledby="usage-title">
+      <h2 id="usage-title">Tunnel usage</h2>
+      <p class="help">Successful routes for the current tunnel sessions.</p>
+      <div id="usage"></div>
+    </section>
+    <section class="panel chart-activity" aria-labelledby="activity-title">
+      <h2 id="activity-title">Connection activity</h2>
+      <div id="activity"></div>
+    </section>
+  </div>
+  <p class="help">Charts sample every two seconds while this tab is open and show up to five minutes of activity.</p>
+  <section class="panel" aria-labelledby="tunnel-status">
+    <header><h2 id="tunnel-status" tabindex="-1">Tunnel status</h2><button type="button" id="clear-preferred" disabled>Clear preference</button></header>
+    <p id="action-status" class="help" role="status"></p>
+    <div id="health"></div>
+  </section>
+</main>
+<script type="module">
+const token = new URLSearchParams(location.search).get('token');
+const url = path => path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(token);
+try {
+  const {startDashboard} = await import(url('/smart-proxy-dashboard.js'));
+  startDashboard(url);
+} catch (error) {
+  document.getElementById('state').textContent = 'Could not open the dashboard: ' + error.message;
+}
+</script>
+</html>

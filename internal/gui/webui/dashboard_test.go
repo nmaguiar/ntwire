@@ -155,3 +155,91 @@ func TestProxySettingsAreVisibleAndCredentialsAreWriteOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestSettingsPlaceSmartProxyAfterProfileManagement(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(page)
+	if !strings.Contains(html, `<details id="profiles-disclosure" open>`) ||
+		!strings.Contains(html, `aria-hidden="true">🌐</span> Browser settings (advanced)</summary>`) {
+		t.Fatal("Settings must start with Profiles expanded and mark the Browser settings icon as decorative")
+	}
+	for _, disclosure := range []string{"updates-disclosure", "browser-cleanup-disclosure"} {
+		if !strings.Contains(html, `<details id="`+disclosure+`">`) {
+			t.Errorf("missing collapsed disclosure %s", disclosure)
+		}
+	}
+	previous := -1
+	for _, marker := range []string{`id="profiles"`, `id="form-panel"`, `id="smart-proxy-panel"`, `id="updates-panel"`} {
+		at := strings.Index(html, marker)
+		if at <= previous {
+			t.Fatalf("missing or out-of-order Settings panel %s", marker)
+		}
+		previous = at
+	}
+	panel := html[strings.Index(html, `id="smart-proxy-panel"`):previous]
+	if !strings.Contains(panel, `<details id="smart-proxy-disclosure">`) || strings.Count(panel, "<details") != 1 {
+		t.Fatal("Smart Proxy must start collapsed and have no nested disclosures")
+	}
+	for _, want := range []string{"Enable Smart Proxy", "Activate this group", "Export saved settings", "Import settings",
+		"Save changes", "Discard changes", "Open isolated browser", "Open live dashboard"} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("Smart Proxy is missing %q", want)
+		}
+	}
+	if !strings.Contains(panel, `id="smart-proxy-open-live" target="_blank" rel="noopener noreferrer"`) ||
+		!strings.Contains(html, `q('/smart-proxy-dashboard.html?group='`) {
+		t.Fatal("Settings must link to the authenticated dashboard in a new tab")
+	}
+	for i, name := range []string{"setup", "tunnels", "destinations", "health-settings", "limits"} {
+		id := "smart-proxy-" + name
+		tab := `id="` + id + `-tab" role="tab" aria-controls="` + id + `" aria-selected="`
+		tabPanel := `id="` + id + `" role="tabpanel" aria-labelledby="` + id + `-tab" tabindex="0"`
+		if i == 0 {
+			tab += `true">`
+			tabPanel += ">"
+		} else {
+			tab += `false" tabindex="-1">`
+			tabPanel += " hidden>"
+		}
+		if !strings.Contains(panel, tab) || !strings.Contains(panel, tabPanel) {
+			t.Errorf("Missing tab or incorrect initial state for %s", name)
+		}
+	}
+	if !strings.Contains(html, "import(q('/smart-proxy.js'))") {
+		t.Fatal("Settings must load the Smart Proxy module with the loopback API token")
+	}
+	if _, err := fs.ReadFile(files, "smart-proxy.js"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSmartProxyDashboardChartsAndAuthentication(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := fs.ReadFile(files, "smart-proxy-dashboard.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Traffic sent and received", "Tunnel latency", "Connection activity",
+		"Tunnel usage", "Clear preference", "import(url('/smart-proxy-dashboard.js'))"} {
+		if !strings.Contains(string(page), want) {
+			t.Errorf("Live dashboard is missing %q", want)
+		}
+	}
+	module, err := fs.ReadFile(files, "smart-proxy-dashboard.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(module), "settingsModule.search = new URL(import.meta.url).search") {
+		t.Fatal("The dashboard dependency must inherit the loopback token")
+	}
+}

@@ -23,6 +23,8 @@ type Config struct {
 	Health    Health            `yaml:"health" json:"health"`
 	Routing   Routing           `yaml:"routing" json:"routing"`
 	Limits    Limits            `yaml:"limits" json:"limits"`
+
+	BrowserBlockLocalDNS bool `yaml:"browser_block_local_dns,omitempty" json:"browser_block_local_dns,omitempty"`
 }
 
 type Membership struct {

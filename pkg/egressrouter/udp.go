@@ -69,6 +69,7 @@ func (r *Router) serveUDP(ctx context.Context, in net.Conn, client netip.AddrPor
 	}
 	defer udp.Close()
 	socks.ReplyBound(in, udp.LocalAddr().(*net.UDPAddr).AddrPort())
+	h.routed.Add(1)
 
 	idle := state.config.Routing.UDPIdleTimeout
 	setIdle := func() {
