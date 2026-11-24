@@ -795,3 +795,18 @@ func TestBrowserBootstrapPreservesSetupAndQueryAuthentication(t *testing.T) {
 		t.Fatal("host-wide cookie authenticates API")
 	}
 }
+
+func TestProfileOrder_UpdatesList(t *testing.T) {
+	s := newTestServer(t)
+	a := decode[config.Profile](t, s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "Alpha"}))
+	b := decode[config.Profile](t, s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "Bravo"}))
+	resp := s.do(t, http.MethodPut, "/api/profile-order", []string{b.ID, a.ID})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reorder status = %d, want 204", resp.StatusCode)
+	}
+	list := decode[[]manager.Snapshot](t, s.get(t, "/api/profiles"))
+	if len(list) != 2 || list[0].Profile.ID != b.ID || list[1].Profile.ID != a.ID {
+		t.Fatalf("profile list order = %+v", list)
+	}
+}

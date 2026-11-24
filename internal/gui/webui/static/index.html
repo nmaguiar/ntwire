@@ -573,7 +573,7 @@ function renderProfiles() {
     renderSetup();
     return;
   }
-  const list = [...profiles.values()].sort((a, b) => a.profile.Name.localeCompare(b.profile.Name));
+  const list = [...profiles.values()];
   if (!list.length) {
     profilesEl.classList.add('empty');
     profilesEl.textContent = 'No profiles yet.';
@@ -665,7 +665,7 @@ setupCancelBtn.addEventListener('click', () => {
   regularSettings.classList.remove('hidden');
 });
 
-function renderProfileRow(snap) {
+function renderProfileRow(snap, index, list) {
   const p = snap.profile;
   const block = document.createElement('div');
   block.className = 'profile';
@@ -739,6 +739,18 @@ function renderProfileRow(snap) {
   });
 
   actions.append(connectBtn, editBtn, deleteBtn);
+  if (list.length > 1) {
+    for (const [offset, label] of [[-1, 'Move up'], [1, 'Move down']]) {
+      const move = document.createElement('button');
+      move.className = 'secondary';
+      move.textContent = label;
+      move.setAttribute('aria-label', label + ' ' + p.Name);
+      const target = index + offset;
+      move.disabled = target < 0 || target >= list.length || savingProfileOrder;
+      move.onclick = () => moveProfile(index, target, list);
+      actions.append(move);
+    }
+  }
 
   if (snap.state === 'failed' && snap.error) {
     const clearErrorBtn = document.createElement('button');
@@ -1110,7 +1122,11 @@ function proxySettingsControl(profile) {
       <option value="custom">Custom proxy</option>
       <option value="direct">Direct connection</option>
     </select></label>
-    <div data-custom><label>New proxy URL<input name="ProxyURL" type="password" autocomplete="new-password" placeholder="Enter a complete proxy URL"></label>
+    <div data-custom><label for="new-proxy-url">New proxy URL</label>
+    <div style="display:flex;gap:.4rem">
+      <input id="new-proxy-url" name="ProxyURL" type="password" autocomplete="new-password" placeholder="Enter a complete proxy URL">
+      <button type="button" class="secondary" data-view-proxy aria-controls="new-proxy-url" aria-label="View proxy URL">View</button>
+    </div>
     <p class="help">Supports http://, https://, socks5:// and socks5h://, optional username/password, and bracketed IPv6. Default ports are supported. Enter a complete URL to replace saved credentials; enter a URL without credentials to clear them. Leave blank to keep a saved URL.</p></div>
     <p class="help">Proxy settings apply to the HTTPS control channel and WebSocket Secure (WSS) transport. Direct UDP and UDP-relay paths do not use the configured HTTP/SOCKS proxy. Auto transport may select native UDP.</p>
     <p class="help">Direct mode ignores HTTP_PROXY, HTTPS_PROXY and NO_PROXY for HTTPS/WSS. It does not change firewall policies or operating-system network controls.</p>
@@ -1120,6 +1136,13 @@ function proxySettingsControl(profile) {
   const mode = fs.querySelector('select');
   mode.value = profile && profile.HTTPSProxy ? 'custom' : profile && profile.NoSystemProxy ? 'direct' : 'environment';
   const input = fs.querySelector('input');
+  const view = fs.querySelector('[data-view-proxy]');
+  view.addEventListener('click', () => {
+    const reveal = input.type === 'password';
+    input.type = reveal ? 'text' : 'password';
+    view.textContent = reveal ? 'Hide' : 'View';
+    view.setAttribute('aria-label', view.textContent + ' proxy URL');
+  });
   const status = fs.querySelector('[data-proxy-status]');
   let sequence = 0;
   async function refresh() {
@@ -1597,6 +1620,24 @@ async function answerPassphrase(id, passphrase, cancel) {
 
 // --- data loading -----------------------------------------------------------
 
+let savingProfileOrder = false;
+
+async function moveProfile(index, target, list) {
+  if (savingProfileOrder) return;
+  const ids = list.map(snap => snap.profile.ID);
+  [ids[index], ids[target]] = [ids[target], ids[index]];
+  savingProfileOrder = true;
+  renderProfiles();
+  try {
+    await api('PUT', '/api/profile-order', ids);
+  } catch (e) {
+    setMessage(e.message);
+  } finally {
+    savingProfileOrder = false;
+    try { await refreshProfiles(); } catch (e) { setMessage(e.message); renderProfiles(); }
+  }
+}
+
 async function refreshProfiles() {
   const list = await api('GET', '/api/profiles');
   profiles = new Map(list.map(s => [s.profile.ID, s]));
@@ -1759,6 +1800,9 @@ function connectEvents() {
   if (eventSource) eventSource.close();
   eventSource = new EventSource(q('/api/events'));
   eventSource.onopen = () => { failures = 0; hideReconnectBanner(); };
+  eventSource.addEventListener('profiles', () => {
+    refreshProfiles().catch(e => setMessage(e.message));
+  });
   eventSource.addEventListener('smart-proxy', event => {
     try { smartProxy?.updateStatus(JSON.parse(event.data)); } catch {}
   });

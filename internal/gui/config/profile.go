@@ -85,6 +85,7 @@ type Settings struct {
 type Config struct {
 	Version           int                  `yaml:"version"`
 	Settings          Settings             `yaml:"settings"`
+	ProfileOrder      []string             `yaml:"profile_order,omitempty"`
 	Profiles          []Profile            `yaml:"profiles"`
 	SmartProxyEnabled bool                 `yaml:"smart_proxy_enabled,omitempty"`
 	SmartProxy        *egressrouter.Config `yaml:"smart_proxy,omitempty"`

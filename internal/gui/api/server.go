@@ -131,6 +131,7 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.String()})
 	}))
 	s.mux.HandleFunc("GET /api/profiles", s.requireToken(s.handleListProfiles))
+	s.mux.HandleFunc("PUT /api/profile-order", s.requireToken(s.handleReorderProfiles))
 	s.mux.HandleFunc("POST /api/profiles", s.requireToken(s.handleCreateProfile))
 	s.mux.HandleFunc("PUT /api/profiles/{id}", s.requireToken(s.handleUpdateProfile))
 	s.mux.HandleFunc("DELETE /api/profiles/{id}", s.requireToken(s.handleDeleteProfile))
@@ -167,6 +168,19 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.Snapshots())
+}
+
+func (s *Server) handleReorderProfiles(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&ids); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.mgr.ReorderProfiles(ids); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
@@ -518,7 +532,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case u := <-updates:
-			writeSSE(w, u)
+			if u.ProfileID == "" {
+				fmt.Fprint(w, "event: profiles\ndata: {}\n\n")
+			} else {
+				writeSSE(w, u)
+			}
 			flusher.Flush()
 		case <-ticker.C:
 			sendSmart()
