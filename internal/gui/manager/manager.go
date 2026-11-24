@@ -79,6 +79,7 @@ type Manager struct {
 	smartEnabled    bool
 	smartConfigured bool
 	smartError      string
+	smartHistory    smartProxyHistory
 
 	persistMu  sync.Mutex
 	connector  Connector
@@ -173,12 +174,17 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 	if err := m.smartRouter.Apply(runningSmartProxyConfig(m.smartConfig, m.smartEnabled), nil); err != nil {
 		m.smartError = err.Error()
 	}
+	m.startSmartProxyHistory()
 	return m, nil
 }
 
 // Close disconnects every connected profile. It does not remove profiles
 // from gui.yaml.
 func (m *Manager) Close() {
+	if m.smartHistory.cancel != nil {
+		m.smartHistory.cancel()
+		<-m.smartHistory.done
+	}
 	if m.smartRouter != nil {
 		m.smartRouter.Close()
 	}

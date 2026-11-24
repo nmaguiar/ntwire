@@ -5,6 +5,7 @@ const {
 } = await import(settingsModule);
 
 const windowMillis = 5 * 60_000;
+const maxGapMillis = 10_000;
 const apiPath = '/api/smart-proxy';
 const svgNS = 'http://www.w3.org/2000/svg';
 const count = value => value.toLocaleString();
@@ -22,7 +23,7 @@ const clock = new Intl.DateTimeFormat(undefined, {hour: 'numeric', minute: '2-di
 
 function trafficRates(before, member, seconds) {
   const rates = {};
-  if (!before || seconds <= 0 || seconds > 10) return rates;
+  if (!before || seconds <= 0 || seconds * 1000 > maxGapMillis) return rates;
   for (const metric of ['sent', 'received']) {
     if (!Number.isFinite(before[metric]) || !Number.isFinite(member[metric])) continue;
     rates[metric] = Math.max(0, member[metric] - before[metric]) / seconds;
@@ -39,6 +40,15 @@ function trafficEntriesFor(state) {
 
 const trafficKey = member => member.direct ? 'direct' : memberKey(member);
 
+function tunnelOutage(state) {
+  switch (state) {
+    case 'reconnecting': return 'Reconnecting';
+    case 'failed': return 'Connection failed';
+    case 'idle': return 'Profile disconnected';
+    case 'transport': return 'Tunnel transport unavailable';
+  }
+}
+
 function recordSample(history, state, time) {
   const entries = trafficEntriesFor(state);
   const previous = history.at(-1);
@@ -46,14 +56,16 @@ function recordSample(history, state, time) {
   const totals = {};
   const members = new Map(entries.map(member => {
     const key = trafficKey(member);
-    const traffic = trafficRates(previous?.members.get(key), member, elapsed);
+    const outage = tunnelOutage(member.outage);
+    const traffic = outage ? {} : trafficRates(previous?.members.get(key), member, elapsed);
     for (const [metric, value] of Object.entries(traffic)) {
       totals[metric] = (totals[metric] ?? 0) + value;
     }
     return [key, {
-      sent: member.sent, received: member.received, traffic,
+      member: {profile_id: member.profile_id, tunnel: member.tunnel, direct: member.direct},
+      sent: outage ? undefined : member.sent, received: outage ? undefined : member.received, traffic,
       setup: member.connect_millis, rtt: member.carrier_rtt == null ? undefined : member.carrier_rtt / 1e6,
-      latency: member.https_ttfb_millis
+      latency: member.https_ttfb_millis, outage
     }];
   }));
   history.push({
@@ -65,10 +77,15 @@ function recordSample(history, state, time) {
   while (history.length && history[0].time < time - windowMillis) history.shift();
 }
 
+function measuredLatency(sample, tunnel, metric) {
+  const member = sample.members.get(tunnel);
+  return member?.outage ? undefined : member?.[metric];
+}
+
 function latencySeries(choices, tunnel) {
-  if (tunnel === 'direct') return [{name: 'Setup', color: 'primary', measure: sample => sample.members.get(tunnel)?.setup}];
+  if (tunnel === 'direct') return [{name: 'Setup', color: 'primary', measure: sample => measuredLatency(sample, tunnel, 'setup')}];
   if (tunnel) {
-    const measure = metric => sample => sample.members.get(tunnel)?.[metric];
+    const measure = metric => sample => measuredLatency(sample, tunnel, metric);
     return [
       {name: 'Setup', color: 'primary', measure: measure('setup')},
       {name: 'Tunnel round trip', color: 'secondary-series', measure: measure('rtt')},
@@ -79,7 +96,7 @@ function latencySeries(choices, tunnel) {
   return choices.toSorted(([a], [b]) => a.localeCompare(b)).map(([key, name], index) => ({
     name,
     hue: (222 + index * 137.508) % 360,
-    measure: sample => sample.members.get(key)?.setup
+    measure: sample => measuredLatency(sample, key, 'setup')
   }));
 }
 
@@ -104,11 +121,23 @@ function seriesPath(samples, measure, x, y) {
       previousTime = undefined;
       continue;
     }
-    path += (previousTime !== undefined && sample.time - previousTime <= 10_000 ? ' L' : ' M') +
+    path += (previousTime !== undefined && sample.time - previousTime <= maxGapMillis ? ' L' : ' M') +
       x(sample.time).toFixed(2) + ',' + y(value).toFixed(2);
     previousTime = sample.time;
   }
   return path.trim();
+}
+
+function trendBands(samples, outages) {
+  const bands = [];
+  for (const [i, sample] of samples.entries()) {
+    const next = samples[i + 1];
+    const gap = next && next.time - sample.time > maxGapMillis;
+    const affected = outages?.(sample);
+    if (affected?.length) bands.push({type: 'down', from: sample.time, to: next && !gap ? next.time : sample.time, sample, affected});
+    if (gap) bands.push({type: 'gap', from: sample.time, to: next.time});
+  }
+  return bands;
 }
 
 function nearestSample(samples, time) {
@@ -175,9 +204,10 @@ function pointsAt(pointer, rect) {
     pointer.clientY >= rect.top && pointer.clientY <= rect.bottom;
 }
 
-function renderTrend(container, samples, series, format, emptyText) {
+function renderTrend(container, samples, series, format, emptyText, outages) {
   const values = samples.flatMap(sample => series.map(line => line.measure(sample))).filter(Number.isFinite);
-  if (!values.length) {
+  const bands = trendBands(samples, outages);
+  if (!values.length && !bands.length) {
     container.replaceChildren(make('p', emptyText, 'help chart-empty'));
     bindChartHover(container, undefined);
     return;
@@ -195,6 +225,13 @@ function renderTrend(container, samples, series, format, emptyText) {
   const plot = svgElement('svg', {
     class: 'plot', viewBox: '0 0 ' + width + ' ' + height, preserveAspectRatio: 'none', 'aria-hidden': true
   });
+  for (const band of bands) {
+    const left = x(band.from);
+    const span = x(band.to) - left;
+    plot.append(svgElement('rect', {
+      class: 'chart-' + band.type, x: span ? left : left - 2, y: 0, width: span || 4, height
+    }));
+  }
   for (const value of [0, max / 2, max]) {
     plot.append(svgElement('line', {x1: 0, x2: width, y1: y(value), y2: y(value), stroke: 'var(--border)'}));
   }
@@ -218,12 +255,21 @@ function renderTrend(container, samples, series, format, emptyText) {
         fill: 'currentColor'}), line));
     }
   }
+  for (const [type, name] of [['down', 'Tunnel down'], ['gap', 'No samples recorded']]) {
+    if (!bands.some(band => band.type === type)) continue;
+    const key = make('span', undefined, 'chart-key-' + type);
+    const swatch = make('i');
+    swatch.setAttribute('aria-hidden', 'true');
+    key.append(swatch, name);
+    legend.append(key);
+  }
   const axes = make('div', undefined, 'axis');
   const guide = svgElement('line', {class: 'chart-guide', y1: 0, y2: height});
   guide.style.display = 'none';
   plot.append(guide);
   const time = make('span');
-  axes.append(time, make('span', format(0) + ' to ' + format(max)));
+  axes.append(time);
+  if (values.length) axes.append(make('span', format(0) + ' to ' + format(max)));
   function showLegend(sample) {
     updateText(time, clock.format(sample.time));
     for (const {line, text} of labels) {
@@ -240,7 +286,14 @@ function renderTrend(container, samples, series, format, emptyText) {
       return;
     }
     const plotX = (pointer.clientX - rect.left) / rect.width * width;
-    const sample = nearestSample(samples, start + duration * (plotX - 4) / (width - 8));
+    const pointerTime = start + duration * (plotX - 4) / (width - 8);
+    const band = bands.find(item => pointerTime >= item.from && pointerTime < item.to);
+    if (band?.type === 'gap') {
+      guide.style.display = 'none';
+      showLegend({time: pointerTime, members: new Map()});
+      return [clock.format(pointerTime), 'No samples recorded'];
+    }
+    const sample = band?.sample || nearestSample(samples, pointerTime);
     guide.setAttribute('x1', x(sample.time));
     guide.setAttribute('x2', x(sample.time));
     guide.style.display = 'block';
@@ -250,6 +303,8 @@ function renderTrend(container, samples, series, format, emptyText) {
       return line.name + ': ' + (Number.isFinite(value) ? format(value) : '—');
     })];
     if (series.length > 8) lines.push((series.length - 8) + ' more in the legend');
+    const affected = band?.affected ?? outages?.(sample);
+    if (affected?.length) lines.push(...affected);
     return lines;
   });
 }
@@ -312,6 +367,7 @@ export function startDashboard(url) {
   let live;
   let profiles = new Map();
   let error = '';
+  let historyError = '';
 
   async function request(path, body) {
     const options = {signal: AbortSignal.timeout(5000)};
@@ -342,7 +398,7 @@ export function startDashboard(url) {
     const entries = state.members || [];
     const detail = live.master_enabled === false ? 'Smart Proxy is off'
       : state.listening ? 'Listening on ' + state.listening : state.enabled ? 'Not listening' : 'Disabled';
-    updateText(el('state'), [detail, state.error || live.error, error].filter(Boolean).join(' · '));
+    updateText(el('state'), [detail, state.error || live.error, error, historyError].filter(Boolean).join(' · '));
     const summary = [count(state.active ?? 0) + ' active connections',
       count(state.recovered ?? 0) + ' of ' + count(state.failovers ?? 0) + ' failovers recovered'];
     if (state.last_selected) summary.push('Last selected ' + label(state.last_selected) +
@@ -362,7 +418,13 @@ export function startDashboard(url) {
 
     const samples = history.get(group) || [];
     const trafficEntries = trafficEntriesFor(state);
-    const choices = trafficEntries.map(member => [trafficKey(member), label(member)]);
+    const chartLabels = new Map(trafficEntries.map(member => [trafficKey(member), label(member)]));
+    for (const sample of samples) {
+      for (const [key, {member}] of sample.members) {
+        if (!chartLabels.has(key)) chartLabels.set(key, label(member));
+      }
+    }
+    const choices = [...chartLabels];
     trafficTunnel = fillTunnelSelect(trafficPicker, choices, trafficTunnel);
     latencyTunnel = fillTunnelSelect(latencyPicker, choices, latencyTunnel);
 
@@ -376,8 +438,10 @@ export function startDashboard(url) {
     ], rate, 'Waiting for traffic samples.');
 
     el('latency-comparison').hidden = !!latencyTunnel;
+    const outages = sample => [...sample.members].flatMap(([key, {outage}]) =>
+      outage && (!latencyTunnel || key === latencyTunnel) ? [chartLabels.get(key) + ' · ' + outage] : []);
     renderTrend(el('latency'), samples, latencySeries(choices, latencyTunnel), milliseconds,
-      latencyTunnel ? 'No latency measurements for this tunnel yet.' : 'No setup latency measurements yet.');
+      latencyTunnel ? 'No latency measurements for this tunnel yet.' : 'No setup latency measurements yet.', outages);
     renderTrend(el('activity'), samples, [{name: 'Active connections', color: 'primary', measure: sample => sample.active}],
       count, 'Waiting for an active proxy listener.');
     renderUsage(el('usage'), chartRows(trafficEntries, label, member => member.routed ?? 0), samples.at(-1)?.time);
@@ -417,20 +481,29 @@ export function startDashboard(url) {
   }
 
   async function poll() {
-    try {
-      live = await request(apiPath + '/status');
-      const time = Date.now();
-      const groups = [['default', live], ...Object.entries(live.groups || {})];
-      for (const [name, state] of groups) {
-        if (!history.has(name)) history.set(name, []);
-        recordSample(history.get(name), state, time);
-      }
+    const selected = group;
+    const samples = history.get(selected) || [];
+    const after = samples.at(-1)?.time ?? 0;
+    const query = new URLSearchParams({group: selected, after});
+    const [status, trend] = await Promise.allSettled([
+      request(apiPath + '/status'),
+      request(apiPath + '/history?' + query)
+    ]);
+    if (trend.status === 'fulfilled') {
+      for (const sample of trend.value) recordSample(samples, sample, sample.time);
+      history.set(selected, samples);
+    }
+    if (group === selected) {
+      historyError = trend.status === 'rejected' ? 'Could not load chart history: ' + trend.reason.message : '';
+    }
+    if (status.status === 'fulfilled') {
+      live = status.value;
       for (const name of history.keys()) {
         if (!groupAt(live, name)) history.delete(name);
       }
       error = '';
-    } catch (failure) {
-      error = 'Could not refresh live status: ' + failure.message;
+    } else {
+      error = 'Could not refresh live status: ' + status.reason.message;
     }
     render();
     setTimeout(poll, 2000);
@@ -439,6 +512,7 @@ export function startDashboard(url) {
   groupPicker.onchange = () => {
     group = groupPicker.value;
     trafficTunnel = latencyTunnel = '';
+    historyError = '';
     updateText(el('action-status'), '');
     render();
   };
@@ -458,4 +532,4 @@ export function startDashboard(url) {
   poll();
 }
 
-export {latencySeries, nearestSample, recordSample, seriesPath};
+export {latencySeries, nearestSample, recordSample, seriesPath, trendBands};

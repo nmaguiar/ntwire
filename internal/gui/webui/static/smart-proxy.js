@@ -9,6 +9,18 @@ const strategyHelp = {
   priority: 'Try higher-priority tunnels first. List order breaks ties.',
   'round-robin': 'Rotate new connections through healthy tunnels.'
 };
+const strategyGuide = [
+  ['sticky-fastest', 'Sticky fastest', 'Picks the fastest tunnel, then keeps using it for the same site until another is consistently faster.',
+    'Everyday browsing and logins. Keeps a steady exit IP while still choosing a fast tunnel.'],
+  ['fastest-healthy', 'Fastest healthy', 'Picks the fastest healthy tunnel for every new connection. The exit IP can change between connections.',
+    'Speed matters most and sites do not care which exit IP you use.'],
+  ['destination-aware', 'Destination aware', 'Like fastest healthy, but ranks tunnels by how they performed for the specific site and port requested.',
+    'Tunnels behave differently per site, for example one is fast for a CDN but blocked by another service.'],
+  ['priority', 'Priority', 'Always uses the highest-priority tunnel that is healthy. Speed is ignored. List order breaks ties.',
+    'A preferred exit with backups, or predictable routing for cost or policy reasons.'],
+  ['round-robin', 'Round robin', 'Rotates new connections through the healthy tunnels in turn.',
+    'Spreading load evenly so no single tunnel is saturated.']
+];
 const displayGroup = name => name === 'default' ? 'Default' : name;
 const memberKey = member => JSON.stringify([member.profile_id, member.tunnel]);
 function groupAt(config, name) {
@@ -752,6 +764,38 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     dialog.showModal();
   }
 
+  function openStrategyGuide() {
+    const dialog = make('dialog', undefined, 'browser-profile-dialog smart-editor');
+    const title = make('h2', 'Choosing a routing strategy');
+    title.id = 'smart-proxy-strategy-guide-title';
+    dialog.setAttribute('aria-labelledby', title.id);
+    const wrap = make('div', undefined, 'smart-table-wrap');
+    const table = make('table', undefined, 'smart-table');
+    const head = make('tr');
+    for (const name of ['Strategy', 'How it picks', 'Best for']) head.append(make('th', name));
+    const thead = make('thead');
+    thead.append(head);
+    table.append(thead);
+    const body = make('tbody');
+    const current = group().egress.selection ?? 'sticky-fastest';
+    for (const [value, name, how, best] of strategyGuide) {
+      const row = make('tr');
+      const cell = make('th', name + (value === current ? ' (selected)' : ''));
+      cell.scope = 'row';
+      row.append(cell, make('td', how), make('td', best));
+      body.append(row);
+    }
+    table.append(body);
+    wrap.append(table);
+    const note = make('p', 'All strategies skip tunnels that are unhealthy, and failover can still retry another tunnel when a connection fails. Destination rules are applied before the strategy picks.', 'help');
+    const actions = make('div', undefined, 'row panel-actions');
+    actions.append(button('Close', () => dialog.close()));
+    dialog.append(title, wrap, note, actions);
+    dialog.addEventListener('close', () => dialog.remove(), {once: true});
+    document.body.append(dialog);
+    dialog.showModal();
+  }
+
   function strategyDetails() {
     updateText(field('strategy-help'), strategyHelp[group().egress.selection ?? 'sticky-fastest'] || '');
   }
@@ -952,6 +996,7 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     updateText(field('action-status'), '');
     renderGroup();
   };
+  field('strategy-compare').onclick = openStrategyGuide;
   field('add-group').onclick = () => {
     const input = field('group-name');
     const name = input.value.trim();
@@ -1045,5 +1090,5 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
   };
 }
 
-export {bindSettingsTabs, buildRequest, chartRows, choice, controlValue, displayGroup, groupAt, make,
+export {strategyGuide, bindSettingsTabs, buildRequest, chartRows, choice, controlValue, displayGroup, groupAt, make,
   memberKey, milliseconds, readable, readSharedConfig, setControl, statusCard, statusMetrics, syncGroupActivation, updateText};

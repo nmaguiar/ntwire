@@ -43,6 +43,10 @@ a{color:var(--blue)}
 .chart-tooltip{position:fixed;z-index:60;display:none;max-width:min(14rem,calc(100vw - 16px));background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:.45rem .6rem;font-size:.78rem;line-height:1.4;box-shadow:var(--shadow);overflow-wrap:anywhere;pointer-events:none}
 .chart-tooltip>div:first-child{color:var(--muted);font-size:.7rem;margin-bottom:.2rem}
 .chart-guide{stroke:var(--muted);stroke-width:1;stroke-dasharray:2 2;vector-effect:non-scaling-stroke;pointer-events:none}
+.chart-key-down{color:#b91c1c}.chart-key-gap{color:var(--muted)}
+@media(prefers-color-scheme:dark){.chart-key-down{color:#fca5a5}}
+.chart-down{fill:#dc2626;fill-opacity:.22}.chart-gap{fill:var(--muted);fill-opacity:.18}
+.legend .chart-key-down i,.legend .chart-key-gap i{border-radius:2px}
 .axis{display:flex;justify-content:space-between;gap:.4rem;margin-top:.15rem}
 .chart-empty{padding:.8rem 0}
 .bars{list-style:none;margin:.65rem 0 0;padding:0}
@@ -92,7 +96,7 @@ a{color:var(--blue)}
       <div id="activity"></div>
     </section>
   </div>
-  <p class="help">Charts sample every two seconds while this tab is open and show up to five minutes of activity.</p>
+  <p class="help">ntwire GUI records samples every two seconds and keeps the last five minutes in memory.</p>
   <section class="panel" aria-labelledby="tunnel-status">
     <header><h2 id="tunnel-status" tabindex="-1">Tunnel status</h2><button type="button" id="clear-preferred" disabled>Clear preference</button></header>
     <p id="action-status" class="help" role="status"></p>

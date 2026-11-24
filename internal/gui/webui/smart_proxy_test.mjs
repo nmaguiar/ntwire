@@ -1,8 +1,8 @@
 // Run with node --test internal/gui/webui/smart_proxy_test.mjs
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {bindSettingsTabs, buildRequest, chartRows, controlValue, readSharedConfig, setControl, syncGroupActivation} from './static/smart-proxy.js';
-import {latencySeries, nearestSample, recordSample, seriesPath} from './static/smart-proxy-dashboard.js';
+import {strategyGuide, bindSettingsTabs, buildRequest, chartRows, controlValue, readSharedConfig, setControl, syncGroupActivation} from './static/smart-proxy.js';
+import {latencySeries, nearestSample, recordSample, seriesPath, trendBands} from './static/smart-proxy-dashboard.js';
 
 test('Imports match profile names and server URLs and keep destination targets aligned', () => {
   const exportFile = {
@@ -91,6 +91,25 @@ test('Charts break between missing measurements and long gaps', () => {
   ];
   assert.equal(seriesPath(samples, sample => sample.value, time => time / 1000, value => value),
     'M0.00,1.00 L2.00,2.00 M6.00,0.00 M18.00,3.00');
+});
+
+test('Latency distinguishes reported tunnel reconnects from missing samples and route exclusions', () => {
+  const history = [];
+  const key = '["office","egress"]';
+  const west = {profile_id: 'west', tunnel: 'egress', reason: 'excluded'};
+  const office = {profile_id: 'office', tunnel: 'egress', connect_millis: 25};
+  const sample = (time, members) => recordSample(history, {listening: true, active: 4, members}, time);
+  sample(0, [office, west]);
+  sample(2000, [{...office, outage: 'reconnecting'}, west]);
+  sample(4000, [office, west]);
+  sample(6000, [{...office, connect_millis: undefined}, west]);
+  sample(20000, [office, west]);
+  const show = point => [...point.members.values()].flatMap(entry => entry.outage ? [entry.outage] : []);
+  assert.deepEqual(trendBands(history, show).map(({type, from, to, affected}) => [type, from, to, affected]), [
+    ['down', 2000, 4000, ['Reconnecting']], ['gap', 6000, 20000, undefined]
+  ]);
+  assert.deepEqual(history.map(latencySeries([[key, 'Office']], '')[0].measure), [25, undefined, 25, undefined, 25]);
+  assert.deepEqual(history.map(point => point.active), [4, 4, 4, 4, 4]);
 });
 
 test('Settings tabs switch one panel at a time and support keyboard navigation', () => {
@@ -263,4 +282,10 @@ test('Direct TCP and UDP traffic contribute once to the aggregate', () => {
   sample(1000, 5, 3);
   assert.equal(history[1].members.get('direct').traffic.sent, 5);
   assert.equal(history[1].sent, 9);
+});
+
+test('Strategy guide covers every selection strategy the backend accepts', () => {
+  assert.deepEqual(strategyGuide.map(([value]) => value).sort(),
+    ['destination-aware', 'fastest-healthy', 'priority', 'round-robin', 'sticky-fastest']);
+  for (const entry of strategyGuide) assert.ok(entry.every(text => text.length > 0));
 });

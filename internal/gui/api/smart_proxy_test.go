@@ -4,12 +4,72 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nmaguiar/ntwire/internal/gui/manager"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
+
+func TestSmartProxyHistoryAPI_BackfillsSamplesAndSupportsCursor(t *testing.T) {
+	s := newTestServer(t)
+	t.Cleanup(s.mgr.Close)
+
+	const path = "/api/smart-proxy/history"
+	anonymous, err := http.Get("http://" + s.Addr() + path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anonymous.Body.Close()
+	if anonymous.StatusCode != http.StatusNotFound {
+		t.Fatalf("anonymous history returned %d", anonymous.StatusCode)
+	}
+	invalid := s.get(t, path+"?after=-1")
+	invalid.Body.Close()
+	if invalid.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid cursor returned %d", invalid.StatusCode)
+	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := probe.Addr().String()
+	probe.Close()
+	if err := s.mgr.SetSmartProxy(egressrouter.Config{
+		Groups: map[string]egressrouter.Config{"office": {Enabled: true, Listen: addr}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.mgr.SetSmartProxyEnabled(true); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if recent := s.mgr.SmartProxyHistory("office", 0); len(recent) > 0 && recent[len(recent)-1].Listening {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	openedAt := time.Now().UnixMilli()
+	officePath := path + "?group=office"
+	samples := decode[[]manager.SmartProxyHistorySample](t, s.get(t, officePath))
+	if len(samples) == 0 || !samples[len(samples)-1].Listening || samples[len(samples)-1].Time > openedAt {
+		t.Fatalf("expected samples collected before opening the dashboard, got %+v", samples)
+	}
+	last := samples[len(samples)-1].Time
+	delta := decode[[]manager.SmartProxyHistorySample](t, s.get(t, officePath+"&after="+strconv.FormatInt(last, 10)))
+	for _, sample := range delta {
+		if sample.Time <= last {
+			t.Fatalf("cursor returned old sample %+v", sample)
+		}
+	}
+	if missed := decode[[]manager.SmartProxyHistorySample](t, s.get(t, path+"?group=unknown")); len(missed) != 0 {
+		t.Fatalf("unknown group returned samples: %+v", missed)
+	}
+}
 
 func TestSmartProxyAPIAppliesConfiguration(t *testing.T) {
 	s := newTestServer(t)

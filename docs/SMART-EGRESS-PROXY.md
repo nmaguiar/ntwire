@@ -18,7 +18,9 @@ Connect the profiles you want to use. In Settings, expand **Smart Proxy** below 
 
 The **Tunnels** and **Destination rules** tabs show tables. Use **Add** or **Edit** to open an item form. Item edits go into the group draft. Use the row arrows to reorder items, then select **Save changes** to apply the draft. Destination rules run in the order shown.
 
-Select **Open live dashboard** to open the selected group in a new browser tab. Traffic shows combined sent and received rates by default. Latency compares setup time across all tunnels, with one line per tunnel. Select an individual tunnel in either chart for its traffic or detailed timings. The dashboard also shows active connections, tunnel usage, diagnostics, and temporary preferences. Trend charts collect up to five minutes of samples while the tab is open.
+Select **Open live dashboard** to open the selected group in a new browser tab. Traffic shows combined sent and received rates by default. Latency compares setup time across all tunnels, with one line per tunnel. Select an individual tunnel in either chart for its traffic or detailed timings. The dashboard also shows active connections, tunnel usage, diagnostics, and temporary preferences.
+
+ntwire GUI samples trend metrics every two seconds and retains the last five minutes in memory, including while the dashboard is closed. History resets when ntwire GUI restarts. Gray bands mark periods with no recorded samples. Red bands in Tunnel latency mark a reported disconnection or reconnect. Hover over a red band to see the affected tunnel.
 
 When the master switch is on, the tray shows one **Smart Proxy** menu. Choose **Group** to switch which group its actions apply to. **Activate** and **Disconnect** change the selected group's saved activation. **Open dashboard** also works when that group is inactive. **Open isolated browser** is available while the group is listening.
 

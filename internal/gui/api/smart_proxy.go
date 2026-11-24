@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
@@ -79,6 +80,19 @@ func (s *Server) smartProxyRoutes() {
 	}))
 	s.mux.HandleFunc("GET /api/smart-proxy/status", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.mgr.SmartProxyStatus())
+	}))
+	s.mux.HandleFunc("GET /api/smart-proxy/history", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		var after int64
+		if raw := query.Get("after"); raw != "" {
+			var err error
+			after, err = strconv.ParseInt(raw, 10, 64)
+			if err != nil || after < 0 {
+				writeError(w, http.StatusBadRequest, errors.New("invalid history cursor"))
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, s.mgr.SmartProxyHistory(query.Get("group"), after))
 	}))
 	s.mux.HandleFunc("PUT /api/smart-proxy/master", s.requireToken(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
