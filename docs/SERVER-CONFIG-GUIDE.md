@@ -260,6 +260,7 @@ tunnels:
 #     reverse_filters : false              # invert the above from an allow-list into a deny-list
 #     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
 #     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+#     allow_destination_binding: false  # allow authorized hostname ASN classification on native SOCKS tunnels
 #     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
 #     allow_local_egress: false            # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 #     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
@@ -846,6 +847,9 @@ audit:
                 "type": "boolean"
               },
               "allow_bind": {
+                "type": "boolean"
+              },
+              "allow_destination_binding": {
                 "type": "boolean"
               },
               "allow_local_egress": {

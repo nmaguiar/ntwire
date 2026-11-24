@@ -18,6 +18,7 @@ import (
 // GroupSet owns a backwards-compatible default listener and optional independent
 // groups. Configuration and port allocation are committed as one operation.
 type GroupSet struct {
+	asn         *asnDatabase
 	endpoints   atomic.Pointer[[]string]
 	mu          sync.RWMutex
 	source      Source
@@ -107,12 +108,18 @@ func (g *GroupSet) Apply(config Config, save func(Config) error) error {
 		endpoints = append(endpoints, cfg.PACListen)
 	}
 	g.endpoints.Store(&endpoints)
+	used := false
+	for _, config := range configs {
+		used = used || config.Enabled && config.Routing.usesASN()
+	}
+	g.asn = useASNDatabase(g.asn, cfg.ASNDatabase, used)
 	old := g.groups
 	g.groups = make(map[string]*Router, len(staged))
 	for name, p := range staged {
 		// A change to one group should not reset the preferences or routing
 		// history of groups with the same configuration and listener.
-		if p.router.state == nil || !reflect.DeepEqual(p.router.state.config, p.cfg) || p.router.listener != p.listener {
+		if p.router.state == nil || p.router.asnShared != g.asn && p.cfg.Routing.usesASN() || !reflect.DeepEqual(p.router.state.config, p.cfg) || p.router.listener != p.listener {
+			p.router.asnShared = g.asn
 			p.router.commit(p.cfg, p.listener)
 		}
 		g.groups[name] = p.router
@@ -217,6 +224,7 @@ func (g *GroupSet) Status() Status {
 		return Status{}
 	}
 	status := g.groups["default"].Status()
+	status.ASNDatabase = g.asn.status(time.Now())
 	if len(g.groups) > 1 {
 		status.Groups = make(map[string]Status, len(g.groups)-1)
 	}
@@ -246,6 +254,9 @@ func (g *GroupSet) Close() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.closed = true
+	if g.asn != nil {
+		g.asn.cancel()
+	}
 	if g.pacServer != nil {
 		_ = g.pacServer.Close()
 	}
@@ -260,6 +271,9 @@ func (g *GroupSet) Close() {
 }
 
 func (g *GroupSet) candidate(member Member) Candidate {
+	if g.source == nil {
+		return Candidate{}
+	}
 	candidate := g.source(member)
 	if endpoints := g.endpoints.Load(); endpoints != nil && candidate.ControlProxy != "" {
 		for _, endpoint := range *endpoints {

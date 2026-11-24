@@ -18,15 +18,16 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/localproxy"
+	"github.com/nmaguiar/ntwire/internal/privatepath"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
 
 func readRecord(path string) (record, error) {
-	if err := verifyPrivate(path, true); err != nil {
+	if err := privatepath.Verify(path, true); err != nil {
 		return record{}, err
 	}
 	file := filepath.Join(path, "discovery.json")
-	if err := verifyPrivate(file, false); err != nil {
+	if err := privatepath.Verify(file, false); err != nil {
 		return record{}, err
 	}
 	f, err := os.Open(file)
@@ -78,12 +79,17 @@ func (info record) exchange(ctx context.Context, req request) (net.Conn, *bufio.
 }
 
 type attached struct {
-	info       record
-	member     egressrouter.Member
-	generation string
+	destinationBinding bool
+	info               record
+	member             egressrouter.Member
+	generation         string
+	numericDomain      bool
 }
 
 func (a attached) DialDestination(ctx context.Context, dst egressrouter.Destination) (net.Conn, error) {
+	if err := egressrouter.CheckNumericDomain(dst, a.numericDomain); err != nil {
+		return nil, err
+	}
 	return a.open(ctx, "dial", dst)
 }
 func (a attached) AssociateUDP(ctx context.Context) (net.Conn, error) {
@@ -242,7 +248,7 @@ func (r *Registry) fetch(ctx context.Context, member egressrouter.Member) egress
 	c := reply.Candidate
 	c.ControlProxy = reply.ControlProxy
 	if c.Reason == "" && c.Generation != "" {
-		c.Dialer = attached{info: info, member: member, generation: c.Generation}
+		c.Dialer = attached{info: info, member: member, generation: c.Generation, numericDomain: c.NumericDomain, destinationBinding: c.DestinationBinding}
 		c.Generation = info.Instance + "/" + c.Generation
 	}
 	return c
@@ -288,10 +294,13 @@ func (a attached) Prepare(ctx context.Context) (egressrouter.PreparedEgress, err
 		_ = conn.Close()
 		return nil, errors.New("invalid prepared attachment")
 	}
-	return &preparedAttachment{conn: buffered}, nil
+	return &preparedAttachment{conn: buffered, numericDomain: a.numericDomain}, nil
 }
 
-type preparedAttachment struct{ conn *localproxy.BufferedConn }
+type preparedAttachment struct {
+	conn          *localproxy.BufferedConn
+	numericDomain bool
+}
 
 func (p *preparedAttachment) Close() error {
 	if p.conn == nil {
@@ -300,6 +309,9 @@ func (p *preparedAttachment) Close() error {
 	return p.conn.Close()
 }
 func (p *preparedAttachment) DialDestination(ctx context.Context, dst egressrouter.Destination) (net.Conn, error) {
+	if err := egressrouter.CheckNumericDomain(dst, p.numericDomain); err != nil {
+		return nil, err
+	}
 	if p.conn == nil {
 		return nil, net.ErrClosed
 	}

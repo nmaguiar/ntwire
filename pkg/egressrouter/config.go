@@ -13,16 +13,17 @@ import (
 )
 
 type Config struct {
-	Groups    map[string]Config `yaml:"groups,omitempty" json:"groups,omitempty"`
-	PACListen string            `yaml:"pac_listen,omitempty" json:"pac_listen,omitempty"`
-	Enabled   bool              `yaml:"enabled" json:"enabled"`
-	Listen    string            `yaml:"listen" json:"listen"`
-	Protocols []string          `yaml:"protocols" json:"protocols"`
-	Egress    Membership        `yaml:"egress" json:"egress"`
-	Failover  Failover          `yaml:"failover" json:"failover"`
-	Health    Health            `yaml:"health" json:"health"`
-	Routing   Routing           `yaml:"routing" json:"routing"`
-	Limits    Limits            `yaml:"limits" json:"limits"`
+	ASNDatabase *ASNDatabaseConfig `yaml:"asn_database,omitempty" json:"asn_database,omitempty"`
+	Groups      map[string]Config  `yaml:"groups,omitempty" json:"groups,omitempty"`
+	PACListen   string             `yaml:"pac_listen,omitempty" json:"pac_listen,omitempty"`
+	Enabled     bool               `yaml:"enabled" json:"enabled"`
+	Listen      string             `yaml:"listen" json:"listen"`
+	Protocols   []string           `yaml:"protocols" json:"protocols"`
+	Egress      Membership         `yaml:"egress" json:"egress"`
+	Failover    Failover           `yaml:"failover" json:"failover"`
+	Health      Health             `yaml:"health" json:"health"`
+	Routing     Routing            `yaml:"routing" json:"routing"`
+	Limits      Limits             `yaml:"limits" json:"limits"`
 
 	BrowserBlockLocalDNS bool `yaml:"browser_block_local_dns,omitempty" json:"browser_block_local_dns,omitempty"`
 }
@@ -61,6 +62,7 @@ type Health struct {
 	RecoveryInterval time.Duration `yaml:"recovery_interval" json:"recovery_interval"`
 }
 type Routing struct {
+	ASN               *ASNPolicy    `yaml:"asn,omitempty" json:"asn,omitempty"`
 	UDPAssociate      bool          `yaml:"udp_associate,omitempty" json:"udp_associate,omitempty"`
 	UDPIdleTimeout    time.Duration `yaml:"udp_idle_timeout,omitempty" json:"udp_idle_timeout,omitempty"`
 	AffinityScope     string        `yaml:"affinity_scope,omitempty" json:"affinity_scope,omitempty"`
@@ -82,6 +84,13 @@ func (c Config) Normalized() (Config, error) {
 	cfg, err := c.normalizedGroup()
 	if err != nil {
 		return cfg, err
+	}
+	if cfg.ASNDatabase != nil {
+		db, err := cfg.ASNDatabase.normalized()
+		if err != nil {
+			return cfg, err
+		}
+		cfg.ASNDatabase = &db
 	}
 	if len(c.Groups) > 16 {
 		return cfg, errors.New("at most 16 named smart proxy groups are supported")
@@ -107,7 +116,7 @@ func (c Config) Normalized() (Config, error) {
 		seen[cfg.PACListen] = true
 	}
 	for name, group := range c.Groups {
-		if !ValidProfileID(name) || name == "default" || len(group.Groups) > 0 || group.PACListen != "" {
+		if !ValidProfileID(name) || name == "default" || len(group.Groups) > 0 || group.PACListen != "" || group.ASNDatabase != nil {
 			return cfg, errors.New("invalid or nested smart proxy group")
 		}
 		group, err = group.normalizedGroup()

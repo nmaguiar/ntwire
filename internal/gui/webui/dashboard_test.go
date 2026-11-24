@@ -37,6 +37,32 @@ func TestGUISettingsIncludesAdaptiveBrandMark(t *testing.T) {
 	}
 }
 
+func TestSmartProxyDashboardMatchesSettingsBrand(t *testing.T) {
+	files, err := Files()
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := fs.ReadFile(files, "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dashboard, err := fs.ReadFile(files, "smart-proxy-dashboard.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const logoStart = `<svg class="brand-mark"`
+	_, logoTail, found := strings.Cut(string(settings), logoStart)
+	logo, _, closed := strings.Cut(logoTail, "</svg>")
+	if !found || !closed || !strings.Contains(string(dashboard), logoStart+logo+"</svg>") {
+		t.Error("The Smart Proxy dashboard must use the Settings logo")
+	}
+	const title = "ntwire Smart Proxy live dashboard"
+	if !strings.Contains(string(dashboard), "<title>"+title+"</title>") ||
+		!strings.Contains(string(dashboard), `<h1><span class="brand-nt">nt</span>wire Smart Proxy live dashboard</h1>`) {
+		t.Errorf("The Smart Proxy dashboard heading and tab must read %q", title)
+	}
+}
+
 func TestGUISettingsMessageResetAndDismissControls(t *testing.T) {
 	files, err := Files()
 	if err != nil {

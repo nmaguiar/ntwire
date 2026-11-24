@@ -102,6 +102,41 @@ func TestReloadKeepsOIDCSessionWhenStillGranted(t *testing.T) {
 	}
 }
 
+func TestReloadRevokesStaleNumericDomainGrant(t *testing.T) {
+	for _, change := range []string{"policy", "upstream", "transparent", "virtual port"} {
+		t.Run(change, func(t *testing.T) {
+			const port = 1080
+			tunnel := TunnelConfig{Name: "egress", Target: "socks", VirtualPort: port, Allow: []string{"*"}, Socks: &SocksConfig{AllowAll: true}}
+			cfg := Config{Tunnels: []TunnelConfig{tunnel}}
+			cfg.Auth.OIDC.Issuers = []OIDCIssuerConfig{{Name: "test"}}
+			s := New(cfg, nil)
+			newSession := func(capable bool) Session {
+				return s.sessions.Create(CreateParams{Method: "oidc", Identity: "alice@example.test", Issuer: "test", TTL: time.Minute,
+					Tunnels: []protocol.Tunnel{{Name: tunnel.Name, VirtualPort: port, EgressNumericDomain: capable}}})
+			}
+			current, old := newSession(true), newSession(false)
+			switch change {
+			case "policy":
+				tunnel.Socks = &SocksConfig{Filters: []string{"192.0.2.0/24"}}
+			case "upstream":
+				tunnel.Socks = &SocksConfig{Upstream: "socks5://127.0.0.1:9999"}
+			case "transparent":
+				tunnel.Socks = &SocksConfig{Transparent: true, Upstream: "socks5h://127.0.0.1:9999"}
+			case "virtual port":
+				tunnel.VirtualPort++
+			}
+			cfg.Tunnels = []TunnelConfig{tunnel}
+			s.Reload(cfg)
+			if _, live := s.sessions.Get(current.Token); live != (change == "policy") {
+				t.Fatalf("capable grant live after %s = %v", change, live)
+			}
+			if _, live := s.sessions.Get(old.Token); !live {
+				t.Fatal("existing legacy grant was revoked")
+			}
+		})
+	}
+}
+
 func TestReloadSerializesConcurrentRenewal(t *testing.T) {
 	cfg := Config{Tunnels: []TunnelConfig{{Name: "reports", Target: "x:1", VirtualPort: 1, Allow: []string{"*"}}}}
 	cfg.Auth.SessionTTL = time.Minute

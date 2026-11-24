@@ -382,7 +382,7 @@ DNS rebinding.
   `socks.asn_url`) — don't enable it on a server that otherwise has no
   outbound internet access, and pin `socks.asn_url` to a trusted source if
   you do.
-- **SOCKS5 domain requests resolve on the server**, using the server's DNS
+- **SOCKS5 hostname requests resolve on the server**, using the server's DNS
   resolver and `socks.dns_timeout`, before `socks.domain_filters` is
   matched against the requested hostname and `socks.filters`/`asn_filters`
   against the resolved IP. This is also the final address for direct and
@@ -390,10 +390,29 @@ DNS rebinding.
   trusted `socks5h://` upstream, ntwire sends the authorized original hostname
   to that upstream for final DNS resolution; use this only when that upstream
   is within the destination-policy trust boundary.
+- **Numeric CONNECT and UDP destinations use the parsed IP directly.** IPv4-mapped
+  IPv6 is treated as IPv4 for CIDRs, ASNs, the loopback and link-local floor,
+  and the final dial. A literal carried in a SOCKS5 domain field must pass both
+  the numeric policy and the legacy suffix decision against the exact field.
+  The SOCKS filter, tunnel policy and principal policy each enforce this check.
+  Use CIDR rules to deny an IP across encodings. An inverted suffix can also
+  deny a domain-form request whose original text matches that suffix.
+  Scoped IPv6 and ambiguous numeric spellings are rejected. The proxy performs
+  no forward or reverse DNS to classify a literal.
+- **Smart Proxy preserves the destination on the wire.** Numeric-domain
+  forwarding requires the selected authenticated grant and any attached publisher
+  to advertise support. Missing support fails before destination submission.
+  A server reload that removes the advertised handling or moves its virtual port
+  revokes affected grants. Client-side routing can restrict the member set, and
+  the selected server still authorizes the destination. A policy denial or
+  ambiguous failure after submission remains terminal.
 - **UDP ASSOCIATE is control-session-bound.** ntwire creates one private
   virtual UDP listener per SOCKS5 control connection, accepts packets only
   from that connection's authenticated tunnel IP, rejects fragmented SOCKS
-  datagrams, and expires inactive destination flows. `socks.upstream` applies
+  datagrams, and expires inactive destination flows. Ordinary renewal rotates
+  the control-plane credentials while preserving the peer's UDP associations.
+  Loss of the tunnel grant or a change of peer lifetime ends the relay and
+  closes its control connection when detected. `socks.upstream` applies
   to TCP CONNECT only; UDP is never silently sent through another proxy.
 - **BIND is independently opt-in and opens a real, temporary *inbound*
   listener on the server host.** Set `socks.allow_bind: true` only when this
@@ -825,3 +844,11 @@ headers are preserved as required). No forwarded identity headers are added.
 HTTP errors do not reveal raw upstream errors or internal tunnel addresses.
 TLS-to-proxy and HTTP/2/3 proxy protocols are not supported; HTTPS destinations
 use CONNECT without TLS interception.
+
+### Smart Proxy direct and ASN routing
+
+Direct egress requires an explicit rule or unmatched action on a loopback Smart Proxy. A server denial or unavailable route cannot trigger it. The proxy checks local interfaces and blocks loopback, link-local, and protected address ranges. Intentional private access requires an explicit LAN CIDR in the matching direct rule. The proxy resolves an authorized direct hostname with the client resolver, checks every returned address, and dials a chosen numeric address. The OS routing table selects the path and the destination sees the client’s source IP. No ntwire server is present to apply its destination policy.
+
+ASN data classifies routing metadata. It cannot authenticate a destination and a missing result cannot skip an earlier applicable rule. The client downloads only from the configured trusted HTTPS source when an active group uses ASN rules. Its bounded and validated IPv4 snapshot becomes ineligible after the configured maximum age. Explicitly scoped remote classification discloses a hostname to a single approved policy-compatible resolver. The server authorizes both the original hostname and the offered IP, rechecks authorization before relaying, and dials that exact IP. Scoped local classification is a separate explicit DNS disclosure setting.
+
+Status contains aggregate lookup, traffic and denial counts. It omits requested names, addresses, URLs, and connection offers.

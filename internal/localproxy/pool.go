@@ -4,8 +4,11 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"net/netip"
 	"sync"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
 // HTTPPool belongs to one inbound HTTP connection. Each RoundTrip is attempted
@@ -14,7 +17,7 @@ type HTTPPool struct {
 	mu      sync.Mutex
 	closed  bool
 	dial    DialFunc
-	allowed func(net.Conn) bool
+	allowed func(net.Conn, socks.Destination) bool
 	entries map[string]poolEntry
 }
 type poolEntry struct {
@@ -23,7 +26,7 @@ type poolEntry struct {
 	used   time.Time
 }
 
-func NewHTTPPool(dial DialFunc, allowed func(net.Conn) bool) *HTTPPool {
+func NewHTTPPool(dial DialFunc, allowed func(net.Conn, socks.Destination) bool) *HTTPPool {
 	return &HTTPPool{dial: dial, allowed: allowed, entries: map[string]poolEntry{}}
 }
 func (p *HTTPPool) Close() {
@@ -42,6 +45,14 @@ func (p *HTTPPool) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, net.ErrClosed
 	}
 	address := net.JoinHostPort(req.URL.Hostname(), proxyPort(req.URL.Port()))
+	dst, err := socks.ParseDestination(address)
+	if err != nil {
+		return nil, err
+	}
+	key := address
+	if ip := dst.IP(); ip.IsValid() {
+		key = netip.AddrPortFrom(ip, dst.Port).String()
+	}
 	now := time.Now()
 	for key, entry := range p.entries {
 		if now.Sub(entry.used) > 90*time.Second || entry.client.Err() != nil {
@@ -49,10 +60,10 @@ func (p *HTTPPool) RoundTrip(req *http.Request) (*http.Response, error) {
 			delete(p.entries, key)
 		}
 	}
-	entry, ok := p.entries[address]
-	if ok && (entry.client.Available() == 0 || !p.allowed(entry.conn)) {
+	entry, ok := p.entries[key]
+	if ok && (entry.client.Available() == 0 || !p.allowed(entry.conn, dst)) {
 		_ = entry.client.Close()
-		delete(p.entries, address)
+		delete(p.entries, key)
 		ok = false
 	}
 	if !ok {
@@ -71,8 +82,8 @@ func (p *HTTPPool) RoundTrip(req *http.Request) (*http.Response, error) {
 		transport := &http.Transport{
 			Protocols: protocols, DisableCompression: true, ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: time.Second,
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				conn, err := p.dial(ctx, network, addr)
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				conn, err := p.dial(ctx, network, address)
 				entry.conn = conn
 				return conn, err
 			},
@@ -84,11 +95,11 @@ func (p *HTTPPool) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	entry.used = now
-	p.entries[address] = entry
+	p.entries[key] = entry
 	response, err := entry.client.RoundTrip(req)
 	if err != nil {
 		_ = entry.client.Close()
-		delete(p.entries, address)
+		delete(p.entries, key)
 	}
 	return response, err
 }

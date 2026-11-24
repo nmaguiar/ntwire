@@ -17,12 +17,30 @@ import (
 	"github.com/nmaguiar/ntwire/internal/egressattach"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
+	"github.com/nmaguiar/ntwire/pkg/server"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
 func TestSmartProxyUDPAndPreparationThroughPublisher(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		denyText bool
+	}{{"equivalent encodings", false}, {"cached numeric flow cannot bypass suffix policy", true}} {
+		t.Run(tc.name, func(t *testing.T) { testSmartProxyUDPAndPreparation(t, tc.denyText) })
+	}
+}
+
+func testSmartProxyUDPAndPreparation(t *testing.T, denyText bool) {
+	t.Helper()
 	f := newReconnectFixture(t)
 	startEgressServer(f, "direct-udp", false, false)
+	if denyText {
+		srv := f.current.Load()
+		cfg := srv.Config
+		cfg.Tunnels = append([]server.TunnelConfig(nil), cfg.Tunnels...)
+		cfg.Tunnels[0].Socks = &server.SocksConfig{AllowLocalEgress: true, ReverseFilters: true, DomainFilters: []string{".0.1"}}
+		srv.Reload(cfg)
+	}
 	owner := f.connect()
 	root := filepath.Join(t.TempDir(), "egress")
 	path, _ := egressattach.ProfilePath(root, "publisher")
@@ -35,7 +53,7 @@ func TestSmartProxyUDPAndPreparationThroughPublisher(t *testing.T) {
 	registry := egressattach.NewRegistry(root)
 	registry.Refresh(t.Context(), []egressrouter.Member{member})
 	candidate := registry.Candidate(member)
-	if candidate.Dialer == nil || !candidate.Preparation || !candidate.UDP {
+	if candidate.Dialer == nil || !candidate.Preparation || !candidate.UDP || !candidate.NumericDomain {
 		t.Fatalf("missing publisher capability: %s", candidate.Reason)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
@@ -47,7 +65,11 @@ func TestSmartProxyUDPAndPreparationThroughPublisher(t *testing.T) {
 	defer ready.Close()
 	host, portText, _ := net.SplitHostPort(f.tcpTarget)
 	port, _ := strconv.ParseUint(portText, 10, 16)
-	stream, err := ready.DialDestination(ctx, egressrouter.Destination{Host: host, Port: uint16(port)})
+	encoding := byte(3)
+	if denyText {
+		encoding = 1
+	}
+	stream, err := ready.DialDestination(ctx, egressrouter.Destination{Host: host, Port: uint16(port), AddressType: encoding})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,9 +142,57 @@ func TestSmartProxyUDPAndPreparationThroughPublisher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UDP read: %v; status %+v", err, group.Status())
 	}
-	_, _, offset, err := socks.DatagramDestination(buf[:size])
+	_, offset, err := socks.DatagramDestination(buf[:size])
 	if err != nil || string(buf[offset:size]) != "datagram" {
 		t.Fatalf("invalid SOCKS echo %x: %v", buf[:size], err)
+	}
+	owner.mu.Lock()
+	before := owner.Response.SessionID
+	owner.mu.Unlock()
+	if err := owner.renew(); err != nil {
+		t.Fatal(err)
+	}
+	owner.mu.Lock()
+	after := owner.Response.SessionID
+	owner.mu.Unlock()
+	if after == "" || after == before {
+		t.Fatal("renewal did not rotate the session ID")
+	}
+	_ = packet.SetDeadline(time.Now().Add(3 * time.Second))
+	if _, err = packet.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	size, err = packet.Read(buf)
+	if err != nil {
+		t.Fatalf("existing UDP association after renewal: %v", err)
+	}
+	_, offset, err = socks.DatagramDestination(buf[:size])
+	if err != nil || string(buf[offset:size]) != "datagram" {
+		t.Fatalf("invalid post-renewal SOCKS echo %x: %v", buf[:size], err)
+	}
+	// The domain-form datagram uses the same approved destination and flow.
+	domainFrame := append([]byte{0, 0, 0, 3, byte(len(host))}, host...)
+	domainFrame = binary.BigEndian.AppendUint16(domainFrame, uint16(udpTarget.Port))
+	domainFrame = append(domainFrame, "literally"...)
+	if _, err = packet.Write(domainFrame); err != nil {
+		t.Fatal(err)
+	}
+	received := uint64(16)
+	if denyText {
+		_ = packet.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, err = packet.Read(buf); err == nil {
+			t.Fatal("domain-form datagram reused a cached binary flow despite suffix policy")
+		}
+	} else {
+		size, err = packet.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, offset, err = socks.DatagramDestination(buf[:size])
+		if err != nil || string(buf[offset:size]) != "literally" {
+			t.Fatalf("invalid domain-form SOCKS echo %x: %v", buf[:size], err)
+		}
+		received += 9
 	}
 	spoof, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(relay))
 	if err != nil {
@@ -137,7 +207,7 @@ func TestSmartProxyUDPAndPreparationThroughPublisher(t *testing.T) {
 		t.Fatal("a second local sender used the pinned association")
 	}
 	stats := group.Status().Members[0]
-	if stats.Sent != 8 || stats.Received != 8 {
+	if stats.Sent != 25 || stats.Received != received {
 		t.Fatalf("UDP counters include non-relayed traffic: sent=%d received=%d", stats.Sent, stats.Received)
 	}
 }

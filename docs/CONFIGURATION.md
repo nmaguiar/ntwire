@@ -259,6 +259,7 @@ tunnels:
       dns_timeout: 10s                  # timeout for resolving SOCKS5 domain requests
 
       udp_idle_timeout: 2m              # inactive SOCKS5 UDP ASSOCIATE flows (when enabled)
+      allow_destination_binding: false  # authorized exact-address hostname offers on native SOCKS
       upstream: socks5h://proxy.example:1080 # optional TCP CONNECT pass-through via an external SOCKS5 proxy
       allow_all: false                  # required to permit every destination when no filters above are set
       allow_bind: false                 # explicitly allow SOCKS4/5 BIND (opens a temporary inbound server listener)
@@ -382,16 +383,23 @@ ntwire SOCKS tunnel with no `socks.filters`/`domain_filters`/`asn_filters`/
 otherwise silently deny everything logs a warning at startup.
 
 `socks.filters` (CIDR) and `socks.asn_filters` gate the *resolved* destination
-IP; `socks.domain_filters` gates the hostname the client asked to connect to
-(SOCKS5 domain requests only — SOCKS4 and SOCKS5 IP-literal requests have no
-hostname to match). When both a CIDR/ASN filter and a domain filter are
-configured, a CIDR/ASN miss denies immediately without consulting the domain
-filter, but a CIDR/ASN hit does not by itself allow the connection: the
-domain filter is still checked and is decisive. `socks.only_local` (a
+IP. `socks.domain_filters` gates the hostname the client asked to connect to.
+Binary IP literals have no hostname to match. For CONNECT and UDP datagrams,
+an IP literal sent in the SOCKS5 domain field must pass both the numeric
+policy and the legacy suffix check against its original text. This also
+applies to inverted filters and named destination policies. CIDR and ASN
+entries form a network gate that either kind of entry can satisfy. When a
+network gate and domain filter are both configured, both must match before
+any inversion is applied. `socks.only_local` (a
 hardcoded private-range allow-list: `10.0.0.0/8`, `172.16.0.0/12`,
 `192.168.0.0/16`, `fc00::/7`) overrides every other `socks.*` filter when
 set. `socks.reverse_filters` inverts the whole result, turning the configured
 filters from an allow-list into a deny-list.
+
+Governed SOCKS tunnels without an upstream advertise numeric-domain support
+automatically. No configuration setting is required. Keep HTTP enabled in a
+Smart Proxy group that includes older servers or proxy chains if Chromium
+needs numeric URLs. Existing routing rules apply their CIDRs to canonical IPs.
 
 `socks.asn_filters` and periodic ASN index refresh require the server itself
 to reach the internet (default index: `https://openaf.io/asnidx.json.gz`,
@@ -888,3 +896,13 @@ where available, then repeat the HTML export and import. Keep each live
 browser instance in its own local user-data directory.
 
 [Chromium user-data directory documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/docs/user_data_dir.md) · [Edge sync and privacy](https://learn.microsoft.com/en-us/legal/microsoft-edge/privacy)
+
+### Smart Proxy direct and ASN settings
+
+- Under `smart_proxy.routing`, `rules[].action` accepts `proxy`, `direct`, and `deny`. A rule can contain `asns` with positive 32-bit ASN numbers. Only proxy rules can name `members`. Existing member rules and `deny: true` remain valid.
+- `unmatched` can be `allow` (or `proxy`), `direct`, or `deny`. Omitting it preserves automatic behavior. A direct route to private space requires an explicit private CIDR in the matching rule.
+- `routing.asn.enabled` defaults to inferring use from ASN rules. Setting it to `false` with ASN rules is invalid. `routing.asn.on_unknown` accepts `deny`. `hostname_resolution` defaults to `disabled`. The `local` and `remote` modes require a `hosts` or `suffixes` scope. Remote mode also requires `resolver_member` referencing an explicitly approved member.
+- `smart_proxy.asn_database` is shared across all named groups. `source` defaults to `https://openaf.io/asnidx.json.gz` and must use HTTPS. `refresh_interval` defaults to `72m`, and `max_age` defaults to `24h` since the last successful validation. Optional `cache_dir` must be an absolute path to a private directory. Downloads start only when an enabled group uses ASN rules. A failed refresh retains the last valid index until its advertised local age limit.
+- Server tunnel `socks.allow_destination_binding` defaults to `false`. It enables authorized hostname offers for native SOCKS tunnels. Chained and transparent SOCKS configurations cannot enable it.
+
+See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) for examples and precedence.

@@ -72,6 +72,8 @@ than treating it as a passing GUI validation ([RELEASE.md](RELEASE.md)).
 
 In **Settings**, expand **Smart Proxy** below **Profiles**. Configure and activate individual groups, then turn on **Enable Smart Proxy** to run them and show the tray menu. From the tray you can switch groups, activate them, and open their dashboard or isolated browser. Settings can also export and import group configurations. See the [proxy configuration guide](SMART-EGRESS-PROXY.md).
 
+**Open isolated browser** prefers SOCKS5 for a group with only direct and deny routes, or when every non-excluded member advertises support for Chromium's numeric IPv4 and IPv6 requests. With both protocols enabled, mixed or disconnected groups use HTTP for new launches. SOCKS5-only groups can open the browser and show a compatibility note when some members lack support. Fully close and reopen the isolated browser to apply a different protocol or local DNS setting. The profile, custom executable and additional Chromium arguments are still taken from your browser settings.
+
 ## Profiles and storage
 
 `ntwire-gui` owns its own store, `~/.ntwire/gui.yaml`, holding N server
@@ -318,3 +320,9 @@ check the core's displayed defaults. Use Custom when a profile requires a
 specific proxy. TLS verification and certificate pinning still apply through
 proxies; coordinate certificate trust with your administrator. Proxy settings
 do not disable, evade or override corporate security controls.
+
+### Smart Proxy direct routes and ASN rules
+
+In **Destination rules**, choose an ntwire route, **Direct client connection**, or **Deny**. Enter multiple ASNs separated by commas or spaces. You can include the `AS` prefix. The unmatched action applies after the ordered rules. In **ASN settings**, review the shared database coverage and refresh status, and set an explicit DNS scope before using client or tunnel hostname classification.
+
+A direct-only group can be enabled with no tunnels. It still uses the local proxy listener and exposes the client’s native source IP to the destination. The live dashboard shows direct TCP and UDP traffic as **DIRECT (client)** alongside tunnel traffic. Direct traffic has no tunnel preference or exclusion control.

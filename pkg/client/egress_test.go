@@ -29,7 +29,7 @@ func startEgressServer(f *reconnectFixture, transport string, deny, two bool) {
 	startEgressServerWithFaults(f, transport, deny, two, nil)
 }
 
-func startEgressServerWithFaults(f *reconnectFixture, transport string, deny, two bool, fault *udpFault) {
+func startEgressServerWithFaults(f *reconnectFixture, transport string, deny, two bool, fault *udpFault, configure ...func(*server.Config)) {
 	f.t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -64,6 +64,9 @@ func startEgressServerWithFaults(f *reconnectFixture, transport string, deny, tw
 		secondary := grant("secondary", 10081)
 		secondary.Socks = &server.SocksConfig{Transparent: true, Upstream: "socks5h://" + upstream.Addr()}
 		cfg.Tunnels = append(cfg.Tunnels, secondary)
+	}
+	for _, apply := range configure {
+		apply(&cfg)
 	}
 	s := server.New(cfg, slog.New(slog.DiscardHandler))
 	if err = s.StartDataPlane(); err != nil {

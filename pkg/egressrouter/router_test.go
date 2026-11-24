@@ -151,6 +151,94 @@ func TestSmartProxyHTTPPoolNeverReplays(t *testing.T) {
 	}
 }
 
+func TestNumericDestinationsShareRuleAffinityAndHistory(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Egress.Selection = "sticky-fastest"
+	want := cfg.Egress.Members[1].ID()
+	cfg.Routing = Routing{Rules: []Rule{{CIDRs: []string{"192.0.2.0/24"}, Members: []MemberID{want}}}}
+	r := New(func(m Member) Candidate {
+		return Candidate{Generation: "1", NumericDomain: true, Dialer: dialFunc(func(_ context.Context, dst Destination) (net.Conn, error) {
+			if m.ID() != want {
+				t.Errorf("%+v reached forbidden member %v", dst, m.ID())
+			}
+			a, b := net.Pipe()
+			_ = b.Close()
+			return a, nil
+		})}
+	})
+	defer r.Close()
+	if err := r.Apply(cfg, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, dst := range []Destination{
+		{Host: "192.0.2.7", Port: 443, AddressType: 1},
+		{Host: "192.0.2.7", Port: 443, AddressType: 3},
+		{Host: "::ffff:c000:207", Port: 443, AddressType: 3},
+		{Host: "::ffff:192.0.2.7", Port: 443, AddressType: 4},
+		{Host: "192.0.2.7", Port: 443},
+	} {
+		conn, err := r.dialDestination(t.Context(), dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := observationKey{member: want, host: "192.0.2.7", port: 443}
+	if len(r.state.affinity) != 1 || r.state.affinity[key.host].id != want ||
+		len(r.state.destinations) != 1 || r.state.destinations[key].samples != 5 {
+		t.Fatalf("separate routing state: %+v %+v", r.state.affinity, r.state.destinations)
+	}
+}
+
+func TestSmartProxyHTTPPoolNumericAliasesDependOnCapability(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer origin.Close()
+	for _, native := range []bool{false, true} {
+		t.Run(fmt.Sprintf("native=%t", native), func(t *testing.T) {
+			var dials atomic.Int32
+			cfg := testConfig(t)
+			router := New(func(Member) Candidate {
+				return Candidate{Generation: "1", NumericDomain: native, Dialer: dialFunc(func(ctx context.Context, _ Destination) (net.Conn, error) {
+					dials.Add(1)
+					return (&net.Dialer{}).DialContext(ctx, "tcp", origin.Listener.Addr().String())
+				})}
+			})
+			defer router.Close()
+			if err := router.Apply(cfg, nil); err != nil {
+				t.Fatal(err)
+			}
+			conn, err := net.Dial("tcp", cfg.Listen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+			br := bufio.NewReader(conn)
+			for _, host := range []string{"192.0.2.7", "[::ffff:192.0.2.7]", "[0:0:0:0:0:FFFF:c000:207]"} {
+				_, _ = fmt.Fprintf(conn, "GET http://%s/ HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+				resp, err := http.ReadResponse(br, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = io.Copy(io.Discard, resp.Body)
+				_ = resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("%s got %s", host, resp.Status)
+				}
+			}
+			want := int32(2)
+			if native {
+				want = 1
+			}
+			if got := dials.Load(); got != want {
+				t.Fatalf("dialed %d times, want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestSmartProxyReloadKeepsListenerOnError(t *testing.T) {
 	cfg := testConfig(t)
 	r := New(func(Member) Candidate { return Candidate{} })
@@ -196,7 +284,7 @@ func TestSmartProxyStickyAndCircuit(t *testing.T) {
 	a, b := cfg.Egress.Members[0].ID(), cfg.Egress.Members[1].ID()
 	state.health[a] = &memberHealth{generation: "1", measurements: measurements{samples: 3, revision: 3, latency: float64(100 * time.Millisecond), lastSuccess: now}}
 	state.health[b] = &memberHealth{generation: "1", measurements: measurements{samples: 3, revision: 3, latency: float64(60 * time.Millisecond), lastSuccess: now}}
-	dst := Destination{"test.invalid", 443}
+	dst := Destination{Host: "test.invalid", Port: 443}
 	r.remember(state, dst, a)
 	for i, want := range []MemberID{a, a, a, a, b} {
 		if i == 3 || i == 4 {
@@ -234,7 +322,7 @@ func BenchmarkSmartProxyRank(b *testing.B) {
 	r.state = &routeState{config: cfg, health: map[MemberID]*memberHealth{}, affinity: map[string]affinity{}}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = r.rank(r.state, Destination{"test.example", 443})
+		_ = r.rank(r.state, Destination{Host: "test.example", Port: 443})
 	}
 }
 

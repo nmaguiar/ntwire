@@ -142,7 +142,7 @@ func usage(u *ui.UI) {
 			{Name: "cert", Summary: "inspect a presented TLS certificate without trusting it"},
 			{Name: "keygen", Summary: "create an SSH identity"},
 			{Name: "connect", Summary: "connect tunnels"},
-			{Name: "proxy", Summary: "run the Smart Egress Proxy"},
+			{Name: "proxy", Summary: "run the Smart Egress Proxy with tunnel, direct, and ASN routing"},
 			{Name: "list", Summary: "show allowed tunnels"},
 			{Name: "status", Summary: "show the running connection"},
 			{Name: "disconnect", Summary: "stop the running connection"},

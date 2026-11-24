@@ -80,11 +80,11 @@ func TestUnmatchedPolicyStaysAutomaticAfterNormalization(t *testing.T) {
 			if cfg.Routing.Unmatched != tc.policy {
 				t.Fatalf("normalization rewrote unmatched policy from %q to %q", tc.policy, cfg.Routing.Unmatched)
 			}
-			if _, allowed := cfg.Routing.destinationMembers(dst); allowed != tc.withRule {
+			if allowed := cfg.Routing.decide(dst, dst.IP(), unavailableASN).Action == Proxy; allowed != tc.withRule {
 				t.Fatalf("unmatched destination allowed with rule = %v, want %v", allowed, tc.withRule)
 			}
 			cfg.Routing.Rules = nil
-			if _, allowed := cfg.Routing.destinationMembers(dst); allowed != tc.afterDrop {
+			if allowed := cfg.Routing.decide(dst, dst.IP(), unavailableASN).Action == Proxy; allowed != tc.afterDrop {
 				t.Fatalf("unmatched destination allowed after removing rule = %v, want %v", allowed, tc.afterDrop)
 			}
 		})
@@ -148,7 +148,7 @@ func TestDestinationAwareUsesFreshHistory(t *testing.T) {
 	if err := r.Apply(cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	dst := Destination{"host.invalid", 443}
+	dst := Destination{Host: "host.invalid", Port: 443}
 	now := time.Now()
 	state := r.state
 	for _, m := range cfg.Egress.Members {
@@ -164,7 +164,7 @@ func TestDestinationAwareUsesFreshHistory(t *testing.T) {
 	if got := r.rank(state, dst)[0].ID(); got != cfg.Egress.Members[1].ID() {
 		t.Fatal(got)
 	}
-	if got := r.rank(state, Destination{"other.invalid", 443})[0].ID(); got != cfg.Egress.Members[0].ID() {
+	if got := r.rank(state, Destination{Host: "other.invalid", Port: 443})[0].ID(); got != cfg.Egress.Members[0].ID() {
 		t.Fatal(got)
 	}
 }
@@ -184,13 +184,13 @@ func TestGroupAffinitySurvivesDestinationException(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := r.state
-	r.remember(state, Destination{"first.example", 443}, b)
-	exception := Destination{"exception.example", 443}
+	r.remember(state, Destination{Host: "first.example", Port: 443}, b)
+	exception := Destination{Host: "exception.example", Port: 443}
 	if got := r.rank(state, exception)[0].ID(); got != a {
 		t.Fatalf("override selected %v", got)
 	}
 	r.remember(state, exception, a)
-	other := Destination{"second.example", 443}
+	other := Destination{Host: "second.example", Port: 443}
 	if got := r.rank(state, other)[0].ID(); got != b {
 		t.Fatalf("override changed the group affinity: %v", got)
 	}
@@ -279,7 +279,7 @@ func TestRacingSubmitsDestinationOnlyToWinner(t *testing.T) {
 	cfg.Failover.RaceDelay = time.Millisecond
 	loser, winner := &preparedTest{}, &preparedTest{code: 2}
 	r := New(func(m Member) Candidate {
-		return Candidate{Generation: "1", Preparation: true, Dialer: preparing{prepare: func(ctx context.Context) (PreparedEgress, error) {
+		return Candidate{Generation: "1", Preparation: true, NumericDomain: true, Dialer: preparing{prepare: func(ctx context.Context) (PreparedEgress, error) {
 			if m.ID() == cfg.Egress.Members[0].ID() {
 				<-ctx.Done()
 				return loser, nil
@@ -291,7 +291,7 @@ func TestRacingSubmitsDestinationOnlyToWinner(t *testing.T) {
 	if err := r.Apply(cfg, nil); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.dial(t.Context(), "tcp", "private.invalid:443")
+	_, err := r.dialDestination(t.Context(), Destination{Host: "2001:db8::7", Port: 443, AddressType: 3})
 	if socksCode(err) != 2 || loser.payload.Load() != 0 || !loser.closed.Load() || winner.payload.Load() != 1 {
 		t.Fatalf("unexpected racer behavior: %v", err)
 	}

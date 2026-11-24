@@ -16,6 +16,7 @@ import (
 // OIDCIssuer and OIDCSubject, while Identity remains the verified email.
 type Session struct {
 	ID, Token                                 string
+	peerLifetime                              string // changes on fresh authentication, survives renewal
 	Method                                    string // "ssh" or "oidc"
 	Identity                                  string
 	Fingerprint, WireGuardPublicKey, TunnelIP string
@@ -90,6 +91,29 @@ func (s *Sessions) Create(p CreateParams) Session {
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
 		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
+	v.peerLifetime = v.ID
+	s.storeLocked(v)
+	return v
+}
+
+// renew rotates control credentials and updates the grants without exposing a
+// gap in IP ownership to the data plane.
+func (s *Sessions) renew(oldToken string, tunnels []protocol.Tunnel, ttl time.Duration, info protocol.ClientInfo) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.byToken[oldToken]
+	if !ok || (v.TunnelIP != "" && s.byIP[v.TunnelIP].token != oldToken) {
+		return Session{}, false
+	}
+	s.deleteLocked(v)
+	v.ID, v.Token = token(), token()
+	v.Tunnels, v.Expires = tunnels, time.Now().Add(ttl)
+	v.LatencyMillis, v.Reconnections, v.ClientInfo = info.LatencyMillis, info.Reconnections, info
+	s.storeLocked(v)
+	return v, true
+}
+
+func (s *Sessions) storeLocked(v Session) {
 	s.byToken[v.Token] = v
 	if v.TunnelIP != "" {
 		addr, _ := netip.ParseAddr(v.TunnelIP)
@@ -98,10 +122,9 @@ func (s *Sessions) Create(p CreateParams) Session {
 			grants[t.Name] = true
 		}
 		s.byIP[v.TunnelIP] = sessionPrincipal{token: v.Token, principal: DataPlanePrincipal{
-			sessionID: v.ID, Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
+			peerLifetime: v.peerLifetime, Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
 		}}
 	}
-	return v
 }
 
 // FindWireGuardPublicKey returns the live session using a WireGuard peer.

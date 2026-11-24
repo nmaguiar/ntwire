@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/localproxy"
+	"github.com/nmaguiar/ntwire/internal/privatepath"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
 
@@ -51,6 +53,7 @@ type request struct {
 	Timeout     time.Duration            `json:"timeout"`
 }
 type response struct {
+	Addresses    []netip.Addr              `json:"addresses,omitempty"`
 	Timing       *egressrouter.SetupTiming `json:"timing,omitempty"`
 	Candidate    egressrouter.Candidate    `json:"candidate"`
 	ControlProxy string                    `json:"control_proxy,omitempty"`
@@ -89,17 +92,17 @@ type Service struct {
 
 func openPrivateDirectory(path string) error {
 	if _, err := os.Lstat(path); err == nil {
-		return verifyPrivate(path, true)
+		return privatepath.Verify(path, true)
 	} else if !os.IsNotExist(err) {
 		return err
 	}
 	if err := os.MkdirAll(path, 0700); err != nil {
 		return err
 	}
-	if err := restrict(path, true); err != nil {
+	if err := privatepath.Restrict(path, true); err != nil {
 		return err
 	}
-	return verifyPrivate(path, true)
+	return privatepath.Verify(path, true)
 }
 
 // Start publishes a new authenticated local instance. A second instance for
@@ -118,7 +121,7 @@ func StartWithDiscovery(path string, source egressrouter.Source, control Control
 	}
 	lockPath := filepath.Join(path, "owner.lock")
 	if _, err := os.Lstat(lockPath); err == nil {
-		if err := verifyPrivate(lockPath, false); err != nil {
+		if err := privatepath.Verify(lockPath, false); err != nil {
 			return nil, err
 		}
 	} else if !os.IsNotExist(err) {
@@ -138,7 +141,7 @@ func StartWithDiscovery(path string, source egressrouter.Source, control Control
 			_ = lock.Close()
 		}
 	}()
-	if err = restrict(lockPath, false); err != nil {
+	if err = privatepath.Restrict(lockPath, false); err != nil {
 		return nil, err
 	}
 	raw, err := net.Listen("tcp", "127.0.0.1:0")
@@ -187,7 +190,7 @@ func writeRecord(path string, info record) error {
 		return err
 	}
 	defer os.Remove(f.Name())
-	err = restrict(f.Name(), false)
+	err = privatepath.Restrict(f.Name(), false)
 	if err == nil {
 		err = json.NewEncoder(f).Encode(info)
 	}
@@ -282,7 +285,7 @@ func (s *Service) handle(ctx context.Context, conn net.Conn, source egressrouter
 		_ = writeFrame(conn, response{Candidate: candidate, ControlProxy: candidate.ControlProxy})
 		return
 	}
-	if (req.Operation != "dial" && req.Operation != "udp" && req.Operation != "prepare") || req.Timeout <= 0 || req.Timeout > time.Minute {
+	if (req.Operation != "dial" && req.Operation != "udp" && req.Operation != "prepare" && req.Operation != "offer_destination") || req.Timeout <= 0 || req.Timeout > time.Minute {
 		return
 	}
 	if candidate.Dialer == nil || candidate.Generation != req.Generation {
@@ -303,8 +306,16 @@ func (s *Service) handle(ctx context.Context, conn net.Conn, source egressrouter
 	defer cancel()
 	deadline, _ := setup.Deadline()
 	_ = conn.SetDeadline(deadline)
+	if req.Operation == "offer_destination" {
+		serveDestinationOffer(ctx, setup, &localproxy.BufferedConn{Conn: conn, Reader: reader}, candidate, req.Destination)
+		return
+	}
 	if req.Operation == "prepare" {
 		s.servePreparation(ctx, setup, &localproxy.BufferedConn{Conn: conn, Reader: reader}, candidate)
+		return
+	}
+	if err := egressrouter.CheckNumericDomain(req.Destination, candidate.NumericDomain); err != nil {
+		writeFailure(conn, err)
 		return
 	}
 	_ = conn.SetWriteDeadline(deadline.Add(100 * time.Millisecond))
@@ -390,6 +401,10 @@ func (s *Service) servePreparation(ctx, setup context.Context, in *localproxy.Bu
 	}
 	var destination egressrouter.Destination
 	if err = readFrame(in.Reader, &destination); err != nil {
+		return
+	}
+	if err = egressrouter.CheckNumericDomain(destination, candidate.NumericDomain); err != nil {
+		writeFailure(in, err)
 		return
 	}
 	dialCtx, cancelDial := context.WithCancel(setup)

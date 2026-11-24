@@ -234,3 +234,33 @@ test('Every live metric handles sparse and measured tunnel snapshots', async () 
   assert.equal(statusMetrics.Timing['Virtual service setup']({virtual_service_millis: 0}), '0.0 ms');
   assert.equal(statusMetrics.Traffic['Carrier packet loss']({carrier_rtt: 1_500_000}), '0.0%');
 });
+
+test('Direct and ASN rules survive save and invalid actions stay visible', () => {
+  const draft = config();
+  draft.routing.unmatched = 'direct';
+  draft.routing.rules = [
+    {asns: ['AS13335', 15169], action: 'direct', ports: [443]},
+    {asns: [16509], action: 'deny'}
+  ];
+  const result = buildRequest(draft, [], new Set());
+  assert.equal(result.routing.unmatched, 'direct');
+  assert.deepEqual(result.routing.rules.map(({action, asns}) => [action, asns]),
+    [['direct', [13335, 15169]], ['deny', [16509]]]);
+  draft.routing.rules[0].asns = ['AS0'];
+  assert.throws(() => buildRequest(draft, [], new Set()), /Enter ASNs/);
+  draft.routing.rules[0].asns = [13335];
+  draft.routing.rules[0].members = draft.egress.members;
+  assert.throws(() => buildRequest(draft, [], new Set()), /conflicting routing action/);
+});
+
+test('Direct TCP and UDP traffic contribute once to the aggregate', () => {
+  const history = [];
+  const sample = (time, sent, udp_sent) => recordSample(history, {
+    members: [{profile_id: 'office', tunnel: 'web', sent, received: 0}],
+    direct: {sent, udp_sent, received: 0, udp_received: 0}
+  }, time);
+  sample(0, 1, 2);
+  sample(1000, 5, 3);
+  assert.equal(history[1].members.get('direct').traffic.sent, 5);
+  assert.equal(history[1].sent, 9);
+});

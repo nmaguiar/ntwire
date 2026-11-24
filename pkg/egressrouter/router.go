@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,24 +17,10 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
-type Destination struct {
-	Host string
-	Port uint16
-}
+type Destination = socks.Destination
 
-func (d Destination) Address() (string, error) { return socks.Address(d.Host, d.Port) }
 func destination(address string) (Destination, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return Destination{}, err
-	}
-	n, err := strconv.ParseUint(port, 10, 16)
-	if err != nil {
-		return Destination{}, err
-	}
-	d := Destination{host, uint16(n)}
-	_, err = d.Address()
-	return d, err
+	return socks.ParseDestination(address)
 }
 
 type Egress interface {
@@ -57,31 +43,48 @@ type Failure struct {
 
 func (f *Failure) Error() string { return "smart proxy: " + f.Class }
 
+// CheckNumericDomain is a pre-submission compatibility check. An incompatible
+// selected member cannot be skipped, since it might have denied the request.
+func CheckNumericDomain(dst Destination, supported bool) error {
+	if !supported && dst.NumericDomain() {
+		return &Failure{Class: "numeric_domain_unsupported", Stage: "destination_encoding", Code: 8}
+	}
+	return nil
+}
+
 type Candidate struct {
-	Preparation   bool          `json:"preparation,omitempty"`
-	UDP           bool          `json:"udp_associate,omitempty"`
-	Dialer        Egress        `json:"-"`
-	Generation    string        `json:"generation,omitempty"`
-	Reason        string        `json:"reason,omitempty"`
-	Transport     string        `json:"transport,omitempty"`
-	RTT           time.Duration `json:"carrier_rtt,omitempty"`
-	Loss          float64       `json:"carrier_loss,omitempty"`
-	ControlMillis uint64        `json:"control_latency_millis,omitempty"`
-	Reconnections uint64        `json:"reconnections,omitempty"`
-	LocalAddress  string        `json:"local_address,omitempty"`
-	ControlProxy  string        `json:"-"`
+	DestinationBinding bool          `json:"destination_binding,omitempty"`
+	Preparation        bool          `json:"preparation,omitempty"`
+	UDP                bool          `json:"udp_associate,omitempty"`
+	NumericDomain      bool          `json:"numeric_domain,omitempty"`
+	Dialer             Egress        `json:"-"`
+	Generation         string        `json:"generation,omitempty"`
+	Reason             string        `json:"reason,omitempty"`
+	Transport          string        `json:"transport,omitempty"`
+	RTT                time.Duration `json:"carrier_rtt,omitempty"`
+	Loss               float64       `json:"carrier_loss,omitempty"`
+	ControlMillis      uint64        `json:"control_latency_millis,omitempty"`
+	Reconnections      uint64        `json:"reconnections,omitempty"`
+	LocalAddress       string        `json:"local_address,omitempty"`
+	ControlProxy       string        `json:"-"`
 }
 type Source func(Member) Candidate
 
 type Router struct {
-	probing  bool
-	source   Source
-	selector Selector
-	discover Discover
-	now      func() time.Time
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	network                                   directNetwork
+	direct                                    directTraffic
+	directUDPFlows                            atomic.Int64
+	asnOwned                                  *asnDatabase
+	asnShared                                 *asnDatabase
+	denied, indeterminate, asnHits, asnMisses atomic.Uint64
+	probing                                   bool
+	source                                    Source
+	selector                                  Selector
+	discover                                  Discover
+	now                                       func() time.Time
+	ctx                                       context.Context
+	cancel                                    context.CancelFunc
+	wg                                        sync.WaitGroup
 	// apply serializes configuration and listener replacements.
 	apply         sync.Mutex
 	mu            sync.Mutex
@@ -102,6 +105,7 @@ type Router struct {
 }
 
 type routeState struct {
+	asn          *asnDatabase
 	probeCtx     context.Context
 	cancelProbes context.CancelFunc
 	config       Config
@@ -116,7 +120,7 @@ func New(source Source) *Router { return NewWithSelector(source, nil) }
 // NewWithSelector supplies a ranking strategy for the approved candidate set.
 func NewWithSelector(source Source, selector Selector) *Router {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Router{source: source, selector: selector, ctx: ctx, cancel: cancel, now: time.Now, excluded: map[MemberID]bool{}}
+	return &Router{network: nativeNetwork(), source: source, selector: selector, ctx: ctx, cancel: cancel, now: time.Now, excluded: map[MemberID]bool{}}
 }
 
 // Apply prepares the listener and commits only after save succeeds.
@@ -143,6 +147,7 @@ func (r *Router) Apply(config Config, save func(Config) error) error {
 			return err
 		}
 	}
+	r.asnOwned = useASNDatabase(r.asnOwned, cfg.ASNDatabase, cfg.Enabled && cfg.Routing.usesASN())
 	r.commit(cfg, next)
 	return nil
 }
@@ -171,7 +176,14 @@ func (r *Router) commit(cfg Config, next net.Listener) {
 	r.mu.Lock()
 	previous := r.state
 	probeCtx, cancelProbes := context.WithCancel(r.ctx)
-	r.state = &routeState{probeCtx: probeCtx, cancelProbes: cancelProbes, config: cfg, health: map[MemberID]*memberHealth{}, affinity: map[string]affinity{}}
+	db := r.asnOwned
+	if r.asnShared != nil {
+		db = r.asnShared
+	}
+	if !cfg.Routing.usesASN() {
+		db = nil
+	}
+	r.state = &routeState{asn: db, probeCtx: probeCtx, cancelProbes: cancelProbes, config: cfg, health: map[MemberID]*memberHealth{}, affinity: map[string]affinity{}}
 	if previous != nil {
 		previous.cancelProbes()
 		for _, member := range cfg.Egress.Members {
@@ -206,6 +218,9 @@ func (r *Router) commit(cfg Config, next net.Listener) {
 func (r *Router) Close() {
 	r.apply.Lock()
 	r.cancel()
+	if r.asnOwned != nil {
+		r.asnOwned.cancel()
+	}
 	if r.listener != nil {
 		_ = r.listener.Close()
 	}
@@ -315,7 +330,7 @@ func (r *Router) serveSOCKS(ctx context.Context, in net.Conn) {
 	}
 	setup, cancel := context.WithCancel(ctx)
 	stopWatch := localproxy.WatchSetupDisconnect(in, cancel)
-	out, err := r.dial(setup, "tcp", req.Address)
+	out, err := r.dialDestination(setup, req.Destination)
 	stopWatch()
 	canceled := setup.Err() != nil
 	cancel()
@@ -367,57 +382,103 @@ type routedConn struct {
 	member     Member
 	generation string
 	health     *memberHealth
+	direct     *directTraffic
+	state      *routeState
+	asn        *asnData
+	bound      bool
 	once       sync.Once
 }
 
 func (c *routedConn) Read(p []byte) (int, error) {
 	n, err := c.Conn.Read(p)
-	c.health.received.Add(uint64(n))
+	if c.direct != nil {
+		c.direct.received.Add(uint64(n))
+	} else {
+		c.health.received.Add(uint64(n))
+	}
 	return n, err
 }
 func (c *routedConn) Write(p []byte) (int, error) {
 	n, err := c.Conn.Write(p)
-	c.health.sent.Add(uint64(n))
+	if c.direct != nil {
+		c.direct.sent.Add(uint64(n))
+	} else {
+		c.health.sent.Add(uint64(n))
+	}
 	return n, err
 }
 func (c *routedConn) CloseWrite() error { return localproxy.CloseWrite(c.Conn) }
 func (c *routedConn) Close() error {
-	c.once.Do(func() { c.health.active.Add(-1) })
+	c.once.Do(func() {
+		if c.direct != nil {
+			c.direct.active.Add(-1)
+		} else {
+			c.health.active.Add(-1)
+		}
+	})
 	return c.Conn.Close()
 }
 
-func (r *Router) poolAllowed(conn net.Conn) bool {
+func (r *Router) poolAllowed(conn net.Conn, dst socks.Destination) bool {
 	r.lastActive.Store(r.now().UnixNano())
 	c, ok := conn.(*routedConn)
-	if !ok {
+	if !ok || c.bound {
 		return false
 	}
 	r.mu.Lock()
 	state := r.state
-	allowed := state != nil && state.config.Enabled && slices.Contains(state.config.Protocols, "http") && !r.excluded[c.member.ID()] &&
-		(r.preferred == (MemberID{}) || r.preferred == c.member.ID()) && state.config.approves(c.member) && state.config.Routing.permits(c.destination, c.member.ID())
+	now := r.now()
+	if state == nil || c.state != state || !state.config.Enabled || !slices.Contains(state.config.Protocols, "http") || c.asn != state.asnSnapshot(now) {
+		r.mu.Unlock()
+		return false
+	}
+	decision := state.decide(dst, dst.IP(), now)
+	if c.direct != nil {
+		r.mu.Unlock()
+		if decision.Action != Direct || !dst.IP().IsValid() {
+			return false
+		}
+		local, err := r.network.local()
+		return err == nil && directIPAllowed(dst.IP(), decision, local)
+	}
+	allowed := !r.excluded[c.member.ID()] && (r.preferred == (MemberID{}) || r.preferred == c.member.ID()) &&
+		state.config.approves(c.member) && decision.permits(c.member.ID())
 	r.mu.Unlock()
 	if !allowed {
 		return false
 	}
 	fresh := r.candidate(state, c.member)
-	return fresh.Dialer != nil && fresh.Generation == c.generation
+	if fresh.Dialer == nil || fresh.Generation != c.generation {
+		return false
+	}
+	// Unknown upstreams can distinguish mapped IPv6 and binary IPv4 on the
+	// wire even though the router uses one canonical IP for their keys.
+	original, _ := netip.ParseAddr(c.destination.Host)
+	requested, _ := netip.ParseAddr(dst.Host)
+	return fresh.NumericDomain || original == requested
 }
 
 func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, error) {
-	r.lastActive.Store(r.now().UnixNano())
 	dst, err := destination(address)
 	if err != nil {
 		return nil, &Failure{Class: "invalid_destination"}
 	}
+	return r.dialDestination(ctx, dst)
+}
+
+func (r *Router) dialDestination(ctx context.Context, dst Destination) (net.Conn, error) {
+	r.lastActive.Store(r.now().UnixNano())
 	r.mu.Lock()
 	state := r.state
 	r.mu.Unlock()
 	if state == nil || !state.config.Enabled {
 		return nil, &Failure{Class: "unavailable"}
 	}
-	if _, allow := state.config.Routing.destinationMembers(dst); !allow {
-		return nil, &Failure{Class: "local_destination_denied", Code: 2}
+	now := r.now()
+	snapshot := state.asnSnapshot(now)
+	decision := r.decision(state, dst, snapshot, now)
+	if decision.Action == Deny || decision.Action == Indeterminate && decision.reason != "asn_hostname_unresolved" {
+		return r.reject(decision)
 	}
 	ctx, cancel := context.WithTimeout(ctx, state.config.Failover.TotalTimeout)
 	defer cancel()
@@ -425,7 +486,13 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 		return nil, &Failure{Class: "capacity"}
 	}
 	defer r.attempts.Add(-1)
-	ordered := r.rank(state, dst)
+	if decision.Action == Indeterminate {
+		return r.dialClassifiedHostname(ctx, state, dst, snapshot)
+	}
+	if decision.Action == Direct {
+		return r.dialDirect(ctx, state, dst, decision, snapshot)
+	}
+	ordered := r.rankDecision(state, dst, decision)
 	limit := state.config.Failover.MaxAttempts
 	if !*state.config.Failover.Enabled {
 		limit = 1
@@ -458,9 +525,20 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 		if ctx.Err() != nil || attempt >= limit {
 			break
 		}
+		if snapshot != state.asnSnapshot(r.now()) {
+			return nil, &Failure{Class: "routing_changed"}
+		}
 		h, halfOpen := r.admit(state, candidate, false)
 		if h == nil {
 			continue
+		}
+		if err := CheckNumericDomain(dst, candidate.NumericDomain); err != nil {
+			if halfOpen {
+				r.mu.Lock()
+				h.testing = false
+				r.mu.Unlock()
+			}
+			return nil, err
 		}
 		if attempt > 0 {
 			r.failovers.Add(1)
@@ -477,13 +555,16 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 		if f != nil {
 			last = f
 			if !f.Retry {
+				if f.Code == 2 {
+					r.denied.Add(1)
+				}
 				return nil, last
 			}
 			continue
 		}
 		r.mu.Lock()
 		current := r.state
-		valid := current != nil && current.config.Enabled && current.config.approves(candidate.Member) && current.config.Routing.permits(dst, candidate.ID())
+		valid := current == state && snapshot == state.asnSnapshot(r.now()) && current.config.Enabled && current.config.approves(candidate.Member) && current.decide(dst, dst.IP(), r.now()).permits(candidate.ID())
 		r.mu.Unlock()
 		if !valid {
 			_ = conn.Close()
@@ -508,7 +589,7 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 		r.remember(state, dst, candidate.ID())
 		h.routed.Add(1)
 		h.active.Add(1)
-		return &routedConn{Conn: conn, destination: dst, member: candidate.Member, generation: candidate.Generation, health: h}, nil
+		return &routedConn{Conn: conn, destination: dst, member: candidate.Member, generation: candidate.Generation, health: h, state: state, asn: snapshot}, nil
 	}
 	if ctx.Err() != nil {
 		return nil, &Failure{Class: "timeout", Code: 6}
@@ -516,4 +597,71 @@ func (r *Router) dial(ctx context.Context, _ string, address string) (net.Conn, 
 	return nil, last
 }
 
-func hostKey(d Destination) string { return strings.TrimSuffix(strings.ToLower(d.Host), ".") }
+func hostKey(d Destination) string {
+	return strings.TrimSuffix(strings.ToLower(d.CanonicalHost()), ".")
+}
+
+func (s *routeState) asnSnapshot(now time.Time) *asnData {
+	if s.asn == nil {
+		return nil
+	}
+	data := s.asn.data.Load()
+	if data == nil || s.asn.expired(data, now) {
+		return nil
+	}
+	return data
+}
+
+func (s *routeState) decide(dst Destination, ip netip.Addr, now time.Time) Decision {
+	return s.config.Routing.decide(dst, ip, func(ip netip.Addr) (uint32, string) {
+		return s.lookupASN(ip, now)
+	})
+}
+
+func (s *routeState) lookupASN(ip netip.Addr, now time.Time) (uint32, string) {
+	if s.asn == nil {
+		return unavailableASN(ip)
+	}
+	return s.lookupASNData(s.asn.data.Load(), ip, now)
+}
+
+func (s *routeState) lookupASNData(data *asnData, ip netip.Addr, now time.Time) (uint32, string) {
+	if data == nil {
+		return unavailableASN(ip)
+	}
+	if s.asn.expired(data, now) {
+		return 0, "asn_stale"
+	}
+	if !ip.Is4() {
+		return 0, "asn_unsupported_family"
+	}
+	number, ok := data.index.Lookup(ip)
+	if !ok || number == 0 {
+		return 0, "asn_unmapped"
+	}
+	return number, ""
+}
+
+func (r *Router) decision(state *routeState, dst Destination, snapshot *asnData, now time.Time) Decision {
+	return state.config.Routing.decide(dst, dst.IP(), func(ip netip.Addr) (uint32, string) {
+		number, reason := state.lookupASNData(snapshot, ip, now)
+		if snapshot == nil && state.asn != nil && state.asn.data.Load() != nil {
+			reason = "asn_stale"
+		}
+		if reason == "" {
+			r.asnHits.Add(1)
+		} else {
+			r.asnMisses.Add(1)
+		}
+		return number, reason
+	})
+}
+
+func (r *Router) reject(decision Decision) (net.Conn, error) {
+	if decision.Action == Indeterminate {
+		r.indeterminate.Add(1)
+		return nil, &Failure{Class: decision.reason, Stage: "routing", Code: 4}
+	}
+	r.denied.Add(1)
+	return nil, &Failure{Class: "local_destination_denied", Code: 2}
+}

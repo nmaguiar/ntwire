@@ -220,12 +220,11 @@ func (m *Manager) OpenSmartProxyGroupBrowser(group string) error {
 	options := browseropen.LaunchOptions{Executable: settings.BrowserExecutable, ExtraArgs: settings.BrowserArgs,
 		BlockLocalDNS: cfg.BrowserBlockLocalDNS,
 		Profile:       browseropen.SelectProfile(filepath.Join(folder, "smart-proxy-browser"), browseropen.ProfileSettings{Name: "Smart Proxy"})}
-	// Chromium sends IP literals in SOCKS5's domain field. Prefer HTTP
-	// when available so those requests reach the same destination rules.
-	if slices.Contains(cfg.Protocols, "http") {
-		return openSmartProxyBrowser(options, key, (&url.URL{Scheme: "http", Host: status.Listening}).String())
+	scheme := "socks5"
+	if slices.Contains(cfg.Protocols, "http") && (!slices.Contains(cfg.Protocols, "socks5") || !status.NumericDomainReady) {
+		scheme = "http"
 	}
-	return openSmartProxyBrowser(options, key, "socks5://"+status.Listening)
+	return openSmartProxyBrowser(options, key, (&url.URL{Scheme: scheme, Host: status.Listening}).String())
 }
 
 func (m *Manager) SetSmartProxyGroupPreference(group string, id egressrouter.MemberID, exclude *bool) error {

@@ -23,24 +23,31 @@ import (
 var egressSequence atomic.Uint64
 
 type egressGrant struct {
-	class        string
-	udp          bool
-	owner        *Connection
-	name, target string
-	stack        *wgnet.Stack
-	generation   string
-	lifetime     context.Context
-	invalidate   context.CancelFunc
+	destinationBinding bool
+	class              string
+	udp                bool
+	numericDomain      bool
+	owner              *Connection
+	name               string
+	target             netip.AddrPort
+	stack              *wgnet.Stack
+	generation         string
+	lifetime           context.Context
+	invalidate         context.CancelFunc
 }
 
-func (c *Connection) egressTargetLocked(name string) string {
+func (c *Connection) egressTunnelLocked(name string) (protocol.Tunnel, netip.AddrPort) {
 	for _, g := range c.Response.Tunnels {
 		if g.Name == name && protocol.IsBrowserSocksTarget(g.TargetHint) &&
 			(g.Protocol == "" || g.Protocol == "tcp") && g.VirtualPort > 0 && g.VirtualPort <= 65535 && c.serverTunnelIP.IsValid() {
-			return net.JoinHostPort(c.serverTunnelIP.String(), strconv.Itoa(g.VirtualPort))
+			return g, netip.AddrPortFrom(c.serverTunnelIP, uint16(g.VirtualPort))
 		}
 	}
-	return ""
+	return protocol.Tunnel{}, netip.AddrPort{}
+}
+
+func (g *egressGrant) matches(t protocol.Tunnel, target netip.AddrPort) bool {
+	return g.target == target && g.class == t.EgressClass && g.udp == t.EgressUDP && g.numericDomain == t.EgressNumericDomain && g.destinationBinding == t.EgressDestinationBind
 }
 
 func (c *Connection) egressAvailableLocked() bool {
@@ -53,7 +60,8 @@ func (c *Connection) reconcileEgressLocked() {
 		c.egressTimer.Stop()
 	}
 	for name, g := range c.egressGrants {
-		if !c.egressAvailableLocked() || g.stack != c.Stack || g.target != c.egressTargetLocked(name) || g.class != c.egressClassLocked(name) || g.udp != c.egressUDPLocked(name) {
+		tunnel, target := c.egressTunnelLocked(name)
+		if !c.egressAvailableLocked() || g.stack != c.Stack || !g.matches(tunnel, target) {
 			g.invalidate()
 			delete(c.egressGrants, name)
 		}
@@ -87,15 +95,15 @@ func (c *Connection) socksEgressLocked(name string) (*egressGrant, error) {
 	if !c.egressAvailableLocked() {
 		return nil, &egressrouter.Failure{Class: "expired", Retry: true}
 	}
-	target := c.egressTargetLocked(name)
-	if target == "" {
+	tunnel, target := c.egressTunnelLocked(name)
+	if !target.IsValid() {
 		return nil, &egressrouter.Failure{Class: "grant_unavailable", Code: 2}
 	}
 	if g := c.egressGrants[name]; g != nil {
 		return g, nil
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &egressGrant{class: c.egressClassLocked(name), udp: c.egressUDPLocked(name), owner: c, name: name, target: target, stack: c.Stack,
+	g := &egressGrant{destinationBinding: tunnel.EgressDestinationBind, class: tunnel.EgressClass, udp: tunnel.EgressUDP, numericDomain: tunnel.EgressNumericDomain, owner: c, name: name, target: target, stack: c.Stack,
 		generation: strconv.FormatUint(egressSequence.Add(1), 10), lifetime: ctx, invalidate: cancel}
 	if c.egressGrants == nil {
 		c.egressGrants = map[string]*egressGrant{}
@@ -123,7 +131,7 @@ func (c *Connection) EgressCandidate(member egressrouter.Member) egressrouter.Ca
 		return egressrouter.Candidate{Reason: f.Class}
 	}
 	state := c.State()
-	candidate := egressrouter.Candidate{UDP: grant.udp, Preparation: true, Dialer: grant, Generation: grant.generation, Transport: string(state.Transport.Mode),
+	candidate := egressrouter.Candidate{DestinationBinding: grant.destinationBinding, UDP: grant.udp, NumericDomain: grant.numericDomain, Preparation: true, Dialer: grant, Generation: grant.generation, Transport: string(state.Transport.Mode),
 		ControlMillis: state.LatencyMillis, Reconnections: state.Reconnections}
 	for _, p := range state.Transport.Paths {
 		if p.Primary || string(p.Kind) == string(state.Transport.Mode) {
@@ -165,7 +173,8 @@ func (g *egressGrant) valid() error {
 	if !c.egressAvailableLocked() {
 		return &egressrouter.Failure{Class: "expired", Retry: true}
 	}
-	if c.egressGrants[g.name] != g || g.target != c.egressTargetLocked(g.name) || g.class != c.egressClassLocked(g.name) || g.udp != c.egressUDPLocked(g.name) {
+	tunnel, target := c.egressTunnelLocked(g.name)
+	if c.egressGrants[g.name] != g || !g.matches(tunnel, target) {
 		return &egressrouter.Failure{Class: "grant_revoked", Code: 2}
 	}
 	if c.reconnectState.Reconnecting {
@@ -175,6 +184,9 @@ func (g *egressGrant) valid() error {
 }
 
 func (g *egressGrant) DialDestination(ctx context.Context, dst egressrouter.Destination) (net.Conn, error) {
+	if err := egressrouter.CheckNumericDomain(dst, g.numericDomain); err != nil {
+		return nil, err
+	}
 	prepared, err := g.Prepare(ctx)
 	if err != nil {
 		return nil, err
@@ -194,7 +206,7 @@ func (g *egressGrant) Prepare(ctx context.Context) (egressrouter.PreparedEgress,
 	stopSetup := context.AfterFunc(g.lifetime, cancel)
 	defer stopSetup()
 	started := time.Now()
-	conn, err := g.stack.DialContext(setup, "tcp", g.target)
+	conn, err := g.stack.DialContext(setup, "tcp", g.target.String())
 	if err != nil {
 		if invalid := g.valid(); invalid != nil {
 			return nil, invalid
@@ -224,11 +236,10 @@ func (p *preparedGrant) DialDestination(ctx context.Context, dst egressrouter.De
 	if p.conn == nil {
 		return nil, net.ErrClosed
 	}
-	address, err := dst.Address()
-	if err != nil {
-		return nil, &egressrouter.Failure{Class: "invalid_destination"}
+	if err := egressrouter.CheckNumericDomain(dst, g.numericDomain); err != nil {
+		return nil, err
 	}
-	if err = g.valid(); err != nil {
+	if err := g.valid(); err != nil {
 		return nil, err
 	}
 	setup, cancel := context.WithCancel(ctx)
@@ -236,7 +247,7 @@ func (p *preparedGrant) DialDestination(ctx context.Context, dst egressrouter.De
 	stopSetup := context.AfterFunc(g.lifetime, cancel)
 	defer stopSetup()
 	started := time.Now()
-	if err = socks.Connect(setup, p.conn, address); err != nil {
+	if err := socks.ConnectDestination(setup, p.conn, dst); err != nil {
 		var reply *socks.ConnectError
 		if errors.As(err, &reply) {
 			if reply.Auth {
@@ -255,6 +266,8 @@ func (p *preparedGrant) DialDestination(ctx context.Context, dst egressrouter.De
 					class = "destination_refused"
 				case 6:
 					class = "destination_timeout"
+				case 8:
+					class = "address_type_unsupported"
 				}
 				return nil, &egressrouter.Failure{Class: class, Stage: "socks_connect", Code: reply.Code}
 			}
@@ -272,9 +285,12 @@ func (p *preparedGrant) DialDestination(ctx context.Context, dst egressrouter.De
 				return nil, &egressrouter.Failure{Class: "transport", Retry: true}
 			}
 		}
+		if errors.Is(err, socks.ErrInvalidDestination) {
+			return nil, &egressrouter.Failure{Class: "invalid_destination"}
+		}
 		return nil, &egressrouter.Failure{Class: "ambiguous"}
 	}
-	if err = g.valid(); err != nil {
+	if err := g.valid(); err != nil {
 		var f *egressrouter.Failure
 		if errors.As(err, &f) {
 			return nil, &egressrouter.Failure{Class: f.Class, Code: f.Code}
@@ -317,7 +333,7 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 	defer cancel()
 	stopSetup := context.AfterFunc(g.lifetime, cancel)
 	defer stopSetup()
-	control, err := g.stack.DialContext(setup, "tcp", g.target)
+	control, err := g.stack.DialContext(setup, "tcp", g.target.String())
 	if err != nil {
 		if invalid := g.valid(); invalid != nil {
 			return nil, invalid
@@ -352,11 +368,11 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 		}
 		return nil, &egressrouter.Failure{Class: "ambiguous", Stage: "udp_associate"}
 	}
-	virtual, err := netip.ParseAddrPort(g.target)
-	if err != nil || (relay.Addr() != virtual.Addr().Unmap() && !relay.Addr().IsUnspecified()) {
+	virtual := g.target.Addr().Unmap()
+	if relay.Addr() != virtual && !relay.Addr().IsUnspecified() {
 		return nil, &egressrouter.Failure{Class: "invalid_udp_relay", Stage: "udp_associate"}
 	}
-	target := netip.AddrPortFrom(virtual.Addr().Unmap(), relay.Port())
+	target := netip.AddrPortFrom(virtual, relay.Port())
 	udp, err := g.stack.DialContext(setup, "udp", target.String())
 	if err != nil {
 		return nil, &egressrouter.Failure{Class: "udp_associate_failed"}
@@ -384,24 +400,6 @@ type udpAssociation struct {
 func (c *udpAssociation) Close() error {
 	c.once.Do(func() { c.stop(); _ = c.control.Close(); _ = c.Conn.Close() })
 	return nil
-}
-
-func (c *Connection) egressClassLocked(name string) string {
-	for _, t := range c.Response.Tunnels {
-		if t.Name == name {
-			return t.EgressClass
-		}
-	}
-	return ""
-}
-
-func (c *Connection) egressUDPLocked(name string) bool {
-	for _, t := range c.Response.Tunnels {
-		if t.Name == name {
-			return t.EgressUDP
-		}
-	}
-	return false
 }
 
 func (c *Connection) canDiscoverEgress() bool {

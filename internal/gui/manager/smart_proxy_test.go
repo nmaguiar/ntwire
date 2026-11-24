@@ -1,16 +1,33 @@
 package manager
 
 import (
+	"context"
 	"net"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
+	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
 
-func TestOpenSmartProxyGroupBrowser_PrefersHTTPWhenAvailable(t *testing.T) {
+type smartProxyBrowserHandle struct {
+	fakeHandle
+	numericDomain atomic.Bool
+}
+
+func (h *smartProxyBrowserHandle) EgressCandidate(egressrouter.Member) egressrouter.Candidate {
+	return egressrouter.Candidate{Dialer: h, Generation: "live", NumericDomain: h.numericDomain.Load()}
+}
+
+func (h *smartProxyBrowserHandle) DialDestination(context.Context, egressrouter.Destination) (net.Conn, error) {
+	return nil, net.ErrClosed
+}
+
+func TestOpenSmartProxyGroupBrowser_UsesCurrentCapabilities(t *testing.T) {
 	original := openSmartProxyBrowser
 	t.Cleanup(func() { openSmartProxyBrowser = original })
 	var launchedProxy string
@@ -21,8 +38,29 @@ func TestOpenSmartProxyGroupBrowser_PrefersHTTPWhenAvailable(t *testing.T) {
 		return nil
 	}
 
-	m, _ := newTestManager(t, &fakeConnector{})
+	const modern = "https://modern.test"
+	const older = "https://older.test"
+	current, legacy := &smartProxyBrowserHandle{}, &smartProxyBrowserHandle{}
+	current.numericDomain.Store(true)
+	m, _ := newTestManager(t, &fakeConnector{connectFunc: func(server, _ string, _ client.Options) (Handle, error) {
+		if server == modern {
+			return current, nil
+		}
+		return legacy, nil
+	}})
 	t.Cleanup(m.Close)
+	var members []egressrouter.Member
+	for _, server := range []string{modern, older} {
+		profile, err := m.AddProfile(config.Profile{Name: server, Server: server})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = m.Connect(profile.ID); err != nil {
+			t.Fatal(err)
+		}
+		waitForState(t, m, profile.ID, StateConnected, 2*time.Second)
+		members = append(members, egressrouter.Member{ProfileID: profile.ID, Tunnel: "egress", ExpectedServer: server})
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -40,18 +78,26 @@ func TestOpenSmartProxyGroupBrowser_PrefersHTTPWhenAvailable(t *testing.T) {
 		protocols []string
 		scheme    string
 		blockDNS  bool
+		members   []egressrouter.Member
+		upgrade   bool
+		unmatched string
 	}{
-		{"default protocols", nil, "http", false},
-		{"both protocols", []string{"socks5", "http"}, "http", false},
-		{"HTTP only with DNS blocking", []string{"http"}, "http", true},
-		{"SOCKS5 only with DNS blocking", []string{"socks5"}, "socks5", true},
+		{"no connected members", nil, "http", false, nil, false, ""},
+		{"direct only with no members", nil, "socks5", true, nil, false, "direct"},
+		{"compatible", nil, "socks5", true, members[:1], false, ""},
+		{"mixed", []string{"socks5", "http"}, "http", false, members, false, ""},
+		{"both members upgraded", nil, "socks5", true, members, true, ""},
+		{"HTTP only with DNS blocking", []string{"http"}, "http", true, members[:1], false, ""},
+		{"SOCKS5 only with DNS blocking", []string{"socks5"}, "socks5", true, members, false, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			group := egressrouter.Config{Enabled: true, Listen: address, Protocols: tc.protocols, BrowserBlockLocalDNS: tc.blockDNS}
+			group := egressrouter.Config{Enabled: true, Listen: address, Protocols: tc.protocols, BrowserBlockLocalDNS: tc.blockDNS,
+				Egress: egressrouter.Membership{Members: tc.members}, Routing: egressrouter.Routing{Unmatched: tc.unmatched}}
 			cfg := egressrouter.Config{Groups: map[string]egressrouter.Config{"office": group}}
 			if err := m.SetSmartProxy(cfg); err != nil {
 				t.Fatal(err)
 			}
+			legacy.numericDomain.Store(tc.upgrade)
 			launchedProxy = ""
 			if err := m.OpenSmartProxyGroupBrowser("office"); err != nil {
 				t.Fatal(err)

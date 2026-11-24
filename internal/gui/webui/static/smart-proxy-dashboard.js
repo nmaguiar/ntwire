@@ -30,13 +30,22 @@ function trafficRates(before, member, seconds) {
   return rates;
 }
 
-function recordSample(history, state, time) {
+function trafficEntriesFor(state) {
   const entries = state.members || [];
+  const direct = state.direct;
+  return direct ? [...entries, {...direct, direct: true, sent: direct.sent + (direct.udp_sent ?? 0),
+    received: direct.received + (direct.udp_received ?? 0), routed: direct.successes}] : entries;
+}
+
+const trafficKey = member => member.direct ? 'direct' : memberKey(member);
+
+function recordSample(history, state, time) {
+  const entries = trafficEntriesFor(state);
   const previous = history.at(-1);
   const elapsed = previous ? (time - previous.time) / 1000 : 0;
   const totals = {};
   const members = new Map(entries.map(member => {
-    const key = memberKey(member);
+    const key = trafficKey(member);
     const traffic = trafficRates(previous?.members.get(key), member, elapsed);
     for (const [metric, value] of Object.entries(traffic)) {
       totals[metric] = (totals[metric] ?? 0) + value;
@@ -57,6 +66,7 @@ function recordSample(history, state, time) {
 }
 
 function latencySeries(choices, tunnel) {
+  if (tunnel === 'direct') return [{name: 'Setup', color: 'primary', measure: sample => sample.members.get(tunnel)?.setup}];
   if (tunnel) {
     const measure = metric => sample => sample.members.get(tunnel)?.[metric];
     return [
@@ -314,7 +324,7 @@ export function startDashboard(url) {
     if (response.status !== 204) return response.json();
   }
 
-  const label = member => (profiles.get(member.profile_id) || member.profile_id) + ' / ' + member.tunnel;
+  const label = member => member.direct ? 'DIRECT (client)' : (profiles.get(member.profile_id) || member.profile_id) + ' / ' + member.tunnel;
 
   function render() {
     if (!live) {
@@ -339,17 +349,27 @@ export function startDashboard(url) {
       (state.selection_reason ? ' (' + readable(state.selection_reason) + ')' : ''));
     if (state.race_preparations) summary.push(count(state.race_backup_wins ?? 0) + ' backup wins in ' +
       count(state.race_preparations) + ' TCP preparations');
+    if (state.direct) {
+      const {active, udp_active, successes, failures, connect_millis} = state.direct;
+      summary.push(`DIRECT (client) · ${active} TCP · ${udp_active ?? 0} UDP · ${successes} successful · ${failures} failed · Setup ${milliseconds(connect_millis)}`);
+    }
+    if (state.destination_denied || state.routing_indeterminate) summary.push(`${state.destination_denied ?? 0} denied · ${state.routing_indeterminate ?? 0} indeterminate`);
+    if (live.asn_database) {
+      const db = live.asn_database;
+      summary.push(`ASN database ${db.stale ? 'stale' : db.loaded ? 'loaded' : 'unavailable'} · ${db.ranges} ranges · ${db.ipv6 ? 'IPv4/IPv6' : 'IPv4 only when loaded'} · ${state.asn_lookups_succeeded ?? 0} lookups succeeded · ${state.asn_lookups_failed ?? 0} failed`);
+    }
     updateText(el('summary'), summary.join(' · '));
 
     const samples = history.get(group) || [];
-    const choices = entries.map(member => [memberKey(member), label(member)]);
+    const trafficEntries = trafficEntriesFor(state);
+    const choices = trafficEntries.map(member => [trafficKey(member), label(member)]);
     trafficTunnel = fillTunnelSelect(trafficPicker, choices, trafficTunnel);
     latencyTunnel = fillTunnelSelect(latencyPicker, choices, latencyTunnel);
 
-    const trafficEntries = trafficTunnel ? entries.filter(member => memberKey(member) === trafficTunnel) : entries;
-    const totals = trafficEntries.reduce((sum, entry) => [sum[0] + (entry.sent ?? 0), sum[1] + (entry.received ?? 0)], [0, 0]);
+    const visibleTraffic = trafficTunnel ? trafficEntries.filter(member => trafficKey(member) === trafficTunnel) : trafficEntries;
+    const totals = visibleTraffic.reduce((sum, entry) => [sum[0] + (entry.sent ?? 0), sum[1] + (entry.received ?? 0)], [0, 0]);
     const trafficAt = sample => trafficTunnel ? sample.members.get(trafficTunnel)?.traffic : sample;
-    updateText(el('traffic-total'), trafficEntries.length ? bytes(totals[0]) + ' sent · ' + bytes(totals[1]) + ' received' : '');
+    updateText(el('traffic-total'), visibleTraffic.length ? bytes(totals[0]) + ' sent · ' + bytes(totals[1]) + ' received' : '');
     renderTrend(el('traffic'), samples, [
       {name: 'Sent', color: 'out', measure: sample => trafficAt(sample)?.sent},
       {name: 'Received', color: 'in', measure: sample => trafficAt(sample)?.received}
@@ -360,7 +380,7 @@ export function startDashboard(url) {
       latencyTunnel ? 'No latency measurements for this tunnel yet.' : 'No setup latency measurements yet.');
     renderTrend(el('activity'), samples, [{name: 'Active connections', color: 'primary', measure: sample => sample.active}],
       count, 'Waiting for an active proxy listener.');
-    renderUsage(el('usage'), chartRows(entries, label, member => member.routed ?? 0), samples.at(-1)?.time);
+    renderUsage(el('usage'), chartRows(trafficEntries, label, member => member.routed ?? 0), samples.at(-1)?.time);
 
     el('clear-preferred').disabled = !state.listening;
     const wanted = new Set();

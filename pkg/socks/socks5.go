@@ -47,8 +47,25 @@ func (s *Server) serveSocks5(ctx context.Context, conn net.Conn, br *bufio.Reade
 	}
 
 	switch cmd {
+	case destinationOfferCommand:
+		s.serveDestinationOffer(ctx, conn, br, hostname, ip, port)
 	case socks5CmdConnect:
-		out, o := s.connect(ctx, hostname, ip, port)
+		if port == 0 {
+			Reply(conn, socks5RepGeneralFailure)
+			return
+		}
+		var literal string
+		if !ip.IsValid() {
+			ip, err = parseHost(hostname)
+			if err != nil {
+				Reply(conn, socks5RepGeneralFailure)
+				return
+			}
+			if ip.IsValid() {
+				literal, hostname = hostname, ""
+			}
+		}
+		out, o := s.connectDestination(ctx, hostname, literal, ip.Unmap(), port)
 		if o != outcomeGranted {
 			writeSocks5Reply(conn, socks5ReplyCode(o), netip.IPv4Unspecified(), 0)
 			return
@@ -79,6 +96,10 @@ func (s *Server) serveSocks5(ctx context.Context, conn net.Conn, br *bufio.Reade
 			}
 		}()
 		writeSocks5Reply(conn, socks5RepSucceeded, a.Addr, a.Port)
+		if a.Lifetime != nil {
+			stop := context.AfterFunc(a.Lifetime, func() { _ = conn.Close() })
+			defer stop()
+		}
 		// RFC 1928 keeps the association alive exactly while its TCP control
 		// connection remains open. Discard any control bytes rather than
 		// treating them as a second SOCKS request.

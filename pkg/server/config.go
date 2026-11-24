@@ -358,6 +358,8 @@ func (t TunnelConfig) IsBrowserSocks() bool {
 // would silently turn an authenticated ntwire session into an open egress
 // proxy. Set AllowAll to opt into socksd's original behavior.
 type SocksConfig struct {
+	// AllowDestinationBinding enables one-use hostname offers on native SOCKS tunnels.
+	AllowDestinationBinding bool `yaml:"allow_destination_binding"`
 	// Transparent relays the client's SOCKS stream unchanged to Upstream.
 	// It deliberately bypasses ntwire's destination filters; the upstream
 	// SOCKS service is responsible for authorization and destination policy.
@@ -632,6 +634,7 @@ tunnels:
 #     reverse_filters : false              # invert the above from an allow-list into a deny-list
 #     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
 #     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+#     allow_destination_binding: false  # allow authorized hostname ASN classification on native SOCKS tunnels
 #     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
 #     allow_local_egress: false            # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 #     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
@@ -1135,6 +1138,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 					return c, fmt.Errorf("tunnel %q: socks.upstream must be a socks5:// or socks5h:// URL", t.Name)
 				}
 			}
+			if t.Socks.AllowDestinationBinding && !t.nativeSOCKSEgress() {
+				return c, fmt.Errorf("tunnel %q: destination binding requires native SOCKS egress", t.Name)
+			}
 			if t.Socks.Transparent {
 				if t.Socks.Upstream == "" {
 					return c, fmt.Errorf("tunnel %q: socks.transparent requires socks.upstream", t.Name)
@@ -1287,8 +1293,8 @@ func containsDomain(domains []string, want string) bool {
 	return false
 }
 
-// egressUDP reports native UDP support with no TCP-only upstream boundary.
-func (t TunnelConfig) egressUDP() bool {
+// nativeSOCKSEgress identifies governed tunnels with no upstream proxy.
+func (t TunnelConfig) nativeSOCKSEgress() bool {
 	return t.IsSocks() && t.Socks != nil && !t.Socks.Transparent && t.Socks.Upstream == ""
 }
 

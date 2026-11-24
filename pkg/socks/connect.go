@@ -87,7 +87,7 @@ func readRequest(w io.Writer, r io.Reader, strict bool) (byte, string, netip.Add
 	if _, err := io.ReadFull(r, buf[:4]); err != nil {
 		return 0, "", ip, 0, err
 	}
-	if buf[0] != socks5Version || strict && buf[2] != 0 {
+	if buf[0] != socks5Version || (strict || buf[1] == destinationOfferCommand) && buf[2] != 0 {
 		return 0, "", ip, 0, errors.New("invalid SOCKS request")
 	}
 	host, ip, port, err := readAddress(r, buf[3])
@@ -100,7 +100,15 @@ func readRequest(w io.Writer, r io.Reader, strict bool) (byte, string, netip.Add
 // ReadConnect negotiates only SOCKS5 CONNECT. The caller owns buffering and deadlines.
 func ReadConnect(w io.Writer, r io.Reader) (string, error) {
 	req, err := ReadClientRequest(w, r, false)
-	return req.Address, err
+	if err != nil {
+		return "", err
+	}
+	if req.Destination.NumericDomain() {
+		// A string-only caller cannot preserve the requested address type.
+		Reply(w, socks5RepAtypNotSupported)
+		return "", errAddressType
+	}
+	return net.JoinHostPort(req.Destination.Host, strconv.Itoa(int(req.Destination.Port))), nil
 }
 
 // ReadClientRequest accepts UDP ASSOCIATE only when explicitly enabled.
@@ -141,19 +149,11 @@ func ReadClientRequest(w io.Writer, r io.Reader, allowUDP bool) (ClientRequest, 
 		Reply(w, socks5RepCmdNotSupported)
 		return ClientRequest{}, errors.New("SOCKS command unsupported")
 	}
-	if ip.IsValid() {
-		host = ip.String()
-	} else if _, err := netip.ParseAddr(host); err == nil {
-		// Re-encoding a domain-form IP as a numeric address could change the
-		// upstream's hostname-based filtering decision.
-		Reply(w, socks5RepAtypNotSupported)
-		return ClientRequest{}, errors.New("numeric address requires a numeric SOCKS address type")
-	}
-	address, err := Address(host, port)
+	dst, err := wireDestination(host, ip, port)
 	if err != nil {
 		Reply(w, socks5RepGeneralFailure)
 	}
-	return ClientRequest{Address: address}, err
+	return ClientRequest{Destination: dst}, err
 }
 
 // Reply writes a SOCKS5 reply with an unspecified bound address.
@@ -176,30 +176,35 @@ func (e *ConnectError) Unwrap() error { return e.Err }
 // Connect performs a no-auth SOCKS5 CONNECT over an already-open stream.
 // The caller keeps ownership of conn and its lifetime after the handshake.
 func Connect(ctx context.Context, conn net.Conn, address string) error {
-	host, portText, err := net.SplitHostPort(address)
+	dst, err := ParseDestination(address)
 	if err != nil {
 		return err
 	}
-	port, err := strconv.ParseUint(portText, 10, 16)
+	return ConnectDestination(ctx, conn, dst)
+}
+
+// ConnectDestination preserves the wire encoding. Callers must establish
+// upstream support before forwarding a domain-form numeric destination.
+func ConnectDestination(ctx context.Context, conn net.Conn, dst Destination) error {
+	ip, err := dst.validate()
 	if err != nil {
-		return err
+		return ErrInvalidDestination
 	}
-	if _, err = Address(host, uint16(port)); err != nil {
-		return err
-	}
-	request := []byte{5, 1, 0}
-	if ip, err := netip.ParseAddr(host); err == nil {
+	var request []byte
+	if ip.IsValid() && dst.AddressType != socks5AtypDomain {
 		atyp := byte(socks5AtypIPv6)
 		if ip.Is4() {
 			atyp = socks5AtypIPv4
 		}
-		request = append(request, atyp)
+		request = make([]byte, 0, 4+ip.BitLen()/8+2)
+		request = append(request, socks5Version, socks5CmdConnect, 0, atyp)
 		request = append(request, ip.AsSlice()...)
 	} else {
-		request = append(request, socks5AtypDomain, byte(len(host)))
-		request = append(request, host...)
+		request = make([]byte, 0, 5+len(dst.Host)+2)
+		request = append(request, socks5Version, socks5CmdConnect, 0, socks5AtypDomain, byte(len(dst.Host)))
+		request = append(request, dst.Host...)
 	}
-	request = binary.BigEndian.AppendUint16(request, uint16(port))
+	request = binary.BigEndian.AppendUint16(request, dst.Port)
 	_, _, _, err = exchange(ctx, conn, request)
 	return err
 }

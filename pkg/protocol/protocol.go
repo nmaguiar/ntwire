@@ -218,6 +218,10 @@ type Tunnel struct {
 	TargetHint  string `json:"target_hint,omitempty"`
 	EgressClass string `json:"egress_class,omitempty"`
 	EgressUDP   bool   `json:"egress_udp,omitempty"`
+	// EgressNumericDomain authorizes forwarding an unchanged numeric domain
+	// field to a governed server with both numeric and legacy suffix checks.
+	EgressNumericDomain   bool `json:"egress_numeric_domain,omitempty"`
+	EgressDestinationBind bool `json:"egress_destination_bind_v1,omitempty"`
 	// Instructions is optional Markdown describing how to use this tunnel,
 	// expanded as a Go template by the client (see pkg/instructions) so that
 	// the real loopback port can appear in the commands it documents.

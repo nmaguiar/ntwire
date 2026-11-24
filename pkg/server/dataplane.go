@@ -99,7 +99,24 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 	}
 	var sv *socks.Server
 	var err error
+	var binding func(context.Context) bool
+	if t.nativeSOCKSEgress() && sc.AllowDestinationBinding {
+		binding = func(ctx context.Context) bool {
+			principal, valid := principalFromContext(ctx)
+			if !valid {
+				return false
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			current, granted := s.principalForIPLocked(principal.TunnelIP.String())
+			tunnel, configured := s.tunnelConfigLocked(t.Name)
+			return granted && current.peerLifetime == principal.peerLifetime && current.Identity == principal.Identity &&
+				current.Method == principal.Method && current.Policy == principal.Policy && current.Tunnels[t.Name] &&
+				configured && tunnel.nativeSOCKSEgress() && tunnel.Socks.AllowDestinationBinding && reflect.DeepEqual(tunnel, t)
+		}
+	}
 	sv, err = socks.New(socks.Config{
+		AllowDestinationBinding: binding,
 		Filter: socks.FilterConfig{
 			AllowLocalEgress: t.Socks.AllowLocalEgress,
 			OnlyLocal:        sc.OnlyLocal,
@@ -110,12 +127,12 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 			AllowAll:         sc.AllowAll,
 		},
 		ASNLookup: s.asn,
-		Authorize: func(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) bool {
+		AuthorizeDestination: func(ctx context.Context, hostname, literal string, ip netip.Addr, port uint16, protocol string) bool {
 			principal, ok := principalFromContext(ctx)
 			// Accepted SOCKS sockets can outlive their listener across reload.
 			// Resolve the attachment for every new destination command.
 			current, exists := s.tunnelConfig(t.Name)
-			return ok && exists && current.IsSocks() && s.destinationAllowed(ctx, principal, current, hostname, ip, port, protocol)
+			return ok && exists && current.IsSocks() && s.destinationAllowedRequest(ctx, principal, current, hostname, literal, ip, port, protocol)
 		},
 		DNSTimeout:         sc.DNSTimeout,
 		AllowBind:          sc.AllowBind,
@@ -141,9 +158,12 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 				_ = pc.Close()
 				return nil, false
 			}
-			stop := make(chan struct{})
-			go s.proxySocksUDP(pc, principal, t, sv, stop)
-			return &socks.UDPAssociation{Addr: addr.Addr(), Port: addr.Port(), Close: func() { close(stop); _ = pc.Close() }}, true
+			lifetime, endRelay := context.WithCancel(ctx)
+			go func() {
+				defer endRelay()
+				s.proxySocksUDP(pc, principal, t, sv, lifetime.Done())
+			}()
+			return &socks.UDPAssociation{Addr: addr.Addr(), Port: addr.Port(), Lifetime: lifetime, Close: func() { endRelay(); _ = pc.Close() }}, true
 		},
 		Logger: log,
 		Dial:   dial,
@@ -684,7 +704,24 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		c  *net.UDPConn
 		ip netip.Addr
 	}
-	flows := map[string]flow{}
+	type destinationKey struct {
+		host string
+		ip   netip.Addr
+		port uint16
+	}
+	flows := map[destinationKey]flow{}
+	ownerIP := principal.TunnelIP.String()
+	currentOwner := func() (DataPlanePrincipal, TunnelConfig, bool) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		current, granted := s.principalForIPLocked(ownerIP)
+		if !granted || !current.Tunnels[t.Name] || current.peerLifetime != principal.peerLifetime ||
+			current.Identity != principal.Identity || current.Method != principal.Method {
+			return DataPlanePrincipal{}, TunnelConfig{}, false
+		}
+		tunnel, configured := s.tunnelConfigLocked(t.Name)
+		return current, tunnel, configured && tunnel.IsSocks() && reflect.DeepEqual(tunnel.Socks, t.Socks) && tunnel.VirtualPort == t.VirtualPort
+	}
 	var mu sync.Mutex
 	defer func() {
 		mu.Lock()
@@ -705,33 +742,34 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		default:
 		}
 		host, _, e := net.SplitHostPort(src.String())
-		if e != nil || host != principal.TunnelIP.String() {
+		if e != nil || host != ownerIP {
 			continue
 		}
-		hostname, ip, port, payload, ok := parseSocksUDP(b[:n])
-		if !ok {
+		dst, offset, err := socks.DatagramDestination(b[:n])
+		if err != nil {
 			continue
 		}
-		current, granted := s.principalForIP(host)
-		if !granted || !current.Tunnels[t.Name] || current.sessionID != principal.sessionID ||
-			current.Identity != principal.Identity || current.Method != principal.Method {
-			return
-		}
-		tunnel, configured := s.tunnelConfig(t.Name)
-		if !configured || !tunnel.IsSocks() || !reflect.DeepEqual(tunnel.Socks, t.Socks) || tunnel.VirtualPort != t.VirtualPort {
+		current, tunnel, owned := currentOwner()
+		if !owned {
 			return
 		}
 		ctx := context.WithValue(context.Background(), principalContextKey{}, current)
-		key := net.JoinHostPort(ip.String(), fmt.Sprint(port))
-		if hostname != "" {
-			key = hostname + ":" + fmt.Sprint(port)
+		key := destinationKey{ip: dst.IP(), port: dst.Port}
+		if !key.ip.IsValid() {
+			key.host = dst.Host
 		}
 		mu.Lock()
 		f, exists := flows[key]
 		count := len(flows)
 		mu.Unlock()
 		if exists {
-			if !s.destinationAllowed(ctx, current, tunnel, hostname, f.ip, port, "udp") {
+			// A cached binary flow does not carry the legacy suffix check
+			// required for a domain-form literal addressed to that same IP.
+			if dst.NumericDomain() {
+				if _, allowed := sv.AuthorizeDatagram(ctx, dst); !allowed {
+					continue
+				}
+			} else if !s.destinationAllowed(ctx, current, tunnel, key.host, f.ip, dst.Port, "udp") {
 				continue
 			}
 		} else {
@@ -739,11 +777,11 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 			if count >= maxSOCKSUDPFlows {
 				continue
 			}
-			resolved, allowed := sv.AuthorizeUDP(ctx, hostname, ip, port)
+			resolved, allowed := sv.AuthorizeDatagram(ctx, dst)
 			if !allowed {
 				continue
 			}
-			out, e := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(resolved.Unmap(), port)))
+			out, e := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(resolved.Unmap(), dst.Port)))
 			if e != nil {
 				continue
 			}
@@ -751,7 +789,7 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
-			go func(key string, f flow, src net.Addr) {
+			go func(key destinationKey, f flow, src net.Addr) {
 				defer f.c.Close()
 				defer func() { mu.Lock(); delete(flows, key); mu.Unlock() }()
 				rb := make([]byte, 65535)
@@ -759,6 +797,10 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 					_ = f.c.SetReadDeadline(time.Now().Add(idle))
 					n, e := f.c.Read(rb)
 					if e != nil {
+						return
+					}
+					if _, _, owned := currentOwner(); !owned {
+						_ = pc.Close()
 						return
 					}
 					frame := socksUDPFrame(f.c.RemoteAddr().(*net.UDPAddr).AddrPort(), rb[:n])
@@ -769,72 +811,11 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 			}(key, f, src)
 		}
 		_ = f.c.SetReadDeadline(time.Now().Add(idle))
-		_, _ = f.c.Write(payload)
+		_, _ = f.c.Write(b[offset:n])
 	}
 }
 
-func parseSocksUDP(b []byte) (string, netip.Addr, uint16, []byte, bool) {
-	if len(b) < 4 || b[0] != 0 || b[1] != 0 || b[2] != 0 {
-		return "", netip.Addr{}, 0, nil, false
-	}
-	i := 4
-	var host string
-	var ip netip.Addr
-	switch b[3] {
-	case 1:
-		if len(b) < i+4+2 {
-			return "", ip, 0, nil, false
-		}
-		var x [4]byte
-		copy(x[:], b[i:i+4])
-		ip = netip.AddrFrom4(x)
-		i += 4
-	case 4:
-		if len(b) < i+16+2 {
-			return "", ip, 0, nil, false
-		}
-		var x [16]byte
-		copy(x[:], b[i:i+16])
-		ip = netip.AddrFrom16(x)
-		i += 16
-	case 3:
-		if len(b) < i+1 {
-			return "", ip, 0, nil, false
-		}
-		l := int(b[i])
-		i++
-		if len(b) < i+l+2 || l == 0 {
-			return "", ip, 0, nil, false
-		}
-		host = string(b[i : i+l])
-		i += l
-	default:
-		return "", ip, 0, nil, false
-	}
-	port := uint16(b[i])<<8 | uint16(b[i+1])
-	return host, ip, port, b[i+2:], true
-}
-func socksUDPFrame(ap netip.AddrPort, p []byte) []byte {
-	ip := ap.Addr().Unmap()
-	if ip.Is4() {
-		a := ip.As4()
-		b := make([]byte, 10+len(p))
-		b[3] = 1
-		copy(b[4:8], a[:])
-		b[8] = byte(ap.Port() >> 8)
-		b[9] = byte(ap.Port())
-		copy(b[10:], p)
-		return b
-	}
-	a := ip.As16()
-	b := make([]byte, 22+len(p))
-	b[3] = 4
-	copy(b[4:20], a[:])
-	b[20] = byte(ap.Port() >> 8)
-	b[21] = byte(ap.Port())
-	copy(b[22:], p)
-	return b
-}
+func socksUDPFrame(ap netip.AddrPort, p []byte) []byte { return socks.DatagramFrame(ap, p) }
 func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	defer in.Close()
 	t := tl.config
@@ -999,6 +980,10 @@ func principalFromContext(ctx context.Context) (DataPlanePrincipal, bool) {
 func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.principalForIPLocked(ip)
+}
+
+func (s *Server) principalForIPLocked(ip string) (DataPlanePrincipal, bool) {
 	if principal, ok := s.sessions.principalForIP(ip); ok {
 		return principal, true
 	}
@@ -1009,7 +994,7 @@ func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 			for _, tunnel := range peer.Tunnels {
 				grants[tunnel] = true
 			}
-			return DataPlanePrincipal{Method: "native-wireguard", Identity: peer.Name, TunnelIP: addr, Tunnels: grants, Policy: peer.DestinationPolicy}, true
+			return DataPlanePrincipal{peerLifetime: s.nativePeerLifetime, Method: "native-wireguard", Identity: peer.Name, TunnelIP: addr, Tunnels: grants, Policy: peer.DestinationPolicy}, true
 		}
 	}
 	return DataPlanePrincipal{}, false

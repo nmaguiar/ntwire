@@ -234,6 +234,21 @@ func printProxyMembers(u *ui.UI, status egressrouter.Status) {
 	if status.Selected != nil {
 		fmt.Fprintf(u.Out, "  last selected %s/%s (%s)\n", status.Selected.ProfileID, status.Selected.Tunnel, status.SelectionReason)
 	}
+	if d := status.Direct; d != nil {
+		fmt.Fprintf(u.Out, "  DIRECT (client) | %d TCP active, %d UDP associations | %d succeeded, %d failed | %d bytes sent, %d received | %.1f ms setup\n",
+			d.Active, d.UDPActive, d.Successes, d.Failures, d.Sent+d.UDPSent, d.Received+d.UDPReceived, d.ConnectMillis)
+	}
+	if db := status.ASNDatabase; db != nil {
+		fmt.Fprintf(u.Out, "  ASN database | loaded %t | IPv4 %t, IPv6 %t | %d ranges | age %ds | stale %t\n",
+			db.Loaded, db.IPv4, db.IPv6, db.Ranges, db.AgeSeconds, db.Stale)
+		if db.LastError != "" {
+			fmt.Fprintln(u.Out, "  ASN refresh:", db.LastError)
+		}
+	}
+	if status.Denied+status.Indeterminate+status.ASNMatches+status.ASNFailures != 0 {
+		fmt.Fprintf(u.Out, "  %d denied, %d indeterminate | ASN lookups %d succeeded, %d failed\n",
+			status.Denied, status.Indeterminate, status.ASNMatches, status.ASNFailures)
+	}
 	for _, m := range status.Members {
 		parts := []string{m.ProfileID + "/" + m.Tunnel, m.Circuit}
 		if m.Transport != "" {

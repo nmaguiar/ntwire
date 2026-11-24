@@ -34,13 +34,17 @@ func (r *Router) serveUDP(ctx context.Context, in net.Conn, client netip.AddrPor
 		socks.Reply(in, 7)
 		return
 	}
+	if state.config.Routing.mayDirect() || state.config.Routing.usesASN() {
+		r.serveRoutedUDP(ctx, in, state, client)
+		return
+	}
 	if !claim(&r.attempts, state.config.Limits.ConcurrentAttempts) {
 		socks.Reply(in, 1)
 		return
 	}
 	setup, cancel := context.WithCancel(ctx)
 	stopWatch := localproxy.WatchSetupDisconnect(in, cancel)
-	out, chosen, h, err := r.openUDP(setup, state)
+	out, chosen, h, err := r.openUDP(setup, state, Destination{}, Decision{Action: Proxy})
 	stopWatch()
 	canceled := setup.Err() != nil
 	cancel()
@@ -99,8 +103,8 @@ func (r *Router) serveUDP(ctx context.Context, in net.Conn, client netip.AddrPor
 			if n > maxSOCKSDatagram || from.Addr() != tcp.AddrPort().Addr().Unmap() {
 				continue
 			}
-			host, port, offset, err := socks.DatagramDestination(packet[:n])
-			if err != nil || !r.udpPermitted(chosen, Destination{Host: host, Port: port}) {
+			dst, offset, err := socks.DatagramDestination(packet[:n])
+			if err != nil || CheckNumericDomain(dst, chosen.NumericDomain) != nil || !r.udpPermitted(chosen, dst) {
 				continue
 			}
 			mu.Lock()
@@ -130,15 +134,15 @@ func (r *Router) serveUDP(ctx context.Context, in net.Conn, client netip.AddrPor
 			if n > maxSOCKSDatagram {
 				continue
 			}
-			_, _, offset, err := socks.DatagramDestination(packet[:n])
-			if err != nil {
+			dst, offset, err := socks.DatagramDestination(packet[:n])
+			if err != nil || CheckNumericDomain(dst, chosen.NumericDomain) != nil {
 				continue
 			}
 			mu.Lock()
-			dst := source
+			client := source
 			mu.Unlock()
-			if dst.IsValid() {
-				if _, err = udp.WriteToUDPAddrPort(packet[:n], dst); err != nil {
+			if client.IsValid() {
+				if _, err = udp.WriteToUDPAddrPort(packet[:n], client); err != nil {
 					return
 				}
 				h.received.Add(uint64(n - offset))
@@ -155,10 +159,10 @@ func (r *Router) udpPermitted(c ranked, dst Destination) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state != nil && r.state.config.Routing.UDPAssociate &&
-		r.state.config.approves(c.Member) && r.state.config.Routing.permits(dst, c.ID())
+		!r.excluded[c.ID()] && r.state.config.approves(c.Member) && r.state.decide(dst, dst.IP(), r.now()).permits(c.ID())
 }
 
-func (r *Router) openUDP(ctx context.Context, state *routeState) (net.Conn, ranked, *memberHealth, error) {
+func (r *Router) openUDP(ctx context.Context, state *routeState, dst Destination, decision Decision) (net.Conn, ranked, *memberHealth, error) {
 	ctx, cancel := context.WithTimeout(ctx, state.config.Failover.TotalTimeout)
 	defer cancel()
 	limit := state.config.Failover.MaxAttempts
@@ -169,7 +173,7 @@ func (r *Router) openUDP(ctx context.Context, state *routeState) (net.Conn, rank
 	var last error = &Failure{Class: "udp_unavailable", Code: 7}
 	// The TCP request names the sender. Actual destinations are authorized
 	// separately for each datagram on the pinned association.
-	for _, c := range r.rankCandidates(state, Destination{}, false) {
+	for _, c := range r.rankDecision(state, dst, decision) {
 		if attempts >= limit || ctx.Err() != nil {
 			break
 		}
@@ -180,6 +184,14 @@ func (r *Router) openUDP(ctx context.Context, state *routeState) (net.Conn, rank
 		h, halfOpen := r.admit(state, c, false)
 		if h == nil {
 			continue
+		}
+		if err := CheckNumericDomain(dst, c.NumericDomain); err != nil {
+			r.mu.Lock()
+			if halfOpen {
+				h.testing = false
+			}
+			r.mu.Unlock()
+			return nil, ranked{}, nil, err
 		}
 		if attempts > 0 {
 			r.failovers.Add(1)

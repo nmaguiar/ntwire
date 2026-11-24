@@ -289,10 +289,40 @@ details.advanced > fieldset{margin-top:.5rem}
             <label class="smart-after">When no rule matches
               <select data-smart-field="routing.unmatched">
                 <option value="">Block when rules exist</option>
-                <option value="allow">Allow through the group</option>
+                <option value="allow">Through the ntwire group</option>
+                <option value="proxy">Through the ntwire group (explicit proxy)</option>
+                <option value="direct">Direct client connection</option>
                 <option value="deny">Block</option>
               </select>
             </label>
+            <p class="help">Direct routes use the client network and expose the client’s source IP. Server destination policy does not apply. Private LAN access requires an explicit direct CIDR.</p>
+            <button type="button" class="secondary smart-after" id="smart-proxy-asn-toggle" aria-expanded="false" aria-controls="smart-proxy-asn-settings">ASN settings</button>
+            <div id="smart-proxy-asn-settings" hidden>
+              <p id="smart-proxy-asn-status" class="help"></p>
+              <label class="toggle"><input type="checkbox" data-smart-field="routing.asn.enabled" data-default="true"> Allow ASN rules in this group</label>
+              <div class="smart-fields">
+                <label>Hostname classification
+                  <select data-smart-field="routing.asn.hostname_resolution">
+                    <option value="">Numeric destinations only</option><option value="disabled">Disabled</option>
+                    <option value="local">Scoped client DNS</option><option value="remote">Scoped tunnel DNS</option>
+                  </select>
+                </label>
+                <label>Unknown ASN
+                  <select data-smart-field="routing.asn.on_unknown" data-default="deny"><option value="deny">Deny</option></select>
+                </label>
+                <label>Exact names, one per line <textarea id="smart-proxy-asn-hosts" data-smart-field="routing.asn.hosts" data-list rows="2"></textarea></label>
+                <label>Suffixes, one per line <textarea id="smart-proxy-asn-suffixes" data-smart-field="routing.asn.suffixes" data-list rows="2"></textarea></label>
+                <label>Approved resolver tunnel <select id="smart-proxy-asn-resolver"></select></label>
+              </div>
+              <p class="help">Scoped client DNS reveals matching names to the client resolver. Scoped tunnel DNS requires a server that advertises destination binding.</p>
+              <h4>Shared ASN database</h4>
+              <div class="smart-fields">
+                <label>Trusted HTTPS source <input data-smart-field="asn_database.source" placeholder="https://openaf.io/asnidx.json.gz"></label>
+                <label>Refresh interval (seconds) <input type="number" min="60" max="2592000" data-unit="seconds" data-smart-field="asn_database.refresh_interval" placeholder="4320"></label>
+                <label>Maximum age (seconds) <input type="number" min="60" max="7776000" data-unit="seconds" data-smart-field="asn_database.max_age" placeholder="86400"></label>
+                <label>Private cache directory (optional) <input data-smart-field="asn_database.cache_dir" placeholder="/absolute/path"></label>
+              </div>
+            </div>
           </section>
           <section class="smart-section" id="smart-proxy-health-settings" role="tabpanel" aria-labelledby="smart-proxy-health-settings-tab" tabindex="0" hidden>
             <label class="toggle"><input type="checkbox" data-smart-field="failover.enabled" data-default="true"> Try another tunnel when connection setup fails</label>
@@ -316,7 +346,7 @@ details.advanced > fieldset{margin-top:.5rem}
           </section>
           <section class="smart-section" id="smart-proxy-limits" role="tabpanel" aria-labelledby="smart-proxy-limits-tab" tabindex="0" hidden>
             <label class="toggle"><input type="checkbox" data-smart-field="routing.udp_associate"> Enable SOCKS5 UDP ASSOCIATE</label>
-            <p class="help">UDP needs SOCKS5 and a server that advertises UDP support.</p>
+            <p class="help">UDP needs SOCKS5. Tunneled UDP also needs a server that advertises UDP support.</p>
             <div class="smart-fields smart-after">
               <label>UDP idle timeout (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.udp_idle_timeout" data-unit="seconds" data-default="120"></label>
               <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="256"></label>

@@ -88,6 +88,54 @@ func BenchmarkSmartProxyTransport(b *testing.B) {
 	}
 }
 
+// BenchmarkSmartProxyDestinationEncoding compares native SOCKS5 and HTTP
+// CONNECT over the same governed WireGuard egress and local echo workload.
+func BenchmarkSmartProxyDestinationEncoding(b *testing.B) {
+	f := newReconnectFixture(b)
+	startEgressServer(f, "direct-udp", false, false)
+	owner := f.connect()
+	member := egressrouter.Member{ProfileID: "local", Tunnel: "internet", ExpectedServer: f.http.URL}
+	router := startNumericProxy(b, []egressrouter.Member{member}, owner.EgressCandidate)
+	address := router.Status().Listening
+	_, port, err := net.SplitHostPort(f.tcpTarget)
+	if err != nil {
+		b.Fatal(err)
+	}
+	v6 := net.JoinHostPort("::1", port)
+	listener, err := net.Listen("tcp", v6)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
+		}
+	}()
+	for _, tc := range []struct {
+		name, destination string
+		atyp              byte
+	}{
+		{"SOCKS5/IPv4-binary", f.tcpTarget, 1},
+		{"SOCKS5/IPv4-domain", f.tcpTarget, 3},
+		{"SOCKS5/IPv6-binary", v6, 4},
+		{"SOCKS5/IPv6-domain", v6, 3},
+		{"SOCKS5/hostname", net.JoinHostPort("localhost", port), 3},
+		{"HTTP/IPv4", f.tcpTarget, 0},
+		{"HTTP/IPv6", v6, 0},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkEgressSetup(b, tc.destination, func(ctx context.Context, _ string, dst string) (net.Conn, error) {
+				return dialNumericProxy(ctx, address, dst, tc.atyp)
+			})
+		})
+	}
+}
+
 func benchmarkRoutedSetup(b *testing.B, origin string, members []egressrouter.Member, source egressrouter.Source) {
 	b.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

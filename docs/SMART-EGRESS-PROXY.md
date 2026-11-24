@@ -2,7 +2,7 @@
 
 Smart Egress Proxy provides one local address for SOCKS5 CONNECT, HTTP/1.x forwarding, HTTP CONNECT, and HTTP WebSocket upgrades. It routes new destination connections through a group of explicitly selected ntwire SOCKS tunnels. The listener stays up across profile connections and reconnects. An established stream keeps its egress until it closes.
 
-The feature starts disabled. It uses numeric loopback addresses and the existing userspace WireGuard connections. Explicit membership works with existing compatible SOCKS grants. Automatic enrollment additionally requires servers that advertise an egress policy class.
+The feature starts disabled. It listens on numeric loopback addresses and can use approved userspace WireGuard connections or explicitly configured client-native routes. Explicit membership works with existing compatible SOCKS grants. Automatic enrollment additionally requires servers that advertise an egress policy class.
 
 ## Select the group
 
@@ -28,7 +28,11 @@ You can switch groups or close the panel while editing. **Save changes** applies
 
 For headless GUI, configure the top-level `smart_proxy` block and set `smart_proxy_enabled: true` in `gui.yaml` when ready to run it. Reference the actual profile IDs. The authenticated Settings API provides configuration at `/api/smart-proxy`, master activation via `PUT /api/smart-proxy/master` with an `enabled` boolean, and status at `/api/smart-proxy/status` and on the SSE stream. The option called **Proxy settings** on each profile configures ntwire's own HTTPS/WSS connection.
 
-The isolated Chromium browser uses HTTP when the group supports it, including when SOCKS5 is also enabled. HTTP lets the browser reach literal IP destinations through the group's routing rules. The browser uses SOCKS5 for SOCKS5-only groups, where Chromium's encoding of literal IP addresses is unsupported. The launch removes Chromium's implicit loopback bypass for proxied requests. The proxy governs traffic the application submits to it. Some applications resolve names locally or bypass proxies for certain traffic.
+The isolated Chromium browser prefers SOCKS5 when it is enabled and the group can only route directly or deny, or when every non-excluded member currently advertises numeric-domain support. With both protocols enabled, a disconnected or incompatible member causes new launches to use HTTP. A single-protocol group uses its configured protocol. Reopen the isolated browser to pick up a new protocol choice. The launch removes Chromium's implicit loopback bypass for proxied requests. The proxy governs traffic that applications submit to its listener.
+
+Chromium sends numeric IPv4 and IPv6 URLs in the SOCKS5 domain field. Earlier Smart Proxies rejected this encoding because converting the field to binary could change upstream domain-suffix decisions. The proxy now uses the canonical IP for routing and sends the original field to a compatible selected member. The egress server requires both numeric authorization and the policy result for the original text. A mismatch is denied. IPv4-mapped IPv6 uses the IPv4 address for routing and filtering. Ordinary tunneled hostname requests still resolve at the egress. Direct numeric destinations work without an upstream capability.
+
+If the selected member is an older server, an older attached publisher, or a transparent or chained upstream without the capability, numeric-domain CONNECT fails with SOCKS5 reply `0x08`. The proxy keeps the same member ranking and never tries a backup merely to get around that compatibility failure. HTTP CONNECT and binary SOCKS5 continue to work through those members. Keep HTTP enabled in mixed groups for Chromium numeric URLs. SOCKS5-only groups can use numeric URLs when the selected member supports the capability. Established browser windows retain their launch settings as membership changes.
 
 To block local hostname lookups by the isolated browser, enable **Block local DNS in the isolated browser** in the group's **Setup** tab and save. The option defaults to off and takes effect when you fully close and reopen the isolated browser. It uses Chromium's `--host-resolver-rules=MAP * ~NOTFOUND` with an exception for the numeric proxy address, which requires no DNS lookup. Both HTTP and SOCKS5 still send destination hostnames through the proxy. A custom browser must support Chromium's host resolver rules. This setting controls the browser's resolver and does not provide system-wide DNS isolation. For headless GUI settings, set `browser_block_local_dns: true` in the applicable group.
 
@@ -49,6 +53,16 @@ ntwire proxy status --config egress.yaml --json
 ntwire proxy reload --config egress.yaml
 curl --proxy socks5h://127.0.0.1:1080 https://example.org/
 curl --proxy http://127.0.0.1:1080 https://example.org/
+```
+
+For a compatible group, the following commands illustrate numeric and hostname URLs. Replace the documentation addresses with authorized destinations reachable by your egress server.
+
+```sh
+curl --noproxy '' --proxy socks5h://127.0.0.1:1080 http://192.0.2.10/
+curl --noproxy '' --proxy socks5h://127.0.0.1:1080 'http://[2001:db8::10]/'
+chromium --user-data-dir="$HOME/.ntwire/smart-proxy-example" \
+  --proxy-server=socks5://127.0.0.1:1080 '--proxy-bypass-list=<-loopback>' \
+  'http://192.0.2.10/' 'http://[2001:db8::10]/' 'https://example.org/'
 ```
 
 Save edits before reloading. If validation, binding, or persistence fails, all existing listeners continue serving. To shut off the listener through reload, set `enabled: false`. Ctrl-C exits the aggregate process. The same-account publisher and router discovery records live under `~/.ntwire/egress`. They contain scoped local authentication material. Keep those files private. The attachment pins the publishing instance's local TLS certificate and revalidates the current grant for every new stream.
@@ -103,7 +117,76 @@ Use `destination-aware` to rank members using recent observations for the reques
 
 For a dedicated browser group, set `selection: sticky-fastest` and `affinity_scope: group`. The first successful egress is reused across eligible destinations until the group is idle for the affinity TTL or selection is forced to change. Applications sharing the listener share that affinity. A destination rule can restrict the eligible members for a particular destination. An exception to the preferred egress leaves the group affinity in place for other destinations.
 
-Destination rules run before ranking. The first matching rule wins. A rule can match `hosts`, `suffixes`, `cidrs`, or `ports`. Host and suffix matching is case insensitive. CIDRs apply to IP literals. When a rule sets `members`, it restricts the request to those explicit members. Use `deny: true` to reject a match. Unmatched requests are denied by default when rules exist. Set `unmatched: allow` explicitly to use the whole approved group for other destinations.
+Destination rules run before ranking. The first matching rule wins. In a rule, an exact name, suffix, or CIDR can satisfy its address selector. A port list and an ASN list each add a constraint. Values within each list are alternatives. Name matching is case insensitive. CIDRs and ASNs use the canonical numeric IP across HTTP and SOCKS5 encodings. Equivalent numeric addresses share affinity and destination history for tunneled routes.
+
+Choose `action: proxy`, `direct`, or `deny`. A proxy rule can restrict destinations to specific approved `members`. Legacy member lists and `deny: true` still work. An omitted unmatched action allows the approved group when there are no rules and denies unmatched requests once rules exist. Set `unmatched: allow` or `proxy` to use the full approved group, `direct` to explicitly use the client network, or `deny` to reject unmatched requests.
+
+### Direct client routes
+
+Direct routes use the client’s OS networking and source address, including any OS-level VPN. The application still connects to the local Smart Proxy. Direct traffic bypasses ntwire servers, relay and WireGuard connections, upstream proxy settings, and proxy environment variables. Server destination policy does not apply. A failed tunnel, server denial, timeout, DNS failure, or missing ASN result never triggers direct access.
+
+Loopback, client interface addresses, link-local and special-use ranges are blocked. Private IPv4 and IPv6 ULA access additionally requires a matched direct rule with a CIDR contained in the applicable private range. The same safeguards apply to every answer from local DNS. The proxy dials only a checked address. An authorized direct hostname can use the client resolver even with Chromium’s own local DNS blocking enabled.
+
+This group works with zero connected profiles. It allows a LAN subnet and a public suffix, then denies other destinations.
+
+```yaml
+smart_proxy:
+  enabled: true
+  listen: 127.0.0.1:1080
+  routing:
+    unmatched: deny
+    rules:
+      - cidrs: [192.168.1.0/24]
+        action: direct
+      - suffixes: [public.example.net]
+        action: direct
+```
+
+Test an allowed LAN address from the preceding configuration with `curl --noproxy '' --proxy socks5h://127.0.0.1:1080 http://192.168.1.42/`. To test Chromium from a terminal, use a separate browser profile.
+
+```sh
+chromium --user-data-dir="$(mktemp -d)" --proxy-server=socks5://127.0.0.1:1080 \
+  --proxy-bypass-list='<-loopback>' http://192.168.1.42/
+```
+
+For corporate split routing, put a corporate suffix rule with its approved tunnel first and set `unmatched: direct` for the remaining public traffic. To use tunnels by default, set `unmatched: allow` and add only the intended direct exceptions. Direct routes remain operational when all tunnel members disconnect.
+
+### ASN rules and hostname resolution
+
+Numeric rules work with existing servers, subject to the current SOCKS5 numeric-domain capability checks when forwarding that encoding. In this example the named cloud tunnel must already be approved in the group.
+
+```yaml
+routing:
+  unmatched: allow
+  rules:
+    - suffixes: [corp.example.net]
+      members: [{profile_id: corporate, tunnel: internal}]
+    - asns: [13335, 15169]
+      action: direct
+    - asns: [16509]
+      members: [{profile_id: cloud, tunnel: internet}]
+    - asns: [64500]
+      action: deny
+```
+
+An earlier ASN rule whose other conditions match stops routing when the ASN is unknown, unavailable, stale, or unsupported. In this example an unclassified hostname also stops at the first ASN-only rule. Put decisive hostname rules first for traffic that should continue using ordinary remote DNS. The default database is IPv4-only. IPv4-mapped IPv6 is looked up as IPv4. Native IPv6 still works on routes that can be decided without ASN data. ASNs are provider-supplied routing metadata for IP ranges. They offer no proof of service identity and the default format has no multiple-origin representation.
+
+Hostname ASN classification is disabled by default. Use an explicit name scope to opt in.
+
+```yaml
+routing:
+  asn:
+    hostname_resolution: remote
+    suffixes: [public.example.net]
+    resolver_member: {profile_id: cloud, tunnel: internet}
+    on_unknown: deny
+  rules:
+    - suffixes: [public.example.net]
+      asns: [16509]
+      members: [{profile_id: cloud, tunnel: internet}]
+```
+
+The resolver tunnel must be explicitly approved, policy-compatible, and advertise destination binding. Its server independently authorizes the original hostname and proposed IPs. The selected tunnel connects to the offered address on the same stream. Conflicting route outcomes or an incompatible resolver fail closed. The proxy does not send the name to backup members. Choose `hostname_resolution: local` to expressly permit client DNS for the configured scope. A local result can select a direct route. A resulting proxy route also needs an authorized exact-address offer from the configured resolver tunnel. Remote answers cannot authorize a native direct connection.
 
 Enable `failover.racing` to stagger the first two TCP service preparations by `race_delay`, which defaults to 200 ms. The group sends one destination CONNECT to the winner after closing the losing preparation. Both preparations count against the attempt budget. Destination requests and application payloads are never raced.
 
@@ -131,7 +214,7 @@ smart_proxy:
             ports: [443]
 ```
 
-Point an application at `http://127.0.0.1:1082/office.pac` or print the script with `ntwire proxy pac --config egress.yaml --group office`. Each script points to a single local group and delegates destination rules to that group. It performs no DNS lookups and includes no direct fallback. Use `default.pac` for the default group. The proxy and PAC listeners need distinct addresses.
+Point an application at `http://127.0.0.1:1082/office.pac` or print the script with `ntwire proxy pac --config egress.yaml --group office`. Each script points to a single local group and delegates destination rules to that group. It uses HTTP when enabled for compatibility with applications that cache the script. It performs no DNS lookups and includes no direct fallback. Use `default.pac` for the default group. The proxy and PAC listeners need distinct addresses.
 
 Use `ntwire proxy prefer --config egress.yaml --group office --profile office-a --tunnel office` for a temporary preference. The `exclude` and `include` commands take the same arguments. `clear-preference` takes just the group and configuration path. These commands use the same authenticated local service as status and reload.
 
@@ -154,7 +237,11 @@ The router only discovers matching current SOCKS grants from the explicitly appr
 
 ### UDP ASSOCIATE
 
-Set `routing.udp_associate: true` in a SOCKS5 group that has a server advertising native SOCKS UDP in its authenticated grant. Aggregate UDP requires an updated server and a governed SOCKS tunnel without a TCP-only upstream. One eligible egress is chosen for the association, and every datagram is checked against the group's current rules and that member. This allows an association to carry multiple destinations while retaining one source identity. To reach destinations assigned to disjoint member sets, use separate groups. Remote SOCKS UDP framing preserves hostnames for egress-side DNS. The router rejects fragments and pins the sender to the TCP peer's loopback address and declared UDP port, or the first accepted datagram's port when the client supplies zero. The TCP control lifetime and `udp_idle_timeout` bound the relay lifetime.
+Set `routing.udp_associate: true` in a SOCKS5 group. Direct UDP works without a server. Tunneled UDP requires a governed native SOCKS tunnel that advertises SOCKS UDP in its authenticated grant. The router pins one eligible tunnel for tunneled datagrams and checks every datagram against the group’s current rules. This allows an association to carry multiple destinations while retaining one source identity. To reach destinations assigned to disjoint member sets, use separate groups. Remote SOCKS UDP framing preserves hostnames for egress-side DNS. The router rejects fragments and pins the sender to the TCP peer's loopback address and declared UDP port, or the first accepted datagram's port when the client supplies zero. The TCP control lifetime and `udp_idle_timeout` bound the relay lifetime.
+
+Each datagram uses the same ordered routing rules as CONNECT. A direct destination uses a bounded, connected client UDP socket. A mixed association can also use one pinned tunnel for proxy destinations. Later packets requiring a different tunnel are dropped. Proxy hostnames that require ASN-bound resolution are currently unsupported over UDP and fail closed. A routing reload or a database change that invalidates the pinned proxy classification can close a mixed association. Ordinary server session renewal with the same authorized peer preserves existing associations.
+
+Numeric datagrams use the same canonical routing as CONNECT. Domain-form IP datagrams require the selected member's numeric-domain capability. The relay preserves the datagram address type so the egress can enforce the original suffix decision even when an equivalent numeric flow already exists. UDP ASSOCIATE still requires a binary source address.
 
 ## Developer verification
 
@@ -162,8 +249,10 @@ Run the focused integration test and benchmark against local origins. The relay 
 
 ```sh
 go test ./pkg/client ./pkg/egressrouter ./internal/egressattach ./internal/gui/api -run 'SmartProxy|Attachment'
-go test ./pkg/client ./pkg/egressrouter -run '^$' -bench 'BenchmarkSmartProxy' -benchmem
+go test ./pkg/client ./pkg/egressrouter -run '^$' -bench 'BenchmarkSmartProxy|BenchmarkSplit' -benchmem
 go test -race ./...
 ```
+
+Run the optional browser integration with `NTWIRE_TEST_CHROMIUM=/path/to/chromium go test ./pkg/client -run TestSmartProxyChromiumNumericURLs`. It uses a temporary profile and local IPv4, IPv6 and hostname origins.
 
 Compare measurements on the same host, carrier and origin. The benchmark reports setup and echo TTFB percentiles, allocations, and round-trip bytes per second. Bulk throughput, CPU/RSS under sustained concurrent load, and latency under controlled packet loss require a separate representative test run.

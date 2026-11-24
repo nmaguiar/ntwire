@@ -114,9 +114,13 @@ func (r *Router) healthFor(state *routeState, c ranked) *memberHealth {
 	return h
 }
 func (r *Router) rank(state *routeState, dst Destination) []ranked {
-	return r.rankCandidates(state, dst, true)
+	return r.rankDecision(state, dst, state.decide(dst, dst.IP(), r.now()))
 }
-func (r *Router) rankCandidates(state *routeState, dst Destination, checkDestination bool) []ranked {
+
+func (r *Router) rankDecision(state *routeState, dst Destination, decision Decision) []ranked {
+	if decision.Action != Proxy {
+		return nil
+	}
 	candidates := r.candidates(state)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -124,14 +128,7 @@ func (r *Router) rankCandidates(state *routeState, dst Destination, checkDestina
 		return nil
 	}
 	now := r.now()
-	var memberIDs []MemberID
-	if checkDestination {
-		var allow bool
-		memberIDs, allow = state.config.Routing.destinationMembers(dst)
-		if !allow {
-			return nil
-		}
-	}
+	memberIDs := decision.Members
 	strategy := state.config.Egress.Selection
 	measured := strategy == "sticky-fastest" || strategy == "fastest-healthy" || strategy == "destination-aware"
 	filtered := candidates[:0]
@@ -262,7 +259,7 @@ func (r *Router) remember(state *routeState, dst Destination, id MemberID) {
 	key := affinityKey(state.config.Routing, dst)
 	existing, ok := state.affinity[key]
 	if ok && now.Before(existing.expires) && state.config.Routing.AffinityScope == "group" &&
-		dst.Port != 0 && !state.config.Routing.permits(dst, existing.id) {
+		dst.Port != 0 && !state.decide(dst, dst.IP(), now).permits(existing.id) {
 		return
 	}
 	if ok && existing.id == id && now.Before(existing.expires) {
@@ -411,7 +408,7 @@ func (r *Router) probeLoop() {
 				probes.Wait()
 				return
 			}
-			if !state.config.Routing.permits(target.destination, c.ID()) {
+			if !state.decide(target.destination, target.destination.IP(), r.now()).permits(c.ID()) {
 				<-parallel
 				continue
 			}

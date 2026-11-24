@@ -68,6 +68,8 @@ function readSharedConfig(file, snapshots) {
       if (targetCounts.get(target) > 1 || (original !== target && originals.has(target))) mapping.delete(original);
     }
     for (const link of links) link.profile_id = mapping.get(link.profile_id) ?? link.profile_id;
+    const resolver = group.routing?.asn?.resolver_member;
+    if (resolver) resolver.profile_id = mapping.get(resolver.profile_id) ?? resolver.profile_id;
     for (const rule of group.routing?.rules || []) {
       for (const target of rule.members || []) {
         target.profile_id = mapping.get(target.profile_id) ?? target.profile_id;
@@ -91,10 +93,21 @@ function tokens(value) {
 }
 
 function ruleMode(rule) {
-  return rule.mode ?? (rule.deny ? 'deny' : rule.members?.length ? 'selected' : 'any');
+  return rule.mode ?? (rule.deny || rule.action === 'deny' ? 'deny' : rule.action === 'direct' ? 'direct' : rule.members?.length ? 'selected' : 'any');
 }
 
+const asnNumber = value => /^\d+$/i.test(String(value).replace(/^AS/i, ''))
+  ? Number(String(value).replace(/^AS/i, '')) : NaN;
+
 function validateRule(rule, members) {
+  if ((rule.asns || []).some(value => !Number.isInteger(asnNumber(value)) || asnNumber(value) < 1 || asnNumber(value) > 4294967295)) {
+    return 'Enter ASNs from 1 to 4294967295, such as AS13335.';
+  }
+  if (!rule.mode && (rule.action && !['proxy', 'direct', 'deny'].includes(rule.action) ||
+      rule.deny && rule.action && rule.action !== 'deny' ||
+      (rule.deny || ['direct', 'deny'].includes(rule.action)) && rule.members?.length)) {
+    return 'Resolve the conflicting routing action and tunnel settings.';
+  }
   if ((rule.ports || []).some(port => !/^\d+$/.test(String(port)) || +port < 1 || +port > 65535)) {
     return 'Enter port numbers from 1 to 65535.';
   }
@@ -158,12 +171,23 @@ function buildRequest(draft, controls, unapproved) {
     }
     for (const control of controls) {
       if (control.type !== 'number') continue;
-      const value = read(group, control.dataset.smartField);
+      const path = control.dataset.smartField;
+      if (path.startsWith('asn_database.') && name !== 'default') continue;
+      const value = read(group, path);
       if (value === undefined) continue;
       const scale = durationUnits[control.dataset.unit] ?? 1;
       if (!Number.isSafeInteger(value) || value < Number(control.min) * scale || value > Number(control.max) * scale) {
         const label = control.closest('label').firstChild.textContent.trim();
         fail(label + ' must be between ' + control.min + ' and ' + control.max + '.');
+      }
+    }
+    const asn = group.routing?.asn;
+    if (asn) {
+      const mode = asn.hostname_resolution || 'disabled';
+      if (mode !== 'disabled' && !asn.hosts?.length && !asn.suffixes?.length) fail('Enter a hostname or suffix scope for ASN resolution.');
+      const member = asn.resolver_member;
+      if ((mode === 'remote' || member) && (!member || !members.some(entry => memberKey(entry) === memberKey(member)))) {
+        fail('Select an explicitly approved ASN resolver tunnel.');
       }
     }
     if (group.routing?.rules) {
@@ -173,7 +197,10 @@ function buildRequest(draft, controls, unapproved) {
         const mode = ruleMode(rule);
         return {
           hosts: rule.hosts, suffixes: rule.suffixes, cidrs: rule.cidrs,
-          ports: rule.ports?.map(Number), deny: mode === 'deny',
+          ports: rule.ports?.map(Number), asns: rule.asns?.map(asnNumber),
+          action: mode === 'direct' ? 'direct' : rule.action === 'proxy' && ['any', 'selected'].includes(mode) ? 'proxy'
+            : mode === 'deny' && rule.action === 'deny' ? 'deny' : undefined,
+          deny: mode === 'deny' && rule.action !== 'deny',
           members: mode === 'selected' ? rule.members : undefined
         };
       });
@@ -341,6 +368,11 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
   const field = name => document.getElementById('smart-proxy-' + name);
   const form = field('form');
   const controls = [...form.querySelectorAll('[data-smart-field]')];
+  field('asn-toggle').onclick = () => {
+    const panel = field('asn-settings');
+    panel.hidden = !panel.hidden;
+    field('asn-toggle').setAttribute('aria-expanded', String(!panel.hidden));
+  };
   const protocolInputs = [...form.querySelectorAll('[data-smart-protocol]')];
   const copyButtons = [...field('actions').querySelectorAll('[data-copy-proxy]')];
   const selectGroup = field('group');
@@ -485,12 +517,14 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     ['Exact hostnames', 'hosts', 'app.example.net'],
     ['Domain suffixes', 'suffixes', 'example.net'],
     ['IP ranges (CIDR)', 'cidrs', '192.0.2.0/24'],
-    ['Ports', 'ports', '80, 443']
+    ['Ports', 'ports', '80, 443'],
+    ['ASNs', 'asns', 'AS13335, 15169']
   ];
   const ruleActions = {
-    any: 'Allow through any group tunnel',
-    selected: 'Allow through selected tunnels',
-    deny: 'Block'
+    any: 'Through any ntwire tunnel',
+    selected: 'Through selected ntwire tunnels',
+    direct: 'Direct client connection',
+    deny: 'Deny'
   };
   const tables = {
     members: {entries: members, name: 'tunnel', label: 'Tunnels', add: 'add-manual', limit: 64,
@@ -531,7 +565,7 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     const target = field(kind);
     const add = field(spec.add);
     add.disabled = entries.length >= spec.limit;
-    if (kind === 'members') refreshOffers();
+    if (kind === 'members') { refreshOffers(); renderResolverMembers(); }
     target.replaceChildren();
     if (!entries.length) {
       target.append(make('p', 'No ' + (kind === 'rules' ? 'destination rules' : kind === 'members' ? 'tunnels' : 'enrollments') + ' yet.', 'help'));
@@ -653,7 +687,7 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     }
     for (const [label, key, hint] of matchFields) {
       fields.append(editField(label, (rule[key] || []).join(', '), value => {
-        rule[key] = tokens(value);
+        rule[key] = key === 'asns' ? value.split(/[,\s]+/).filter(Boolean) : tokens(value);
         refreshWarning();
       }, {placeholder: hint}));
     }
@@ -734,6 +768,29 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     return next;
   }
 
+  function renderResolverMembers() {
+    const picker = field('asn-resolver');
+    const member = group().routing.asn?.resolver_member;
+    const entries = members().map(entry => [memberKey(entry), memberLabel(entry)]);
+    if (member && !entries.some(([key]) => key === memberKey(member))) entries.push([memberKey(member), memberLabel(member) + ' (removed)']);
+    picker.replaceChildren(choice('', 'No resolver tunnel'), ...entries.map(([key, name]) => choice(key, name)));
+    picker.value = member ? memberKey(member) : '';
+    picker.disabled = !['local', 'remote'].includes(group().routing.asn?.hostname_resolution);
+    field('asn-hosts').disabled = field('asn-suffixes').disabled = picker.disabled;
+  }
+
+  field('asn-resolver').onchange = event => {
+    const policy = (group().routing.asn ??= {});
+    const target = event.target.value;
+    if (target) {
+      const [profile_id, tunnel] = JSON.parse(target);
+      policy.resolver_member = {profile_id, tunnel};
+    } else delete policy.resolver_member;
+    edited();
+  };
+
+  const rootSetting = path => path === 'pac_listen' || path.startsWith('asn_database.');
+
   function renderGroup() {
     selectGroup.replaceChildren(...['default', ...Object.keys(draft.groups || {}).sort()]
       .map(name => choice(name, displayGroup(name))));
@@ -744,12 +801,13 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     field('add-group').disabled = Object.keys(draft.groups || {}).length >= 16;
     for (const control of controls) {
       const path = control.dataset.smartField;
-      setControl(control, read(path === 'pac_listen' ? draft : group(), path));
+      setControl(control, read(rootSetting(path) ? draft : group(), path));
     }
     for (const input of protocolInputs) {
       input.checked = (group().protocols ?? defaultProtocols).includes(input.dataset.smartProtocol);
     }
     strategyDetails();
+    renderResolverMembers();
     for (const kind of Object.keys(tables)) renderTable(kind);
     updateApproval();
     renderLive();
@@ -779,6 +837,9 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
       if (!protocols.includes('http')) unavailable.push('HTTP');
       if (!live.pac_listen) unavailable.push('PAC');
       if (unavailable.length) help.push(unavailable.join(', ') + ' not enabled.');
+      if (protocols.includes('socks5') && !protocols.includes('http') && !state.numeric_domain_ready) {
+        help.push('Numeric IPv4 and IPv6 URLs in Chromium require a compatible SOCKS5 tunnel. Enable HTTP for compatibility.');
+      }
     }
     if (dirty) help.push('Proxy actions and live status use saved settings.');
     updateText(field('action-help'), help.join(' '));
@@ -801,6 +862,11 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
       : state.listening ? 'Listening on ' + state.listening : config.enabled ? 'Not listening' : 'Disabled';
     const detail = status + (state.error || live.error ? ' · ' + (state.error || live.error) : '');
     updateText(field('state'), [detail, liveError].filter(Boolean).join(' · '));
+    const db = live.asn_database;
+    updateText(field('asn-status'), !db ? 'Inactive until an enabled group uses ASN rules.'
+      : db.loaded ? [db.stale ? 'Stale' : 'Loaded', db.ranges.toLocaleString() + ' ranges',
+        db.ipv6 ? 'IPv4 and IPv6' : 'IPv4 only', db.last_update && 'Updated ' + stamp(db.last_update), db.last_error].filter(Boolean).join(' · ')
+      : ['Unavailable', db.last_error].filter(Boolean).join(' · '));
     updateActions();
   }
 
@@ -853,7 +919,21 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
     const event = control.matches('select') ? 'change' : 'input';
     control.addEventListener(event, () => {
       const path = control.dataset.smartField;
-      write(path === 'pac_listen' ? draft : group(), path, controlValue(control));
+      const value = controlValue(control);
+      if (path.startsWith('asn_database.') && value === null) {
+        if (draft.asn_database) delete draft.asn_database[path.split('.')[1]];
+      } else write(rootSetting(path) ? draft : group(), path, value);
+      if (path === 'routing.asn.hostname_resolution') {
+        const policy = group().routing.asn;
+        if (!['local', 'remote'].includes(value)) {
+          delete policy.resolver_member;
+          delete policy.hosts;
+          delete policy.suffixes;
+          setControl(field('asn-hosts'), undefined);
+          setControl(field('asn-suffixes'), undefined);
+        }
+        renderResolverMembers();
+      }
       if (path === 'egress.selection') strategyDetails();
       edited();
     });

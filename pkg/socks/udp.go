@@ -1,18 +1,19 @@
 package socks
 
 import (
-	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"io"
 	"net"
 	"net/netip"
 )
 
 // ClientRequest is a validated local SOCKS CONNECT or UDP ASSOCIATE request.
 type ClientRequest struct {
-	Address string
-	UDP     bool
-	Source  netip.AddrPort
+	Destination Destination
+	UDP         bool
+	Source      netip.AddrPort
 }
 
 // Associate requests an upstream UDP relay. The TCP connection remains open
@@ -35,22 +36,52 @@ func ReplyBound(w net.Conn, addr netip.AddrPort) {
 
 // DatagramDestination validates a SOCKS UDP envelope without DNS resolution.
 // The returned offset identifies the first payload byte.
-func DatagramDestination(packet []byte) (string, uint16, int, error) {
+func DatagramDestination(packet []byte) (Destination, int, error) {
 	if len(packet) < 4 || packet[0] != 0 || packet[1] != 0 || packet[2] != 0 {
-		return "", 0, 0, errors.New("invalid or fragmented SOCKS datagram")
+		return Destination{}, 0, errors.New("invalid or fragmented SOCKS datagram")
 	}
-	r := bytes.NewReader(packet[4:])
-	host, ip, port, err := readAddress(r, packet[3])
-	if err != nil {
-		return "", 0, 0, err
+	offset, size := 4, 0
+	switch packet[3] {
+	case socks5AtypIPv4:
+		size = 4
+	case socks5AtypIPv6:
+		size = 16
+	case socks5AtypDomain:
+		if len(packet) <= offset {
+			return Destination{}, 0, io.ErrUnexpectedEOF
+		}
+		size = int(packet[offset])
+		offset++
+	default:
+		return Destination{}, 0, errAddressType
 	}
-	if ip.IsValid() {
-		host = ip.String()
-	} else if _, err := netip.ParseAddr(host); err == nil {
-		return "", 0, 0, errors.New("numeric address requires a numeric SOCKS address type")
+	end := offset + size
+	if len(packet) < end+2 {
+		return Destination{}, 0, io.ErrUnexpectedEOF
 	}
-	if _, err := Address(host, port); err != nil {
-		return "", 0, 0, err
+	var host string
+	var ip netip.Addr
+	if packet[3] == socks5AtypDomain {
+		host = string(packet[offset:end])
+	} else {
+		ip, _ = netip.AddrFromSlice(packet[offset:end])
 	}
-	return host, port, len(packet) - r.Len(), nil
+	port := binary.BigEndian.Uint16(packet[end:])
+	dst, err := wireDestination(host, ip, port)
+	return dst, end + 2, err
+}
+
+// DatagramFrame encodes a numeric SOCKS5 UDP source address and payload.
+func DatagramFrame(address netip.AddrPort, payload []byte) []byte {
+	ip := address.Addr().Unmap()
+	atyp, size := byte(socks5AtypIPv6), 16
+	if ip.Is4() {
+		atyp, size = socks5AtypIPv4, 4
+	}
+	frame := make([]byte, 6+size+len(payload))
+	frame[3] = atyp
+	copy(frame[4:], ip.AsSlice())
+	binary.BigEndian.PutUint16(frame[4+size:], address.Port())
+	copy(frame[6+size:], payload)
+	return frame
 }

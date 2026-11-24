@@ -10,10 +10,11 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
 const HeaderTimeout = 10 * time.Second
@@ -174,12 +175,8 @@ func proxyPort(port string) string {
 	return port
 }
 func validProxyAuthority(address string) bool {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || host == "" || strings.ContainsAny(host, " /\\\t\r\n@?#") {
-		return false
-	}
-	n, err := strconv.Atoi(port)
-	return err == nil && n > 0 && n <= 65535
+	_, err := socks.ParseDestination(address)
+	return err == nil
 }
 func HTTPError(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
