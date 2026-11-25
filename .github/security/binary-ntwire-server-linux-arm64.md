@@ -1,8 +1,8 @@
 # binary-ntwire-server-linux-arm64 — linux/arm64
 
-- Scanned: 2026-11-21 02:46 UTC
-- Source commit: `fe66cf5763229ba6c27cf66800203c56d2e75faf`
-- Artifact: `sha256:41a19060d80ad11abb855b80cf5170d391668c8f197e2c72391ca3d3fdc0542c`
+- Scanned: 2026-11-25 10:42 UTC
+- Source commit: `8da483691ed5cb6790120698991047ac93fc4026`
+- Artifact: `sha256:a4d864ddc453319d01d3b7f107a7a0976050cdbe9c605db83b23f85161fd4b1b`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -22,7 +22,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "scanner_name": "govulncheck",
     "scanner_version": "v1.10.0",
     "db": "https://vuln.go.dev",
-    "db_last_modified": "2026-11-11T02:51:11Z",
+    "db_last_modified": "2026-11-24T15:56:00Z",
     "scan_level": "symbol",
     "scan_mode": "binary"
   }
@@ -38,7 +38,11 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261120012017-fe66cf576322"
+        "version": "v0.0.0-20261125100141-8da483691ed5"
+      },
+      {
+        "path": "github.com/cilium/ebpf",
+        "version": "v0.22.0"
       },
       {
         "path": "github.com/coder/websocket",
@@ -65,12 +69,36 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v1.1.3"
       },
       {
+        "path": "github.com/google/nftables",
+        "version": "v0.3.0"
+      },
+      {
         "path": "github.com/kayrus/putty",
         "version": "v1.0.5"
       },
       {
+        "path": "github.com/mdlayher/genetlink",
+        "version": "v1.3.2"
+      },
+      {
+        "path": "github.com/mdlayher/netlink",
+        "version": "v1.7.3-0.20250113171957-fbb4dce95f42"
+      },
+      {
+        "path": "github.com/mdlayher/socket",
+        "version": "v0.5.1"
+      },
+      {
         "path": "github.com/skip2/go-qrcode",
         "version": "v0.0.0-20200617195104-da1b6568686e"
+      },
+      {
+        "path": "github.com/vishvananda/netlink",
+        "version": "v1.3.1"
+      },
+      {
+        "path": "github.com/vishvananda/netns",
+        "version": "v0.0.5"
       },
       {
         "path": "github.com/youmark/pkcs8",
@@ -93,6 +121,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.37.0"
       },
       {
+        "path": "golang.org/x/sync",
+        "version": "v0.24.0"
+      },
+      {
         "path": "golang.org/x/sys",
         "version": "v0.49.0"
       },
@@ -107,6 +139,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "path": "golang.zx2c4.com/wireguard",
         "version": "v0.0.0-20261024220952-b3bc704ef0ee"
+      },
+      {
+        "path": "golang.zx2c4.com/wireguard/wgctrl",
+        "version": "v0.0.0-20241231184526-a9ab2273dd10"
       },
       {
         "path": "gopkg.in/yaml.v3",
@@ -129,6 +165,104 @@ Go vulnerability reports do not assign severity here; findings are counted as un
 {
   "progress": {
     "message": "Fetching vulnerabilities from the database..."
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-6238",
+    "modified": "2026-08-18T16:38:10Z",
+    "published": "2026-08-18T16:38:10Z",
+    "aliases": [
+      "CVE-2026-10722",
+      "GHSA-xhgw-qwwf-pg32"
+    ],
+    "summary": "Integer overflow in BTF parsing in github.com/cilium/ebpf",
+    "details": "Integer overflow in BTF parsing in github.com/cilium/ebpf",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/cilium/ebpf",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.22.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/cilium/ebpf/btf",
+              "symbols": [
+                "Builder.Spec",
+                "Cache.Kernel",
+                "Cache.Module",
+                "Handle.Spec",
+                "LoadKernelModuleSpec",
+                "LoadKernelSpec",
+                "LoadSpec",
+                "LoadSpecAndExtInfosFromReader",
+                "LoadSpecFromReader",
+                "LoadSplitSpec",
+                "LoadSplitSpecFromReader",
+                "loadRawSpec"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/advisories/GHSA-xhgw-qwwf-pg32"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/cilium/ebpf/commit/533dfc82fd228bfadf42ea7180c39de7d9af47fa"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/cilium/ebpf/pull/2021"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/cilium/ebpf/issues/2019"
+      },
+      {
+        "type": "WEB",
+        "url": "https://gist.github.com/thesmartshadow/256bff0f8042c584f993ace89074a815"
+      },
+      {
+        "type": "WEB",
+        "url": "https://vuldb.com/cve/CVE-2026-10722"
+      },
+      {
+        "type": "WEB",
+        "url": "https://vuldb.com/submit/818291"
+      },
+      {
+        "type": "WEB",
+        "url": "https://vuldb.com/vuln/368091"
+      },
+      {
+        "type": "WEB",
+        "url": "https://vuldb.com/vuln/368091/cti"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-6238",
+      "review_status": "REVIEWED"
+    }
   }
 }
 {
@@ -521,6 +655,77 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     ],
     "database_specific": {
       "url": "https://pkg.go.dev/vuln/GO-2026-4945",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2024-2977",
+    "modified": "2024-07-09T16:55:06Z",
+    "published": "2024-07-09T16:55:06Z",
+    "aliases": [
+      "CVE-2024-6284",
+      "GHSA-qjvf-8748-9w7h"
+    ],
+    "summary": "IP addresses were encoded in the wrong byte order in github.com/google/nftables",
+    "details": "IP addresses were encoded in the wrong byte order, resulting in an nftables configuration which did not work as intended (might block or not block the desired addresses).",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/google/nftables",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.1.0"
+              },
+              {
+                "fixed": "0.2.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/google/nftables",
+              "symbols": [
+                "Conn.AddSet"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/advisories/GHSA-qjvf-8748-9w7h"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/google/nftables/commit/b1f901b05510bed05c232c5049f68d1511b56a19"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/google/nftables/issues/225"
+      },
+      {
+        "type": "WEB",
+        "url": "https://bugs.launchpad.net/ubuntu/+source/crowdsec-firewall-bouncer/+bug/2069596"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/crowdsecurity/cs-firewall-bouncer/issues/368"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2024-2977",
       "review_status": "REVIEWED"
     }
   }
@@ -2616,10 +2821,11 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5023",
-    "modified": "2026-05-22T02:08:34Z",
+    "modified": "2026-11-23T20:03:11Z",
     "published": "2026-05-22T02:08:34Z",
     "aliases": [
-      "CVE-2026-46595"
+      "CVE-2026-46595",
+      "GHSA-x527-x647-q7gg"
     ],
     "summary": "Invoking VerifiedPublicKeyCallback permissions skip enforcement in golang.org/x/crypto/ssh",
     "details": "Previously, CVE-2024-45337 fixed an authorization bypass for misused ssh server configurations; if any other type of callback is passed other than public key, then the source-address validation would be skipped.",
@@ -2634,7 +2840,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
             "type": "SEMVER",
             "events": [
               {
-                "introduced": "0"
+                "introduced": "0.43.0"
               },
               {
                 "fixed": "0.52.0"
@@ -5649,7 +5855,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5026",
-    "modified": "2026-08-21T20:38:00Z",
+    "modified": "2026-11-23T20:03:04Z",
     "published": "2026-05-22T02:46:43Z",
     "aliases": [
       "CVE-2026-39821"
@@ -5739,7 +5945,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
                 "introduced": "0"
               },
               {
-                "fixed": "0.55.0"
+                "fixed": "0.57.0"
               }
             ]
           }
@@ -5764,6 +5970,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "type": "FIX",
         "url": "https://go.dev/cl/767220"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/796421"
       },
       {
         "type": "REPORT",
@@ -21041,7 +21251,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-4602",
-    "modified": "2026-03-06T21:03:42Z",
+    "modified": "2026-11-23T20:03:16Z",
     "published": "2026-03-06T21:03:42Z",
     "aliases": [
       "CVE-2026-27139"
@@ -21078,11 +21288,12 @@ Go vulnerability reports do not assign severity here; findings are counted as un
             {
               "path": "os",
               "symbols": [
-                "File.ReadDir",
-                "File.Readdir",
-                "ReadDir",
-                "dirFS.ReadDir",
-                "rootFS.ReadDir"
+                "OpenInRoot",
+                "Root.Open",
+                "Root.ReadFile",
+                "rootFS.Open",
+                "rootFS.ReadDir",
+                "rootFS.ReadFile"
               ]
             }
           ]
@@ -22525,7 +22736,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5026",
-    "modified": "2026-08-21T20:38:00Z",
+    "modified": "2026-11-23T20:03:04Z",
     "published": "2026-05-22T02:46:43Z",
     "aliases": [
       "CVE-2026-39821"
@@ -22615,7 +22826,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
                 "introduced": "0"
               },
               {
-                "fixed": "0.55.0"
+                "fixed": "0.57.0"
               }
             ]
           }
@@ -22640,6 +22851,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "type": "FIX",
         "url": "https://go.dev/cl/767220"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/796421"
       },
       {
         "type": "REPORT",
@@ -29055,6 +29270,21 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/armor",
+        "function": "org/x/crypto/openpgp/armor/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/clearsign",
         "function": "org/x/crypto/openpgp/clearsign/*",
         "receiver": "golang"
@@ -29132,21 +29362,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/packet",
         "function": "org/x/crypto/openpgp/packet/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor",
-        "function": "org/x/crypto/openpgp/armor/*",
         "receiver": "golang"
       }
     ]

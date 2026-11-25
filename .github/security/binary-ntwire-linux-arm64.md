@@ -1,8 +1,8 @@
 # binary-ntwire-linux-arm64 — linux/arm64
 
-- Scanned: 2026-11-21 02:46 UTC
-- Source commit: `fe66cf5763229ba6c27cf66800203c56d2e75faf`
-- Artifact: `sha256:3711ea3ca8be4945ad89340e4b267297fe1a9035f87434e68f5f0f8e9b5e8482`
+- Scanned: 2026-11-25 10:42 UTC
+- Source commit: `8da483691ed5cb6790120698991047ac93fc4026`
+- Artifact: `sha256:26d86efb444da7abcd755bd1094e82f03773b8fe4d1ea7e27cf4287b0cb79f82`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -22,7 +22,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "scanner_name": "govulncheck",
     "scanner_version": "v1.10.0",
     "db": "https://vuln.go.dev",
-    "db_last_modified": "2026-11-11T02:51:11Z",
+    "db_last_modified": "2026-11-24T15:56:00Z",
     "scan_level": "symbol",
     "scan_mode": "binary"
   }
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261120012017-fe66cf576322"
+        "version": "v0.0.0-20261125100141-8da483691ed5"
       },
       {
         "path": "github.com/coder/websocket",
@@ -2612,10 +2612,11 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5023",
-    "modified": "2026-05-22T02:08:34Z",
+    "modified": "2026-11-23T20:03:11Z",
     "published": "2026-05-22T02:08:34Z",
     "aliases": [
-      "CVE-2026-46595"
+      "CVE-2026-46595",
+      "GHSA-x527-x647-q7gg"
     ],
     "summary": "Invoking VerifiedPublicKeyCallback permissions skip enforcement in golang.org/x/crypto/ssh",
     "details": "Previously, CVE-2024-45337 fixed an authorization bypass for misused ssh server configurations; if any other type of callback is passed other than public key, then the source-address validation would be skipped.",
@@ -2630,7 +2631,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
             "type": "SEMVER",
             "events": [
               {
-                "introduced": "0"
+                "introduced": "0.43.0"
               },
               {
                 "fixed": "0.52.0"
@@ -5645,7 +5646,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5026",
-    "modified": "2026-08-21T20:38:00Z",
+    "modified": "2026-11-23T20:03:04Z",
     "published": "2026-05-22T02:46:43Z",
     "aliases": [
       "CVE-2026-39821"
@@ -5735,7 +5736,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
                 "introduced": "0"
               },
               {
-                "fixed": "0.55.0"
+                "fixed": "0.57.0"
               }
             ]
           }
@@ -5760,6 +5761,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "type": "FIX",
         "url": "https://go.dev/cl/767220"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/796421"
       },
       {
         "type": "REPORT",
@@ -21037,7 +21042,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-4602",
-    "modified": "2026-03-06T21:03:42Z",
+    "modified": "2026-11-23T20:03:16Z",
     "published": "2026-03-06T21:03:42Z",
     "aliases": [
       "CVE-2026-27139"
@@ -21074,11 +21079,12 @@ Go vulnerability reports do not assign severity here; findings are counted as un
             {
               "path": "os",
               "symbols": [
-                "File.ReadDir",
-                "File.Readdir",
-                "ReadDir",
-                "dirFS.ReadDir",
-                "rootFS.ReadDir"
+                "OpenInRoot",
+                "Root.Open",
+                "Root.ReadFile",
+                "rootFS.Open",
+                "rootFS.ReadDir",
+                "rootFS.ReadFile"
               ]
             }
           ]
@@ -22521,7 +22527,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
   "osv": {
     "schema_version": "1.3.1",
     "id": "GO-2026-5026",
-    "modified": "2026-08-21T20:38:00Z",
+    "modified": "2026-11-23T20:03:04Z",
     "published": "2026-05-22T02:46:43Z",
     "aliases": [
       "CVE-2026-39821"
@@ -22611,7 +22617,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
                 "introduced": "0"
               },
               {
-                "fixed": "0.55.0"
+                "fixed": "0.57.0"
               }
             ]
           }
@@ -22636,6 +22642,10 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "type": "FIX",
         "url": "https://go.dev/cl/767220"
+      },
+      {
+        "type": "FIX",
+        "url": "https://go.dev/cl/796421"
       },
       {
         "type": "REPORT",
@@ -28960,6 +28970,19 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/s2k"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp"
       }
     ]
@@ -29038,7 +29061,24 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/s2k"
+        "package": "golang.org/x/crypto/openpgp",
+        "function": "org/x/crypto/openpgp/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/packet",
+        "function": "org/x/crypto/openpgp/packet/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -29113,36 +29153,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/s2k",
         "function": "org/x/crypto/openpgp/s2k/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp",
-        "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet",
-        "function": "org/x/crypto/openpgp/packet/*",
         "receiver": "golang"
       }
     ]
