@@ -22,7 +22,7 @@ Use a Linux kernel with network namespaces, WireGuard and inet-family nftables. 
 
 The server owns an anonymous network namespace with its own WireGuard device, loopback and nftables. It installs rules before activating the public packet bridge. The rules permit the tunnel service address and active TCP and UDP listeners plus IP control traffic to the service address. Tunnel forwarding is blocked. Existing Go handlers authorize each peer and destination and dial targets from the original namespace. No host routing, firewall or sysctl change is required. The namespace, sockets and optional eBPF links are released on teardown.
 
-The encrypted bridge has a 4,096-mapping bound, including at most 512 pending endpoint mappings. The public UDP bind retains batched I/O and reports its effective socket buffers. The private bridge batches I/O and requests larger receive buffers per socket. Monitor bridge drops and socket errors when evaluating a busy deployment.
+The encrypted bridge allows at most 4,096 mappings, including 512 pending endpoint mappings. Raw UDP traffic can hold up to 32 pending mappings per IPv4 address or IPv6 `/64`. Authentication and expiry free pending slots. The public UDP bind retains batched I/O and reports its effective socket buffers. The private bridge batches I/O and requests larger receive buffers per socket. Monitor bridge drops and socket errors when evaluating a busy deployment.
 
 ## Docker and Kubernetes
 

@@ -24,10 +24,11 @@ import (
 // Reserve most of the mapping pool for endpoints that have received a
 // non-cookie packet from the kernel after WireGuard authenticated traffic.
 const (
-	bridgeMaxMappings = 4096
-	bridgeMaxPending  = 512
-	bridgePendingTTL  = 20 * time.Second
-	bridgeIdleTTL     = 10 * time.Minute
+	bridgeMaxMappings         = 4096
+	bridgeMaxPending          = 512
+	bridgeMaxPendingPerSource = 32
+	bridgePendingTTL          = 20 * time.Second
+	bridgeIdleTTL             = 10 * time.Minute
 )
 
 type bridgeEndpoint struct {
@@ -37,6 +38,7 @@ type bridgeEndpoint struct {
 	created       time.Time
 	lastTraffic   time.Time
 	authenticated bool
+	pendingSource netip.Prefix
 }
 
 type kernelBridge struct {
@@ -53,24 +55,26 @@ type kernelBridge struct {
 	closeErr error
 	workers  sync.WaitGroup
 
-	mu           sync.Mutex
-	mappings     map[string]*bridgeEndpoint
-	byAddress    map[netip.AddrPort]string
-	pending      int
-	sequence     uint32
-	closed       bool
-	dropped      atomic.Uint64
-	socketErrors atomic.Uint64
-	batchPackets atomic.Uint64
-	batchRetries atomic.Uint64
-	tuningErrors atomic.Uint64
-	receiveError atomic.Bool
+	mu              sync.Mutex
+	mappings        map[string]*bridgeEndpoint
+	byAddress       map[netip.AddrPort]string
+	pending         int
+	pendingBySource map[netip.Prefix]int
+	sequence        uint32
+	closed          bool
+	dropped         atomic.Uint64
+	socketErrors    atomic.Uint64
+	batchPackets    atomic.Uint64
+	batchRetries    atomic.Uint64
+	tuningErrors    atomic.Uint64
+	receiveError    atomic.Bool
 }
 
 func newKernelBridge(ns *kernelNamespace, log *slog.Logger) *kernelBridge {
 	return &kernelBridge{
 		ns: ns, log: log, stop: make(chan struct{}),
 		mappings: make(map[string]*bridgeEndpoint), byAddress: make(map[netip.AddrPort]string),
+		pendingBySource: make(map[netip.Prefix]int),
 	}
 }
 
@@ -195,14 +199,20 @@ func (b *kernelBridge) mapping(key string, endpoint conn.Endpoint, authorized bo
 	if prev := b.mappings[key]; prev != nil {
 		prev.lastTraffic = now
 		prev.endpoint = endpoint
-		if authorized && !prev.authenticated {
-			prev.authenticated = true
-			b.pending--
+		if authorized {
+			b.authenticate(prev)
 		}
 		return prev
 	}
-	if (!authorized && b.pending >= bridgeMaxPending) || len(b.mappings) >= bridgeMaxMappings || b.sequence >= 0xfffffe {
+	if len(b.mappings) >= bridgeMaxMappings || b.sequence >= 0xfffffe {
 		return nil
+	}
+	var pendingSource netip.Prefix
+	if !authorized {
+		pendingSource = bridgePendingSource(endpoint)
+		if b.pending >= bridgeMaxPending || b.pendingBySource[pendingSource] >= bridgeMaxPendingPerSource {
+			return nil
+		}
 	}
 
 	// A retired socket's address is never assigned to a new mapping. The
@@ -221,15 +231,53 @@ func (b *kernelBridge) mapping(key string, endpoint conn.Endpoint, authorized bo
 	if socket.SetReadBuffer(wstransport.DefaultUDPBufferBytes) != nil {
 		b.tuningErrors.Add(1)
 	}
-	mapping := &bridgeEndpoint{socket: socket, packetConn: ipv4.NewPacketConn(socket), endpoint: endpoint, created: now, lastTraffic: now, authenticated: authorized}
+	mapping := &bridgeEndpoint{
+		socket: socket, packetConn: ipv4.NewPacketConn(socket), endpoint: endpoint,
+		created: now, lastTraffic: now, authenticated: authorized, pendingSource: pendingSource,
+	}
 	if !authorized {
 		b.pending++
+		if pendingSource.IsValid() {
+			b.pendingBySource[pendingSource]++
+		}
 	}
 	b.mappings[key] = mapping
 	address := socket.LocalAddr().(*net.UDPAddr).AddrPort()
 	b.byAddress[netip.AddrPortFrom(address.Addr().Unmap(), address.Port())] = key
 	b.workers.Go(func() { b.returnPackets(key, mapping) })
 	return mapping
+}
+
+func bridgePendingSource(endpoint conn.Endpoint) netip.Prefix {
+	ip, ok := wstransport.UDPSourceIP(endpoint)
+	if !ok {
+		return netip.Prefix{}
+	}
+	ip = ip.Unmap().WithZone("")
+	if ip.Is4() {
+		return netip.PrefixFrom(ip, 32)
+	}
+	return netip.PrefixFrom(ip, 64).Masked()
+}
+
+// Called with b.mu held. Promotion releases both pending limits once.
+func (b *kernelBridge) authenticate(mapping *bridgeEndpoint) {
+	if !mapping.authenticated {
+		b.releasePending(mapping)
+		mapping.authenticated = true
+	}
+}
+
+func (b *kernelBridge) releasePending(mapping *bridgeEndpoint) {
+	b.pending--
+	source := mapping.pendingSource
+	if source.IsValid() {
+		if b.pendingBySource[source] == 1 {
+			delete(b.pendingBySource, source)
+		} else {
+			b.pendingBySource[source]--
+		}
+	}
 }
 
 func (b *kernelBridge) returnPackets(key string, mapping *bridgeEndpoint) {
@@ -271,10 +319,7 @@ func (b *kernelBridge) returnPackets(key string, mapping *bridgeEndpoint) {
 			}
 			bufs[i] = storage[i][:message.N]
 			if binary.LittleEndian.Uint32(bufs[i]) != device.MessageCookieReplyType {
-				if !mapping.authenticated {
-					mapping.authenticated = true
-					b.pending--
-				}
+				b.authenticate(mapping)
 				mapping.lastTraffic = time.Now()
 			}
 		}
@@ -310,7 +355,7 @@ func (b *kernelBridge) remove(key string, mapping *bridgeEndpoint) {
 	address := mapping.socket.LocalAddr().(*net.UDPAddr).AddrPort()
 	delete(b.byAddress, netip.AddrPortFrom(address.Addr().Unmap(), address.Port()))
 	if !mapping.authenticated {
-		b.pending--
+		b.releasePending(mapping)
 	}
 	_ = mapping.socket.Close()
 }
