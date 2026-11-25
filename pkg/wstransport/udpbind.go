@@ -459,6 +459,13 @@ func (e udpEndpoint) DstToBytes() []byte  { b, _ := e.addr.MarshalBinary(); retu
 func (e udpEndpoint) DstIP() netip.Addr   { return e.addr.Addr() }
 func (udpEndpoint) SrcIP() netip.Addr     { return netip.Addr{} }
 
+// UDPSourceIP returns the remote IP of a raw UDP endpoint from UDPBind.
+// WebSocket and logical multipath endpoints have independent admission.
+func UDPSourceIP(endpoint conn.Endpoint) (netip.Addr, bool) {
+	ep, ok := endpoint.(udpEndpoint)
+	return ep.addr.Addr(), ok
+}
+
 func portFromEndpoint(ep conn.Endpoint) uint16 {
 	addr, err := netip.ParseAddrPort(ep.DstToString())
 	if err != nil {

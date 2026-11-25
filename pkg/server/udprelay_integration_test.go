@@ -27,7 +27,7 @@ import (
 // test helper -- used here to give the relay's listen.udp_relay_ports a
 // single concrete port to bind (the range validator rejects port 0, so a
 // real ephemeral-but-known port has to be found up front instead).
-func findFreeUDPPortForTest(t *testing.T) int {
+func findFreeUDPPortForTest(t testing.TB) int {
 	t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -37,23 +37,8 @@ func findFreeUDPPortForTest(t *testing.T) int {
 	return pc.LocalAddr().(*net.UDPAddr).Port
 }
 
-// TestUDPRelayAllocateEndToEndWithRealRelay is the full-stack proof that the
-// UDP-relay tier's allocation dance (POST /v1/udp-relay -> udpRelay.sessionFor
-// -> RelayAgent.AllocateUDPSession -> a real relay control-connection round
-// trip -> udpSessionTable.Allocate -> the server's own WireGuard peer
-// endpoint reseeded) works through real components end to end, not just its
-// pieces in isolation -- mirroring TestRelayAgent_EndToEndWithRealRelay's and
-// TestDirectUpgradeEndToEnd's use of a real relay.Relay and RelayAgent rather
-// than fakes for exactly this kind of wire-protocol integration risk.
-//
-// It deliberately does not route a client through the relay's SNI-based
-// listen.public (unlike TestDirectUpgradeEndToEnd): the UDP-relay tier's
-// allocation call is an ordinary server endpoint a client reaches over
-// whatever control-plane transport it already has, so exercising it directly
-// against s.Handler() covers the same integration risk without also needing
-// DNS/SNI plumbing for "home.relay.test" that has nothing to do with this
-// feature.
-func TestUDPRelayAllocateEndToEndWithRealRelay(t *testing.T) {
+func startUDPRelayFixture(t testing.TB) (*RelayAgent, string, int) {
+	t.Helper()
 	signer, _, err := sshkey.GenerateEd25519()
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +78,7 @@ func TestUDPRelayAllocateEndToEndWithRealRelay(t *testing.T) {
 	if err := rl.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer rl.Close()
+	t.Cleanup(func() { _ = rl.Close() })
 	udpRelayAddr := rl.UDPRelayAddr()
 	if udpRelayAddr == "" {
 		t.Fatal("relay did not bind listen.udp_relay")
@@ -105,16 +90,37 @@ func TestUDPRelayAllocateEndToEndWithRealRelay(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 	go agent.Run(ctx)
-	defer agent.Close()
+	t.Cleanup(func() { _ = agent.Close() })
 	time.Sleep(200 * time.Millisecond) // allow registration to complete
 
+	return agent, udpRelayAddr, poolPort
+}
+
+// TestUDPRelayAllocateEndToEndWithRealRelay is the full-stack proof that the
+// UDP-relay tier's allocation dance (POST /v1/udp-relay -> udpRelay.sessionFor
+// -> RelayAgent.AllocateUDPSession -> a real relay control-connection round
+// trip -> udpSessionTable.Allocate -> the server's own WireGuard peer
+// endpoint reseeded) works through real components end to end, not just its
+// pieces in isolation -- mirroring TestRelayAgent_EndToEndWithRealRelay's and
+// TestDirectUpgradeEndToEnd's use of a real relay.Relay and RelayAgent rather
+// than fakes for exactly this kind of wire-protocol integration risk.
+//
+// It deliberately does not route a client through the relay's SNI-based
+// listen.public (unlike TestDirectUpgradeEndToEnd): the UDP-relay tier's
+// allocation call is an ordinary server endpoint a client reaches over
+// whatever control-plane transport it already has, so exercising it directly
+// against s.Handler() covers the same integration risk without also needing
+// DNS/SNI plumbing for "home.relay.test" that has nothing to do with this
+// feature.
+func TestUDPRelayAllocateEndToEndWithRealRelay(t *testing.T) {
+	agent, udpRelayAddr, poolPort := startUDPRelayFixture(t)
 	scfg := Config{}
 	scfg.Network.TunnelCIDR = "100.66.0.0/16"
 	scfg.Listen.WireGuard = "127.0.0.1:0"
 	s := New(scfg, nil)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
@@ -127,7 +133,11 @@ func TestUDPRelayAllocateEndToEndWithRealRelay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess := s.sessions.Create(CreateParams{WireGuardPublicKey: peer.Public, TTL: time.Minute})
+	const peerIP = "100.66.0.2"
+	if err := s.addPeer(peer.Public, peerIP); err != nil {
+		t.Fatal(err)
+	}
+	sess := s.sessions.Create(CreateParams{WireGuardPublicKey: peer.Public, TunnelIP: peerIP, TTL: time.Minute})
 
 	postUDPRelay := func() protocol.UDPRelayResponse {
 		t.Helper()

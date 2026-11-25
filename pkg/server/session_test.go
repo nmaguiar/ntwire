@@ -89,3 +89,45 @@ func TestSessionPrincipalFollowsIPOwnership(t *testing.T) {
 		t.Fatal("native peer unavailable after reload")
 	}
 }
+
+func TestSessionRenewalPreservesCurrentPeerLifetime(t *testing.T) {
+	s := NewSessions()
+	params := CreateParams{TunnelIP: "100.64.0.2", Identity: "test", Method: "ssh", TTL: time.Minute}
+	original := s.Create(params)
+	owner, _ := s.principalForIP(params.TunnelIP)
+	renewed, ok := s.renew(original.Token, []protocol.Tunnel{{Name: "current"}}, time.Minute, protocol.ClientInfo{})
+	if !ok || renewed.ID == original.ID || renewed.Token == original.Token {
+		t.Fatal("renewal did not rotate the control-plane credentials")
+	}
+	if _, ok := s.Get(original.Token); ok {
+		t.Fatal("old bearer token survived renewal")
+	}
+	if p, ok := s.principalForIP(params.TunnelIP); !ok || !p.Tunnels["current"] || p.peerLifetime == "" || p.peerLifetime != owner.peerLifetime {
+		t.Fatal("renewal lost the peer lifetime or the new grants")
+	}
+	s.Create(params)
+	if _, ok := s.renew(renewed.Token, nil, time.Minute, protocol.ClientInfo{}); ok {
+		t.Fatal("a superseded token regained IP ownership by renewing")
+	}
+	if p, ok := s.principalForIP(params.TunnelIP); !ok || p.peerLifetime == owner.peerLifetime {
+		t.Fatal("replacement inherited the previous peer lifetime")
+	}
+}
+
+func TestNativePeerLifetimeChangesWhenReinstalled(t *testing.T) {
+	const ip = "100.64.0.2"
+	cfg := Config{NativeWireGuard: NativeWireGuardConfig{Enabled: true, Peers: []NativeWireGuardPeer{{Name: "native", TunnelIP: ip}}}}
+	s := New(cfg, nil)
+	original, _ := s.principalForIP(ip)
+	s.Reload(cfg)
+	if p, ok := s.principalForIP(ip); !ok || p.peerLifetime != original.peerLifetime {
+		t.Fatal("unchanged native configuration changed the peer lifetime")
+	}
+	withoutPeer := cfg
+	withoutPeer.NativeWireGuard.Peers = nil
+	s.Reload(withoutPeer)
+	s.Reload(cfg)
+	if p, ok := s.principalForIP(ip); !ok || p.peerLifetime == original.peerLifetime {
+		t.Fatal("reinstalled native peer inherited its former lifetime")
+	}
+}

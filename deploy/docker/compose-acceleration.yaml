@@ -1,0 +1,7 @@
+services:
+  ntwire-server:
+    user: "0:0"
+    command: ["--config", "/etc/ntwire/ntwire.yaml", "--acceleration=required"]
+    cap_drop: [ALL]
+    cap_add: [NET_ADMIN, SYS_ADMIN, NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]

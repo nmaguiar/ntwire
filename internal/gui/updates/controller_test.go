@@ -42,13 +42,24 @@ func waitIdle(t *testing.T, c *Controller) {
 	}
 	t.Fatal("controller remained busy")
 }
+
+type cancellationTransport struct {
+	entered chan<- struct{}
+}
+
+func (t cancellationTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	select {
+	case t.entered <- struct{}{}:
+	default:
+	}
+	<-r.Context().Done()
+	return nil, r.Context().Err()
+}
+
 func TestCheckSerializesAndCancellation(t *testing.T) {
 	c := testController(t)
-	entered := make(chan struct{})
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { close(entered); <-r.Context().Done() }))
-	defer srv.Close()
-	c.client.API = srv.URL
-	c.client.HTTP = srv.Client()
+	entered := make(chan struct{}, 1)
+	c.client.HTTP = &http.Client{Transport: cancellationTransport{entered: entered}}
 	if e := c.Check(); e != nil {
 		t.Fatal(e)
 	}

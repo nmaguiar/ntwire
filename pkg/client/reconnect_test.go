@@ -178,13 +178,13 @@ func TestReconnectReconcilesTunnelGrants(t *testing.T) {
 }
 
 type reconnectFixture struct {
-	t                                       *testing.T
+	t                                       testing.TB
 	current                                 atomic.Pointer[server.Server]
 	http                                    *httptest.Server
 	key, keysDir, dir, tcpTarget, udpTarget string
 }
 
-func newReconnectFixture(t *testing.T) *reconnectFixture {
+func newReconnectFixture(t testing.TB) *reconnectFixture {
 	t.Helper()
 	f := &reconnectFixture{t: t, dir: t.TempDir(), keysDir: t.TempDir()}
 	f.key = filepath.Join(f.dir, "identity")

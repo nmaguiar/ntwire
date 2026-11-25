@@ -265,7 +265,9 @@ func main() {
 		// loopback API is serving.
 		openSetup()
 	}
-	tray.Run(mgr, openSettings, openSetup)
+	tray.Run(mgr, openSettings, openSetup, func(group string) error {
+		return window.OpenSmartProxyDashboard(srv.URL(), group)
+	})
 }
 
 // findExistingInstance reports a live instance's Info, or nil if none is

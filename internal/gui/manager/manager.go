@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/internal/gui/config"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 )
@@ -28,7 +30,7 @@ const defaultPromptTimeout = 5 * time.Minute
 // Update is published to every subscriber whenever a session's state
 // changes.
 type Update struct {
-	ProfileID string
+	ProfileID string // empty when the profile list changes
 	Snapshot  Snapshot
 }
 
@@ -73,6 +75,13 @@ func (m *Manager) ImportIdentity(name string, r io.Reader) (string, error) {
 // fans out state changes to subscribers (the tray, the settings window's
 // SSE stream). All exported methods are safe for concurrent use.
 type Manager struct {
+	smartRouter     *egressrouter.GroupSet
+	smartConfig     egressrouter.Config
+	smartEnabled    bool
+	smartConfigured bool
+	smartError      string
+	smartHistory    smartProxyHistory
+
 	persistMu  sync.Mutex
 	connector  Connector
 	configPath string
@@ -84,8 +93,9 @@ type Manager struct {
 	// goroutine (possibly leaked from another test's Manager) that reads it.
 	promptTimeout time.Duration
 
-	mu       sync.Mutex
-	settings config.Settings
+	mu           sync.Mutex
+	settings     config.Settings
+	profileOrder []string
 	// settingsURL is this process's own settings-window URL (api.Server.URL(),
 	// set once via SetSettingsURL after the API server starts listening). It
 	// is threaded into every profile's client.Options.SettingsURL so that
@@ -146,6 +156,7 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 		connector:     connector,
 		configPath:    configPath,
 		settings:      cfg.Settings,
+		profileOrder:  cfg.ProfileOrder,
 		sessions:      map[string]*session{},
 		reservations:  map[string]map[string]string{},
 		subs:          map[int]chan Update{},
@@ -157,12 +168,29 @@ func New(connector Connector, configPath, cliConfigPath string) (*Manager, error
 		stored.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 		m.sessions[p.ID] = newSession(stored)
 	}
+	m.smartRouter = egressrouter.NewDiscoveredGroupSet(m.smartCandidate, m.discoverEgress)
+	if cfg.SmartProxy != nil {
+		m.smartConfigured = true
+		m.smartConfig = *cfg.SmartProxy
+	}
+	m.smartEnabled = cfg.SmartProxyEnabled
+	if err := m.smartRouter.Apply(runningSmartProxyConfig(m.smartConfig, m.smartEnabled), nil); err != nil {
+		m.smartError = err.Error()
+	}
+	m.startSmartProxyHistory()
 	return m, nil
 }
 
 // Close disconnects every connected profile. It does not remove profiles
 // from gui.yaml.
 func (m *Manager) Close() {
+	if m.smartHistory.cancel != nil {
+		m.smartHistory.cancel()
+		<-m.smartHistory.done
+	}
+	if m.smartRouter != nil {
+		m.smartRouter.Close()
+	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
 	for id, s := range m.sessions {
@@ -231,7 +259,7 @@ func (m *Manager) SetSettings(s config.Settings) error {
 	return m.persist()
 }
 
-// Profiles returns every profile, sorted by name.
+// Profiles returns every profile in display order.
 func (m *Manager) Profiles() []config.Profile {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -240,14 +268,65 @@ func (m *Manager) Profiles() []config.Profile {
 
 func (m *Manager) profilesLocked() []config.Profile {
 	out := make([]config.Profile, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		p := s.profile
+	for _, id := range m.profileIDsLocked() {
+		p := m.sessions[id].profile
 		p.BrowserArgs = append([]string(nil), p.BrowserArgs...)
 		p.BrowserProfiles = maps.Clone(p.BrowserProfiles)
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+func (m *Manager) profileIDsLocked() []string {
+	ids := make([]string, 0, len(m.sessions))
+	seen := make(map[string]bool, len(m.profileOrder))
+	for _, id := range m.profileOrder {
+		if m.sessions[id] != nil && !seen[id] {
+			ids = append(ids, id)
+			seen[id] = true
+		}
+	}
+	remaining := make([]string, 0, len(m.sessions)-len(ids))
+	for id := range m.sessions {
+		if !seen[id] {
+			remaining = append(remaining, id)
+		}
+	}
+	sort.Slice(remaining, func(i, j int) bool {
+		a, b := remaining[i], remaining[j]
+		if m.sessions[a].profile.Name == m.sessions[b].profile.Name {
+			return a < b
+		}
+		return m.sessions[a].profile.Name < m.sessions[b].profile.Name
+	})
+	return append(ids, remaining...)
+}
+
+// ReorderProfiles saves a complete display order for the current profiles.
+func (m *Manager) ReorderProfiles(ids []string) error {
+	m.persistMu.Lock()
+	defer m.persistMu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(ids) != len(m.sessions) {
+		return errors.New("profile list changed; refresh and try again")
+	}
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if m.sessions[id] == nil || seen[id] {
+			return errors.New("profile order must contain every current profile exactly once")
+		}
+		seen[id] = true
+	}
+	cfg := m.configLocked()
+	cfg.ProfileOrder = slices.Clone(ids)
+	if err := config.Save(m.configPath, cfg); err != nil {
+		return err
+	}
+	m.profileOrder = cfg.ProfileOrder
+	m.broadcast(Update{})
+	return nil
 }
 
 // AddProfile saves a new profile, assigning it an ID if p.ID is empty.
@@ -272,6 +351,7 @@ func (m *Manager) AddProfile(p config.Profile) (config.Profile, error) {
 	if err := m.persist(); err != nil {
 		return config.Profile{}, err
 	}
+	m.broadcast(Update{})
 	return p, nil
 }
 
@@ -296,7 +376,7 @@ func (m *Manager) UpdateProfile(p config.Profile) error {
 	}
 	s.profile = p
 	m.mu.Unlock()
-	return m.persist()
+	return m.persistProfiles()
 }
 
 // RemoveProfile deletes a profile and any associated persistent browser
@@ -317,21 +397,40 @@ func (m *Manager) RemoveProfile(id string) error {
 		return fmt.Errorf("gui: profile %q is connected; disconnect first", id)
 	}
 	delete(m.sessions, id)
+	m.profileOrder = slices.DeleteFunc(m.profileOrder, func(orderedID string) bool { return id == orderedID })
 	close(s.cancel)
 	m.mu.Unlock()
 
 	_ = browseropen.CleanProfilesForProfile(id)
 
-	return m.persist()
+	return m.persistProfiles()
+}
+
+func (m *Manager) persistProfiles() error {
+	if err := m.persist(); err != nil {
+		return err
+	}
+	m.broadcast(Update{})
+	return nil
 }
 
 func (m *Manager) persist() error {
 	m.persistMu.Lock()
 	defer m.persistMu.Unlock()
 	m.mu.Lock()
-	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
+	cfg := m.configLocked()
 	m.mu.Unlock()
 	return config.Save(m.configPath, cfg)
+}
+
+func (m *Manager) configLocked() config.Config {
+	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings,
+		Profiles: m.profilesLocked(), ProfileOrder: slices.Clone(m.profileOrder), SmartProxyEnabled: m.smartEnabled}
+	if m.smartConfigured {
+		saved := m.smartConfig
+		cfg.SmartProxy = &saved
+	}
+	return cfg
 }
 
 // Snapshot returns one profile's current state.
@@ -345,15 +444,14 @@ func (m *Manager) Snapshot(id string) (Snapshot, bool) {
 	return snapshotOf(s), true
 }
 
-// Snapshots returns every profile's current state, sorted by name.
+// Snapshots returns every profile's current state in display order.
 func (m *Manager) Snapshots() []Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]Snapshot, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		out = append(out, snapshotOf(s))
+	for _, id := range m.profileIDsLocked() {
+		out = append(out, snapshotOf(m.sessions[id]))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Profile.Name < out[j].Profile.Name })
 	return out
 }
 
@@ -628,8 +726,7 @@ func (m *Manager) tunnelBrowserProfile(id, name string, update *browseropen.Prof
 	}
 	previous := s.profile.BrowserProfiles
 	s.profile.BrowserProfiles = profiles
-	cfg := config.Config{Version: config.CurrentVersion, Settings: m.settings, Profiles: m.profilesLocked()}
-	if err := config.Save(m.configPath, cfg); err != nil {
+	if err := config.Save(m.configPath, m.configLocked()); err != nil {
 		s.profile.BrowserProfiles = previous
 		return p, path, err
 	}
@@ -750,7 +847,10 @@ func (m *Manager) publish(id string) {
 	if !ok {
 		return
 	}
-	u := Update{ProfileID: id, Snapshot: snap}
+	m.broadcast(Update{ProfileID: id, Snapshot: snap})
+}
+
+func (m *Manager) broadcast(u Update) {
 	m.subMu.Lock()
 	defer m.subMu.Unlock()
 	for _, ch := range m.subs {
@@ -789,6 +889,9 @@ func (m *Manager) reservePorts(id string, ports map[string]int, hosts map[string
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for name, addr := range requested {
+		if m.smartEnabled && m.smartError == "" && smartAddressConflict(m.smartConfig, addr) {
+			return fmt.Errorf("gui: local address %s (tunnel %q) conflicts with the Smart Proxy", addr, name)
+		}
 		for otherID, res := range m.reservations {
 			if otherID == id {
 				continue

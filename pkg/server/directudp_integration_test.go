@@ -90,7 +90,7 @@ func TestDirectUpgradeEndToEnd(t *testing.T) {
 	scfg.Network.TunnelCIDR = "100.66.0.0/16"
 	scfg.Listen.WireGuard = "127.0.0.1:0"
 	s := New(scfg, nil)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
@@ -188,7 +188,7 @@ func TestForcedWebSocketNeverUpgrades(t *testing.T) {
 	scfg.Network.TunnelCIDR = "100.66.0.0/16"
 	scfg.Listen.WireGuard = "127.0.0.1:0"
 	s := New(scfg, nil)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
@@ -238,7 +238,7 @@ func TestDirectServerMultipathLoopbackPromotesDirectUDP(t *testing.T) {
 	s.Config.Network.TunnelCIDR = "100.66.0.0/16"
 	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
 	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
@@ -307,7 +307,7 @@ func TestDirectMultipath_UDPAltFallback(t *testing.T) {
 			s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
 			s.Config.Listen.WireGuardAlt = ":" + fmt.Sprint(alt)
 			s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(dead)
-			if err := s.StartDataPlane(); err != nil {
+			if err := startTransportFixture(s); err != nil {
 				t.Fatal(err)
 			}
 			defer s.Close()
@@ -352,7 +352,7 @@ func TestDirectMultipath_MTUAwareBothEndsReportOK(t *testing.T) {
 	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
 	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
 	s.Config.Transport.MTUAware = true
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
@@ -394,7 +394,7 @@ func TestDirectMultipath_ServerHonorsClientTunnelMTU(t *testing.T) {
 	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
 	s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
 	s.Config.Transport.MTUAware = true
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()

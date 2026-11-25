@@ -53,6 +53,33 @@ func TestDestinationPolicyDomainReverseAndDefaultDeny(t *testing.T) {
 	}
 }
 
+func TestNumericDomainRequiresBothPrincipalAndTunnelPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		principal, tunnel DestinationPolicy
+		binary, domain    bool
+	}{
+		{"principal reverses suffix", DestinationPolicy{DomainFilters: []string{".113.7"}, ReverseFilters: true}, DestinationPolicy{AllowAll: true}, true, false},
+		{"tunnel reverses suffix", DestinationPolicy{AllowAll: true}, DestinationPolicy{DomainFilters: []string{".113.7"}, ReverseFilters: true}, true, false},
+		{"principal requires hostname", DestinationPolicy{DomainFilters: []string{".113.7"}}, DestinationPolicy{AllowAll: true}, false, false},
+		{"principal requires another port", DestinationPolicy{AllowAll: true, Ports: []uint16{80}}, DestinationPolicy{AllowAll: true}, false, false},
+		{"CIDR approved by both", DestinationPolicy{Filters: []string{"203.0.113.0/24"}}, DestinationPolicy{AllowAll: true}, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(Config{DestinationPolicies: map[string]DestinationPolicy{"peer": tc.principal, "tunnel": tc.tunnel}}, nil)
+			peer := DataPlanePrincipal{Identity: "peer", Method: "native-wireguard", Policy: "peer"}
+			tunnel := TunnelConfig{Name: "egress", DestinationPolicy: "tunnel"}
+			ip := netip.MustParseAddr("203.0.113.7")
+			if got := s.destinationAllowed(t.Context(), peer, tunnel, "", ip, 443, "tcp"); got != tc.binary {
+				t.Errorf("binary result = %v, want %v", got, tc.binary)
+			}
+			if got := s.destinationAllowedRequest(t.Context(), peer, tunnel, "", "203.0.113.7", ip, 443, "tcp"); got != tc.domain {
+				t.Errorf("domain-form result = %v, want %v", got, tc.domain)
+			}
+		})
+	}
+}
+
 func TestNativePeerConfigValidation(t *testing.T) {
 	key, err := wgnet.GenerateKey()
 	if err != nil {

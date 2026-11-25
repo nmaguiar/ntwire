@@ -64,6 +64,7 @@ func main() {
 	}
 
 	config := flag.String("config", "ntwire.yaml", "server configuration file")
+	acceleration := flag.String("acceleration", "", "override acceleration.mode: auto, off, or required")
 	listFlag := flag.Bool("list", false, "list configured server tunnels and proxy PAC endpoints and exit")
 	jsonFlag := flag.Bool("json", false, "output in JSON format (used with -list)")
 	printSampleConfig := flag.Bool("print-sample-config", false, "print a fully commented sample YAML configuration and exit")
@@ -121,6 +122,11 @@ func main() {
 		}.Fprint(os.Stderr, ui.New(os.Stdout, os.Stderr, false))
 	}
 	flag.Parse()
+	var accelerationOverride server.AccelerationConfig
+	if err := accelerationOverride.OverrideMode(*acceleration); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if *printVersion {
 		fmt.Println(buildinfo.String())
 		return
@@ -227,6 +233,7 @@ func main() {
 		slog.Error("configuration error", "error", err)
 		os.Exit(2)
 	}
+	_ = c.Acceleration.OverrideMode(*acceleration) // validated immediately after parsing flags
 	final := logging.Resolve(flagLogOpts, c.Log.Options(), logging.EnvOptions("NTWIRE"))
 	mainHandler := logging.NewHandler(os.Stderr, final, caps)
 	slog.SetDefault(slog.New(mainHandler))
@@ -238,18 +245,19 @@ func main() {
 	}
 	s := server.New(c, slog.Default())
 	s.SetTLSManager(tlsManager)
+	var startMASQUE func()
 	if c.MASQUE.Enabled {
 		gateway, gatewayErr := server.NewMASQUEGateway(s, tlsManager.Config())
 		if gatewayErr != nil {
 			slog.Error("MASQUE gateway configuration error", "error", gatewayErr)
 			os.Exit(2)
 		}
-		go func() {
+		startMASQUE = func() {
 			slog.Info("ntwire MASQUE gateway listening", "https", c.MASQUE.Listen)
 			if e := gateway.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 				slog.Error("MASQUE gateway stopped", "error", e)
 			}
-		}()
+		}
 	}
 	if c.Audit.LogFile != "" {
 		f, err := os.OpenFile(c.Audit.LogFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
@@ -265,6 +273,9 @@ func main() {
 		os.Exit(2)
 	}
 	defer s.Close()
+	if startMASQUE != nil {
+		go startMASQUE()
+	}
 	if _, err = server.WatchConfig(*config, s, slog.Default()); err != nil {
 		slog.Warn("config watch disabled", "error", err)
 	}

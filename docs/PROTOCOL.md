@@ -4,6 +4,16 @@ This is the implemented control-plane protocol. It authenticates a client and
 returns tunnel grants and the values needed to establish a WireGuard netstack
 session and forward TCP traffic.
 
+[Smart Egress Proxy](SMART-EGRESS-PROXY.md) uses existing SOCKS and authenticated WireGuard sessions. Its local-only client attachment channel is separate from the server and relay interfaces below.
+
+### Smart Egress Proxy grant metadata
+
+An authenticated SOCKS tunnel grant can include the optional `egress_class` string. Servers use the configured label on governed SOCKS tunnels in authentication and renewal responses. Clients require a verified HTTPS connection and explicit approval of the profile, server and class before automatic enrollment. This metadata does not grant additional destinations. An optional `egress_udp: true` advertises native SOCKS UDP handling on a governed tunnel with no upstream proxy. Aggregate clients require this field before starting UDP ASSOCIATE. Older clients continue to use individual tunnels.
+
+The optional `egress_numeric_domain: true` field advertises support for numeric IPv4 and IPv6 literals sent with SOCKS5 `ATYP=0x03`. It is sent on authentication and renewal for governed tunnels with no external SOCKS upstream. The server parses the IP without DNS and checks the ordinary numeric policy and the legacy interpretation of the unchanged literal. The capability adds no SOCKS negotiation round trip. A missing field is treated as unsupported. A reload revokes grants that advertised the capability if the tunnel loses support or changes its virtual port.
+
+The local attachment snapshot carries `numeric_domain: true` for a capable grant. A dial request or prepared dial continuation can include `address_type` in its destination object alongside `Host` and `Port`. For `ATYP=0x03`, `Host` carries the exact received field. Older publishers omit the capability, so a new consumer will send them only hostname or binary numeric requests. Older consumers ignore the optional metadata and retain their previous request behavior. The aggregate SOCKS listener sends reply `0x08` when the selected member lacks support and reserves `0x02` for policy denial. The connection is never retried through another member because of either result.
+
 ## Endpoints
 
 The reference server serves HTTPS.
@@ -741,3 +751,11 @@ a peer stops draining, excess WireGuard datagrams are dropped locally (counted
 in `Bind.Dropped`) instead of blocking the shared WireGuard device. A write
 timeout or sustained overflow closes/fails the carrier and, with multipath,
 moves the primary to another healthy path. No wire format change.
+
+### Authenticated destination binding
+
+A native SOCKS tunnel with `socks.allow_destination_binding: true` advertises `egress_destination_bind_v1: true` in the affected authenticated tunnel grant. The public Smart Proxy listener continues accepting standard SOCKS5 and HTTP. Direct routing and numeric ASN selection add no wire traffic to ordinary tunneled CONNECT. An attachment publisher relays the optional `destination_binding` capability in its grant snapshot.
+
+On a capable virtual TCP stream, the client negotiates SOCKS5 and sends private command `0x80` with the original domain-form hostname and port. The server independently resolves and authorizes it under the current grant. A normal successful SOCKS5 reply is followed by one byte of count and up to eight 16-byte addresses in offer order. IPv4 is encoded in IPv4-mapped form. The client sends one zero-based selection byte on that same stream. After checking the grant and destination policy again, the server dials that exact address and emits the final SOCKS5 reply. Application bytes start after the final success reply. An abandoned, expired, or invalid selection closes the stream without a destination connection. Offers are single-use. The extension does not apply to transparent or chained SOCKS, or to SOCKS UDP destination binding.
+
+The authenticated local attachment protocol supports an optional `offer_destination` operation. Its initial success includes the bounded addresses, followed by one selected address frame and the final response on the same TLS stream. Unknown capabilities leave ordinary egress available. A client that requires hostname ASN binding fails that classification when support is missing.

@@ -3,6 +3,9 @@
 package window
 
 import (
+	"net/url"
+	"time"
+
 	webview "github.com/webview/webview_go"
 )
 
@@ -15,12 +18,45 @@ import (
 // requirement. cmd/ntwire-gui's own CGO_ENABLED=0 cross-builds for linux
 // and windows (see its package doc) only hold as long as nothing in the
 // default build graph imports this file.
-func Run(url string) error {
+func Run(settingsURL string) error {
 	w := webview.New(false)
 	defer w.Destroy()
+	type browserLaunch struct {
+		timer   *time.Timer
+		cleanup func()
+	}
+	var browserLaunches []browserLaunch
+	defer func() {
+		for _, launch := range browserLaunches {
+			if launch.timer.Stop() {
+				launch.cleanup()
+			}
+		}
+	}()
 	w.SetTitle("ntwire settings")
 	w.SetSize(960, 720, webview.HintNone)
-	w.Navigate(url)
+	launch := func(target string, err error) error {
+		if err != nil {
+			return err
+		}
+		cleanup, err := launchPrivateBrowser(target)
+		if err != nil {
+			return err
+		}
+		browserLaunches = append(browserLaunches, browserLaunch{time.AfterFunc(30*time.Second, cleanup), cleanup})
+		return nil
+	}
+	if err := w.Bind("openSmartProxyDashboard", func(group string) error {
+		return launch(smartProxyDashboardURL(settingsURL, group))
+	}); err != nil {
+		return err
+	}
+	if err := w.Bind("openSmartProxyExport", func() error {
+		return launch(smartProxyBrowserURL(settingsURL, "/api/smart-proxy/export", url.Values{}))
+	}); err != nil {
+		return err
+	}
+	w.Navigate(settingsURL)
 	w.Run()
 	return nil
 }

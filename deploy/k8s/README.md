@@ -46,3 +46,7 @@ For production TLS, OIDC, relay, and NetworkPolicy design, see
 [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md),
 [docs/RELAY.md](../../docs/RELAY.md), and
 [docs/SECURITY.md](../../docs/SECURITY.md).
+
+### Kernel backend evaluation on Linux nodes
+
+Use `kubectl apply -k deploy/k8s-acceleration` from the repository root for the explicit kernel backend overlay. Verify node support for WireGuard, nftables and namespace creation under the runtime's seccomp policy. See [Linux acceleration](../../docs/LINUX-ACCELERATION.md).

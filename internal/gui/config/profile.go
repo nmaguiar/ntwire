@@ -12,6 +12,7 @@ import (
 
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/egressrouter"
 )
 
 // Profile is one saved server connection. It holds everything
@@ -82,9 +83,12 @@ type Settings struct {
 
 // Config is the full contents of ~/.ntwire/gui.yaml.
 type Config struct {
-	Version  int       `yaml:"version"`
-	Settings Settings  `yaml:"settings"`
-	Profiles []Profile `yaml:"profiles"`
+	Version           int                  `yaml:"version"`
+	Settings          Settings             `yaml:"settings"`
+	ProfileOrder      []string             `yaml:"profile_order,omitempty"`
+	Profiles          []Profile            `yaml:"profiles"`
+	SmartProxyEnabled bool                 `yaml:"smart_proxy_enabled,omitempty"`
+	SmartProxy        *egressrouter.Config `yaml:"smart_proxy,omitempty"`
 }
 
 // CurrentVersion is the Config.Version this package reads and writes.

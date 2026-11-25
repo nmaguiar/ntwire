@@ -33,6 +33,13 @@ func FuzzServeConn(f *testing.F) {
 	f.Add([]byte{})
 	f.Add([]byte{0x05, 0x01, 0x00})
 	f.Add([]byte{0x04, 0x01, 0, 80, 127, 0, 0, 1, 0})
+	for _, host := range []string{"127.0.0.1", "::1", "::ffff:127.0.0.1", "FE80::1%en0", "127.1", "example.test"} {
+		request := clientRequestBytes(socks5AtypDomain, host, 443)
+		f.Add(request)
+		f.Add(append([]byte{0, 0, 0}, request[6:]...))
+	}
+	f.Add(clientRequestBytes(socks5AtypIPv4, "127.0.0.1", 443))
+	f.Add(clientRequestBytes(socks5AtypIPv6, "::1", 443))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		s, err := New(Config{
 			Filter: FilterConfig{},
@@ -50,5 +57,20 @@ func FuzzServeConn(f *testing.F) {
 		// The finite reader guarantees EOF for partial frames; no fuzz case can
 		// wait for peer input indefinitely.
 		s.ServeConn(context.Background(), fuzzConn{bytes.NewReader(input)})
+		if req, err := ReadClientRequest(&bytes.Buffer{}, bytes.NewReader(input), true); err == nil && !req.UDP {
+			address, err := req.Destination.Address()
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical, err := ParseDestination(address)
+			if err != nil || canonical.IP() != req.Destination.IP() || canonical.Port != req.Destination.Port {
+				t.Fatalf("non-equivalent canonical destination: %+v, %v", canonical, err)
+			}
+		}
+		if dst, offset, err := DatagramDestination(input); err == nil {
+			if _, err := dst.Address(); err != nil || offset > len(input) {
+				t.Fatalf("invalid parsed datagram: %+v at %d, error %v", dst, offset, err)
+			}
+		}
 	})
 }

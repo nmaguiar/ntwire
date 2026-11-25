@@ -13,6 +13,7 @@ type LaunchOptions struct {
 	Profile        ProfileSettings
 	ProfilesDir    string
 	TunnelProfiles map[string]ProfileSettings
+	BlockLocalDNS  bool // Applies to Smart Proxy launches.
 }
 
 // ForTunnel selects the profile settings for a specific SOCKS tunnel.

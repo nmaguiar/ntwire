@@ -1038,6 +1038,10 @@ func authenticateSSH(h *http.Client, url, keyPath string, info protocol.ClientIn
 
 // Connection is a persistent, local-listener view of one WireGuard session.
 type Connection struct {
+	egressGrants map[string]*egressGrant
+	egressTimer  *time.Timer
+	egressDenied bool
+
 	Response       protocol.AuthResponse
 	Stack          *wgnet.Stack
 	tunnels        []*localTunnel
@@ -1963,6 +1967,12 @@ func (c *Connection) renew() error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusForbidden {
+			c.mu.Lock()
+			c.egressDenied = true
+			c.reconcileEgressLocked()
+			c.mu.Unlock()
+		}
 		return fmt.Errorf("session renewal failed: %s", resp.Status)
 	}
 	var out protocol.AuthResponse
@@ -2007,6 +2017,8 @@ func (c *Connection) renew() error {
 	} else {
 		c.expiresAt = time.Time{}
 	}
+	c.egressDenied = false
+	c.reconcileEgressLocked()
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
 	hybrid := c.hybrid
 	c.mu.Unlock()
@@ -3468,6 +3480,7 @@ func (c *Connection) Close() {
 		return
 	}
 	c.closed = true
+	c.reconcileEgressLocked()
 	if c.dataStop != nil {
 		close(c.dataStop)
 		c.dataStop = nil

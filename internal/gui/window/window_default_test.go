@@ -4,11 +4,24 @@ package window
 
 import (
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSmartProxyDashboardURLKeepsOriginAndEncodesGroup(t *testing.T) {
+	target, err := smartProxyDashboardURL("http://127.0.0.1:1234/?token=secret&setup=1#old", "a&token=other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Host != "127.0.0.1:1234" || u.Path != "/smart-proxy-dashboard.html" || u.Fragment != "" ||
+		u.Query().Get("token") != "secret" || u.Query().Get("group") != "a&token=other" || u.Query().Has("setup") {
+		t.Fatalf("unexpected dashboard URL %q", target)
+	}
+}
 
 func TestBrowserFallbackUsesPrivateFileInsteadOfCredentialArgv(t *testing.T) {
 	original := launchBootstrapFile
