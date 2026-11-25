@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	fyne.io/systray v1.12.2
-	github.com/cilium/ebpf v0.19.0
+	github.com/cilium/ebpf v0.22.0
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/fsnotify/fsnotify v1.10.1
