@@ -133,6 +133,13 @@ and pushes versioned images. After the builds and scans pass, it publishes the
 draft as a prerelease. Test that release using its download links and versioned
 images.
 
+Publishing a prerelease through GitHub also starts the **Release** workflow.
+Wait for that workflow to finish before testing the downloads or promoting.
+To build a tag whose prerelease is still missing assets, open **Actions →
+Release → Run workflow**, select the default branch, and enter the existing
+tag. The workflow builds from the tagged commit and uploads to the same
+prerelease.
+
 In **Actions → Promote to stable → Run workflow**, select the default branch
 and enter the same tag. The workflow checks the release assets and images,
 points `latest` on Docker Hub and GHCR to the existing image digests, marks the

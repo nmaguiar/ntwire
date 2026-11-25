@@ -56,6 +56,24 @@ jq -n '{
   ] | map({name: ., state: "uploaded", size: 100}))
 }' > "$tmp/complete.json"
 
+build_needed() {
+  bash "$root/scripts/release-build-needed.sh" v1.2.3
+}
+
+# New tags, drafts and incomplete prereleases can build. Stable and complete
+# prereleases are skipped, even when a duplicate release event arrives.
+test "$(build_needed <<< 'null')" = true
+test "$(jq '.draft = true' "$tmp/complete.json" | build_needed)" = true
+test "$(jq '.assets = []' "$tmp/complete.json" | build_needed)" = true
+test "$(jq '.assets[] |= if .name == "checksums.txt" then .size = 0 else . end' "$tmp/complete.json" | build_needed)" = true
+test "$(build_needed < "$tmp/complete.json")" = false
+test "$(jq '.prerelease = false | .assets = []' "$tmp/complete.json" | build_needed)" = false
+if jq '.immutable = true | .assets = []' "$tmp/complete.json" | build_needed > "$tmp/output" 2>&1; then
+  echo 'Expected immutable prerelease with missing assets to fail' >&2
+  exit 1
+fi
+grep -Fq 'Cannot upload missing assets to immutable prerelease' "$tmp/output"
+
 promote() {
   bash "$root/scripts/promote-release.sh" "${1:-v1.2.3}" > "$tmp/output" 2>&1
 }

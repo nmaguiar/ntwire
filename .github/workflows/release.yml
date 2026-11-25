@@ -1,36 +1,70 @@
 name: Release
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to build from the default branch (for example, v1.2.3)'
+        type: string
+  release:
+    types: [published]
   push:
     tags: ["v*"]
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
   cancel-in-progress: false
 permissions:
   contents: write
   packages: write
+defaults:
+  run:
+    shell: bash
 jobs:
   test:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'release' && github.event.release.prerelease &&
+       startsWith(github.ref, 'refs/tags/v')) ||
+      (github.event_name == 'workflow_dispatch' &&
+       (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) ||
+        (startsWith(github.ref, 'refs/tags/v') && (!inputs.tag || inputs.tag == github.ref_name))))
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.release.outputs.build }}
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
     steps:
-      - name: Check whether the tag is already published
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Check whether the release needs a build
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name || github.ref_name }}
+          NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
         run: |
-          releases=$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '.[] | select(.draft == false) | .tag_name')
-          if grep -Fxq -- "$GITHUB_REF_NAME" <<< "$releases"; then
-            echo "Release $GITHUB_REF_NAME already exists. Its assets will be reused."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "build=true" >> "$GITHUB_OUTPUT"
+          tag="$RELEASE_TAG"
+          if [[ ! "$tag" =~ ^v[0-9][0-9A-Za-z.+-]*$ ]] || ! git check-ref-format "refs/tags/$tag"; then
+            echo "Expected a version tag such as v1.2.3." >&2
+            exit 1
           fi
+          commit=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$tag" --jq .sha)
+          if [[ "$GITHUB_REF_TYPE" == tag && "$commit" != "$GITHUB_SHA" ]]; then
+            echo "Tag $tag moved after this workflow started." >&2
+            exit 1
+          fi
+          release=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$tag" '[.[][] | select(.tag_name == $tag)] | sort_by(.draft) | first')
+          build=$(bash scripts/release-build-needed.sh "$tag" <<< "$release")
+          if [[ "$build" == 'false' ]]; then
+            echo "Release $tag is stable or already has all required assets."
+          fi
+          printf 'build=%s\ntag=%s\ncommit=%s\n' "$build" "$tag" "$commit" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: steps.release.outputs.build == 'true'
+        with:
+          ref: ${{ steps.release.outputs.commit }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         if: steps.release.outputs.build == 'true'
         with: {go-version: stable}
@@ -44,11 +78,9 @@ jobs:
     if: needs.test.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
-      # GoReleaser derives the release version from the tag and uploads the
-      # archives to that tag's GitHub Release. Keep the tags available here;
-      # a shallow checkout can otherwise publish images while skipping assets.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ needs.test.outputs.commit }}
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with: {go-version: stable}
@@ -56,8 +88,25 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
-        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}", NTWIRE_UPDATE_PUBLIC_KEY: "${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}"}
+          args: release --clean --skip=publish
+        env:
+          GORELEASER_CURRENT_TAG: ${{ needs.test.outputs.tag }}
+          NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
+      - name: Upload binaries to the tag's GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.test.outputs.tag }}
+        run: |
+          release=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -c --arg tag "$RELEASE_TAG" '[.[][] | select(.tag_name == $tag)] | sort_by(.draft) | first')
+          if [[ "$release" == 'null' ]]; then
+            gh release create "$RELEASE_TAG" --verify-tag --draft --prerelease --latest=false \
+              --title "$RELEASE_TAG" --notes-file dist/CHANGELOG.md
+          elif jq -e '.immutable == true or (.draft == false and .prerelease == false)' <<< "$release" >/dev/null; then
+            echo "Release $RELEASE_TAG can no longer be updated." >&2
+            exit 1
+          fi
+          gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.zip dist/checksums.txt --clobber
   # ntwire-gui's darwin build is not part of the `binaries` job above:
   # internal/gui/tray needs Cocoa cgo there, which the ubuntu-hosted
   # goreleaser job has no macOS SDK to cross-compile against (see
@@ -66,16 +115,19 @@ jobs:
   # bundle packaging/darwin/build-app.sh assembles, and uploads it to the
   # same release `binaries` already created.
   gui-darwin:
-    needs: binaries
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, binaries]
     strategy:
       matrix:
         include:
           - arch: arm64
             runner: macos-latest
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.test.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.test.outputs.commit }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with: {go-version: stable}
       - name: Build
@@ -84,32 +136,35 @@ jobs:
           NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
         run: |
           mkdir -p dist
-          go build -ldflags "-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version=${GITHUB_REF_NAME#v} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey=${NTWIRE_UPDATE_PUBLIC_KEY}" \
+          go build -ldflags "-s -w -X github.com/nmaguiar/ntwire/pkg/buildinfo.Version=${RELEASE_TAG#v} -X github.com/nmaguiar/ntwire/pkg/updater.PublicKey=${NTWIRE_UPDATE_PUBLIC_KEY}" \
             -o dist/ntwire-gui ./cmd/ntwire-gui
       - name: Assemble .app bundle
         run: |
-          packaging/darwin/build-app.sh dist/ntwire-gui "${GITHUB_REF_NAME#v}" dist
+          packaging/darwin/build-app.sh dist/ntwire-gui "${RELEASE_TAG#v}" dist
           ditto -c -k --sequesterRsrc --keepParent dist/ntwire-gui.app \
-            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip"
+            "dist/ntwire-gui_${RELEASE_TAG}_darwin_${{ matrix.arch }}.zip"
       - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # GoReleaser's manifest predates this native macOS archive. Merge its
           # checksum before uploading; replace an existing entry on reruns.
-          gh release download "${GITHUB_REF_NAME}" --pattern checksums.txt --dir dist
+          gh release download "${RELEASE_TAG}" --pattern checksums.txt --dir dist
           sh scripts/add-release-checksum.sh dist/checksums.txt \
-            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip"
-          gh release upload "${GITHUB_REF_NAME}" \
-            "dist/ntwire-gui_${GITHUB_REF_NAME}_darwin_${{ matrix.arch }}.zip" --clobber
-          gh release upload "${GITHUB_REF_NAME}" dist/checksums.txt --clobber
+            "dist/ntwire-gui_${RELEASE_TAG}_darwin_${{ matrix.arch }}.zip"
+          gh release upload "${RELEASE_TAG}" \
+            "dist/ntwire-gui_${RELEASE_TAG}_darwin_${{ matrix.arch }}.zip" --clobber
+          gh release upload "${RELEASE_TAG}" dist/checksums.txt --clobber
 
   update-manifest:
-    needs: [binaries, gui-darwin]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, binaries, gui-darwin]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.test.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.test.outputs.commit }}
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with: {go-version: stable}
       - name: Finalize signed client update manifest
@@ -123,32 +178,36 @@ jobs:
             exit 0
           fi
           mkdir -p update-assets
-          gh release download "$GITHUB_REF_NAME" --pattern 'ntwire_*.tar.gz' --pattern 'ntwire_*.zip' --pattern 'ntwire-gui_*.tar.gz' --pattern 'ntwire-gui_*.zip' --dir update-assets
-          go run ./scripts/update-manifest -version "${GITHUB_REF_NAME#v}" -dir update-assets
+          gh release download "$RELEASE_TAG" --pattern 'ntwire_*.tar.gz' --pattern 'ntwire_*.zip' --pattern 'ntwire-gui_*.tar.gz' --pattern 'ntwire-gui_*.zip' --dir update-assets
+          go run ./scripts/update-manifest -version "${RELEASE_TAG#v}" -dir update-assets
           # Upload the signature last. No updater accepts a missing/mismatched pair.
-          gh release upload "$GITHUB_REF_NAME" update-assets/update-manifest.json --clobber
-          gh release upload "$GITHUB_REF_NAME" update-assets/update-manifest.sig --clobber
+          gh release upload "$RELEASE_TAG" update-assets/update-manifest.json --clobber
+          gh release upload "$RELEASE_TAG" update-assets/update-manifest.sig --clobber
 
   helm-chart:
     # Package the same chart that operators can inspect in the source tree.
     # The chart appVersion makes its default images match the release tag.
-    needs: binaries
-    if: startsWith(github.ref, 'refs/tags/')
+    # Upload the chart last so an incomplete build can always be retried.
+    needs: [test, update-manifest, security-scan]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.test.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.test.outputs.commit }}
       - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
       - name: Lint and package chart
         run: |
           mkdir -p dist
           helm lint deploy/helm/ntwire
           helm package deploy/helm/ntwire --destination dist \
-            --version "${GITHUB_REF_NAME#v}" \
-            --app-version "${GITHUB_REF_NAME#v}"
+            --version "${RELEASE_TAG#v}" \
+            --app-version "${RELEASE_TAG#v}"
       - name: Upload to release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" dist/ntwire-*.tgz --clobber
+        run: gh release upload "${RELEASE_TAG}" dist/ntwire-*.tgz --clobber
 
   images:
     needs: test
@@ -165,9 +224,13 @@ jobs:
             image: ntwire-relay
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.test.outputs.commit }}
       - name: Resolve release version
         id: version
-        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          RELEASE_TAG: ${{ needs.test.outputs.tag }}
+        run: echo "value=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -185,21 +248,22 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.version.outputs.value }}
 
   security-scan:
-    needs: [binaries, gui-darwin, update-manifest, helm-chart, images]
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, images]
     uses: ./.github/workflows/build-images.yml
+    with:
+      source_commit: ${{ needs.test.outputs.commit }}
     secrets: inherit
 
   publish-prerelease:
-    needs: [test, security-scan]
-    if: needs.test.outputs.build == 'true'
+    needs: [test, helm-chart]
     runs-on: ubuntu-latest
     steps:
       - name: Publish staged assets as a prerelease
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.test.outputs.tag }}
         run: |
-          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          draft=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
           if [[ "$draft" == "true" ]]; then
-            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft=false --prerelease --latest=false
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --draft=false --prerelease --latest=false
           fi

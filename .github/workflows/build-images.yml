@@ -2,6 +2,10 @@ name: Docker Images CI
 
 on:
   workflow_call:
+    inputs:
+      source_commit:
+        type: string
+        description: Commit to build and identify in security reports
   workflow_dispatch:
   push:
     branches: [ "main" ]
@@ -15,6 +19,9 @@ on:
 # GitHub token itself needs no more than read access to the repository.
 permissions:
   contents: read
+
+env:
+  SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
 
 concurrency:
   group: docker-images-and-security-reports
@@ -39,6 +46,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.source_commit }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -87,6 +96,8 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.source_commit }}
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
@@ -157,6 +168,8 @@ jobs:
         arch: [amd64, arm64]
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.source_commit }}
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         name: digest-${{ matrix.image }}-${{ matrix.arch }}
@@ -170,7 +183,7 @@ jobs:
         [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
         image="nmaguiar/$IMAGE@$digest"
         docker run --rm -v "$PWD:/work" aquasec/trivy:0.76.1 image --platform "linux/$ARCH" --scanners vuln --format json --output /work/scan.json "$image"
-        python3 scripts/security/report.py --kind image --input scan.json --target "image-$IMAGE-linux-$ARCH" --platform "linux/$ARCH" --identity "$image" --commit "$GITHUB_SHA" --output reports
+        python3 scripts/security/report.py --kind image --input scan.json --target "image-$IMAGE-linux-$ARCH" --platform "linux/$ARCH" --identity "$image" --commit "$SOURCE_COMMIT" --output reports
     - name: Generate severity badge
       uses: openaf/ojob-action@v7
       with:
@@ -218,6 +231,8 @@ jobs:
           - {os: darwin, arch: arm64, binary: ntwire-gui, runner: macos-latest}
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.source_commit }}
     - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
       with:
         go-version: stable
@@ -235,7 +250,7 @@ jobs:
         go build -ldflags "$flags" -o "artifact$suffix" "./cmd/$BINARY"
         digest=$(shasum -a 256 "artifact$suffix" | cut -d ' ' -f 1)
         "$(go env GOPATH)/bin/govulncheck" -mode binary -format json "artifact$suffix" > scan.json
-        python3 scripts/security/report.py --kind binary --input scan.json --target "binary-$BINARY-$GOOS-$GOARCH" --platform "$GOOS/$GOARCH" --identity "sha256:$digest" --commit "$GITHUB_SHA" --output reports
+        python3 scripts/security/report.py --kind binary --input scan.json --target "binary-$BINARY-$GOOS-$GOARCH" --platform "$GOOS/$GOARCH" --identity "sha256:$digest" --commit "$SOURCE_COMMIT" --output reports
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: binary-scan-${{ matrix.binary }}-${{ matrix.os }}-${{ matrix.arch }}
@@ -247,6 +262,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        ref: ${{ inputs.source_commit }}
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         pattern: binary-scan-*
@@ -285,8 +302,8 @@ jobs:
       env:
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
-        python3 scripts/security/verify_reports.py .github/security "$GITHUB_SHA"
-        git merge-base --is-ancestor "$GITHUB_SHA" HEAD
+        python3 scripts/security/verify_reports.py .github/security "$SOURCE_COMMIT"
+        git merge-base --is-ancestor "$SOURCE_COMMIT" HEAD
         git add .github/security
         if git diff --cached --quiet; then exit 0; fi
         git config user.name 'github-actions[bot]'
