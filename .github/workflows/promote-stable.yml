@@ -1,0 +1,44 @@
+name: Promote to stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Prerelease tag to promote (for example, v1.2.3)'
+        required: true
+        type: string
+
+concurrency:
+  group: promote-to-stable
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with: {username: "${{ secrets.DOCKERHUB_USERNAME }}", password: "${{ secrets.DOCKERHUB_TOKEN }}"}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ github.token }}"}
+      - name: Verify and promote the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          NTWIRE_UPDATE_PUBLIC_KEY: ${{ vars.NTWIRE_UPDATE_PUBLIC_KEY }}
+        run: bash scripts/promote-release.sh "$RELEASE_TAG"
+
+  pages:
+    needs: promote
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/static.yml
+    with:
+      release_tag: ${{ inputs.tag }}

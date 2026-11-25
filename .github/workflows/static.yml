@@ -9,11 +9,10 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-  # The GUI macOS artifact is uploaded after GoReleaser finishes. Waiting for
-  # the whole Release workflow means the manifest below sees every GUI asset.
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
@@ -30,7 +29,6 @@ concurrency:
 jobs:
   # Single deploy job since we're just deploying
   deploy:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -47,8 +45,13 @@ jobs:
       - name: Build latest download manifest
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           if gh api "repos/${GITHUB_REPOSITORY}/releases/latest" > /tmp/ntwire-release.json; then
+            if [[ -n "$RELEASE_TAG" ]] && ! jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag' /tmp/ntwire-release.json >/dev/null; then
+              echo "::error::GitHub has not listed $RELEASE_TAG as the latest release."
+              exit 1
+            fi
             jq '{
               version: .tag_name,
               publishedAt: .published_at,
@@ -64,21 +67,25 @@ jobs:
                 | {binary: "ntwire Helm chart", platform: "Kubernetes", name: .name, size: .size, url: .browser_download_url})
               ]
             }' /tmp/ntwire-release.json > web/assets/release.json
-          else
+          elif [[ -z "$RELEASE_TAG" ]]; then
             echo "No published release yet; using the committed fallback manifest."
+          else
+            exit 1
           fi
       - name: Build Helm chart repository
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Helm repositories are static: publish every released chart archive
+          # Helm repositories are static: publish every stable chart archive
           # and an index whose URLs point back to this Pages site. This keeps
           # `helm repo update` independent of GitHub Release asset URLs.
+          tags=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | select(any(.assets[]; .name | test("^ntwire-[^_]+\\.tgz$"))) | .tag_name')
           while IFS= read -r tag; do
+            [[ -n "$tag" ]] || continue
             gh release download "$tag" --pattern 'ntwire-*.tgz' \
               --dir web/charts --clobber
-          done < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-            --jq '.[] | select(.draft | not) | select(any(.assets[]; .name | test("^ntwire-[^_]+\\.tgz$"))) | .tag_name')
+          done <<< "$tags"
           if find web/charts -maxdepth 1 -name 'ntwire-*.tgz' -print -quit | grep -q .; then
             helm repo index web/charts --url https://ntwire.io/charts
           else

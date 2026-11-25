@@ -20,6 +20,7 @@ jobs:
       - run: go test ./...
       - run: node internal/gui/webui/tests/certificate-dialog.mjs
       - run: sh scripts/add-release-checksum_test.sh
+      - run: bash scripts/promote-release_test.sh
       - run: python3 -m unittest discover -s scripts/security -p 'test_*.py'
 
   e2e:

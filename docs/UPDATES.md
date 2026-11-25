@@ -115,8 +115,8 @@ in both release clients. Local builds may use the same linker option with the
 public key; they must also carry a stable `pkg/buildinfo.Version` to self-install.
 
 After GoReleaser uploads every client archive and the native macOS GUI job uploads
-the complete `.app` archive, the final `update-manifest` job downloads the actual
-published client archives. `go run ./scripts/update-manifest -version <version>
+the complete `.app` archive, the `update-manifest` job downloads the staged
+client archives. `go run ./scripts/update-manifest -version <version>
 -dir <archives>` computes their sizes and SHA-256 hashes, requires every supported
 client/platform combination, verifies the signing/public key match, signs the
 exact UTF-8 `update-manifest.json` bytes, and uploads it and its detached base64
@@ -124,6 +124,23 @@ exact UTF-8 `update-manifest.json` bytes, and uploads it and its detached base64
 manifest makes that release unavailable. Never edit a signed manifest or replace
 an archive afterward; rerun finalization if a release is rebuilt. Without both
 provisioned values, the job emits a notice and publishes no update manifest.
+
+### Prerelease and stable promotion
+
+Push the final version tag (for example, `v1.2.3`). The **Release** workflow
+stages the binaries, checksums, Helm chart, and updater files on a GitHub draft
+and pushes versioned images. After the builds and scans pass, it publishes the
+draft as a prerelease. Test that release using its download links and versioned
+images.
+
+In **Actions → Promote to stable → Run workflow**, select the default branch
+and enter the same tag. The workflow checks the release assets and images,
+points `latest` on Docker Hub and GHCR to the existing image digests, marks the
+GitHub release as stable and latest, and refreshes the GitHub Pages download
+manifest and Helm index. GitHub keeps the existing uploaded assets. If a
+registry or Pages step fails, rerun the workflow for the same tag.
+When `NTWIRE_UPDATE_PUBLIC_KEY` is configured, promotion requires both signed
+updater files.
 
 For planned key rotation, publish a bridge release **signed by the old private
 key** with binaries embedding the new public key, then sign later releases with
