@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 )
 
@@ -290,7 +291,7 @@ func TestHTTPProxy_SniffFragmented(t *testing.T) {
 			}
 		}()
 		br := bufio.NewReader(b)
-		got, err := isHTTPProxy(br)
+		got, err := localproxy.IsHTTP(br)
 		want := len(input) > 1 && strings.HasSuffix(input, " ")
 		if err != nil || got != want {
 			t.Fatalf("%q: %v %v", input, got, err)
@@ -313,7 +314,7 @@ func BenchmarkProxyDispatch(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				reader.Reset(input)
 				br.Reset(reader)
-				isHTTPProxy(br)
+				localproxy.IsHTTP(br)
 			}
 		})
 	}
@@ -597,9 +598,9 @@ func BenchmarkProxyRelay(b *testing.B) {
 							defer in.Close()
 							br := bufio.NewReader(in)
 							if mode != "socks_baseline" {
-								isHTTPProxy(br)
+								localproxy.IsHTTP(br)
 							}
-							buffered := &bufferedProxyConn{Conn: in, reader: br}
+							buffered := &localproxy.BufferedConn{Conn: in, Reader: br}
 							if mode == "http_connect" {
 								(&Connection{}).serveHTTPProxy(ctx, buffered, &localTunnel{}, tunnelProxyDialer{dial: (&net.Dialer{}).DialContext, target: sl.Addr().String()})
 								return
@@ -609,7 +610,7 @@ func BenchmarkProxyRelay(b *testing.B) {
 								return
 							}
 							defer out.Close()
-							relayProxy(out, buffered)
+							localproxy.Relay(out, buffered)
 						}()
 					}
 				}()

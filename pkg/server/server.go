@@ -45,8 +45,9 @@ const (
 )
 
 type Server struct {
-	Config   Config
-	sessions *Sessions
+	acceleration atomic.Pointer[accelerationStatus]
+	Config       Config
+	sessions     *Sessions
 	// nonces and rates bound what an unauthenticated caller can allocate; see
 	// pkg/authlimit for why both are shared with pkg/relay rather than
 	// open-coded here.
@@ -69,15 +70,16 @@ type Server struct {
 	lifecycle        *lifecycleCounters
 	promotions       promoteLimiter
 	// transportSwitches is non-nil only when transport.metrics is enabled.
-	transportSwitches atomic.Pointer[transportSwitchCounters]
-	direct            *directUDP
-	udpr              atomic.Pointer[udpRelay]
-	nativeRelayMu     sync.Mutex
-	nativeRelayStop   chan struct{}
-	policies          map[string]*compiledPolicy
-	asn               *socks.ASNIndex
-	dnsForwardSlots   chan struct{}
-	dnsForward        func([]byte, []string) ([]byte, error)
+	transportSwitches  atomic.Pointer[transportSwitchCounters]
+	direct             *directUDP
+	udpr               atomic.Pointer[udpRelay]
+	nativeRelayMu      sync.Mutex
+	nativeRelayStop    chan struct{}
+	nativePeerLifetime string // guarded by mu and rotated when native peers are rebuilt
+	policies           map[string]*compiledPolicy
+	asn                *socks.ASNIndex
+	dnsForwardSlots    chan struct{}
+	dnsForward         func([]byte, []string) ([]byte, error)
 }
 
 func New(c Config, l *slog.Logger) *Server {
@@ -86,6 +88,7 @@ func New(c Config, l *slog.Logger) *Server {
 	}
 	s := &Server{Config: c, sessions: NewSessions(), nonces: authlimit.NewNonceCache(nonceTTL, 0), log: l, rates: authlimit.NewSourceLimiter(maxAuthAttemptsPerMinute, time.Minute, 0), adminRates: authlimit.NewSourceLimiter(maxAdminRequestsPerMinute, time.Minute, 0), lifecycle: newLifecycleCounters(), policies: map[string]*compiledPolicy{}, asn: socks.NewASNIndex(), dnsForwardSlots: make(chan struct{}, 64)}
 	s.dnsForward = s.forwardDNS
+	s.nativePeerLifetime = token()
 	for name, policy := range c.DestinationPolicies {
 		if compiled, err := compilePolicy(policy, s.asn); err == nil {
 			s.policies[name] = compiled
@@ -424,6 +427,10 @@ func (s *Server) dashboardStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) tunnelConfig(name string) (TunnelConfig, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.tunnelConfigLocked(name)
+}
+
+func (s *Server) tunnelConfigLocked(name string) (TunnelConfig, bool) {
 	for _, tunnel := range s.Config.Tunnels {
 		if tunnel.Name == name {
 			return tunnel, true
@@ -677,7 +684,7 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, t := range grants {
-		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, Protocol: t.Protocol, UDPIdleTimeout: t.UDPIdleTimeout, LocalPort: t.LocalPort, LocalHost: t.LocalHost, TargetHint: t.Target,
+		v = append(v, protocol.Tunnel{Name: t.Name, Description: t.Description, VirtualPort: t.VirtualPort, Protocol: t.Protocol, UDPIdleTimeout: t.UDPIdleTimeout, LocalPort: t.LocalPort, LocalHost: t.LocalHost, TargetHint: t.Target, EgressClass: t.egressClass(), EgressUDP: t.nativeSOCKSEgress(), EgressNumericDomain: t.nativeSOCKSEgress(), EgressDestinationBind: t.nativeSOCKSEgress() && t.Socks.AllowDestinationBinding,
 			Instructions: t.Instructions, DocsURL: t.DocsURL})
 	}
 	if req.QueryOnly {
@@ -1030,21 +1037,19 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	}
 	v := make([]protocol.Tunnel, 0, len(grants))
 	for _, g := range grants {
-		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, Protocol: g.Protocol, UDPIdleTimeout: g.UDPIdleTimeout, LocalPort: g.LocalPort, LocalHost: g.LocalHost, TargetHint: g.Target,
+		v = append(v, protocol.Tunnel{Name: g.Name, Description: g.Description, VirtualPort: g.VirtualPort, Protocol: g.Protocol, UDPIdleTimeout: g.UDPIdleTimeout, LocalPort: g.LocalPort, LocalHost: g.LocalHost, TargetHint: g.Target, EgressClass: g.egressClass(), EgressUDP: g.nativeSOCKSEgress(), EgressNumericDomain: g.nativeSOCKSEgress(), EgressDestinationBind: g.nativeSOCKSEgress() && g.Socks.AllowDestinationBinding,
 			Instructions: g.Instructions, DocsURL: g.DocsURL})
 	}
-	s.sessions.Delete(t)
 	// Deliberately not dropSession here: WireGuardPublicKey and TunnelIP carry
 	// over unchanged into the renewed session below, and both the WireGuard
 	// device peer and the WebSocket fallback connection are keyed by that
 	// public key (not the session ID/token that just changed), so they stay
 	// valid across renewal without being torn down and reopened.
-	n := s.sessions.Create(CreateParams{
-		Method: old.Method, Identity: old.Identity, Fingerprint: old.Fingerprint, Issuer: old.Issuer, Groups: old.Groups, OIDCIssuer: old.OIDCIssuer, OIDCSubject: old.OIDCSubject,
-		WireGuardPublicKey: old.WireGuardPublicKey, TunnelIP: old.TunnelIP, Tunnels: v, TTL: ttl,
-		LatencyMillis: body.Info.LatencyMillis, Reconnections: body.Info.Reconnections,
-		Multipath: old.Multipath, PathMTU: old.PathMTU, Promote: old.Promote, ClientInfo: body.Info,
-	})
+	n, ok := s.sessions.renew(t, v, ttl, body.Info)
+	if !ok {
+		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
 	if old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
@@ -1264,6 +1269,11 @@ func (s *Server) Reload(c Config) {
 	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
 	c.Transport.Metrics = s.Config.Transport.Metrics
 	c.Transport.MTUAware = s.Config.Transport.MTUAware
+	c.Acceleration.override = s.Config.Acceleration.override
+	if s.Config.Acceleration.effective() != c.Acceleration.effective() {
+		s.log.Info("acceleration configuration changes require restart")
+	}
+	c.Acceleration = s.Config.Acceleration
 	oldNative := s.Config.NativeWireGuard.Peers
 	oldNativeEnabled := s.Config.NativeWireGuard.Enabled
 	oldIssuers := s.Config.Auth.OIDC.Issuers
@@ -1301,6 +1311,7 @@ func (s *Server) Reload(c Config) {
 	}
 	s.reloadTunnels(c.Tunnels)
 	if oldNativeEnabled != c.NativeWireGuard.Enabled || !reflect.DeepEqual(oldNative, c.NativeWireGuard.Peers) {
+		s.nativePeerLifetime = token()
 		if !oldNativeEnabled {
 			oldNative = nil
 		}
@@ -1323,9 +1334,9 @@ func (s *Server) Reload(c Config) {
 				auditRecord(s.auditLog, s.log, "authorization_revoked", v, "issuer removed on configuration reload", 0)
 				continue
 			}
-			allowed := map[string]bool{}
+			allowed := map[string]TunnelConfig{}
 			for _, g := range s.grants(grantSubject{Method: "oidc", Email: v.Identity, Domain: emailDomain(v.Identity), Groups: v.Groups}) {
-				allowed[g.Name] = true
+				allowed[g.Name] = g
 			}
 			s.reconcileTunnels(v, allowed)
 			continue
@@ -1341,9 +1352,9 @@ func (s *Server) Reload(c Config) {
 		// Same comment source as auth(), so a comment-granted session is
 		// re-evaluated against the grant it actually holds instead of being
 		// dropped for lack of a comment on every reload.
-		allowed := map[string]bool{}
+		allowed := map[string]TunnelConfig{}
 		for _, g := range s.grants(grantSubject{Method: "ssh", Fingerprint: v.Fingerprint, Comment: comment}) {
-			allowed[g.Name] = true
+			allowed[g.Name] = g
 		}
 		s.reconcileTunnels(v, allowed)
 	}
@@ -1352,18 +1363,19 @@ func (s *Server) Reload(c Config) {
 	s.logSecurityCapabilities(c)
 }
 
-func (s *Server) reconcileTunnels(v Session, allowed map[string]bool) {
-	kept := make([]protocol.Tunnel, 0, len(v.Tunnels))
-	for _, t := range v.Tunnels {
-		if allowed[t.Name] {
-			kept = append(kept, t)
+func (s *Server) reconcileTunnels(v Session, allowed map[string]TunnelConfig) {
+	for _, old := range v.Tunnels {
+		current, ok := allowed[old.Name]
+		// A cached capability must never reach a replacement service that
+		// can process the literal with different authorization semantics.
+		if ok && (!old.EgressNumericDomain || current.nativeSOCKSEgress() && old.VirtualPort == current.VirtualPort) {
+			continue
 		}
-	}
-	if len(kept) != len(v.Tunnels) {
 		s.sessions.Delete(v.Token)
 		s.dropSession(v)
 		s.observe("tunnel_grant_revoked", v.Method)
 		auditRecord(s.auditLog, s.log, "tunnel_grant_revoked", v, "tunnel grant changed on configuration reload", 0)
+		return
 	}
 }
 

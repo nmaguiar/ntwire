@@ -129,6 +129,13 @@ func NewFilter(cfg FilterConfig, asnLookup ASNLookup) (*Filter, error) {
 // IP. When domains are configured too, both the network gate (if configured)
 // and the hostname suffix must match. Reverse mode inverts the combined result.
 func (f *Filter) Allowed(hostname string, ip netip.Addr) bool {
+	return f.AllowedDestination(hostname, "", ip)
+}
+
+// AllowedDestination checks a numeric literal sent as a domain against both
+// the numeric policy and the legacy suffix interpretation of the exact text.
+// Neither interpretation can override a denial by the other.
+func (f *Filter) AllowedDestination(hostname, literal string, ip netip.Addr) bool {
 	// Evaluated before onlyLocal, allowAll and invert, so no configuration can
 	// reach these destinations by accident and invert cannot turn the floor
 	// into an allow.
@@ -159,6 +166,9 @@ func (f *Filter) Allowed(hostname string, ip netip.Addr) bool {
 		match = false
 	default:
 		match = matchesDomainSuffix(hostname, f.domains)
+		if literal != "" && match != matchesDomainSuffix(literal, f.domains) {
+			return false
+		}
 	}
 
 	if f.invert {

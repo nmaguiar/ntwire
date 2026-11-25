@@ -48,7 +48,7 @@ type testSOCKS5Server struct {
 	done     chan struct{}
 }
 
-func startTestSOCKS5Server(t *testing.T, user, pass string) *testSOCKS5Server {
+func startTestSOCKS5Server(t testing.TB, user, pass string) *testSOCKS5Server {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to listen for test SOCKS5 server: %v", err)

@@ -137,6 +137,8 @@ func (c *Connection) applyReconnectedSession(auth authResult) error {
 	if auth.response.TTLSeconds > 0 {
 		c.expiresAt = time.Now().Add(time.Duration(auth.response.TTLSeconds) * time.Second)
 	}
+	c.egressDenied = false
+	c.reconcileEgressLocked()
 	hybrid, stop := c.hybrid, c.dataStop
 	c.mu.Unlock()
 	committed = true

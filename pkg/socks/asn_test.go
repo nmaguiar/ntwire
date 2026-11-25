@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"testing"
-	"time"
 )
 
 func gzipJSON(t *testing.T, v any) []byte {
@@ -27,6 +26,12 @@ func gzipJSON(t *testing.T, v any) []byte {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
+}
+
+type asnIndexEntry struct {
+	ASN   uint32 `json:"a"`
+	Start uint32 `json:"s"`
+	End   uint32 `json:"e"`
 }
 
 func TestASNIndexUpdateAndLookup(t *testing.T) {
@@ -54,6 +59,8 @@ func TestASNIndexUpdateAndLookup(t *testing.T) {
 		wantOK  bool
 	}{
 		{"8.8.8.8", 15169, true},
+		{"2001:db8::1", 0, false},
+		{"::ffff:8.8.8.8", 15169, true},
 		{"8.8.8.0", 15169, true},   // range start (inclusive)
 		{"8.8.8.255", 15169, true}, // range end (inclusive)
 		{"1.1.1.1", 13335, true},
@@ -65,26 +72,6 @@ func TestASNIndexUpdateAndLookup(t *testing.T) {
 		if ok != tt.wantOK || (ok && asn != tt.wantASN) {
 			t.Errorf("Lookup(%s) = (%d, %v), want (%d, %v)", tt.ip, asn, ok, tt.wantASN, tt.wantOK)
 		}
-	}
-}
-
-func TestASNIndexLookupIPv6NeverMatches(t *testing.T) {
-	idx := NewASNIndex()
-	idx.entries = []asnIndexEntry{{ASN: 1, Start: 0, End: 0xFFFFFFFF}}
-	if _, ok := idx.Lookup(netip.MustParseAddr("2001:db8::1")); ok {
-		t.Fatal("IPv6 address should never match the (IPv4-only) ASN index")
-	}
-}
-
-func TestASNIndexUpdateDefaultURLOnEmpty(t *testing.T) {
-	// Update("") should attempt defaultASNURL; we just check it doesn't
-	// panic and returns a network error rather than silently no-op'ing.
-	idx := NewASNIndex()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	err := idx.Update(ctx, "")
-	if err == nil {
-		t.Skip("network reachable and openaf.io responded within 10ms; nothing to assert")
 	}
 }
 

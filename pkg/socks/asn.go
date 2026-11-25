@@ -1,44 +1,28 @@
 package socks
 
 import (
-	"compress/gzip"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
-	"sort"
-	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/nmaguiar/ntwire/pkg/asn"
 )
 
-// defaultASNURL matches socksd's ASNURL default.
-const defaultASNURL = "https://openaf.io/asnidx.json.gz"
+const defaultASNURL = asn.DefaultURL
+const defaultASNRefreshInterval = asn.DefaultRefresh
 
-// defaultASNRefreshInterval matches socksd's periodic ASN index update job
-// (main.yaml: "Periodic ASNs update", scheduled every 4,320,000ms).
-const defaultASNRefreshInterval = 72 * time.Minute
-
-// asnIndexEntry is one row of the downloaded index: an IPv4 range (as
-// big-endian uint32 bounds, inclusive) announced by ASN a. The wire format
-// is a gzip-compressed JSON array of {i,a,s,e} objects; i (the original
-// cache index) is accepted but unused here.
-type asnIndexEntry struct {
-	ASN   uint32 `json:"a"`
-	Start uint32 `json:"s"`
-	End   uint32 `json:"e"`
+type asnSnapshot struct {
+	index    *asn.Index
+	loadedAt time.Time
 }
 
-// ASNIndex is an IPv4-only IP-to-ASN lookup table, matching socksd's index
-// (which is built from 32-bit integer ranges; IPv6 destinations never match
-// an ASN filter, in socksd or here). It is safe for concurrent use and can
-// be refreshed in the background via Refresh.
+// ASNIndex provides the legacy server-side view of the shared IPv4 index.
 type ASNIndex struct {
-	mu       sync.RWMutex
-	entries  []asnIndexEntry // sorted by Start
-	loadedAt time.Time
+	data atomic.Pointer[asnSnapshot]
 }
 
 // NewASNIndex returns an empty index; Lookup returns ok=false until Update
@@ -49,33 +33,18 @@ func NewASNIndex() *ASNIndex {
 
 // Lookup implements ASNLookup.
 func (a *ASNIndex) Lookup(ip netip.Addr) (uint32, bool) {
-	ip = ip.Unmap()
-	if !ip.Is4() {
-		return 0, false
-	}
-	b := ip.As4()
-	n := binary.BigEndian.Uint32(b[:])
-
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	entries := a.entries
-	i := sort.Search(len(entries), func(i int) bool { return entries[i].Start > n })
-	if i == 0 {
-		return 0, false
-	}
-	e := entries[i-1]
-	if n >= e.Start && n <= e.End {
-		return e.ASN, true
+	if snapshot := a.data.Load(); snapshot != nil {
+		return snapshot.index.Lookup(ip)
 	}
 	return 0, false
 }
 
-// Loaded reports whether the index has ever been successfully populated,
-// and when.
+// Loaded reports whether the index has data, and when it was last updated.
 func (a *ASNIndex) Loaded() (bool, time.Time) {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return len(a.entries) > 0, a.loadedAt
+	if snapshot := a.data.Load(); snapshot != nil {
+		return snapshot.index.Len() > 0, snapshot.loadedAt
+	}
+	return false, time.Time{}
 }
 
 // Update downloads and replaces the index from url (defaulting to
@@ -96,22 +65,11 @@ func (a *ASNIndex) Update(ctx context.Context, url string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("socks: asn index download failed: %s", resp.Status)
 	}
-	gz, err := gzip.NewReader(resp.Body)
+	index, err := asn.Decode(resp.Body, false)
 	if err != nil {
 		return err
 	}
-	defer gz.Close()
-
-	var raw []asnIndexEntry
-	if err := json.NewDecoder(gz).Decode(&raw); err != nil {
-		return err
-	}
-	sort.Slice(raw, func(i, j int) bool { return raw[i].Start < raw[j].Start })
-
-	a.mu.Lock()
-	a.entries = raw
-	a.loadedAt = time.Now()
-	a.mu.Unlock()
+	a.data.Store(&asnSnapshot{index: index, loadedAt: time.Now()})
 	return nil
 }
 

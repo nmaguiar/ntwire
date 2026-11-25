@@ -101,6 +101,10 @@ transport:
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
 
+acceleration:
+  mode: auto                              # auto, off, or required. Restart to change.
+  ebpf: false                             # opt in to aggregate Linux kernel packet counters
+
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
 destination_policies:
@@ -242,6 +246,7 @@ tunnels:
 # - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
 #   target      : socks                   # required sentinel value that selects the SOCKS target type
 #   virtual_port: 11080
+#   egress_class: internet-v1             # optional Smart Egress enrollment label for equivalent governed SOCKS policies
 #   allow       :
 #   - group:engineering
 #   socks       :
@@ -259,6 +264,7 @@ tunnels:
 #     reverse_filters : false              # invert the above from an allow-list into a deny-list
 #     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
 #     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+#     allow_destination_binding: false  # allow authorized hostname ASN classification on native SOCKS tunnels
 #     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
 #     allow_local_egress: false            # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 #     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
@@ -301,6 +307,25 @@ audit:
   "additionalProperties": false,
   "description": "Complete reference for ntwire-server YAML configuration.",
   "properties": {
+    "acceleration": {
+      "additionalProperties": false,
+      "properties": {
+        "ebpf": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "off",
+            "required"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "admin": {
       "additionalProperties": false,
       "properties": {
@@ -790,6 +815,9 @@ audit:
           "docs_url": {
             "type": "string"
           },
+          "egress_class": {
+            "type": "string"
+          },
           "instructions": {
             "type": "string"
           },
@@ -842,6 +870,9 @@ audit:
                 "type": "boolean"
               },
               "allow_bind": {
+                "type": "boolean"
+              },
+              "allow_destination_binding": {
                 "type": "boolean"
               },
               "allow_local_egress": {

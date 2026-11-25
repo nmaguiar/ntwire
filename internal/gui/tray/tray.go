@@ -43,16 +43,16 @@ func pickRegularIcon(s icons.State) []byte {
 // UpdateStatus supplies the updater tray indicator before Run starts.
 var UpdateStatus func() string
 
-func Run(mgr *manager.Manager, openSettings, openSetup func()) {
-	systray.Run(func() { onReady(mgr, openSettings, openSetup) }, func() {})
+func Run(mgr *manager.Manager, openSettings, openSetup func(), openSmartDashboard func(string) error) {
+	systray.Run(func() { onReady(mgr, openSettings, openSetup, openSmartDashboard) }, func() {})
 }
 
-func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
+func onReady(mgr *manager.Manager, openSettings, openSetup func(), openSmartDashboard func(string) error) {
 	systray.SetTemplateIcon(icons.TemplatePNG(icons.StateNone), pickRegularIcon(icons.StateNone))
 	systray.SetTooltip("ntwire")
 
 	lastUpdateTitle := "Check for updates…"
-	m := newMenu(mgr, openSettings, openSetup)
+	m := newMenu(mgr, openSettings, openSetup, openSmartDashboard)
 	go func() {
 		for range m.update.ClickedCh {
 			if openSettings != nil {
@@ -62,6 +62,7 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 	}()
 
 	m.render(mgr.Snapshots())
+	m.renderSmartProxy()
 
 	updates, unsubscribe := mgr.Subscribe()
 	go func() {
@@ -81,6 +82,7 @@ func onReady(mgr *manager.Manager, openSettings, openSetup func()) {
 				}
 				dirty = true
 			case <-ticker.C:
+				m.renderSmartProxy()
 				if UpdateStatus != nil {
 					title := UpdateStatus()
 					if title != lastUpdateTitle {

@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ntwire-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: server
+          args: ["--config", "/etc/ntwire/ntwire.yaml", "--acceleration=required"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: [ALL]
+              add: [NET_ADMIN, SYS_ADMIN, NET_BIND_SERVICE]

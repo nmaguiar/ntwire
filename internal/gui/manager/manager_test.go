@@ -742,3 +742,46 @@ func TestProxyEditRequiresReconnectWithoutInterruptingSession(t *testing.T) {
 		t.Fatal("reconnect warning did not clear")
 	}
 }
+
+func TestReorderProfiles_PersistsAndRejectsInvalidLists(t *testing.T) {
+	m, path := newTestManager(t, nil)
+	for _, p := range []config.Profile{{ID: "z", Name: "Zulu"}, {ID: "a", Name: "Alpha"}} {
+		if _, err := m.AddProfile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := m.Snapshots(); len(got) != 2 || got[0].Profile.ID != "a" {
+		t.Fatalf("default profile order: %+v", got)
+	}
+	updates, unsubscribe := m.Subscribe()
+	defer unsubscribe()
+	if err := m.ReorderProfiles([]string{"z", "a"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case update := <-updates:
+		if update.ProfileID != "" {
+			t.Fatalf("expected profile list change, got %+v", update)
+		}
+	default:
+		t.Fatal("profile list change was not published")
+	}
+	for _, invalid := range [][]string{{"a"}, {"a", "a"}, {"a", "missing"}} {
+		if err := m.ReorderProfiles(invalid); err == nil {
+			t.Fatalf("accepted invalid order %v", invalid)
+		}
+	}
+	reloaded, err := New(nil, path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Snapshots(); len(got) != 2 || got[0].Profile.ID != "z" || got[1].Profile.ID != "a" {
+		t.Fatalf("reloaded profile order: %+v", got)
+	}
+	if _, err := reloaded.AddProfile(config.Profile{ID: "b", Name: "Aardvark"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Profiles(); len(got) != 3 || got[2].ID != "b" {
+		t.Fatalf("new profile should follow explicitly ordered profiles: %+v", got)
+	}
+}

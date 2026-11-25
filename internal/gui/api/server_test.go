@@ -629,13 +629,22 @@ func TestEventsStreamsInitialSnapshotThenUpdate(t *testing.T) {
 
 	reader := bufio.NewReader(eventsResp.Body)
 	readEvent := func() manager.Update {
+		event := ""
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				t.Fatalf("reading SSE stream: %v", err)
 			}
 			line = strings.TrimSpace(line)
-			if !strings.HasPrefix(line, "data: ") {
+			if strings.HasPrefix(line, "event: ") {
+				event = strings.TrimPrefix(line, "event: ")
+				continue
+			}
+			if line == "" {
+				event = ""
+				continue
+			}
+			if event != "" || !strings.HasPrefix(line, "data: ") {
 				continue
 			}
 			var u manager.Update
@@ -784,5 +793,20 @@ func TestBrowserBootstrapPreservesSetupAndQueryAuthentication(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != 404 {
 		t.Fatal("host-wide cookie authenticates API")
+	}
+}
+
+func TestProfileOrder_UpdatesList(t *testing.T) {
+	s := newTestServer(t)
+	a := decode[config.Profile](t, s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "Alpha"}))
+	b := decode[config.Profile](t, s.do(t, http.MethodPost, "/api/profiles", config.Profile{Name: "Bravo"}))
+	resp := s.do(t, http.MethodPut, "/api/profile-order", []string{b.ID, a.ID})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reorder status = %d, want 204", resp.StatusCode)
+	}
+	list := decode[[]manager.Snapshot](t, s.get(t, "/api/profiles"))
+	if len(list) != 2 || list[0].Profile.ID != b.ID || list[1].Profile.ID != a.ID {
+		t.Fatalf("profile list order = %+v", list)
 	}
 }

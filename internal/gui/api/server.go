@@ -119,6 +119,7 @@ func (s *Server) routes() {
 	}))
 
 	s.updateRoutes()
+	s.smartProxyRoutes()
 	// The settings UI itself. Token-gated like every other route -- the
 	// page's own script reads its token back out of location.search for
 	// subsequent /api/* fetches, the same convention pkg/client's status
@@ -130,6 +131,7 @@ func (s *Server) routes() {
 		writeJSON(w, http.StatusOK, map[string]string{"version": buildinfo.String()})
 	}))
 	s.mux.HandleFunc("GET /api/profiles", s.requireToken(s.handleListProfiles))
+	s.mux.HandleFunc("PUT /api/profile-order", s.requireToken(s.handleReorderProfiles))
 	s.mux.HandleFunc("POST /api/profiles", s.requireToken(s.handleCreateProfile))
 	s.mux.HandleFunc("PUT /api/profiles/{id}", s.requireToken(s.handleUpdateProfile))
 	s.mux.HandleFunc("DELETE /api/profiles/{id}", s.requireToken(s.handleDeleteProfile))
@@ -166,6 +168,19 @@ func writeError(w http.ResponseWriter, status int, err error) {
 
 func (s *Server) handleListProfiles(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.mgr.Snapshots())
+}
+
+func (s *Server) handleReorderProfiles(w http.ResponseWriter, r *http.Request) {
+	var ids []string
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&ids); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.mgr.ReorderProfiles(ids); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
@@ -501,12 +516,30 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for _, snap := range s.mgr.Snapshots() {
 		writeSSE(w, manager.Update{ProfileID: snap.Profile.ID, Snapshot: snap})
 	}
+	var lastSmart string
+	sendSmart := func() {
+		b, err := json.Marshal(s.mgr.SmartProxyStatus())
+		if err == nil && string(b) != lastSmart {
+			lastSmart = string(b)
+			fmt.Fprintf(w, "event: smart-proxy\ndata: %s\n\n", b)
+		}
+	}
+	sendSmart()
 	flusher.Flush()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case u := <-updates:
-			writeSSE(w, u)
+			if u.ProfileID == "" {
+				fmt.Fprint(w, "event: profiles\ndata: {}\n\n")
+			} else {
+				writeSSE(w, u)
+			}
+			flusher.Flush()
+		case <-ticker.C:
+			sendSmart()
 			flusher.Flush()
 		case <-r.Context().Done():
 			return

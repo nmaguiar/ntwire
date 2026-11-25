@@ -39,7 +39,26 @@ func ClientCommand() Command {
 			})
 	}
 
+	proxyConfig := Flag{Name: "config", Usage: "router YAML configuration", TakesValue: true, IsFilePath: true}
+	proxyJSON := Flag{Name: "json", Usage: "print JSON status"}
+	proxyGroup := Flag{Name: "group", Usage: "proxy group", TakesValue: true}
+	proxyFlags := []Flag{proxyConfig, proxyJSON}
+	memberFlags := []Flag{
+		proxyConfig, proxyJSON, proxyGroup,
+		{Name: "profile", Usage: "egress profile ID", TakesValue: true},
+		{Name: "tunnel", Usage: "egress tunnel name", TakesValue: true},
+	}
 	subcmds = append(subcmds,
+		Command{Name: "proxy", Summary: "run the aggregate SOCKS5/HTTP proxy", Flags: proxyFlags,
+			Subcommands: []Command{
+				{Name: "status", Summary: "show router status", Flags: proxyFlags},
+				{Name: "reload", Summary: "apply router configuration", Flags: proxyFlags},
+				{Name: "pac", Summary: "print a group PAC script", Flags: []Flag{proxyConfig, proxyGroup}},
+				{Name: "prefer", Summary: "prefer an approved egress", Flags: memberFlags},
+				{Name: "exclude", Summary: "temporarily exclude an egress", Flags: memberFlags},
+				{Name: "include", Summary: "remove an egress exclusion", Flags: memberFlags},
+				{Name: "clear-preference", Summary: "clear the group's preferred egress", Flags: []Flag{proxyConfig, proxyJSON, proxyGroup}},
+			}},
 		Command{Name: "cert", Summary: "inspect TLS certificates", Subcommands: []Command{{Name: "inspect", Summary: "inspect without trusting or authenticating", Flags: []Flag{
 			{Name: "json", Usage: "emit JSON"},
 			{Name: "known-servers", Usage: "known_servers file (read only)", TakesValue: true, IsFilePath: true},
@@ -59,7 +78,7 @@ func ClientCommand() Command {
 		Command{
 			Name:       "help",
 			Summary:    "show help for a command",
-			ArgChoices: []string{"cert", "keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
+			ArgChoices: []string{"cert", "keygen", "connect", "list", "proxy", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
 		},
 	)
 
@@ -118,6 +137,7 @@ func ServerCommand() Command {
 		Summary: "ntwire tunnel server",
 		Flags: []Flag{
 			{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+			{Name: "acceleration", Usage: "override the configured acceleration mode", TakesValue: true, Choices: []string{"auto", "off", "required"}},
 			{Name: "list", Usage: "list configured server tunnels and proxy PAC endpoints and exit", TakesValue: false},
 			{Name: "json", Usage: "output in JSON format (used with -list)", TakesValue: false},
 			{Name: "print-sample-config", Usage: "print a fully commented sample YAML configuration and exit", TakesValue: false},

@@ -4,6 +4,10 @@ This guide covers the `ntwire` command-line client, its local state, the GUI,
 and SSO. For a first connection or an official WireGuard client, start with
 [CONNECTING.md](CONNECTING.md).
 
+See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) for a stable local SOCKS5/HTTP endpoint backed by multiple active client processes.
+
+For proxy-side hostname resolution with curl, use `--proxy socks5h://127.0.0.1:1080`. Chromium sends IPv4 and IPv6 literals in the SOCKS5 domain field. Smart Egress Proxy accepts those requests when the selected server and, for the standalone CLI, its publisher advertise compatible handling. Use HTTP for Chromium numeric URLs through older or third-party members. Direct individual SOCKS listeners continue to carry SOCKS frames to the configured egress.
+
 ## Commands
 
 | Command | Behavior |
@@ -239,3 +243,17 @@ can be persisted in `~/.ntwire/config.yaml` under the key shown.
 | `--mtu-aware` | `mtu_aware` | Retry lost MTU probes, probe the size a full tunnel packet needs, report each UDP path's `mtu_state` (`ntwire transport -v`), and rank `limited` paths after others on failover. | Any multipath server (path MTU probing); `transport.mtu_aware` is the server-side equivalent. |
 | `--tunnel-mtu N` | `tunnel_mtu` | Lower the WireGuard tunnel MTU (1280–1420, default 1420) for links with extra encapsulation. The value is reported to the server so an MTU-aware server probes for the same size. | Nothing |
 | `--promote` | `promote` | **Experimental.** Move a healthy session from the WebSocket bootstrap to a proven, clearly better UDP path, coordinated with the server so both directions switch together (`path-promote-v1`). Without it a healthy WSS session stays on WSS. | `transport.promotion` |
+
+### Smart Proxy split routing
+
+Use `ntwire proxy --config egress.yaml` for a local SOCKS5 and HTTP listener with ordered proxy, direct, and deny rules. A direct-only group can operate without a running client profile or publisher. Direct traffic uses the client network and its source IP. Numeric ASN rules use the client’s cached IPv4 index and can select an approved existing tunnel without a server upgrade. Unresolved classification fails closed. Hostname ASN classification requires an explicit DNS scope, and pinned tunneled connections additionally require destination binding support.
+
+```sh
+ntwire proxy --config egress.yaml
+ntwire proxy status --config egress.yaml --json
+ntwire proxy reload --config egress.yaml
+curl --proxy socks5h://127.0.0.1:1080 https://public.example.net/
+curl --proxy http://127.0.0.1:1080 https://public.example.net/
+```
+
+Both proxy commands submit the destination to the same group policy. See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) for direct LAN, ASN, DNS, and mixed-version examples.

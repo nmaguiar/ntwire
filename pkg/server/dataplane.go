@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,7 +25,7 @@ import (
 )
 
 type dataPlane struct {
-	stack     *wgnet.Stack
+	stack     serverStack
 	serverIP  netip.Addr
 	mu        sync.Mutex
 	nextIP    netip.Addr
@@ -99,7 +100,24 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 	}
 	var sv *socks.Server
 	var err error
+	var binding func(context.Context) bool
+	if t.nativeSOCKSEgress() && sc.AllowDestinationBinding {
+		binding = func(ctx context.Context) bool {
+			principal, valid := principalFromContext(ctx)
+			if !valid {
+				return false
+			}
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			current, granted := s.principalForIPLocked(principal.TunnelIP.String())
+			tunnel, configured := s.tunnelConfigLocked(t.Name)
+			return granted && current.peerLifetime == principal.peerLifetime && current.Identity == principal.Identity &&
+				current.Method == principal.Method && current.Policy == principal.Policy && current.Tunnels[t.Name] &&
+				configured && tunnel.nativeSOCKSEgress() && tunnel.Socks.AllowDestinationBinding && reflect.DeepEqual(tunnel, t)
+		}
+	}
 	sv, err = socks.New(socks.Config{
+		AllowDestinationBinding: binding,
 		Filter: socks.FilterConfig{
 			AllowLocalEgress: t.Socks.AllowLocalEgress,
 			OnlyLocal:        sc.OnlyLocal,
@@ -110,12 +128,12 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 			AllowAll:         sc.AllowAll,
 		},
 		ASNLookup: s.asn,
-		Authorize: func(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) bool {
+		AuthorizeDestination: func(ctx context.Context, hostname, literal string, ip netip.Addr, port uint16, protocol string) bool {
 			principal, ok := principalFromContext(ctx)
 			// Accepted SOCKS sockets can outlive their listener across reload.
 			// Resolve the attachment for every new destination command.
 			current, exists := s.tunnelConfig(t.Name)
-			return ok && exists && current.IsSocks() && s.destinationAllowed(ctx, principal, current, hostname, ip, port, protocol)
+			return ok && exists && current.IsSocks() && s.destinationAllowedRequest(ctx, principal, current, hostname, literal, ip, port, protocol)
 		},
 		DNSTimeout:         sc.DNSTimeout,
 		AllowBind:          sc.AllowBind,
@@ -141,9 +159,12 @@ func (s *Server) newSocksRuntime(t TunnelConfig, planes ...*dataPlane) *socksRun
 				_ = pc.Close()
 				return nil, false
 			}
-			stop := make(chan struct{})
-			go s.proxySocksUDP(pc, principal, t, sv, stop)
-			return &socks.UDPAssociation{Addr: addr.Addr(), Port: addr.Port(), Close: func() { close(stop); _ = pc.Close() }}, true
+			lifetime, endRelay := context.WithCancel(ctx)
+			go func() {
+				defer endRelay()
+				s.proxySocksUDP(pc, principal, t, sv, lifetime.Done())
+			}()
+			return &socks.UDPAssociation{Addr: addr.Addr(), Port: addr.Port(), Lifetime: lifetime, Close: func() { endRelay(); _ = pc.Close() }}, true
 		},
 		Logger: log,
 		Dial:   dial,
@@ -166,15 +187,18 @@ func socksConfigChanged(a, b *SocksConfig) bool {
 	return !reflect.DeepEqual(*a, *b)
 }
 
-// StartDataPlane starts an unprivileged WireGuard UDP endpoint and TCP
-// virtual-port listeners inside its netstack. It must be called once at boot.
-func (s *Server) StartDataPlane() error {
+// startDataPlane starts WireGuard and its virtual-port listeners at boot.
+func (s *Server) startDataPlane(newStack func(wgnet.Config) (serverStack, error)) error {
 	prefix, err := netip.ParsePrefix(s.Config.Network.TunnelCIDR)
 	if err != nil {
 		return err
 	}
 	serverIP := prefix.Masked().Addr().Next()
 	port, err := portOf(s.Config.Listen.WireGuard)
+	if err != nil {
+		return err
+	}
+	privateKey, err := s.wireGuardPrivateKey()
 	if err != nil {
 		return err
 	}
@@ -252,27 +276,27 @@ func (s *Server) StartDataPlane() error {
 			return true
 		})
 	}
-	privateKey, err := s.wireGuardPrivateKey()
+	st, err := newStack(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
 	if err != nil {
-		return err
-	}
-	st, err := wgnet.New(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
-	if err != nil {
+		if closeErr := bind.Close(); closeErr != nil {
+			return errors.Join(err, errAccelerationCleanup, closeErr)
+		}
 		return err
 	}
 	d := &dataPlane{stack: st, serverIP: serverIP, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
-	if url, ok := s.asnRefreshURL(); ok {
-		go s.asn.Refresh(url, 0, s.log, d.stopASN)
+	fail := func(err error) error {
+		if closeErr := s.closeDataPlane(); closeErr != nil {
+			return errors.Join(err, errAccelerationCleanup, closeErr)
+		}
+		return err
 	}
 	if err := s.installNativePeers(); err != nil {
-		s.Close()
-		return err
+		return fail(err)
 	}
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {
-			s.Close()
-			return err
+			return fail(err)
 		}
 	}
 	if s.Config.Network.DNS.IsEnabled() {
@@ -284,6 +308,14 @@ func (s *Server) StartDataPlane() error {
 		if err := s.startWebPortal(d); err != nil {
 			s.log.Warn("in-tunnel web portal startup failed", "error", err)
 		}
+	}
+	if staged, ok := st.(interface{ activate() error }); ok {
+		if err := staged.activate(); err != nil {
+			return fail(err)
+		}
+	}
+	if url, ok := s.asnRefreshURL(); ok {
+		go s.asn.Refresh(url, 0, s.log, d.stopASN)
 	}
 	go s.reapLoop(d)
 	return nil
@@ -675,12 +707,33 @@ func (s *Server) dialFixedUDP(principal DataPlanePrincipal, t TunnelConfig) (*ne
 // association. The listener is private to that association and accepts only
 // the authenticated tunnel IP that opened its TCP control connection.
 func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, t TunnelConfig, sv *socks.Server, stop <-chan struct{}) {
+	defer pc.Close()
 	idle := t.Socks.UDPIdleTimeout
 	if idle <= 0 {
 		idle = 2 * time.Minute
 	}
-	type flow struct{ c *net.UDPConn }
-	flows := map[string]flow{}
+	type flow struct {
+		c  *net.UDPConn
+		ip netip.Addr
+	}
+	type destinationKey struct {
+		host string
+		ip   netip.Addr
+		port uint16
+	}
+	flows := map[destinationKey]flow{}
+	ownerIP := principal.TunnelIP.String()
+	currentOwner := func() (DataPlanePrincipal, TunnelConfig, bool) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		current, granted := s.principalForIPLocked(ownerIP)
+		if !granted || !current.Tunnels[t.Name] || current.peerLifetime != principal.peerLifetime ||
+			current.Identity != principal.Identity || current.Method != principal.Method {
+			return DataPlanePrincipal{}, TunnelConfig{}, false
+		}
+		tunnel, configured := s.tunnelConfigLocked(t.Name)
+		return current, tunnel, configured && tunnel.IsSocks() && reflect.DeepEqual(tunnel.Socks, t.Socks) && tunnel.VirtualPort == t.VirtualPort
+	}
 	var mu sync.Mutex
 	defer func() {
 		mu.Lock()
@@ -701,34 +754,54 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 		default:
 		}
 		host, _, e := net.SplitHostPort(src.String())
-		if e != nil || host != principal.TunnelIP.String() {
+		if e != nil || host != ownerIP {
 			continue
 		}
-		hostname, ip, port, payload, ok := parseSocksUDP(b[:n])
-		if !ok {
+		dst, offset, err := socks.DatagramDestination(b[:n])
+		if err != nil {
 			continue
 		}
-		key := net.JoinHostPort(ip.String(), fmt.Sprint(port))
-		if hostname != "" {
-			key = hostname + ":" + fmt.Sprint(port)
+		current, tunnel, owned := currentOwner()
+		if !owned {
+			return
+		}
+		ctx := context.WithValue(context.Background(), principalContextKey{}, current)
+		key := destinationKey{ip: dst.IP(), port: dst.Port}
+		if !key.ip.IsValid() {
+			key.host = dst.Host
 		}
 		mu.Lock()
 		f, exists := flows[key]
+		count := len(flows)
 		mu.Unlock()
-		if !exists {
-			resolved, allowed := sv.AuthorizeUDP(context.Background(), hostname, ip, port)
+		if exists {
+			// A cached binary flow does not carry the legacy suffix check
+			// required for a domain-form literal addressed to that same IP.
+			if dst.NumericDomain() {
+				if _, allowed := sv.AuthorizeDatagram(ctx, dst); !allowed {
+					continue
+				}
+			} else if !s.destinationAllowed(ctx, current, tunnel, key.host, f.ip, dst.Port, "udp") {
+				continue
+			}
+		} else {
+			const maxSOCKSUDPFlows = 64
+			if count >= maxSOCKSUDPFlows {
+				continue
+			}
+			resolved, allowed := sv.AuthorizeDatagram(ctx, dst)
 			if !allowed {
 				continue
 			}
-			out, e := s.dialSocksUDP(principal, t, "", resolved, port)
+			out, e := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(resolved.Unmap(), dst.Port)))
 			if e != nil {
 				continue
 			}
-			f = flow{out}
+			f = flow{c: out, ip: resolved}
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
-			go func(key string, f flow, src net.Addr) {
+			go func(key destinationKey, f flow, src net.Addr) {
 				defer f.c.Close()
 				defer func() { mu.Lock(); delete(flows, key); mu.Unlock() }()
 				rb := make([]byte, 65535)
@@ -736,6 +809,10 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 					_ = f.c.SetReadDeadline(time.Now().Add(idle))
 					n, e := f.c.Read(rb)
 					if e != nil {
+						return
+					}
+					if _, _, owned := currentOwner(); !owned {
+						_ = pc.Close()
 						return
 					}
 					frame := socksUDPFrame(f.c.RemoteAddr().(*net.UDPAddr).AddrPort(), rb[:n])
@@ -746,94 +823,11 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 			}(key, f, src)
 		}
 		_ = f.c.SetReadDeadline(time.Now().Add(idle))
-		_, _ = f.c.Write(payload)
+		_, _ = f.c.Write(b[offset:n])
 	}
 }
 
-func (s *Server) dialSocksUDP(p DataPlanePrincipal, t TunnelConfig, hostname string, ip netip.Addr, port uint16) (*net.UDPConn, error) {
-	if !ip.IsValid() {
-		var e error
-		ips, e := net.DefaultResolver.LookupNetIP(context.Background(), "ip", hostname)
-		if e != nil {
-			return nil, e
-		}
-		for _, candidate := range ips {
-			if s.destinationAllowed(context.Background(), p, t, hostname, candidate, port, "udp") {
-				ip = candidate
-				break
-			}
-		}
-	} else if !s.destinationAllowed(context.Background(), p, t, "", ip, port, "udp") {
-		return nil, fmt.Errorf("destination policy denied")
-	}
-	if !ip.IsValid() {
-		return nil, fmt.Errorf("no permitted destination")
-	}
-	return net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), port)))
-}
-
-func parseSocksUDP(b []byte) (string, netip.Addr, uint16, []byte, bool) {
-	if len(b) < 4 || b[0] != 0 || b[1] != 0 || b[2] != 0 {
-		return "", netip.Addr{}, 0, nil, false
-	}
-	i := 4
-	var host string
-	var ip netip.Addr
-	switch b[3] {
-	case 1:
-		if len(b) < i+4+2 {
-			return "", ip, 0, nil, false
-		}
-		var x [4]byte
-		copy(x[:], b[i:i+4])
-		ip = netip.AddrFrom4(x)
-		i += 4
-	case 4:
-		if len(b) < i+16+2 {
-			return "", ip, 0, nil, false
-		}
-		var x [16]byte
-		copy(x[:], b[i:i+16])
-		ip = netip.AddrFrom16(x)
-		i += 16
-	case 3:
-		if len(b) < i+1 {
-			return "", ip, 0, nil, false
-		}
-		l := int(b[i])
-		i++
-		if len(b) < i+l+2 || l == 0 {
-			return "", ip, 0, nil, false
-		}
-		host = string(b[i : i+l])
-		i += l
-	default:
-		return "", ip, 0, nil, false
-	}
-	port := uint16(b[i])<<8 | uint16(b[i+1])
-	return host, ip, port, b[i+2:], true
-}
-func socksUDPFrame(ap netip.AddrPort, p []byte) []byte {
-	ip := ap.Addr().Unmap()
-	if ip.Is4() {
-		a := ip.As4()
-		b := make([]byte, 10+len(p))
-		b[3] = 1
-		copy(b[4:8], a[:])
-		b[8] = byte(ap.Port() >> 8)
-		b[9] = byte(ap.Port())
-		copy(b[10:], p)
-		return b
-	}
-	a := ip.As16()
-	b := make([]byte, 22+len(p))
-	b[3] = 4
-	copy(b[4:20], a[:])
-	b[20] = byte(ap.Port() >> 8)
-	b[21] = byte(ap.Port())
-	copy(b[22:], p)
-	return b
-}
+func socksUDPFrame(ap netip.AddrPort, p []byte) []byte { return socks.DatagramFrame(ap, p) }
 func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	defer in.Close()
 	t := tl.config
@@ -998,6 +992,10 @@ func principalFromContext(ctx context.Context) (DataPlanePrincipal, bool) {
 func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.principalForIPLocked(ip)
+}
+
+func (s *Server) principalForIPLocked(ip string) (DataPlanePrincipal, bool) {
 	if principal, ok := s.sessions.principalForIP(ip); ok {
 		return principal, true
 	}
@@ -1008,7 +1006,7 @@ func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 			for _, tunnel := range peer.Tunnels {
 				grants[tunnel] = true
 			}
-			return DataPlanePrincipal{Method: "native-wireguard", Identity: peer.Name, TunnelIP: addr, Tunnels: grants, Policy: peer.DestinationPolicy}, true
+			return DataPlanePrincipal{peerLifetime: s.nativePeerLifetime, Method: "native-wireguard", Identity: peer.Name, TunnelIP: addr, Tunnels: grants, Policy: peer.DestinationPolicy}, true
 		}
 	}
 	return DataPlanePrincipal{}, false
@@ -1181,6 +1179,12 @@ func (s *Server) reapSessionsLocked() {
 	}
 }
 func (s *Server) Close() {
+	if err := s.closeDataPlane(); err != nil {
+		s.log.Error("data plane cleanup failed", "error", err)
+	}
+}
+
+func (s *Server) closeDataPlane() error {
 	s.relayLifecycleMu.Lock()
 	defer s.relayLifecycleMu.Unlock()
 	if u := s.udpr.Swap(nil); u != nil {
@@ -1198,7 +1202,7 @@ func (s *Server) Close() {
 		close(direct.stop)
 	}
 	if d == nil {
-		return
+		return nil
 	}
 	s.nativeRelayMu.Lock()
 	if s.nativeRelayStop != nil {
@@ -1222,5 +1226,5 @@ func (s *Server) Close() {
 	if d.portalLn != nil {
 		_ = d.portalLn.Close()
 	}
-	_ = d.stack.Close()
+	return d.stack.Close()
 }

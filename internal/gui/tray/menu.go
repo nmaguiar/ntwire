@@ -3,6 +3,7 @@ package tray
 import (
 	"fmt"
 	"os"
+	"slices"
 	"sync"
 
 	"fyne.io/systray"
@@ -96,21 +97,28 @@ type menu struct {
 	openSettings func()
 	openSetup    func()
 
-	profiles *slotPool // keyed by profile ID
-	slots    [maxProfiles]profileSlot
+	profileOrder []string
+	profiles     *slotPool // keyed by profile ID
+	slots        [maxProfiles]profileSlot
 
 	mu          sync.Mutex
 	lastState   map[string]manager.State
 	currentIcon icons.State
 	iconSetOnce bool
 
-	startAtLogin *systray.MenuItem
-	update       *systray.MenuItem
-	quit         *systray.MenuItem
+	openSmartDashboard func(string) error
+
+	startAtLogin  *systray.MenuItem
+	update        *systray.MenuItem
+	quit          *systray.MenuItem
+	smartProxy    *smartProxySlot
+	smartGroup    string
+	lastSmartName string
+	lastSmart     []manager.SmartProxyGroupState
 }
 
-func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
-	m := &menu{mgr: mgr, openSettings: openSettings, openSetup: openSetup, lastState: map[string]manager.State{}}
+func newMenu(mgr *manager.Manager, openSettings, openSetup func(), openSmartDashboard func(string) error) *menu {
+	m := &menu{mgr: mgr, openSettings: openSettings, openSetup: openSetup, openSmartDashboard: openSmartDashboard, lastState: map[string]manager.State{}}
 
 	profileItems := make([]Slot, maxProfiles)
 	for i := range m.slots {
@@ -170,6 +178,8 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 	m.profiles = newSlotPool(profileItems)
 
 	systray.AddSeparator()
+	m.smartProxy = newSmartProxySlot()
+	systray.AddSeparator()
 	addConnection := systray.AddMenuItem("Add connection…", "Set up a new ntwire server or relay connection")
 	if openSetup != nil {
 		go func() {
@@ -223,23 +233,23 @@ func newMenu(mgr *manager.Manager, openSettings, openSetup func()) *menu {
 // fixed pool created in newMenu, so this only shows, hides, relabels and
 // rebinds click actions; nothing is ever added or removed after startup.
 func (m *menu) render(snaps []manager.Snapshot) {
-	keep := make(map[string]bool, len(snaps))
+	visible := snaps[:min(len(snaps), maxProfiles)]
+	order := make([]string, 0, len(visible))
 	m.mu.Lock()
 	for _, s := range snaps {
-		keep[s.Profile.ID] = true
 		m.lastState[s.Profile.ID] = s.State
 	}
 	m.mu.Unlock()
 
-	m.profiles.releaseAllExceptFunc(keep, m.clearProfileChildren)
-
-	shown := 0
-	for _, snap := range snaps {
-		if shown >= maxProfiles {
-			break // beyond the fixed pool; visible in the settings window only
-		}
+	for _, snap := range visible {
+		order = append(order, snap.Profile.ID)
+	}
+	if !slices.Equal(m.profileOrder, order) {
+		m.profiles.releaseAllExceptFunc(nil, m.clearProfileChildren)
+		m.profileOrder = order
+	}
+	for _, snap := range visible {
 		m.renderProfile(snap)
-		shown++
 	}
 
 	m.setIcon(aggregateState(snaps))

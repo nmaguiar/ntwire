@@ -40,3 +40,13 @@ Keep `keys/` out of source control, and never commit private keys or production
 credentials. For production deployment,
 TLS, OIDC, and relay guidance, see [docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)
 and [docs/CONFIGURATION.md](../../docs/CONFIGURATION.md).
+
+### Kernel backend evaluation on Linux
+
+Apply the acceleration override after the standard compose file:
+
+```sh
+docker compose -f docker-compose.yml -f compose-acceleration.yaml up --build
+```
+
+The override uses explicit `required` mode. See [Linux acceleration](../../docs/LINUX-ACCELERATION.md) for permissions, diagnostics and fallback.

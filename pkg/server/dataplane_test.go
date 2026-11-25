@@ -33,7 +33,7 @@ func startTestDataPlaneWithCIDR(t *testing.T, s *Server, cidr string) {
 	t.Helper()
 	s.Config.Network.TunnelCIDR = cidr
 	s.Config.Listen.WireGuard = "127.0.0.1:0"
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatalf("StartDataPlane: %v", err)
 	}
 	t.Cleanup(s.Close)
@@ -281,7 +281,7 @@ func TestProxySocksOverRealWireGuardConn(t *testing.T) {
 	})
 	s.Config.Network.TunnelCIDR = "100.64.0.0/16"
 	s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(wgPort)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatalf("StartDataPlane: %v", err)
 	}
 	t.Cleanup(s.Close)

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/relay"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
@@ -334,7 +337,7 @@ func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServerWithPortal(t *testi
 	serverCfg.Relay.Fingerprint = r.Fingerprint()
 
 	s := New(serverCfg, nil)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatalf("StartDataPlane: %v", err)
 	}
 	defer s.Close()
@@ -558,9 +561,21 @@ func TestUnchangedWireGuardClient_ThroughRelay_ToNTWireServerWithPortal(t *testi
 	}
 }
 
+type renewalResponseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *renewalResponseWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *renewalResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // TestUnchangedWireGuardClient_MultiClientThroughRelay verifies that multiple
 // unmodified WireGuard clients can concurrently establish independent tunnels
-// and stream data through a single tenant relay UDP port to the server.
+// through one relay UDP port while an existing WebSocket client renews.
 func TestUnchangedWireGuardClient_MultiClientThroughRelay(t *testing.T) {
 	signer, _, err := sshkey.GenerateEd25519()
 	if err != nil {
@@ -633,9 +648,15 @@ func TestUnchangedWireGuardClient_MultiClientThroughRelay(t *testing.T) {
 	serverCfg.Relay.Name = "home"
 	serverCfg.Relay.IdentityFile = idPath
 	serverCfg.Relay.Fingerprint = r.Fingerprint()
+	clientIdentity, clientAuthorizedKey := genTestKey(t, t.TempDir(), "")
+	serverCfg.Auth.AuthorizedKeysDir = t.TempDir()
+	serverCfg.Auth.SessionTTL = time.Minute
+	if err := os.WriteFile(filepath.Join(serverCfg.Auth.AuthorizedKeysDir, "client.pub"), []byte(clientAuthorizedKey+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	s := New(serverCfg, nil)
-	if err := s.StartDataPlane(); err != nil {
+	if err := startTransportFixture(s); err != nil {
 		t.Fatalf("StartDataPlane: %v", err)
 	}
 	defer s.Close()
@@ -661,6 +682,61 @@ func TestUnchangedWireGuardClient_MultiClientThroughRelay(t *testing.T) {
 		t.Fatal("server agent did not register with relay")
 	}
 	time.Sleep(50 * time.Millisecond)
+	connectionsReady := make(chan struct{})
+	renewed := make(chan struct{}, 1)
+	handler := s.Handler()
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/renew" {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		select {
+		case <-connectionsReady:
+			response := &renewalResponseWriter{ResponseWriter: w}
+			handler.ServeHTTP(response, r)
+			if response.status == http.StatusOK {
+				select {
+				case renewed <- struct{}{}:
+				default:
+				}
+			}
+		default:
+			handler.ServeHTTP(w, r)
+		}
+	}))
+	defer tlsServer.Close()
+	local, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	localPort := local.Addr().(*net.TCPAddr).Port
+	_ = local.Close()
+	control, err := client.ConnectWithOptions(tlsServer.URL, clientIdentity, protocol.ClientInfo{OS: "linux"}, client.Options{
+		Insecure: true, NoWebUI: true, UseWebSocket: true, Ports: map[string]int{"echo-svc": localPort},
+		StatusFile: filepath.Join(t.TempDir(), "status.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer control.Close()
+	wss, err := net.DialTimeout("tcp4", fmt.Sprintf("127.0.0.1:%d", localPort), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wss.Close()
+	_ = wss.SetDeadline(time.Now().Add(12 * time.Second))
+	checkWSS := func() {
+		t.Helper()
+		const message = "echo over the original WebSocket tunnel"
+		if _, err := io.WriteString(wss, message); err != nil {
+			t.Fatal(err)
+		}
+		got := make([]byte, len(message))
+		if _, err := io.ReadFull(wss, got); err != nil || string(got) != message {
+			t.Fatalf("WebSocket echo = %q, err = %v", got, err)
+		}
+	}
+	checkWSS()
 
 	startClient := func(key wgnet.Key, ipStr string) *wgnet.Stack {
 		ip := netip.MustParseAddr(ipStr)
@@ -685,46 +761,58 @@ func TestUnchangedWireGuardClient_MultiClientThroughRelay(t *testing.T) {
 	c2 := startClient(client2WGKey, "100.64.0.12")
 	defer c2.Close()
 
-	serverTunnelIP := s.data.serverIP.String()
-	dialCtx, dialCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer dialCancel()
-
-	runEcho := func(stack *wgnet.Stack, name string) {
-		conn, err := stack.DialContext(dialCtx, "tcp", net.JoinHostPort(serverTunnelIP, "18080"))
-		if err != nil {
-			t.Fatalf("%s failed to dial: %v", name, err)
+	address := net.JoinHostPort(s.data.serverIP.String(), "18080")
+	dialCtx, cancelDial := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancelDial()
+	type nativeConnection struct {
+		number int
+		socket net.Conn
+		err    error
+	}
+	connected := make(chan nativeConnection, 2)
+	for i, stack := range []*wgnet.Stack{c1, c2} {
+		go func() {
+			socket, err := stack.DialContext(dialCtx, "tcp", address)
+			connected <- nativeConnection{number: i + 1, socket: socket, err: err}
+		}()
+	}
+	var native []nativeConnection
+	for range 2 {
+		connection := <-connected
+		if connection.err != nil {
+			t.Errorf("client-%d failed to dial: %v", connection.number, connection.err)
+			continue
 		}
-		defer conn.Close()
-		for i := 0; i < 5; i++ {
-			msg := fmt.Sprintf("message %d from %s", i, name)
-			if _, err := conn.Write([]byte(msg)); err != nil {
-				t.Fatalf("%s write: %v", name, err)
+		defer connection.socket.Close()
+		native = append(native, connection)
+	}
+	if t.Failed() {
+		return
+	}
+	echoNative := func(phase string) {
+		t.Helper()
+		for _, connection := range native {
+			if err := connection.socket.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+				t.Fatal(err)
 			}
-			buf := make([]byte, len(msg))
-			if _, err := io.ReadFull(conn, buf); err != nil {
-				t.Fatalf("%s read: %v", name, err)
+			message := fmt.Sprintf("client-%d %s", connection.number, phase)
+			if _, err := io.WriteString(connection.socket, message); err != nil {
+				t.Fatalf("%s write: %v", message, err)
 			}
-			if string(buf) != msg {
-				t.Fatalf("%s got %q, want %q", name, string(buf), msg)
+			got := make([]byte, len(message))
+			if _, err := io.ReadFull(connection.socket, got); err != nil || string(got) != message {
+				t.Fatalf("%s echo = %q, err = %v", message, got, err)
 			}
 		}
 	}
-
-	done := make(chan error, 2)
-	go func() {
-		runEcho(c1, "client-1")
-		done <- nil
-	}()
-	go func() {
-		runEcho(c2, "client-2")
-		done <- nil
-	}()
-
-	for i := 0; i < 2; i++ {
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			t.Fatal("timed out waiting for concurrent client transfers")
-		}
+	echoNative("before renewal")
+	close(connectionsReady)
+	select {
+	case <-renewed:
+	case <-time.After(40 * time.Second):
+		t.Fatal("WebSocket client did not complete /v1/renew after all connections were ready")
 	}
+	_ = wss.SetDeadline(time.Now().Add(15 * time.Second))
+	checkWSS()
+	echoNative("after renewal")
 }

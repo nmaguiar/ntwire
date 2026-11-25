@@ -17,6 +17,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/instructions"
 	"github.com/nmaguiar/ntwire/pkg/logging"
 	"github.com/nmaguiar/ntwire/pkg/portal"
+	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/tcptune"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
@@ -64,6 +65,7 @@ type Config struct {
 		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
 	Transport           TransportConfig              `yaml:"transport"`
+	Acceleration        AccelerationConfig           `yaml:"acceleration"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
@@ -228,6 +230,7 @@ type TunnelConfig struct {
 	LocalHost         string   `yaml:"local_host"`
 	Allow             []string `yaml:"allow"`
 	DestinationPolicy string   `yaml:"destination_policy"`
+	EgressClass       string   `yaml:"egress_class"`
 
 	// Instructions is optional Markdown shown to clients in their local
 	// status UI, describing how to point a tool at this tunnel. It is
@@ -356,6 +359,8 @@ func (t TunnelConfig) IsBrowserSocks() bool {
 // would silently turn an authenticated ntwire session into an open egress
 // proxy. Set AllowAll to opt into socksd's original behavior.
 type SocksConfig struct {
+	// AllowDestinationBinding enables one-use hostname offers on native SOCKS tunnels.
+	AllowDestinationBinding bool `yaml:"allow_destination_binding"`
 	// Transparent relays the client's SOCKS stream unchanged to Upstream.
 	// It deliberately bypasses ntwire's destination filters; the upstream
 	// SOCKS service is responsible for authorization and destination policy.
@@ -470,6 +475,10 @@ transport:
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
+
+acceleration:
+  mode: auto                              # auto, off, or required. Restart to change.
+  ebpf: false                             # opt in to aggregate Linux kernel packet counters
 
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
@@ -612,6 +621,7 @@ tunnels:
 # - name        : egress                  # an embedded SOCKS4/5 proxy tunnel instead of a fixed target
 #   target      : socks                   # required sentinel value that selects the SOCKS target type
 #   virtual_port: 11080
+#   egress_class: internet-v1             # optional Smart Egress enrollment label for equivalent governed SOCKS policies
 #   allow       :
 #   - group:engineering
 #   socks       :
@@ -629,6 +639,7 @@ tunnels:
 #     reverse_filters : false              # invert the above from an allow-list into a deny-list
 #     dns_timeout     : 10s                # timeout for resolving SOCKS5 domain requests
 #     allow_all       : false              # required to permit every destination when no filters above are set; otherwise an unfiltered SOCKS tunnel denies everything (unlike socksd, which defaults to allow-all)
+#     allow_destination_binding: false  # allow authorized hostname ASN classification on native SOCKS tunnels
 #     allow_bind      : false              # explicitly allow SOCKS4/5 BIND; it opens a temporary inbound listener on the server host
 #     allow_local_egress: false            # explicitly allow the server's own loopback/link-local (incl. cloud metadata) as destinations
 #     upstream        : socks5h://proxy.example:1080 # optional upstream for governed TCP CONNECT/BIND; socks5h preserves the client hostname after ntwire authorization
@@ -695,6 +706,8 @@ func serverGuide() configguide.Guide {
 			"auth.session_ttl": {"default": "15m"}, "authorizer.timeout": {"default": "5s"},
 			"network.tunnel_cidr": {"default": "100.64.0.0/16"},
 			"transport.force":     {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
+			"acceleration.mode":   {"enum": []string{"auto", "off", "required"}, "default": "auto"},
+			"acceleration.ebpf":   {"default": false},
 			"log.format":          {"enum": []string{"text", "json"}, "default": "text"},
 			"log.level":           {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
 			"tunnels":             {"minItems": 0},
@@ -910,6 +923,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	if e = decoder.Decode(&c); e != nil {
 		return c, e
 	}
+	if e = c.Acceleration.SetMode(c.Acceleration.Mode); e != nil {
+		return c, e
+	}
 	if e = c.Listen.TCP.Validate(); e != nil {
 		return c, fmt.Errorf("listen.tcp: %w", e)
 	}
@@ -1108,6 +1124,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 		if t.DocsURL != "" && !instructions.SafeURL(t.DocsURL) {
 			return c, fmt.Errorf("tunnel %q requires an absolute http(s) docs_url", t.Name)
 		}
+		if t.EgressClass != "" && (!protocol.ValidEgressClass(t.EgressClass) || !t.IsSocks() || t.Socks == nil || t.Socks.Transparent) {
+			return c, fmt.Errorf("tunnel %q: egress_class requires an embedded SOCKS tunnel and a lowercase class identifier", t.Name)
+		}
 		if t.IsSocks() {
 			if t.Socks == nil {
 				return c, fmt.Errorf("tunnel %q: target: socks requires a socks: block", t.Name)
@@ -1128,6 +1147,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 				if e != nil || (u.Scheme != "socks5" && u.Scheme != "socks5h") || u.Host == "" {
 					return c, fmt.Errorf("tunnel %q: socks.upstream must be a socks5:// or socks5h:// URL", t.Name)
 				}
+			}
+			if t.Socks.AllowDestinationBinding && !t.nativeSOCKSEgress() {
+				return c, fmt.Errorf("tunnel %q: destination binding requires native SOCKS egress", t.Name)
 			}
 			if t.Socks.Transparent {
 				if t.Socks.Upstream == "" {
@@ -1279,4 +1301,16 @@ func containsDomain(domains []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// nativeSOCKSEgress identifies governed tunnels with no upstream proxy.
+func (t TunnelConfig) nativeSOCKSEgress() bool {
+	return t.IsSocks() && t.Socks != nil && !t.Socks.Transparent && t.Socks.Upstream == ""
+}
+
+func (t TunnelConfig) egressClass() string {
+	if !t.IsSocks() || t.Socks == nil || t.Socks.Transparent || !protocol.ValidEgressClass(t.EgressClass) {
+		return ""
+	}
+	return t.EgressClass
 }

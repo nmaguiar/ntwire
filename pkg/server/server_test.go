@@ -111,7 +111,7 @@ func TestOIDCAuthRequiredTransportCapabilityFailsBeforeAuthentication(t *testing
 
 // genTestKey writes an ed25519 private key PEM to dir/priv and returns the
 // private key path plus the OpenSSH authorized_keys line for its public key.
-func genTestKey(t *testing.T, dir, comment string) (privPath, authorizedLine string) {
+func genTestKey(t testing.TB, dir, comment string) (privPath, authorizedLine string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -137,7 +137,7 @@ func genTestKey(t *testing.T, dir, comment string) (privPath, authorizedLine str
 	return privPath, line
 }
 
-func newTestServer(t *testing.T, tunnels []TunnelConfig) (*Server, string, string) {
+func newTestServer(t testing.TB, tunnels []TunnelConfig) (*Server, string, string) {
 	t.Helper()
 	keysDir := t.TempDir()
 	privPath, authLine := genTestKey(t, t.TempDir(), "alice@laptop")

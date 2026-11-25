@@ -4,7 +4,7 @@
   <img src="packaging/darwin/ntwire-icon.svg" width="132" alt="ntwire logo">
 </p>
 
-ntwire is a userspace WireGuard multi-tunnel service. Authenticate with an
+ntwire is a WireGuard multi-tunnel service with a portable userspace backend. Authenticate with an
 SSH key or OIDC, then use only the TCP targets granted in the server YAML.
 It needs neither a host network interface nor elevated privileges. See
 [Security](docs/SECURITY.md) for the trust model and the implications of
@@ -103,6 +103,7 @@ reported for `demo-http` forwards through the WireGuard tunnel to the target.
 The [documentation index](docs/README.md) is the entry point for all details.
 Common next steps:
 
+- [Linux server acceleration](docs/LINUX-ACCELERATION.md) — kernel backend evaluation, prerequisites and rollback.
 - [Connecting guide](docs/CONNECTING.md) — clients, official WireGuard, and relays.
 - [Client guide](docs/CLIENT.md) — commands, local state, GUI, and SSO.
 - [Configuration reference](docs/CONFIGURATION.md) — every server/client option.

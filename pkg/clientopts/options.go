@@ -276,8 +276,11 @@ var registry = []Option{
 		Help: "name=local-port, or name=host:local-port (IPv6 as name=[::1]:local-port) to also pin the tunnel's loopback address, e.g. 127.70.0.1 -- lets distinct tunnels share a memorable port without colliding. Falls back to 127.0.0.1 if the address can't be bound; on macOS a non-default 127.x.x.x address needs `sudo ifconfig lo0 alias <address> up` first (Linux binds it out of the box).",
 	},
 	{
+		Name: "publish-egress", Kind: KindString, Usage: "publish SOCKS egress under an explicit local profile ID", Bind: []Binding{{Command: "connect"}}, GUIHidden: true,
+	},
+	{
 		Name: "status-file", Kind: KindString, Usage: "local status file",
-		Bind:      []Binding{{Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}, {Command: "browser"}, {Command: "transport"}},
+		Bind:      []Binding{{Command: "connect"}, {Command: "list"}, {Command: "status"}, {Command: "disconnect"}, {Command: "port"}, {Command: "browser"}, {Command: "transport"}},
 		GUIHidden: true,
 	},
 	{

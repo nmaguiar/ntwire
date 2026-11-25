@@ -8,6 +8,7 @@ package socks
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,7 +20,9 @@ import (
 // Config configures a Server. Only Filter is required; everything else has
 // a sensible default.
 type Config struct {
-	Filter FilterConfig
+	// AllowDestinationBinding validates the current authenticated native tunnel grant.
+	AllowDestinationBinding func(context.Context) bool
+	Filter                  FilterConfig
 
 	// ASNLookup resolves destination IPs to ASNs for Filter.ASNs. Pass an
 	// *ASNIndex kept warm by ASNIndex.Refresh. A nil lookup produces no ASN match, so an
@@ -31,6 +34,9 @@ type Config struct {
 	// SOCKS' legacy filter with a single destination-policy implementation.
 	// A false result is fail-closed.  The legacy Filter remains the default.
 	Authorize func(context.Context, string, netip.Addr, uint16, string) bool
+	// AuthorizeDestination can evaluate both interpretations atomically. The
+	// second string is the original domain field for a numeric literal.
+	AuthorizeDestination func(context.Context, string, string, netip.Addr, uint16, string) bool
 
 	// DNSTimeout bounds resolution of SOCKS5 domain requests. Matches
 	// socksd's DNSTIMEOUT, reinterpreted as a resolution timeout rather
@@ -69,43 +75,52 @@ type UDPAssociation struct {
 	Addr  netip.Addr
 	Port  uint16
 	Close func()
+	// Lifetime, when supplied, closes the TCP control stream when the relay ends.
+	Lifetime context.Context
 }
 
 // Server serves SOCKS4/SOCKS5 CONNECT and BIND on accepted connections,
 // gating each destination through a Filter. When the host provides an
 // UDPAssociate handler, it also supports SOCKS5 UDP ASSOCIATE.
 type Server struct {
-	filter             *Filter
-	dnsTimeout         time.Duration
-	dialTimeout        time.Duration
-	bindTimeout        time.Duration
-	allowBind          bool
-	dialRemoteHostname bool
-	udpAssociate       func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool)
-	resolver           *net.Resolver
-	dial               func(ctx context.Context, network, addr string) (net.Conn, error)
-	log                *slog.Logger
-	authorize          func(context.Context, string, netip.Addr, uint16, string) bool
+	allowDestinationBinding func(context.Context) bool
+	filter                  *Filter
+	dnsTimeout              time.Duration
+	dialTimeout             time.Duration
+	bindTimeout             time.Duration
+	allowBind               bool
+	dialRemoteHostname      bool
+	udpAssociate            func(context.Context, string, netip.Addr, uint16) (*UDPAssociation, bool)
+	resolver                *net.Resolver
+	dial                    func(ctx context.Context, network, addr string) (net.Conn, error)
+	log                     *slog.Logger
+	authorize               func(context.Context, string, netip.Addr, uint16, string) bool
+	authorizeDestination    func(context.Context, string, string, netip.Addr, uint16, string) bool
 }
 
 // New builds a Server from cfg.
 func New(cfg Config) (*Server, error) {
+	if cfg.DialRemoteHostname && cfg.AllowDestinationBinding != nil {
+		return nil, errors.New("cannot offer bound destinations with remote upstream DNS")
+	}
 	f, err := NewFilter(cfg.Filter, cfg.ASNLookup)
 	if err != nil {
 		return nil, err
 	}
 	s := &Server{
-		filter:             f,
-		dnsTimeout:         cfg.DNSTimeout,
-		dialTimeout:        cfg.DialTimeout,
-		bindTimeout:        cfg.BindTimeout,
-		allowBind:          cfg.AllowBind,
-		dialRemoteHostname: cfg.DialRemoteHostname,
-		udpAssociate:       cfg.UDPAssociate,
-		resolver:           cfg.Resolver,
-		dial:               cfg.Dial,
-		log:                cfg.Logger,
-		authorize:          cfg.Authorize,
+		filter:                  f,
+		allowDestinationBinding: cfg.AllowDestinationBinding,
+		dnsTimeout:              cfg.DNSTimeout,
+		dialTimeout:             cfg.DialTimeout,
+		bindTimeout:             cfg.BindTimeout,
+		allowBind:               cfg.AllowBind,
+		dialRemoteHostname:      cfg.DialRemoteHostname,
+		udpAssociate:            cfg.UDPAssociate,
+		resolver:                cfg.Resolver,
+		dial:                    cfg.Dial,
+		log:                     cfg.Logger,
+		authorize:               cfg.Authorize,
+		authorizeDestination:    cfg.AuthorizeDestination,
 	}
 	if s.dnsTimeout <= 0 {
 		s.dnsTimeout = 10 * time.Second
@@ -171,17 +186,31 @@ const (
 // destination before dispatching, since it names the remote host the
 // session expects to accept a connection back from.
 func (s *Server) filterDestination(ctx context.Context, hostname string, ip netip.Addr, port uint16) (netip.Addr, outcome) {
-	return s.filterDestinationProtocol(ctx, hostname, ip, port, "tcp")
+	return s.filterDestinationProtocol(ctx, hostname, "", ip, port, "tcp")
 }
 
 // AuthorizeUDP resolves and applies the same legacy SOCKS filters and host
 // authorization callback used by CONNECT, selecting protocol udp.
 func (s *Server) AuthorizeUDP(ctx context.Context, hostname string, ip netip.Addr, port uint16) (netip.Addr, bool) {
-	resolved, o := s.filterDestinationProtocol(ctx, hostname, ip, port, "udp")
+	resolved, o := s.filterDestinationProtocol(ctx, hostname, "", ip, port, "udp")
 	return resolved, o == outcomeGranted
 }
 
-func (s *Server) filterDestinationProtocol(ctx context.Context, hostname string, ip netip.Addr, port uint16, protocol string) (netip.Addr, outcome) {
+// AuthorizeDatagram checks a validated UDP destination before use.
+func (s *Server) AuthorizeDatagram(ctx context.Context, dst Destination) (netip.Addr, bool) {
+	ip := dst.IP()
+	hostname, literal := dst.Host, ""
+	if ip.IsValid() {
+		hostname = ""
+		if dst.AddressType == socks5AtypDomain {
+			literal = dst.Host
+		}
+	}
+	resolved, o := s.filterDestinationProtocol(ctx, hostname, literal, ip, dst.Port, "udp")
+	return resolved, o == outcomeGranted
+}
+
+func (s *Server) filterDestinationProtocol(ctx context.Context, hostname, literal string, ip netip.Addr, port uint16, protocol string) (netip.Addr, outcome) {
 	resolved := ip
 	if !resolved.IsValid() {
 		rctx, cancel := context.WithTimeout(ctx, s.dnsTimeout)
@@ -194,9 +223,13 @@ func (s *Server) filterDestinationProtocol(ctx context.Context, hostname string,
 		resolved = addrs[0]
 	}
 
-	allowed := s.filter.Allowed(hostname, resolved)
+	allowed := s.filter.AllowedDestination(hostname, literal, resolved)
 	if allowed && s.authorize != nil {
-		allowed = s.authorize(ctx, hostname, resolved, port, protocol)
+		allowed = s.authorize(ctx, hostname, resolved, port, protocol) &&
+			(literal == "" || s.authorize(ctx, literal, resolved, port, protocol))
+	}
+	if allowed && s.authorizeDestination != nil {
+		allowed = s.authorizeDestination(ctx, hostname, literal, resolved, port, protocol)
 	}
 	s.logDecision(allowed, hostname, resolved, port)
 	if !allowed {
@@ -207,7 +240,11 @@ func (s *Server) filterDestinationProtocol(ctx context.Context, hostname string,
 
 // connect resolves, filters, and dials the requested destination.
 func (s *Server) connect(ctx context.Context, hostname string, ip netip.Addr, port uint16) (net.Conn, outcome) {
-	resolved, o := s.filterDestination(ctx, hostname, ip, port)
+	return s.connectDestination(ctx, hostname, "", ip, port)
+}
+
+func (s *Server) connectDestination(ctx context.Context, hostname, literal string, ip netip.Addr, port uint16) (net.Conn, outcome) {
+	resolved, o := s.filterDestinationProtocol(ctx, hostname, literal, ip, port, "tcp")
 	if o != outcomeGranted {
 		return nil, o
 	}

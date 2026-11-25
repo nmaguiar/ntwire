@@ -15,7 +15,7 @@ var wantSurface = map[string][]string{
 	"connect": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
 		"sso", "provider", "token-cache", "websocket", "collect-exec",
-		"browser-executable", "browser-arg", "browser-profiles-dir", "browser-profile-dir", "browser-profile-name", "no-browser-args", "no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "promote", "tunnel-mtu", "mtu-aware", "udp-alt",
+		"browser-executable", "browser-arg", "browser-profiles-dir", "browser-profile-dir", "browser-profile-name", "no-browser-args", "no-color", "port", "bind", "https-proxy", "no-system-proxy", "ip-version", "transport", "promote", "tunnel-mtu", "mtu-aware", "udp-alt", "status-file", "publish-egress",
 	},
 	"list": {
 		"v", "config", "i", "ca", "insecure", "known-servers", "no-browser",
