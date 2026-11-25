@@ -45,8 +45,9 @@ const (
 )
 
 type Server struct {
-	Config   Config
-	sessions *Sessions
+	acceleration atomic.Pointer[accelerationStatus]
+	Config       Config
+	sessions     *Sessions
 	// nonces and rates bound what an unauthenticated caller can allocate; see
 	// pkg/authlimit for why both are shared with pkg/relay rather than
 	// open-coded here.
@@ -1268,6 +1269,11 @@ func (s *Server) Reload(c Config) {
 	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
 	c.Transport.Metrics = s.Config.Transport.Metrics
 	c.Transport.MTUAware = s.Config.Transport.MTUAware
+	c.Acceleration.override = s.Config.Acceleration.override
+	if s.Config.Acceleration.effective() != c.Acceleration.effective() {
+		s.log.Info("acceleration configuration changes require restart")
+	}
+	c.Acceleration = s.Config.Acceleration
 	oldNative := s.Config.NativeWireGuard.Peers
 	oldNativeEnabled := s.Config.NativeWireGuard.Enabled
 	oldIssuers := s.Config.Auth.OIDC.Issuers

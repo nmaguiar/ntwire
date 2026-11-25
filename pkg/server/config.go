@@ -65,6 +65,7 @@ type Config struct {
 		DNS                     DNSConfig `yaml:"dns"`
 	} `yaml:"network"`
 	Transport           TransportConfig              `yaml:"transport"`
+	Acceleration        AccelerationConfig           `yaml:"acceleration"`
 	Authorizer          AuthorizerConfig             `yaml:"authorizer"`
 	DestinationPolicies map[string]DestinationPolicy `yaml:"destination_policies"`
 	NativeWireGuard     NativeWireGuardConfig        `yaml:"native_wireguard"`
@@ -475,6 +476,10 @@ transport:
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
 
+acceleration:
+  mode: auto                              # auto, off, or required. Restart to change.
+  ebpf: false                             # opt in to aggregate Linux kernel packet counters
+
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
 destination_policies:
@@ -701,6 +706,8 @@ func serverGuide() configguide.Guide {
 			"auth.session_ttl": {"default": "15m"}, "authorizer.timeout": {"default": "5s"},
 			"network.tunnel_cidr": {"default": "100.64.0.0/16"},
 			"transport.force":     {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
+			"acceleration.mode":   {"enum": []string{"auto", "off", "required"}, "default": "auto"},
+			"acceleration.ebpf":   {"default": false},
 			"log.format":          {"enum": []string{"text", "json"}, "default": "text"},
 			"log.level":           {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
 			"tunnels":             {"minItems": 0},
@@ -914,6 +921,9 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	decoder := yaml.NewDecoder(bytes.NewReader(b))
 	decoder.KnownFields(true)
 	if e = decoder.Decode(&c); e != nil {
+		return c, e
+	}
+	if e = c.Acceleration.SetMode(c.Acceleration.Mode); e != nil {
 		return c, e
 	}
 	if e = c.Listen.TCP.Validate(); e != nil {

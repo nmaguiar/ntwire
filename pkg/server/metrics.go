@@ -118,6 +118,7 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) metrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+	s.writeAccelerationMetrics(w)
 	sessions := s.sessions.All()
 	s.mu.Lock()
 	tunnelCount := len(s.Config.Tunnels)

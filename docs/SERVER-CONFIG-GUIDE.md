@@ -101,6 +101,10 @@ transport:
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
 
+acceleration:
+  mode: auto                              # auto, off, or required. Restart to change.
+  ebpf: false                             # opt in to aggregate Linux kernel packet counters
+
 # Named reusable egress policies. A tunnel and a native peer can each name
 # one; when both do, both must allow the selected destination.
 destination_policies:
@@ -303,6 +307,25 @@ audit:
   "additionalProperties": false,
   "description": "Complete reference for ntwire-server YAML configuration.",
   "properties": {
+    "acceleration": {
+      "additionalProperties": false,
+      "properties": {
+        "ebpf": {
+          "default": false,
+          "type": "boolean"
+        },
+        "mode": {
+          "default": "auto",
+          "enum": [
+            "auto",
+            "off",
+            "required"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "admin": {
       "additionalProperties": false,
       "properties": {

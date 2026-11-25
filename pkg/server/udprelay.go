@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
-	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
 
@@ -40,7 +39,7 @@ type udpSessionAllocator interface {
 // AdvertiseDirect for why that asymmetry is deliberate.
 type udpRelay struct {
 	bind      *wstransport.FilterBind
-	stack     *wgnet.Stack
+	stack     serverStack
 	agent     udpSessionAllocator
 	relayAddr string
 	log       *slog.Logger

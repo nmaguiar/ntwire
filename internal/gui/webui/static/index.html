@@ -19,14 +19,29 @@ h1{font-size:1.9rem;margin:0 0 .25rem}.brand-lockup{display:flex;align-items:cen
 .panel > details > summary{cursor:pointer;font-weight:700;font-size:1.1rem}
 summary:focus-visible{outline:2px solid var(--brand);outline-offset:3px;border-radius:4px}
 h2{font-size:1.1rem;margin:0 0 .75rem}
-.profile{display:flex;flex-direction:column;gap:.5rem;padding:.7rem 0;border-bottom:1px solid var(--border)}
-.profile:first-child{padding-top:.15rem}
-.profile:last-child{border-bottom:none;padding-bottom:0}
-.profile .name{font-weight:700}
+.profile-toolbar{padding:.75rem 0;border-bottom:1px solid var(--border)}
+#profiles.empty{padding-top:.75rem}
+.profile{display:grid;gap:.55rem;padding:.85rem 0}
+.profile + .profile{border-top:1px solid var(--border)}
+.profile:last-child{padding-bottom:0}
+.profile-heading{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:.1rem .75rem}
+.profile .name{font-weight:700;overflow-wrap:anywhere}
 .profile .server{overflow-wrap:anywhere;color:var(--muted);font:600 .85rem ui-monospace,SFMono-Regular,Consolas,monospace}
-.profile .live{color:var(--muted);font-size:.8rem;margin-top:.15rem}
-.profile .info{flex:1;min-width:0}
-.badge{max-width:100%;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);border-radius:999px;padding:.25rem .6rem;font-size:.78rem;font-weight:700;background:var(--panel-2)}
+.profile .live{color:var(--muted);font-size:.8rem;margin-top:.2rem;overflow-wrap:anywhere}
+.profile .info{grid-column:1 / -1;min-width:0}
+.profile-actions{display:flex;align-items:start;justify-content:space-between;flex-wrap:wrap;gap:.4rem 1rem}
+.profile-actions .row{gap:.4rem}
+.profile-actions .row + .row{margin:0}
+.profile-actions button.danger{background:transparent;color:var(--danger-strong);border:1px solid var(--border)}
+.profile-toolbar button,.profile-actions :is(button,a.button){min-height:2rem}
+.profile .profile-error{color:var(--danger-strong)}
+.profile-details{display:flex;align-items:start;flex-wrap:wrap;gap:.4rem 1rem}
+.profile-details summary{cursor:pointer;font-size:.8rem;font-weight:600;padding:.15rem 0}
+.profile-details > details[open]{flex-basis:100%}
+.profile-details p{margin:.3rem 0 0}
+.profile-basics{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,16rem),1fr));gap:0 .9rem}
+#form-title{overflow-wrap:anywhere}
+.badge{max-width:100%;display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border);border-radius:999px;padding:.15rem .5rem;font-size:.75rem;font-weight:700;background:var(--panel-2)}
 .badge::before{content:"";flex:none;width:.55rem;height:.55rem;border-radius:50%;background:var(--muted)}
 .badge.connected::before,.badge.reconnecting::before{background:var(--accent)}
 .badge.failed::before,.badge.awaiting_trust::before,.badge.awaiting_passphrase::before{background:var(--danger)}
@@ -70,10 +85,10 @@ legend{padding:0 .4rem;color:var(--muted);font-size:.72rem;font-weight:700;text-
 details.advanced{margin:.65rem 0}
 details.advanced > summary{cursor:pointer;color:var(--muted);font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;padding:.18rem 0}
 details.advanced > fieldset{margin-top:.5rem}
-.ports-toggle{border:1px solid var(--border);border-radius:12px;margin-top:.6rem;padding:.5rem .7rem}
-.ports-toggle summary{cursor:pointer;font-weight:700;font-size:.82rem;color:var(--text)}
-.ports-list{display:grid;gap:.7rem;margin-top:.6rem}
-.port-line .server{flex:0 1 auto}
+.ports-toggle[open]{padding-top:.4rem;border-top:1px solid var(--border)}
+.ports-toggle summary{color:var(--muted)}
+.ports-list{display:grid;gap:.55rem;margin-top:.45rem}
+.port-line .server{flex:1 1 12rem}
 .port-edit{display:flex;gap:.45rem;align-items:center;max-width:100%;min-width:0}
 .port-edit input{width:10rem}
 .port-line + .port-line{margin-top:0}
@@ -91,34 +106,49 @@ details.advanced > fieldset{margin-top:.5rem}
 .browser-profile-meta{font-size:.8rem;color:var(--muted)}
 @media (max-width:38rem){
   .browser-profile-meta{grid-column:2}
-  .profile .info{flex-basis:100%}
 }
 .setup{max-width:34rem;margin:8vh auto}.setup label{font-size:1rem}.setup input{font-size:1rem;padding:.7rem}.setup .help{margin:.1rem 0 1rem}
 .browser-profile-dialog{width:min(36rem,calc(100% - 2rem));padding:1.25rem;border:1px solid var(--border);border-radius:12px;background:var(--panel);color:var(--text)}
 .browser-profile-dialog code{overflow-wrap:anywhere;user-select:all}
-#smart-proxy-unsaved{font-size:.8rem;font-weight:500;color:var(--muted)}
+#smart-proxy-unsaved{margin-inline-start:.4rem;font-size:.8rem;font-weight:500;color:var(--muted)}
 .smart-contents{margin:0;padding:0;border:0;min-width:0}
-#smart-proxy-group-controls{margin-top:1rem}
-.smart-master{margin-top:.85rem;padding-bottom:.6rem;border-bottom:1px solid var(--border)}
-.smart-master .toggle{margin-bottom:.25rem}
-.smart-tabs{display:flex;flex-wrap:wrap;gap:.35rem;margin:1rem 0 0;padding-bottom:.6rem;border-bottom:1px solid var(--border)}
-.smart-tabs button{background:transparent;color:var(--muted);border:1px solid transparent;text-align:left}
-.smart-tabs button[aria-selected="true"]{background:var(--panel-2);color:var(--brand-strong);border-color:var(--border)}
-.smart-tabs button:focus-visible,.smart-section[role="tabpanel"]:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
-.smart-section[role="tabpanel"]{border-top:0}
-.smart-section{border-top:1px solid var(--border);padding:1rem 0;min-width:0}
-.smart-section h3{font-size:1rem;margin:0 0 .65rem}
-.smart-section h4{font-size:.9rem;margin:1rem 0 .4rem}
-.smart-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:.25rem 1rem}
-.smart-fields label{min-width:0;align-content:end}
-.smart-protocols{margin:.7rem 0;padding:.35rem .75rem}
-.smart-protocols label,.smart-picker label{margin-bottom:0}
-.smart-picker{margin:.75rem 0;align-items:end}
-.smart-picker label{min-width:0;flex:1 1 14rem}
-.smart-after,.smart-approval,.smart-action-help{margin-top:.65rem}
+.smart-master{display:grid;gap:.25rem;margin-top:.75rem;padding-bottom:.75rem;border-bottom:1px solid var(--border)}
+.smart-master .toggle{font-weight:700}
+.smart-master label,.smart-group-controls label,.smart-section label{margin:0}
+.smart-master .help + .help,.smart-section .help + .help{margin:0}
+.smart-group-controls{padding:.8rem 0;display:grid;gap:.65rem}
+.smart-group-picker{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,24rem),1fr));gap:.6rem 1rem}
+.smart-picker{display:flex;flex-wrap:wrap;align-items:end;gap:.4rem}
+.smart-picker label{min-width:0;flex:1 1 9rem}
+.smart-picker :is(button,select,input),.smart-section :is(select,input:not([type=checkbox])){min-height:2.35rem}
+.smart-group-options{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:.55rem 1rem}
+.smart-group-activation{display:grid;gap:.2rem}
+.smart-live{display:grid;gap:.4rem;padding:.65rem .75rem;background:color-mix(in srgb,var(--panel-2) 58%,var(--panel));border:1px solid var(--border);border-radius:10px}
+#smart-proxy-state{margin:0;font-size:.85rem;font-weight:700;overflow-wrap:anywhere}
+.smart-live-actions{display:flex;justify-content:space-between;flex-wrap:wrap;gap:.4rem 1rem}
+.smart-live .row,.smart-group-options .row{gap:.4rem}
+.smart-live .row + .row,.smart-live .help + .help{margin:0}
+.smart-live .help:empty{display:none}
+.smart-tabs{display:flex;flex-wrap:wrap;gap:.15rem .35rem;margin:.75rem 0 0;border-bottom:1px solid var(--border)}
+.smart-tabs button{background:transparent;color:var(--muted);border-radius:0;border-bottom:2px solid transparent;text-align:left;padding:.55rem .7rem}
+.smart-tabs button[aria-selected="true"]{color:var(--brand-strong);border-color:var(--brand-strong)}
+.smart-tabs button:focus-visible,.smart-section:focus-visible,#smart-proxy-panel :is(button,a.button,input,select,textarea):focus-visible,#profiles-disclosure :is(button,a.button,input):focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+.smart-section{display:grid;gap:.9rem;padding:.9rem 0;min-width:0}
+.smart-block,.smart-option{display:grid;justify-items:start;gap:.45rem;min-width:0}
+.smart-block + .smart-block{border-top:1px solid var(--border);padding-top:.9rem}
+.smart-section > .smart-fields + .smart-block{border-top:1px solid var(--border);padding-top:.9rem}
+.smart-block > :is(label,.smart-fields,.smart-picker,.smart-table-list,#smart-proxy-asn-settings){width:100%}
+.smart-block > .smart-compact-field{max-width:max(20rem,calc((100% - .9rem) / 2))}
+.smart-section h4{font-size:.9rem;margin:0}
+.smart-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:.65rem .9rem;align-items:end}
+.smart-fields label{min-width:0}
+.smart-option{align-self:start;align-content:start}
+.smart-option > label{width:100%}
+.smart-protocols{margin:0;width:100%;padding:.35rem .65rem .5rem}
+.smart-table-list{min-width:0}
 .smart-card{padding:.8rem;margin:.75rem 0;border:1px solid var(--border);border-radius:10px;min-width:0;overflow-wrap:anywhere}
 .smart-card legend{max-width:100%;text-transform:none;font-weight:600;font-size:.85rem;letter-spacing:normal;color:var(--text)}
-.smart-table-wrap{max-width:100%;overflow-x:auto;margin:.75rem 0;border:1px solid var(--border);border-radius:10px}
+.smart-table-wrap{max-width:100%;overflow-x:auto;margin:.35rem 0;border:1px solid var(--border);border-radius:10px}
 .smart-table{width:100%;border-collapse:collapse;font-size:.85rem;text-align:left}
 .smart-table th,.smart-table td{padding:.55rem .65rem;vertical-align:top;border-bottom:1px solid var(--border);overflow-wrap:anywhere}
 .smart-table thead th{background:var(--panel-2);font-weight:700;white-space:nowrap}
@@ -132,8 +162,15 @@ details.advanced > fieldset{margin-top:.5rem}
 .smart-targets label{margin:.15rem 0}
 .smart-warning{margin:.35rem 0;font-size:.85rem;color:var(--danger-strong)}
 .smart-warning:empty{display:none}
-.smart-save{border-top:1px solid var(--border);padding:.75rem 0;align-items:center}
+.smart-save{border-top:1px solid var(--border);padding-top:.75rem;align-items:center}
 #smart-proxy-save-status{margin:0;font-size:.85rem;overflow-wrap:anywhere}
+@media (prefers-color-scheme:light){
+  :is(.profile-toolbar,.profile-actions,.smart-save) button:not(.secondary,.danger){background:var(--brand-strong);color:var(--panel)}
+}
+@media (max-width:38rem){
+  .profile-toolbar,.smart-group-options .row,.smart-live .row{gap:.35rem}
+  .smart-group-options :is(button,a.button),.smart-live :is(button,a.button){padding-inline:.45rem}
+}
 </style>
 <main id="main">
   <div class="brand-lockup"><svg class="brand-mark" viewBox="0 0 48 48" aria-hidden="true"><defs><linearGradient id="logo-cyan" x1="9" y1="37" x2="39" y2="10" gradientUnits="userSpaceOnUse"><stop stop-color="#0755ed"/><stop offset="1" stop-color="#18dcff"/></linearGradient><linearGradient id="logo-indigo" x1="10" y1="11" x2="39" y2="39" gradientUnits="userSpaceOnUse"><stop stop-color="#1650e7"/><stop offset=".5" stop-color="#8f72ff"/><stop offset="1" stop-color="#2638bf"/></linearGradient></defs><path d="M13 36V16c0-3 3.6-4.5 5.7-2.4l12.5 12.5a3 3 0 0 0 4.2 0l4.8-4.8" fill="none" stroke="url(#logo-cyan)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><path d="m8.7 34.6 10.7-10.7a3.2 3.2 0 0 1 4.5 0l12.5 12.5c1.9 1.9 5.1.6 5.1-2.2V25" fill="none" stroke="url(#logo-indigo)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="40" cy="20" r="2.7" fill="#16d9ff"/></svg><h1><span class="brand-nt">nt</span>wire settings</h1></div>
@@ -167,19 +204,21 @@ details.advanced > fieldset{margin-top:.5rem}
   <section class="panel">
     <details id="profiles-disclosure" open>
       <summary><span aria-hidden="true">👤</span> Profiles</summary>
-      <div id="profiles" class="empty panel-actions">Loading…</div>
-      <div class="row panel-actions">
-        <button id="add-profile-btn">➕ Add profile…</button>
-        <button class="secondary" id="keygen-btn">🔑 Generate new identity…</button>
+      <div class="row profile-toolbar">
+        <button id="add-profile-btn">Add profile…</button>
+        <button class="secondary" id="keygen-btn">Generate identity…</button>
       </div>
+      <div id="profiles" class="empty">Loading…</div>
     </details>
   </section>
 
   <section class="panel hidden" id="form-panel">
-    <h2 id="form-title">➕ Add profile</h2>
+    <h2 id="form-title">Add profile</h2>
     <form id="profile-form">
-      <label>Name<input type="text" name="Name" required></label>
-      <label>Server URL<input type="text" name="Server" placeholder="https://relay.example.com" required></label>
+      <div class="profile-basics">
+        <label>Name<input type="text" name="Name" required></label>
+        <label>Server URL<input type="text" name="Server" placeholder="https://relay.example.com" required></label>
+      </div>
       <label class="toggle"><input type="checkbox" name="ConnectOnStart">Connect automatically at login</label>
       <div id="generated-fields"></div>
       <div class="row">
@@ -191,171 +230,217 @@ details.advanced > fieldset{margin-top:.5rem}
 
   <section class="panel" id="smart-proxy-panel">
     <details id="smart-proxy-disclosure">
-      <summary><span aria-hidden="true">🔀</span> Smart Proxy <span id="smart-proxy-unsaved" hidden>· Unsaved changes</span></summary>
+      <summary><span aria-hidden="true">🔀</span> Smart Proxy <span id="smart-proxy-unsaved" hidden>Unsaved changes</span></summary>
       <div class="smart-master">
         <label class="toggle"><input type="checkbox" id="smart-proxy-master" aria-describedby="smart-proxy-master-help" disabled> Enable Smart Proxy</label>
         <p class="help" id="smart-proxy-master-help">Applies immediately. Turning this off stops all proxy groups and hides Smart Proxy from the tray.</p>
         <p class="help" id="smart-proxy-master-status" role="status"></p>
       </div>
-      <fieldset id="smart-proxy-group-controls" class="smart-contents" disabled>
-        <div class="smart-fields">
-          <label>Proxy group <select id="smart-proxy-group"></select></label>
-          <label>New group name <input id="smart-proxy-group-name" type="text" placeholder="office"></label>
+      <fieldset id="smart-proxy-group-controls" class="smart-contents smart-group-controls" aria-label="Proxy groups" disabled>
+        <div class="smart-group-picker">
+          <div class="smart-picker">
+            <label>Proxy group <select id="smart-proxy-group"></select></label>
+            <button type="button" class="secondary" id="smart-proxy-remove-group">Remove group</button>
+          </div>
+          <div class="smart-picker">
+            <label>New group name <input id="smart-proxy-group-name" type="text" placeholder="office"></label>
+            <button type="button" class="secondary" id="smart-proxy-add-group">Add group</button>
+          </div>
         </div>
-        <div class="row">
-          <button type="button" class="secondary" id="smart-proxy-add-group">Add group</button>
-          <button type="button" class="secondary" id="smart-proxy-remove-group">Remove group</button>
-          <a class="button secondary" id="smart-proxy-export" hidden>Export saved settings</a>
-          <button type="button" class="secondary" id="smart-proxy-import">Import settings…</button>
-          <input type="file" id="smart-proxy-import-file" accept=".json,application/json" hidden>
+        <div class="smart-group-options">
+          <div class="smart-group-activation">
+            <label class="toggle"><input type="checkbox" id="smart-proxy-group-enabled" aria-describedby="smart-proxy-group-enabled-help"> Activate this group</label>
+            <p class="help" id="smart-proxy-group-enabled-help">Save changes to apply. The group runs while Smart Proxy is enabled.</p>
+          </div>
+          <div class="row">
+            <a class="button secondary" id="smart-proxy-export" hidden>Export saved settings</a>
+            <button type="button" class="secondary" id="smart-proxy-import">Import settings…</button>
+            <input type="file" id="smart-proxy-import-file" accept=".json,application/json" hidden>
+          </div>
         </div>
-        <label class="toggle smart-after"><input type="checkbox" id="smart-proxy-group-enabled" aria-describedby="smart-proxy-group-enabled-help"> Activate this group</label>
-        <p class="help" id="smart-proxy-group-enabled-help">Select Save changes to apply. The group runs only while Smart Proxy is enabled.</p>
-        <p class="help smart-after" id="smart-proxy-group-status" role="status"></p>
+        <p class="help" id="smart-proxy-group-status" role="status"></p>
       </fieldset>
-      <p id="smart-proxy-state" role="status">Loading proxy settings…</p>
-      <div class="row" id="smart-proxy-actions" aria-describedby="smart-proxy-action-help">
-        <button type="button" class="secondary" data-copy-proxy="socks5" disabled>Copy SOCKS5 URL</button>
-        <button type="button" class="secondary" data-copy-proxy="http" disabled>Copy HTTP URL</button>
-        <button type="button" class="secondary" data-copy-proxy="pac" disabled>Copy PAC URL</button>
-        <button type="button" class="secondary" id="smart-proxy-browser" disabled><span aria-hidden="true">🌐</span> Open isolated browser</button>
-        <a class="button secondary" id="smart-proxy-open-live" target="_blank" rel="noopener noreferrer" hidden><span aria-hidden="true">📊</span> Open live dashboard</a>
+      <div class="smart-live">
+        <p id="smart-proxy-state" role="status">Loading proxy settings…</p>
+        <div class="smart-live-actions" id="smart-proxy-actions" aria-describedby="smart-proxy-action-help">
+          <div class="row">
+            <button type="button" class="secondary" data-copy-proxy="socks5" disabled>Copy SOCKS5 URL</button>
+            <button type="button" class="secondary" data-copy-proxy="http" disabled>Copy HTTP URL</button>
+            <button type="button" class="secondary" data-copy-proxy="pac" disabled>Copy PAC URL</button>
+          </div>
+          <div class="row">
+            <button type="button" class="secondary" id="smart-proxy-browser" disabled><span aria-hidden="true">🌐</span> Open isolated browser</button>
+            <a class="button secondary" id="smart-proxy-open-live" target="_blank" rel="noopener noreferrer" hidden><span aria-hidden="true">📊</span> Open live dashboard</a>
+          </div>
+        </div>
+        <p class="help" id="smart-proxy-action-help"></p>
+        <p class="help" id="smart-proxy-action-status" role="status"></p>
       </div>
-      <p class="help smart-action-help" id="smart-proxy-action-help"></p>
-      <p class="help" id="smart-proxy-action-status" role="status"></p>
       <div class="smart-tabs" id="smart-proxy-tabs" role="tablist" aria-label="Smart Proxy settings">
-        <button type="button" id="smart-proxy-setup-tab" role="tab" aria-controls="smart-proxy-setup" aria-selected="true"><span aria-hidden="true">⚙️</span> Setup</button>
-        <button type="button" id="smart-proxy-tunnels-tab" role="tab" aria-controls="smart-proxy-tunnels" aria-selected="false" tabindex="-1"><span aria-hidden="true">🔗</span> Tunnels</button>
-        <button type="button" id="smart-proxy-destinations-tab" role="tab" aria-controls="smart-proxy-destinations" aria-selected="false" tabindex="-1"><span aria-hidden="true">🧭</span> Destination rules</button>
-        <button type="button" id="smart-proxy-health-settings-tab" role="tab" aria-controls="smart-proxy-health-settings" aria-selected="false" tabindex="-1"><span aria-hidden="true">🩺</span> Failover and health</button>
-        <button type="button" id="smart-proxy-limits-tab" role="tab" aria-controls="smart-proxy-limits" aria-selected="false" tabindex="-1"><span aria-hidden="true">🎛️</span> Limits and PAC</button>
+        <button type="button" id="smart-proxy-setup-tab" role="tab" aria-controls="smart-proxy-setup" aria-selected="true">Setup</button>
+        <button type="button" id="smart-proxy-tunnels-tab" role="tab" aria-controls="smart-proxy-tunnels" aria-selected="false" tabindex="-1">Tunnels</button>
+        <button type="button" id="smart-proxy-destinations-tab" role="tab" aria-controls="smart-proxy-destinations" aria-selected="false" tabindex="-1">Destination rules</button>
+        <button type="button" id="smart-proxy-health-settings-tab" role="tab" aria-controls="smart-proxy-health-settings" aria-selected="false" tabindex="-1">Failover and health</button>
+        <button type="button" id="smart-proxy-limits-tab" role="tab" aria-controls="smart-proxy-limits" aria-selected="false" tabindex="-1">Limits and PAC</button>
       </div>
       <form id="smart-proxy-form" novalidate>
         <fieldset id="smart-proxy-fields" class="smart-contents" disabled>
           <section class="smart-section" id="smart-proxy-setup" role="tabpanel" aria-labelledby="smart-proxy-setup-tab" tabindex="0">
             <div class="smart-fields">
-              <label>Local address <input type="text" data-smart-field="listen" placeholder="127.0.0.1:1080"></label>
-              <label>Routing strategy
-                <select data-smart-field="egress.selection" data-default="sticky-fastest" aria-describedby="smart-proxy-strategy-help">
-                  <option value="sticky-fastest">Sticky fastest</option>
-                  <option value="fastest-healthy">Fastest healthy</option>
-                  <option value="destination-aware">Destination aware</option>
-                  <option value="priority">Priority</option>
-                  <option value="round-robin">Round robin</option>
-                </select>
-              </label>
-            </div>
-            <p class="help" id="smart-proxy-strategy-help"></p>
-            <button type="button" class="secondary smart-after" id="smart-proxy-strategy-compare" aria-haspopup="dialog">Compare strategies</button>
-            <fieldset class="smart-protocols">
-              <legend>Protocols</legend>
-              <div class="row">
-                <label class="toggle"><input type="checkbox" data-smart-protocol="socks5"> SOCKS5</label>
-                <label class="toggle"><input type="checkbox" data-smart-protocol="http"> HTTP</label>
+              <div class="smart-option">
+                <label>Local address <input type="text" data-smart-field="listen" placeholder="127.0.0.1:1080"></label>
+                <fieldset class="smart-protocols">
+                  <legend>Protocols</legend>
+                  <div class="row">
+                    <label class="toggle"><input type="checkbox" data-smart-protocol="socks5"> SOCKS5</label>
+                    <label class="toggle"><input type="checkbox" data-smart-protocol="http"> HTTP</label>
+                  </div>
+                </fieldset>
               </div>
-            </fieldset>
-            <label class="toggle smart-after"><input type="checkbox" data-smart-field="browser_block_local_dns" aria-describedby="smart-proxy-browser-dns-help"> Block local DNS in the isolated browser</label>
-            <p class="help" id="smart-proxy-browser-dns-help">Requires a Chromium browser that supports host resolver rules. Save changes, then restart the isolated browser to apply.</p>
-            <div class="smart-fields">
-              <label>Keep the same tunnel for
-                <select data-smart-field="routing.affinity_scope" data-default="host">
-                  <option value="host">Each destination hostname</option>
-                  <option value="group">The whole group</option>
-                </select>
-              </label>
-              <label>Keep tunnel preference (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.affinity_ttl" data-unit="seconds" data-default="300"></label>
-              <label>Speed improvement needed to switch (%) <input type="number" min="1" max="99" data-smart-field="routing.hysteresis_percent" data-default="20"></label>
-            </div>
-            <p class="help">Tunnel preference applies to Sticky fastest. Whole-group preference keeps one exit across destinations when possible.</p>
-          </section>
-          <section class="smart-section" id="smart-proxy-tunnels" role="tabpanel" aria-labelledby="smart-proxy-tunnels-tab" tabindex="0" hidden>
-            <p class="help">Group only tunnels with equivalent destination access and trust. Higher priority wins under Priority routing.</p>
-            <div class="row smart-picker">
-              <label>Connected SOCKS tunnel <select id="smart-proxy-available"></select></label>
-              <button type="button" class="secondary" id="smart-proxy-add">Add selected tunnel</button>
-              <button type="button" class="secondary" id="smart-proxy-add-manual">Add tunnel manually</button>
-            </div>
-            <div id="smart-proxy-members"></div>
-            <h4><span aria-hidden="true">🛡️</span> Automatic enrollment</h4>
-            <p class="help">Approve a profile, its HTTPS server, and the policy class advertised by that server.</p>
-            <div id="smart-proxy-enrollments"></div>
-            <button type="button" class="secondary" id="smart-proxy-add-enrollment">Add enrollment</button>
-            <label class="toggle smart-approval"><input type="checkbox" id="smart-proxy-approve"> I approve these tunnels and enrollments for this group</label>
-          </section>
-          <section class="smart-section" id="smart-proxy-destinations" role="tabpanel" aria-labelledby="smart-proxy-destinations-tab" tabindex="0" hidden>
-            <p class="help">The first matching rule wins. Enter multiple values separated by commas. Leave a field empty to match any value of that type.</p>
-            <p class="help">IP ranges match literal IP addresses. Add a hostname or domain suffix to match requests by name. A matching rule that selects specific tunnels uses only those tunnels.</p>
-            <div id="smart-proxy-rules"></div>
-            <button type="button" class="secondary" id="smart-proxy-add-rule">Add rule</button>
-            <label class="smart-after">When no rule matches
-              <select data-smart-field="routing.unmatched">
-                <option value="">Block when rules exist</option>
-                <option value="allow">Through the ntwire group</option>
-                <option value="proxy">Through the ntwire group (explicit proxy)</option>
-                <option value="direct">Direct client connection</option>
-                <option value="deny">Block</option>
-              </select>
-            </label>
-            <p class="help">Direct routes use the client network and expose the client’s source IP. Server destination policy does not apply. Private LAN access requires an explicit direct CIDR.</p>
-            <button type="button" class="secondary smart-after" id="smart-proxy-asn-toggle" aria-expanded="false" aria-controls="smart-proxy-asn-settings">ASN settings</button>
-            <div id="smart-proxy-asn-settings" hidden>
-              <p id="smart-proxy-asn-status" class="help"></p>
-              <label class="toggle"><input type="checkbox" data-smart-field="routing.asn.enabled" data-default="true"> Allow ASN rules in this group</label>
-              <div class="smart-fields">
-                <label>Hostname classification
-                  <select data-smart-field="routing.asn.hostname_resolution">
-                    <option value="">Numeric destinations only</option><option value="disabled">Disabled</option>
-                    <option value="local">Scoped client DNS</option><option value="remote">Scoped tunnel DNS</option>
+              <div class="smart-option">
+                <label>Routing strategy
+                  <select data-smart-field="egress.selection" data-default="sticky-fastest" aria-describedby="smart-proxy-strategy-help">
+                    <option value="sticky-fastest">Sticky fastest</option>
+                    <option value="fastest-healthy">Fastest healthy</option>
+                    <option value="destination-aware">Destination aware</option>
+                    <option value="priority">Priority</option>
+                    <option value="round-robin">Round robin</option>
                   </select>
                 </label>
-                <label>Unknown ASN
-                  <select data-smart-field="routing.asn.on_unknown" data-default="deny"><option value="deny">Deny</option></select>
-                </label>
-                <label>Exact names, one per line <textarea id="smart-proxy-asn-hosts" data-smart-field="routing.asn.hosts" data-list rows="2"></textarea></label>
-                <label>Suffixes, one per line <textarea id="smart-proxy-asn-suffixes" data-smart-field="routing.asn.suffixes" data-list rows="2"></textarea></label>
-                <label>Approved resolver tunnel <select id="smart-proxy-asn-resolver"></select></label>
+                <p class="help" id="smart-proxy-strategy-help"></p>
+                <button type="button" class="secondary" id="smart-proxy-strategy-compare" aria-haspopup="dialog">Compare strategies</button>
               </div>
-              <p class="help">Scoped client DNS reveals matching names to the client resolver. Scoped tunnel DNS requires a server that advertises destination binding.</p>
-              <h4>Shared ASN database</h4>
+            </div>
+            <div class="smart-block">
               <div class="smart-fields">
-                <label>Trusted HTTPS source <input data-smart-field="asn_database.source" placeholder="https://openaf.io/asnidx.json.gz"></label>
-                <label>Refresh interval (seconds) <input type="number" min="60" max="2592000" data-unit="seconds" data-smart-field="asn_database.refresh_interval" placeholder="4320"></label>
-                <label>Maximum age (seconds) <input type="number" min="60" max="7776000" data-unit="seconds" data-smart-field="asn_database.max_age" placeholder="86400"></label>
-                <label>Private cache directory (optional) <input data-smart-field="asn_database.cache_dir" placeholder="/absolute/path"></label>
+                <label>Keep the same tunnel for
+                  <select data-smart-field="routing.affinity_scope" data-default="host">
+                    <option value="host">Each destination hostname</option>
+                    <option value="group">The whole group</option>
+                  </select>
+                </label>
+                <label>Keep tunnel preference (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.affinity_ttl" data-unit="seconds" data-default="300"></label>
+                <label>Speed improvement needed to switch (%) <input type="number" min="1" max="99" data-smart-field="routing.hysteresis_percent" data-default="20"></label>
+              </div>
+              <p class="help">Tunnel preference applies to Sticky fastest. Whole-group preference keeps one exit across destinations when possible.</p>
+            </div>
+            <div class="smart-block">
+              <label class="toggle"><input type="checkbox" data-smart-field="browser_block_local_dns" aria-describedby="smart-proxy-browser-dns-help"> Block local DNS in the isolated browser</label>
+              <p class="help" id="smart-proxy-browser-dns-help">Requires a Chromium browser that supports host resolver rules. Save changes, then restart the isolated browser to apply.</p>
+            </div>
+          </section>
+          <section class="smart-section" id="smart-proxy-tunnels" role="tabpanel" aria-labelledby="smart-proxy-tunnels-tab" tabindex="0" hidden>
+            <div class="smart-block">
+              <p class="help">Group only tunnels with equivalent destination access and trust. Higher priority wins under Priority routing.</p>
+              <div class="smart-picker">
+                <label>Connected SOCKS tunnel <select id="smart-proxy-available"></select></label>
+                <button type="button" class="secondary" id="smart-proxy-add">Add selected tunnel</button>
+                <button type="button" class="secondary" id="smart-proxy-add-manual">Add tunnel manually</button>
+              </div>
+              <div class="smart-table-list" id="smart-proxy-members"></div>
+            </div>
+            <div class="smart-block">
+              <h4><span aria-hidden="true">🛡️</span> Automatic enrollment</h4>
+              <p class="help">Approve a profile, its HTTPS server, and the policy class advertised by that server.</p>
+              <div class="smart-table-list" id="smart-proxy-enrollments"></div>
+              <button type="button" class="secondary" id="smart-proxy-add-enrollment">Add enrollment</button>
+            </div>
+            <div class="smart-block">
+              <label class="toggle"><input type="checkbox" id="smart-proxy-approve"> I approve these tunnels and enrollments for this group</label>
+            </div>
+          </section>
+          <section class="smart-section" id="smart-proxy-destinations" role="tabpanel" aria-labelledby="smart-proxy-destinations-tab" tabindex="0" hidden>
+            <div class="smart-block">
+              <p class="help">The first matching rule wins. Enter multiple values separated by commas. Leave a field empty to match any value of that type.</p>
+              <p class="help">IP ranges match literal IP addresses. Add a hostname or domain suffix to match requests by name. A matching rule that selects specific tunnels uses only those tunnels.</p>
+              <div class="smart-table-list" id="smart-proxy-rules"></div>
+              <button type="button" class="secondary" id="smart-proxy-add-rule">Add rule</button>
+            </div>
+            <div class="smart-block">
+              <label class="smart-compact-field">When no rule matches
+                <select data-smart-field="routing.unmatched">
+                  <option value="">Block when rules exist</option>
+                  <option value="allow">Through the ntwire group</option>
+                  <option value="proxy">Through the ntwire group (explicit proxy)</option>
+                  <option value="direct">Direct client connection</option>
+                  <option value="deny">Block</option>
+                </select>
+              </label>
+              <p class="help">Direct routes use the client network and expose the client’s source IP. Server destination policy does not apply. Private LAN access requires an explicit direct CIDR.</p>
+            </div>
+            <div class="smart-block">
+              <button type="button" class="secondary" id="smart-proxy-asn-toggle" aria-expanded="false" aria-controls="smart-proxy-asn-settings">ASN settings</button>
+              <div class="smart-block" id="smart-proxy-asn-settings" hidden>
+                <p id="smart-proxy-asn-status" class="help"></p>
+                <label class="toggle"><input type="checkbox" data-smart-field="routing.asn.enabled" data-default="true"> Allow ASN rules in this group</label>
+                <div class="smart-fields">
+                  <label>Hostname classification
+                    <select data-smart-field="routing.asn.hostname_resolution">
+                      <option value="">Numeric destinations only</option><option value="disabled">Disabled</option>
+                      <option value="local">Scoped client DNS</option><option value="remote">Scoped tunnel DNS</option>
+                    </select>
+                  </label>
+                  <label>Unknown ASN
+                    <select data-smart-field="routing.asn.on_unknown" data-default="deny"><option value="deny">Deny</option></select>
+                  </label>
+                  <label>Approved resolver tunnel <select id="smart-proxy-asn-resolver"></select></label>
+                </div>
+                <div class="smart-fields">
+                  <label>Exact names, one per line <textarea id="smart-proxy-asn-hosts" data-smart-field="routing.asn.hosts" data-list rows="2"></textarea></label>
+                  <label>Suffixes, one per line <textarea id="smart-proxy-asn-suffixes" data-smart-field="routing.asn.suffixes" data-list rows="2"></textarea></label>
+                </div>
+                <p class="help">Scoped client DNS reveals matching names to the client resolver. Scoped tunnel DNS requires a server that advertises destination binding.</p>
+                <h4>Shared ASN database</h4>
+                <div class="smart-fields">
+                  <label>Trusted HTTPS source <input data-smart-field="asn_database.source" placeholder="https://openaf.io/asnidx.json.gz"></label>
+                  <label>Refresh interval (seconds) <input type="number" min="60" max="2592000" data-unit="seconds" data-smart-field="asn_database.refresh_interval" placeholder="4320"></label>
+                  <label>Maximum age (seconds) <input type="number" min="60" max="7776000" data-unit="seconds" data-smart-field="asn_database.max_age" placeholder="86400"></label>
+                  <label>Private cache directory (optional) <input data-smart-field="asn_database.cache_dir" placeholder="/absolute/path"></label>
+                </div>
               </div>
             </div>
           </section>
           <section class="smart-section" id="smart-proxy-health-settings" role="tabpanel" aria-labelledby="smart-proxy-health-settings-tab" tabindex="0" hidden>
-            <label class="toggle"><input type="checkbox" data-smart-field="failover.enabled" data-default="true"> Try another tunnel when connection setup fails</label>
-            <label class="toggle"><input type="checkbox" data-smart-field="failover.racing"> Start preparing a backup TCP connection before the first attempt finishes</label>
-            <div class="smart-fields">
-              <label>Maximum attempts <input type="number" min="1" max="64" data-smart-field="failover.max_attempts" data-default="3"></label>
-              <label>Per-attempt timeout (seconds) <input type="number" step="any" min="0.001" max="60" data-smart-field="failover.attempt_timeout" data-unit="seconds" data-default="3"></label>
-              <label>Total setup timeout (seconds) <input type="number" step="any" min="0.001" max="120" data-smart-field="failover.total_timeout" data-unit="seconds" data-default="10"></label>
-              <label>Backup start delay (milliseconds) <input type="number" step="any" min="1" max="5000" data-smart-field="failover.race_delay" data-unit="milliseconds" data-default="200"></label>
+            <div class="smart-block">
+              <label class="toggle"><input type="checkbox" data-smart-field="failover.enabled" data-default="true"> Try another tunnel when connection setup fails</label>
+              <label class="toggle"><input type="checkbox" data-smart-field="failover.racing"> Start preparing a backup TCP connection before the first attempt finishes</label>
+              <div class="smart-fields">
+                <label>Maximum attempts <input type="number" min="1" max="64" data-smart-field="failover.max_attempts" data-default="3"></label>
+                <label>Per-attempt timeout (seconds) <input type="number" step="any" min="0.001" max="60" data-smart-field="failover.attempt_timeout" data-unit="seconds" data-default="3"></label>
+                <label>Total setup timeout (seconds) <input type="number" step="any" min="0.001" max="120" data-smart-field="failover.total_timeout" data-unit="seconds" data-default="10"></label>
+                <label>Backup start delay (milliseconds) <input type="number" step="any" min="1" max="5000" data-smart-field="failover.race_delay" data-unit="milliseconds" data-default="200"></label>
+              </div>
+              <p class="help">Backup preparation needs failover and at least two attempts. Only the winning connection receives the destination request.</p>
             </div>
-            <p class="help">Backup preparation needs failover and at least two attempts. Only the winning connection receives the destination request.</p>
-            <label class="smart-after">Health probe targets
-              <textarea rows="2" data-smart-field="health.probe_targets" data-list aria-describedby="smart-proxy-probe-help" placeholder="probe.example.net:443"></textarea>
-            </label>
-            <p class="help" id="smart-proxy-probe-help">Enter one host:port or HTTPS URL per line. Leave empty to turn off active probes.</p>
-            <div class="smart-fields smart-after">
-              <label>Probe interval (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.interval" data-unit="seconds" data-default="30"></label>
-              <label>Consecutive failures before pausing a tunnel <input type="number" min="1" max="32" data-smart-field="health.failure_threshold" data-default="3"></label>
-              <label>Wait before retrying a paused tunnel (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.recovery_interval" data-unit="seconds" data-default="30"></label>
+            <div class="smart-block">
+              <label>Health probe targets
+                <textarea rows="2" data-smart-field="health.probe_targets" data-list aria-describedby="smart-proxy-probe-help" placeholder="probe.example.net:443"></textarea>
+              </label>
+              <p class="help" id="smart-proxy-probe-help">Enter one host:port or HTTPS URL per line. Leave empty to turn off active probes.</p>
+              <div class="smart-fields">
+                <label>Probe interval (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.interval" data-unit="seconds" data-default="30"></label>
+                <label>Consecutive failures before pausing a tunnel <input type="number" min="1" max="32" data-smart-field="health.failure_threshold" data-default="3"></label>
+                <label>Wait before retrying a paused tunnel (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="health.recovery_interval" data-unit="seconds" data-default="30"></label>
+              </div>
             </div>
           </section>
           <section class="smart-section" id="smart-proxy-limits" role="tabpanel" aria-labelledby="smart-proxy-limits-tab" tabindex="0" hidden>
-            <label class="toggle"><input type="checkbox" data-smart-field="routing.udp_associate"> Enable SOCKS5 UDP ASSOCIATE</label>
-            <p class="help">UDP needs SOCKS5. Tunneled UDP also needs a server that advertises UDP support.</p>
-            <div class="smart-fields smart-after">
-              <label>UDP idle timeout (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.udp_idle_timeout" data-unit="seconds" data-default="120"></label>
-              <label class="toggle"><input type="checkbox" data-smart-field="limits.auto"> Automatically adjust connection and setup limits</label>
-              <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="1024"></label>
-              <label>Maximum simultaneous setup attempts <input type="number" min="1" max="1024" data-smart-field="limits.concurrent_attempts" data-default="32"></label>
+            <div class="smart-block">
+              <label class="toggle"><input type="checkbox" data-smart-field="routing.udp_associate"> Enable SOCKS5 UDP ASSOCIATE</label>
+              <p class="help">UDP needs SOCKS5. Tunneled UDP also needs a server that advertises UDP support.</p>
+              <label class="smart-compact-field">UDP idle timeout (seconds) <input type="number" step="any" min="1" max="3600" data-smart-field="routing.udp_idle_timeout" data-unit="seconds" data-default="120"></label>
             </div>
-            <label>PAC address for all groups <input id="smart-proxy-pac" type="text" data-smart-field="pac_listen" placeholder="127.0.0.1:1082" aria-describedby="smart-proxy-pac-help"></label>
-            <p class="help" id="smart-proxy-pac-help">Leave empty to turn off proxy auto-configuration (PAC). Use a different port from the proxy listener.</p>
+            <div class="smart-block">
+              <label class="toggle"><input type="checkbox" data-smart-field="limits.auto"> Automatically adjust connection and setup limits</label>
+              <div class="smart-fields">
+                <label>Maximum connections <input type="number" min="1" max="4096" data-smart-field="limits.connections" data-default="1024"></label>
+                <label>Maximum simultaneous setup attempts <input type="number" min="1" max="1024" data-smart-field="limits.concurrent_attempts" data-default="32"></label>
+              </div>
+            </div>
+            <div class="smart-block">
+              <label class="smart-compact-field">PAC address for all groups <input id="smart-proxy-pac" type="text" data-smart-field="pac_listen" placeholder="127.0.0.1:1082" aria-describedby="smart-proxy-pac-help"></label>
+              <p class="help" id="smart-proxy-pac-help">Leave empty to turn off proxy auto-configuration (PAC). Use a different port from the proxy listener.</p>
+            </div>
           </section>
           <div class="row smart-save">
             <button type="submit" id="smart-proxy-save" disabled>Save changes</button>
@@ -670,24 +755,22 @@ function renderProfileRow(snap, index, list) {
   const block = document.createElement('div');
   block.className = 'profile';
 
-  // Line 1: name, server, and live status.
   const infoRow = document.createElement('div');
-  infoRow.className = 'row';
+  infoRow.className = 'profile-heading';
 
   const info = document.createElement('div');
   info.className = 'info';
   const name = document.createElement('div');
   name.className = 'name';
-  name.textContent = '👤 ' + p.Name;
+  name.textContent = p.Name;
   const server = document.createElement('div');
   server.className = 'server';
   server.textContent = p.Server;
-  info.append(name, server);
+  info.append(server);
 
   const badge = document.createElement('span');
   badge.className = 'badge ' + snap.state;
-  const reconnectError = snap.connection && snap.connection.reconnect && snap.connection.reconnect.last_error;
-  badge.textContent = stateLabel(snap.state) + (snap.error ? ': ' + snap.error : reconnectError ? ': ' + reconnectError : '');
+  badge.textContent = stateLabel(snap.state);
 
   if (snap.connection) {
     const c = snap.connection;
@@ -698,19 +781,29 @@ function renderProfileRow(snap, index, list) {
     if (c.transport && c.transport.description) parts.push(`Transport: ${c.transport.description}`);
     if (c.expiration && c.expiration.expires_at) parts.push(`Expires: ${new Date(c.expiration.expires_at).toLocaleString()}`);
     live.textContent = parts.join(' · ');
-    info.append(live);
+    if (parts.length) info.append(live);
   }
-  infoRow.append(info, badge);
+  infoRow.append(name, badge, info);
+  block.append(infoRow);
 
-  // Line 2: actions, on their own line below the text rather than crowded
-  // in beside it.
+  const error = snap.error || snap.connection?.reconnect?.last_error;
+  if (error) {
+    const detail = document.createElement('p');
+    detail.className = 'help profile-error';
+    detail.textContent = error;
+    block.append(detail);
+  }
+
+  const actionBar = document.createElement('div');
+  actionBar.className = 'profile-actions';
   const actions = document.createElement('div');
   actions.className = 'row';
+  actionBar.append(actions);
 
   const connected = snap.state === 'connected' || snap.state === 'reconnecting';
   const connectBtn = document.createElement('button');
   connectBtn.className = connected ? 'secondary' : '';
-  connectBtn.textContent = connected ? '⏹️ Disconnect' : '▶️ Connect';
+  connectBtn.textContent = connected ? 'Disconnect' : 'Connect';
   connectBtn.disabled = snap.state === 'connecting';
   connectBtn.addEventListener('click', async () => {
     try {
@@ -720,12 +813,12 @@ function renderProfileRow(snap, index, list) {
 
   const editBtn = document.createElement('button');
   editBtn.className = 'secondary';
-  editBtn.textContent = '✏️ Edit';
+  editBtn.textContent = 'Edit';
   editBtn.addEventListener('click', () => openForm(p));
 
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'danger';
-  deleteBtn.textContent = '🗑️ Delete';
+  deleteBtn.textContent = 'Delete';
   deleteBtn.disabled = connected;
   deleteBtn.title = connected ? 'Disconnect first' : '';
   deleteBtn.addEventListener('click', async () => {
@@ -738,24 +831,12 @@ function renderProfileRow(snap, index, list) {
     } catch (e) { setMessage(e.message); }
   });
 
-  actions.append(connectBtn, editBtn, deleteBtn);
-  if (list.length > 1) {
-    for (const [offset, label] of [[-1, 'Move up'], [1, 'Move down']]) {
-      const move = document.createElement('button');
-      move.className = 'secondary';
-      move.textContent = label;
-      move.setAttribute('aria-label', label + ' ' + p.Name);
-      const target = index + offset;
-      move.disabled = target < 0 || target >= list.length || savingProfileOrder;
-      move.onclick = () => moveProfile(index, target, list);
-      actions.append(move);
-    }
-  }
+  actions.append(connectBtn, editBtn);
 
   if (snap.state === 'failed' && snap.error) {
     const clearErrorBtn = document.createElement('button');
     clearErrorBtn.className = 'secondary';
-    clearErrorBtn.textContent = '✖️ Clear error';
+    clearErrorBtn.textContent = 'Clear error';
     clearErrorBtn.title = 'Dismiss this completed connection error';
     clearErrorBtn.addEventListener('click', async () => {
       try {
@@ -772,14 +853,14 @@ function renderProfileRow(snap, index, list) {
     dashboardLink.href = snap.dashboard_url + '#portal';
     dashboardLink.target = '_blank';
     dashboardLink.rel = 'noopener noreferrer';
-    dashboardLink.textContent = '📊 Open dashboard';
+    dashboardLink.textContent = 'Open dashboard';
     actions.append(dashboardLink);
   }
 
   if (p.SSO) {
     const logoutBtn = document.createElement('button');
     logoutBtn.className = 'secondary';
-    logoutBtn.textContent = '🔓 Clear SSO tokens';
+    logoutBtn.textContent = 'Clear SSO tokens';
     logoutBtn.addEventListener('click', async () => {
       try {
         await api('POST', `/api/profiles/${p.ID}/logout`);
@@ -789,7 +870,25 @@ function renderProfileRow(snap, index, list) {
     actions.append(logoutBtn);
   }
 
-  block.append(infoRow, actions);
+  actions.append(deleteBtn);
+  if (list.length > 1) {
+    const order = document.createElement('div');
+    order.className = 'row';
+    order.setAttribute('role', 'group');
+    order.setAttribute('aria-label', 'Profile order');
+    for (const [offset, arrow, label] of [[-1, '↑', 'Move up'], [1, '↓', 'Move down']]) {
+      const move = document.createElement('button');
+      move.className = 'secondary';
+      move.textContent = arrow + ' ' + label;
+      move.setAttribute('aria-label', label + ' ' + p.Name);
+      const target = index + offset;
+      move.disabled = target < 0 || target >= list.length || savingProfileOrder;
+      move.onclick = () => moveProfile(index, target, list);
+      order.append(move);
+    }
+    actionBar.append(order);
+  }
+  block.append(actionBar);
   if (snap.proxy_reconnect_required) {
     const notice = document.createElement('p');
     notice.className = 'help';
@@ -812,13 +911,14 @@ function renderProfileRow(snap, index, list) {
     identity.open = true;
     identity.append(guidance);
   }
-  block.append(identity);
+  const details = document.createElement('div');
+  details.className = 'profile-details';
+  details.append(identity);
 
-  // Line 3: local target ports for a running connection, collapsed by
-  // default -- most visits to this page don't need it.
   if (connected && snap.connection && snap.connection.tunnels && snap.connection.tunnels.length) {
-    block.append(renderTunnelSection(p.ID, snap.connection.tunnels));
+    details.append(renderTunnelSection(p.ID, snap.connection.tunnels));
   }
+  block.append(details);
   return block;
 }
 
@@ -835,7 +935,7 @@ function renderTunnelSection(profileID, tunnels) {
   details.addEventListener('toggle', () => setPortsExpanded(profileID, details.open));
 
   const summary = document.createElement('summary');
-  summary.textContent = `🔌 Local ports (${tunnels.length})`;
+  summary.textContent = `Local ports (${tunnels.length})`;
   details.append(summary);
 
   const list = document.createElement('div');
@@ -1245,7 +1345,7 @@ function renderGeneratedFields(profile) {
 
 function openForm(profile) {
   editingID = profile ? profile.ID : null;
-  formTitle.textContent = profile ? `✏️ Edit ${profile.Name}` : '➕ Add profile';
+  formTitle.textContent = profile ? `Edit ${profile.Name}` : 'Add profile';
   form.Name.value = profile ? profile.Name : '';
   form.Server.value = profile ? profile.Server : '';
   form.ConnectOnStart.checked = !!(profile && profile.ConnectOnStart);

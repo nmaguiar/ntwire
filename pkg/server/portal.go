@@ -327,7 +327,8 @@ func (s *Server) startWebPortal(d *dataPlane) error {
 
 	host, _, splitErr := net.SplitHostPort(addr)
 	if splitErr == nil {
-		if ip, parseErr := netip.ParseAddr(host); parseErr == nil && (ip == d.serverIP || ip.IsUnspecified()) {
+		ip, parseErr := netip.ParseAddr(host)
+		if host == "" || (parseErr == nil && (ip == d.serverIP || ip.IsUnspecified())) {
 			ln, err = d.stack.Listen("tcp", net.JoinHostPort(d.serverIP.String(), portStr(addr)))
 		}
 	}

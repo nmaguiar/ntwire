@@ -43,7 +43,7 @@ func TestPromotion_EndToEnd(t *testing.T) {
 			s.Config.Listen.WireGuard = "127.0.0.1:" + fmt.Sprint(port)
 			s.Config.Network.AdvertisedEndpoint = "127.0.0.1:" + fmt.Sprint(port)
 			s.Config.Transport.Promotion = tc.serverOn
-			if err := s.StartDataPlane(); err != nil {
+			if err := startTransportFixture(s); err != nil {
 				t.Fatal(err)
 			}
 			defer s.Close()

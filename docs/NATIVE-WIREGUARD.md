@@ -1,6 +1,6 @@
 # Native WireGuard peers
 
-ntwire can admit an unmodified official WireGuard client into the same userspace WireGuard device and gVisor netstack used by authenticated ntwire clients. Native peers do not call `/v1/auth`, have no ntwire session or TTL, and are removed only by configuration/reload.
+ntwire can admit an unmodified official WireGuard client into the same WireGuard backend used by authenticated ntwire clients. Native peers do not call `/v1/auth`, have no ntwire session or TTL, and are removed only by configuration or reload.
 
 This whole mechanism is for one specific case: a device that must use the *official* WireGuard app rather than `ntwire`. Whenever the `ntwire` client is an option, prefer it — it needs no WireGuard key management at all and gets session auth, per-tunnel grants, TTLs, and revocation that a static native peer does not have. See [CONNECTING.md](CONNECTING.md) for a side-by-side of both paths.
 

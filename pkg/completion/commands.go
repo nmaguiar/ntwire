@@ -137,6 +137,7 @@ func ServerCommand() Command {
 		Summary: "ntwire tunnel server",
 		Flags: []Flag{
 			{Name: "config", Usage: "server configuration file", TakesValue: true, IsFilePath: true},
+			{Name: "acceleration", Usage: "override the configured acceleration mode", TakesValue: true, Choices: []string{"auto", "off", "required"}},
 			{Name: "list", Usage: "list configured server tunnels and proxy PAC endpoints and exit", TakesValue: false},
 			{Name: "json", Usage: "output in JSON format (used with -list)", TakesValue: false},
 			{Name: "print-sample-config", Usage: "print a fully commented sample YAML configuration and exit", TakesValue: false},

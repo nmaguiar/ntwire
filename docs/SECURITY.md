@@ -426,7 +426,7 @@ DNS rebinding.
 
 ## Native WireGuard and destination policies
 
-Native peers are static cryptographic peers in the existing userspace WireGuard device, not bearer-token sessions. Their configured IPs are reserved from dynamic allocation. Keep the persistent server WireGuard key and all client private keys out of source control. Tunnel grants are checked before destination policies; peer and tunnel policies compose as restrictive AND rules. Fixed-target policies evaluate the chosen resolved IP before it is dialled. See `NATIVE-WIREGUARD.md` and `DESTINATION-POLICIES.md`.
+Native peers use static cryptographic keys on the selected WireGuard backend. Their configured IPs are reserved from dynamic allocation. Keep the persistent server WireGuard key and all client private keys out of source control. Tunnel grants are checked before destination policies; peer and tunnel policies compose as restrictive AND rules. Fixed-target policies evaluate the chosen resolved IP before it is dialled. See `NATIVE-WIREGUARD.md` and `DESTINATION-POLICIES.md`.
 
 ## Binding tunnel listeners beyond loopback (`--bind`)
 
@@ -852,3 +852,7 @@ Direct egress requires an explicit rule or unmatched action on a loopback Smart 
 ASN data classifies routing metadata. It cannot authenticate a destination and a missing result cannot skip an earlier applicable rule. The client downloads only from the configured trusted HTTPS source when an active group uses ASN rules. Its bounded and validated IPv4 snapshot becomes ineligible after the configured maximum age. Explicitly scoped remote classification discloses a hostname to a single approved policy-compatible resolver. The server authorizes both the original hostname and the offered IP, rechecks authorization before relaying, and dials that exact IP. Scoped local classification is a separate explicit DNS disclosure setting.
 
 Status contains aggregate lookup, traffic and denial counts. It omits requested names, addresses, URLs, and connection offers.
+
+## Linux kernel backend
+
+`ntwire-server` can run kernel WireGuard in an anonymous private network namespace. A namespace-local nftables ruleset limits decrypted traffic to the tunnel service address and its active listeners. Forwarding is disabled. The Go authorization and destination-policy checks still run before every target connection. Public control and transport sockets and authorized target dials operate in the original namespace. The standard deployment stays unprivileged, and operators can set `--acceleration=off` to skip kernel setup. See [Linux acceleration](LINUX-ACCELERATION.md) for permissions and operational details.

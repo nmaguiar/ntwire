@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,7 +25,7 @@ import (
 )
 
 type dataPlane struct {
-	stack     *wgnet.Stack
+	stack     serverStack
 	serverIP  netip.Addr
 	mu        sync.Mutex
 	nextIP    netip.Addr
@@ -186,15 +187,18 @@ func socksConfigChanged(a, b *SocksConfig) bool {
 	return !reflect.DeepEqual(*a, *b)
 }
 
-// StartDataPlane starts an unprivileged WireGuard UDP endpoint and TCP
-// virtual-port listeners inside its netstack. It must be called once at boot.
-func (s *Server) StartDataPlane() error {
+// startDataPlane starts WireGuard and its virtual-port listeners at boot.
+func (s *Server) startDataPlane(newStack func(wgnet.Config) (serverStack, error)) error {
 	prefix, err := netip.ParsePrefix(s.Config.Network.TunnelCIDR)
 	if err != nil {
 		return err
 	}
 	serverIP := prefix.Masked().Addr().Next()
 	port, err := portOf(s.Config.Listen.WireGuard)
+	if err != nil {
+		return err
+	}
+	privateKey, err := s.wireGuardPrivateKey()
 	if err != nil {
 		return err
 	}
@@ -272,27 +276,27 @@ func (s *Server) StartDataPlane() error {
 			return true
 		})
 	}
-	privateKey, err := s.wireGuardPrivateKey()
+	st, err := newStack(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
 	if err != nil {
-		return err
-	}
-	st, err := wgnet.New(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
-	if err != nil {
+		if closeErr := bind.Close(); closeErr != nil {
+			return errors.Join(err, errAccelerationCleanup, closeErr)
+		}
 		return err
 	}
 	d := &dataPlane{stack: st, serverIP: serverIP, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
-	if url, ok := s.asnRefreshURL(); ok {
-		go s.asn.Refresh(url, 0, s.log, d.stopASN)
+	fail := func(err error) error {
+		if closeErr := s.closeDataPlane(); closeErr != nil {
+			return errors.Join(err, errAccelerationCleanup, closeErr)
+		}
+		return err
 	}
 	if err := s.installNativePeers(); err != nil {
-		s.Close()
-		return err
+		return fail(err)
 	}
 	for _, tunnel := range s.Config.Tunnels {
 		if err := s.listenTunnel(d, tunnel); err != nil {
-			s.Close()
-			return err
+			return fail(err)
 		}
 	}
 	if s.Config.Network.DNS.IsEnabled() {
@@ -304,6 +308,14 @@ func (s *Server) StartDataPlane() error {
 		if err := s.startWebPortal(d); err != nil {
 			s.log.Warn("in-tunnel web portal startup failed", "error", err)
 		}
+	}
+	if staged, ok := st.(interface{ activate() error }); ok {
+		if err := staged.activate(); err != nil {
+			return fail(err)
+		}
+	}
+	if url, ok := s.asnRefreshURL(); ok {
+		go s.asn.Refresh(url, 0, s.log, d.stopASN)
 	}
 	go s.reapLoop(d)
 	return nil
@@ -1167,6 +1179,12 @@ func (s *Server) reapSessionsLocked() {
 	}
 }
 func (s *Server) Close() {
+	if err := s.closeDataPlane(); err != nil {
+		s.log.Error("data plane cleanup failed", "error", err)
+	}
+}
+
+func (s *Server) closeDataPlane() error {
 	s.relayLifecycleMu.Lock()
 	defer s.relayLifecycleMu.Unlock()
 	if u := s.udpr.Swap(nil); u != nil {
@@ -1184,7 +1202,7 @@ func (s *Server) Close() {
 		close(direct.stop)
 	}
 	if d == nil {
-		return
+		return nil
 	}
 	s.nativeRelayMu.Lock()
 	if s.nativeRelayStop != nil {
@@ -1208,5 +1226,5 @@ func (s *Server) Close() {
 	if d.portalLn != nil {
 		_ = d.portalLn.Close()
 	}
-	_ = d.stack.Close()
+	return d.stack.Close()
 }

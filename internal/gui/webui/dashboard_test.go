@@ -102,7 +102,7 @@ func TestProfileFailureHasClearErrorControl(t *testing.T) {
 	text := string(page)
 	for _, want := range []string{
 		"snap.state === 'failed' && snap.error",
-		"✖️ Clear error",
+		"clearErrorBtn.textContent = 'Clear error'",
 		"/clear-error",
 		"Dismiss this completed connection error",
 	} {
