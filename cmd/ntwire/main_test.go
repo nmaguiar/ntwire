@@ -10,10 +10,31 @@ import (
 
 	"github.com/nmaguiar/ntwire/internal/testutil"
 	"github.com/nmaguiar/ntwire/pkg/client"
+	"github.com/nmaguiar/ntwire/pkg/clientopts"
 	"github.com/nmaguiar/ntwire/pkg/sshkey"
 	"github.com/nmaguiar/ntwire/pkg/ui"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
 )
+
+func TestConnectAdaptiveDefaultAndRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.yaml")
+	settings, _ := settingsFor([]string{"--config", path})
+	flags := clientopts.NewFlagSet("connect", clientopts.Defaults{Settings: settings})
+	if !flags.BoolVal("adaptive-carrier") {
+		t.Fatal("standard connect must offer adaptive carriers")
+	}
+	if err := flags.Parse([]string{"--adaptive-carrier=false"}); err != nil || flags.BoolVal("adaptive-carrier") {
+		t.Fatalf("CLI opt-out ignored: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("adaptive_carrier: false\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = settingsFor([]string{"--config", path})
+	flags = clientopts.NewFlagSet("connect", clientopts.Defaults{Settings: settings})
+	if flags.BoolVal("adaptive-carrier") {
+		t.Fatal("saved opt-out ignored")
+	}
+}
 
 func TestNoColorFrom(t *testing.T) {
 	cases := []struct {
@@ -532,7 +553,7 @@ func TestUsage(t *testing.T) {
 	u := ui.New(&stdout, &stderr, true)
 	usage(u)
 	out := stderr.String()
-	for _, cmd := range []string{"keygen", "connect", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"} {
+	for _, cmd := range []string{"keygen", "connect", "benchmark", "list", "status", "disconnect", "port", "browser", "logout", "completion", "version"} {
 		if !strings.Contains(out, cmd) {
 			t.Errorf("expected usage to mention command %q, got:\n%s", cmd, out)
 		}
@@ -575,6 +596,10 @@ func TestTransportDetails_MTUCellAndEventLine(t *testing.T) {
 	if !strings.Contains(line, "- -> wss (initial)") {
 		t.Errorf("event line = %q, want initial transition", line)
 	}
+	line = switchEventLine(wstransport.SwitchEvent{From: "quic-datagram", Reason: wstransport.SwitchCarrierFailure})
+	if !strings.Contains(line, "quic-datagram -> unavailable (carrier_failure)") {
+		t.Errorf("event line = %q, want unavailable transition", line)
+	}
 }
 
 func TestTransportInfoJSON_DetailsOmittedByDefault(t *testing.T) {
@@ -582,8 +607,21 @@ func TestTransportInfoJSON_DetailsOmittedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(b), "events") || strings.Contains(string(b), "reason") {
+	if strings.Contains(string(b), "events") || strings.Contains(string(b), "reason") || strings.Contains(string(b), "qualified_paths") || strings.Contains(string(b), "lanes") {
 		t.Fatalf("default TransportInfo JSON = %s, want no detail fields", b)
+	}
+}
+
+func TestTransportDetails_LaneStates(t *testing.T) {
+	var out bytes.Buffer
+	printTransportDetails(ui.New(&out, &out, true), client.TransportInfo{Lanes: []client.LaneStatus{
+		{Anchor: true, Carrier: "wss", State: "ready", ActiveFlows: 3},
+		{Carrier: "wss", State: "draining", ActiveFlows: 1},
+	}})
+	for _, want := range []string{"Anchor ready over wss, 3 active flows", "Child 1 draining over wss, 1 active flows"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in %s", want, out.String())
+		}
 	}
 }
 

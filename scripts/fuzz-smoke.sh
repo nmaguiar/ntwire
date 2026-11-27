@@ -16,6 +16,12 @@ run_fuzz() {
 
 run_fuzz ./pkg/protocol FuzzSigningPayload
 run_fuzz ./pkg/protocol FuzzAuthRequestDecoding
+run_fuzz ./pkg/protocol FuzzDecodeCarrierAttach
+run_fuzz ./pkg/protocol FuzzDecodeLaneRequest
+run_fuzz ./pkg/protocol FuzzDecodeCarrierProof
+run_fuzz ./pkg/protocol FuzzCarrierQUICHello
 run_fuzz ./pkg/socks FuzzServeConn
 run_fuzz ./pkg/wstransport FuzzAccept
 run_fuzz ./pkg/wstransport FuzzControlFrameDecoding
+run_fuzz ./pkg/wstransport FuzzCarrierFrame
+run_fuzz ./pkg/wstransport FuzzHTTP3CarrierDatagram

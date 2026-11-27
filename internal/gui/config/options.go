@@ -101,6 +101,8 @@ func (p Profile) ToClientOptions(statusFile, passphrase, settingsURL string) (cl
 		BrowserExecutable: ExpandHome(p.BrowserExecutable),
 		BrowserArgs:       args,
 		Promote:           p.Promote,
+		AdaptiveCarrier:   p.AdaptiveCarrier,
+		AdaptiveFallback:  true,
 		TunnelMTU:         tunnelMTU,
 		SettingsURL:       settingsURL,
 	}, nil

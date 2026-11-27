@@ -143,7 +143,8 @@ func (r *Router) dialClassifiedHostname(ctx context.Context, state *routeState, 
 				r.lastSelection, r.lastReason = member.ID(), "hostname_asn"
 			}
 			r.mu.Unlock()
-			return &routedConn{Conn: out, destination: dst, member: member.Member, generation: member.Generation, health: h, state: state, asn: snapshot, bound: true}, nil
+			return r.trackRoutedFlow(&routedConn{Conn: out, destination: dst, member: member.Member,
+				generation: member.Generation, health: h, state: state, asn: snapshot, bound: true}, ip), nil
 		}
 		return r.reject(Decision{Action: Indeterminate, reason: "asn_binding_no_common_address"})
 	}

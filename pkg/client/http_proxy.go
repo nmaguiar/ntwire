@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/nmaguiar/ntwire/internal/localproxy"
@@ -35,9 +36,19 @@ func (c *Connection) forwardMixedProxy(t *localTunnel, in net.Conn, target strin
 		}
 	}()
 	localproxy.Dispatch(in, func(in net.Conn) {
-		c.serveHTTPProxy(ctx, in, t, tunnelProxyDialer{dial: stack.DialContext, target: target, lifetime: ctx})
+		dial := func(ctx context.Context, network, address string) (net.Conn, error) {
+			lane := c.acquireFlowLaneFor(stack)
+			conn, err := lane.dialOwned(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			return lane.trackLocal(conn), nil
+		}
+		c.serveHTTPProxy(ctx, in, t, tunnelProxyDialer{dial: dial, target: target, lifetime: ctx})
 	}, func(in net.Conn) {
-		c.forwardSocksStream(t, in, target, stack, stop)
+		lane := c.acquireFlowLaneFor(stack)
+		defer lane.release()
+		c.forwardSocksStream(t, in, target, lane, stop)
 	})
 }
 
@@ -86,6 +97,36 @@ func (c *countedProxyConn) Write(p []byte) (int, error) {
 }
 func (c *countedProxyConn) CloseWrite() error { return localproxy.CloseWrite(c.Conn) }
 
+type laneHTTPTransport struct {
+	owner     *Connection
+	transport *http.Transport
+	mu        sync.Mutex
+	revision  uint64
+}
+
+func (t *laneHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	t.owner.mu.Lock()
+	revision := t.owner.laneDrainRevision
+	t.owner.mu.Unlock()
+	if t.revision != revision {
+		// Use a fresh pool. A dial from a request already in flight may
+		// finish late, but its old transport cannot serve another request.
+		t.transport.CloseIdleConnections()
+		t.transport = t.transport.Clone()
+		t.revision = revision
+	}
+	transport := t.transport
+	t.mu.Unlock()
+	return transport.RoundTrip(req)
+}
+
+func (t *laneHTTPTransport) CloseIdleConnections() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.transport.CloseIdleConnections()
+}
+
 func (c *Connection) serveHTTPProxy(parent context.Context, in net.Conn, t *localTunnel, forward tunnelProxyDialer) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -117,6 +158,7 @@ func (c *Connection) serveHTTPProxy(parent context.Context, in net.Conn, t *loca
 		return &countedProxyConn{Conn: conn, tunnel: t}, nil
 	}
 	transport := &http.Transport{DialContext: dial, DisableCompression: true, ResponseHeaderTimeout: proxySetupTimeout, IdleConnTimeout: 90 * time.Second, ExpectContinueTimeout: time.Second}
-	defer transport.CloseIdleConnections()
-	localproxy.ServeHTTP(ctx, in, dial, transport, localproxy.HTTPError)
+	pool := &laneHTTPTransport{owner: c, transport: transport}
+	defer pool.CloseIdleConnections()
+	localproxy.ServeHTTP(ctx, in, dial, pool, localproxy.HTTPError)
 }

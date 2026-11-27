@@ -2,10 +2,12 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"path/filepath"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -153,12 +155,187 @@ func benchmarkRoutedSetup(b *testing.B, origin string, members []egressrouter.Me
 	benchmarkEgressSetup(b, origin, proxyBenchmarkDial(b, addr))
 }
 
-func benchmarkEgressSetup(b *testing.B, origin string, dial func(context.Context, string, string) (net.Conn, error)) {
+// BenchmarkSmartProxyWarmService compares actual SOCKS transfers through an
+// authenticated local attachment and a delayed loopback WireGuard UDP path.
+func BenchmarkSmartProxyWarmService(b *testing.B) {
+	fixture := newReconnectFixture(b)
+	startEgressServerWithFaults(fixture, "direct-udp", false, false, &udpFault{delay: 10 * time.Millisecond})
+	owner := fixture.connect()
+	testEgressInternalDial(b, owner, fixture.tcpTarget)
+	member := egressrouter.Member{ProfileID: "a", Tunnel: "internet", ExpectedServer: fixture.http.URL}
+	root := filepath.Join(b.TempDir(), "egress")
+	path, err := egressattach.ProfilePath(root, member.ProfileID)
+	if err != nil {
+		b.Fatal(err)
+	}
+	attachment, err := egressattach.Start(path, owner.EgressCandidate, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer attachment.Close()
+	registry := egressattach.NewRegistry(root)
+	members := []egressrouter.Member{member}
+	registry.Refresh(b.Context(), members)
+
+	for _, mode := range []string{"destination-aware", "adaptive", "adaptive-warm"} {
+		b.Run(mode, func(b *testing.B) {
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				b.Fatal(err)
+			}
+			addr := ln.Addr().String()
+			_ = ln.Close()
+			router := egressrouter.New(registry.Candidate)
+			defer router.Close()
+			warm := mode == "adaptive-warm"
+			selection := mode
+			if warm {
+				selection = "adaptive"
+			}
+			if err := router.Apply(egressrouter.Config{Enabled: true, Listen: addr, Egress: egressrouter.Membership{
+				Members: members, Selection: selection,
+			}, Failover: egressrouter.Failover{WarmService: warm}}, nil); err != nil {
+				b.Fatal(err)
+			}
+			dial := proxyBenchmarkDial(b, addr)
+			for range 2 {
+				conn, err := dial(b.Context(), "tcp", fixture.tcpTarget)
+				if err != nil {
+					b.Fatal(err)
+				}
+				_ = conn.Close()
+			}
+			benchmarkEgressSetup(b, fixture.tcpTarget, dial, 300*time.Millisecond)
+			hits := router.Status().WarmHits
+			b.ReportMetric(float64(hits)/float64(b.N), "warm-hits/op")
+			if warm && hits == 0 {
+				b.Fatal("no service preparations were reused")
+			}
+		})
+	}
+}
+
+// BenchmarkSmartProxyAdaptiveFanout holds the requested number of routed TCP
+// connections open and validates echo while all sockets remain live.
+func BenchmarkSmartProxyAdaptiveFanout(b *testing.B) {
+	for _, count := range []int{100, 500, 1000, egressrouter.MaxConnections, 10000} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			groupCount := (count + egressrouter.MaxConnections - 1) / egressrouter.MaxConnections
+			type fixtureGroup struct {
+				name   string
+				limit  int
+				target string
+				dial   func(context.Context, string, string) (net.Conn, error)
+			}
+			groups := make([]fixtureGroup, groupCount)
+			owners := make(map[egressrouter.MemberID]*Connection, groupCount)
+			var config egressrouter.Config
+			for i := range groups {
+				fixture := newReconnectFixture(b)
+				startEgressServer(fixture, "direct-udp", false, false)
+				owner := fixture.connect()
+				testEgressInternalDial(b, owner, fixture.tcpTarget)
+				member := egressrouter.Member{ProfileID: fmt.Sprintf("profile%d", i), Tunnel: "internet", ExpectedServer: fixture.http.URL}
+				owners[member.ID()] = owner
+				ln, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					b.Fatal(err)
+				}
+				addr := ln.Addr().String()
+				_ = ln.Close()
+				limit := (count + groupCount - 1 - i) / groupCount
+				group := egressrouter.Config{Enabled: true, Listen: addr, Egress: egressrouter.Membership{
+					Members: []egressrouter.Member{member}, Selection: "adaptive",
+				}, Limits: egressrouter.Limits{Connections: limit, ConcurrentAttempts: 128}}
+				name := "default"
+				if i == 0 {
+					config = group
+					config.Groups = make(map[string]egressrouter.Config, groupCount-1)
+				} else {
+					name = fmt.Sprintf("group%d", i)
+					config.Groups[name] = group
+				}
+				groups[i] = fixtureGroup{name: name, limit: limit, target: fixture.tcpTarget, dial: proxyBenchmarkDial(b, addr)}
+			}
+			routers := egressrouter.NewGroupSet(func(member egressrouter.Member) egressrouter.Candidate {
+				return owners[member.ID()].EgressCandidate(member)
+			})
+			defer routers.Close()
+			if err := routers.Apply(config, nil); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				func() {
+					ctx, cancel := context.WithTimeout(b.Context(), 30*time.Second)
+					defer cancel()
+					conns := make([]net.Conn, count)
+					defer func() {
+						for _, conn := range conns {
+							if conn != nil {
+								_ = conn.Close()
+							}
+						}
+					}()
+					var setupErr error
+					var recordFailure sync.Once
+					var wg sync.WaitGroup
+					for worker := range 32 {
+						wg.Go(func() {
+							for i := worker; i < count; i += 32 {
+								group := groups[i%groupCount]
+								conn, err := group.dial(ctx, "tcp", group.target)
+								if err != nil {
+									recordFailure.Do(func() {
+										setupErr = fmt.Errorf("connection %d/%d in %s: %w", i+1, count, group.name, err)
+										cancel()
+									})
+									return
+								}
+								conns[i] = conn
+							}
+						})
+					}
+					wg.Wait()
+					if setupErr != nil {
+						b.Fatal(setupErr)
+					}
+					for _, group := range groups {
+						status, _, ok := routers.Group(group.name)
+						if !ok || status.Active != int64(group.limit) {
+							b.Fatalf("group %s active connections = %d, want %d", group.name, status.Active, group.limit)
+						}
+					}
+					for i, conn := range conns {
+						if conn == nil {
+							b.Fatalf("connection %d was not opened", i+1)
+						}
+						_ = conn.SetDeadline(time.Now().Add(time.Second))
+						if _, err := conn.Write([]byte{'x'}); err != nil {
+							b.Fatal(err)
+						}
+						var reply [1]byte
+						if _, err := io.ReadFull(conn, reply[:]); err != nil || reply[0] != 'x' {
+							b.Fatalf("connection %d echo = %q: %v", i+1, reply, err)
+						}
+					}
+				}()
+			}
+		})
+	}
+}
+
+func benchmarkEgressSetup(b *testing.B, origin string, dial func(context.Context, string, string) (net.Conn, error), idle ...time.Duration) {
 	b.ReportAllocs()
 	var setup, ttfb []int64
 	var payload [1024]byte
 	var reply [1024]byte
 	for b.Loop() {
+		if len(idle) != 0 {
+			b.StopTimer()
+			time.Sleep(idle[0])
+			b.StartTimer()
+		}
 		ctx, cancel := context.WithTimeout(b.Context(), 10*time.Second)
 		start := time.Now()
 		conn, err := dial(ctx, "tcp", origin)

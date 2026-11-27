@@ -44,6 +44,30 @@ func TestDatagramRelay_KnownKeepalivesBypassNewBindLimit(t *testing.T) {
 	}
 }
 
+func TestDatagramRelay_BandwidthCeilingSeparatesDirections(t *testing.T) {
+	table := newConcurrentSessionTable(1, 1)
+	token, _, err := table.Allocate("tenant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := netip.MustParseAddrPort("192.0.2.1:1000")
+	server := netip.MustParseAddrPort("192.0.2.2:1000")
+	session, _ := table.BindClient(token, client)
+	if _, ok := table.BindServer(token, server); !ok {
+		t.Fatal("could not bind the authenticated server leg")
+	}
+	session.serverConn = discardPacketConn{}
+	d := newDatagramRelay(table, discardPacketConn{}, 100, nil)
+	d.setBandwidthLimit(1)
+	frame := make([]byte, wstransport.MaxRelayDatagram)
+	d.forwardFromClient(frame, client)
+	d.forwardFromClient(frame, client)
+	d.forwardFromServer(session, frame, server)
+	if session.serverBytesForwarded.Load() != uint64(len(frame)) || session.clientBytesForwarded.Load() != uint64(len(frame)) {
+		t.Fatal("ceiling did not limit upload independently of download")
+	}
+}
+
 type retryPacketConn struct {
 	net.PacketConn
 	reads int
@@ -318,5 +342,44 @@ func TestDatagramRelayIsolatesConcurrentSessions(t *testing.T) {
 	}
 	if _, ok := readWithTimeout(t, serverB, 200*time.Millisecond); ok {
 		t.Fatal("server B received a datagram meant for server A's session, want session isolation")
+	}
+}
+
+func BenchmarkRelayPacketAddress(b *testing.B) {
+	for _, mode := range []string{"packet-conn", "addr-port"} {
+		b.Run(mode, func(b *testing.B) {
+			receiver, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer receiver.Close()
+			sender, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer sender.Close()
+
+			peer := receiver.LocalAddr().(*net.UDPAddr).AddrPort()
+			buffer := make([]byte, readBufSize)
+			payload := make([]byte, 1400)
+			b.ReportAllocs()
+			for b.Loop() {
+				if mode == "addr-port" {
+					if _, err := writeRelayPacket(sender, payload, peer); err != nil {
+						b.Fatal(err)
+					}
+					if n, from, err := readRelayPacket(receiver, buffer); err != nil || n != len(payload) || !from.IsValid() {
+						b.Fatalf("read %d bytes from %v: %v", n, from, err)
+					}
+				} else {
+					if _, err := sender.WriteTo(payload, net.UDPAddrFromAddrPort(peer)); err != nil {
+						b.Fatal(err)
+					}
+					if n, from, err := receiver.ReadFrom(buffer); err != nil || n != len(payload) || !from.(*net.UDPAddr).AddrPort().IsValid() {
+						b.Fatalf("read %d bytes from %v: %v", n, from, err)
+					}
+				}
+			}
+		})
 	}
 }

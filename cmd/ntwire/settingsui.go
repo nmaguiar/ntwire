@@ -44,6 +44,7 @@ var settingsField = map[string]string{
 	"ip-version":           "IPVersion",
 	"transport":            "Transport",
 	"promote":              "Promote",
+	"adaptive-carrier":     "AdaptiveCarrier",
 	"tunnel-mtu":           "TunnelMTU",
 	"mtu-aware":            "MTUAware",
 	"udp-alt":              "UDPAlt",
@@ -154,7 +155,7 @@ func startSettingsUI(configPath string) (string, func(), error) {
 			}
 			_ = json.NewEncoder(w).Encode(s)
 		case http.MethodPut:
-			var s client.Settings
+			s := client.DefaultSettings()
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&s); err != nil {
 				http.Error(w, "invalid request body", http.StatusBadRequest)
 				return

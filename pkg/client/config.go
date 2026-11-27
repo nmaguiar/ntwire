@@ -91,7 +91,13 @@ type Settings struct {
 	// TunnelMTU is the persisted opt-in default for --tunnel-mtu.
 	TunnelMTU string `yaml:"tunnel_mtu"`
 	// Promote is the persisted opt-in default for --promote.
-	Promote bool `yaml:"promote"`
+	Promote         bool `yaml:"promote"`
+	AdaptiveCarrier bool `yaml:"adaptive_carrier"`
+}
+
+// DefaultSettings returns the defaults for ntwire's user-facing settings.
+func DefaultSettings() Settings {
+	return Settings{AdaptiveCarrier: true}
 }
 
 func DefaultConfigFile() string {
@@ -110,12 +116,12 @@ func DefaultGeneratedIdentityFile() string {
 	return filepath.Join(h, ".ntwire", "id_ed25519")
 }
 
-// LoadSettings treats a missing configuration file as an empty configuration.
+// LoadSettings applies defaults before reading any persisted overrides.
 func LoadSettings(path string) (Settings, error) {
 	if path == "" {
 		path = DefaultConfigFile()
 	}
-	var s Settings
+	s := DefaultSettings()
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -169,6 +175,7 @@ var settingsUIFields = []struct {
 	{Field: "IPVersion", YAMLKey: "ip_version"},
 	{Field: "Transport", YAMLKey: "transport"},
 	{Field: "Promote", YAMLKey: "promote", Bool: true},
+	{Field: "AdaptiveCarrier", YAMLKey: "adaptive_carrier", Bool: true},
 	{Field: "TunnelMTU", YAMLKey: "tunnel_mtu"},
 	{Field: "MTUAware", YAMLKey: "mtu_aware", Bool: true},
 	{Field: "UDPAlt", YAMLKey: "udp_alt", Bool: true},

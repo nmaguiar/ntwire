@@ -71,6 +71,7 @@ type destinationObservation struct {
 	generation string
 	updated    time.Time
 	diagnostic outcomeWindow
+	transfer   transferEstimate
 }
 
 func destinationKey(id MemberID, dst Destination) observationKey {
@@ -80,10 +81,22 @@ func (s *routeState) observeDestination(now time.Time, c ranked, dst Destination
 	if failure != nil && !isDestinationFailure(failure) {
 		return
 	}
+	key := destinationKey(c.ID(), dst)
+	item := s.destinationEntry(key, now, c.Generation)
+	item.diagnostic.observe(now, failure == nil)
+	if failure == nil || (failure.Code >= 3 && failure.Code <= 6) {
+		item.outcomes.observe(now, failure == nil)
+	}
+	if failure == nil {
+		item.observe(now, elapsed)
+	}
+	s.destinations[key] = item
+}
+
+func (s *routeState) destinationEntry(key observationKey, now time.Time, generation string) destinationObservation {
 	if s.destinations == nil {
 		s.destinations = map[observationKey]destinationObservation{}
 	}
-	key := destinationKey(c.ID(), dst)
 	item, exists := s.destinations[key]
 	if !exists && len(s.destinations) >= destinationLimit {
 		var oldest observationKey
@@ -95,18 +108,11 @@ func (s *routeState) observeDestination(now time.Time, c ranked, dst Destination
 		}
 		delete(s.destinations, oldest)
 	}
-	if item.generation != c.Generation || now.Sub(item.updated) > measurementTTL {
-		item = destinationObservation{generation: c.Generation}
+	if item.generation != generation || now.Sub(item.updated) > measurementTTL {
+		item = destinationObservation{generation: generation}
 	}
 	item.updated = now
-	item.diagnostic.observe(now, failure == nil)
-	if failure == nil || (failure.Code >= 3 && failure.Code <= 6) {
-		item.outcomes.observe(now, failure == nil)
-	}
-	if failure == nil {
-		item.observe(now, elapsed)
-	}
-	s.destinations[key] = item
+	return item
 }
 func isDestinationFailure(f *Failure) bool {
 	return f.Stage == "socks_connect" && !f.Retry

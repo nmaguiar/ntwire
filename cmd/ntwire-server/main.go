@@ -311,6 +311,7 @@ func main() {
 			slog.Error("relay configuration error", "error", err)
 			os.Exit(2)
 		}
+		s.SetRelayPool(pool)
 		if c.Relay.AdvertiseDirect {
 			pool.OnReflectAddr = s.EnableDirectUpgrade
 		}

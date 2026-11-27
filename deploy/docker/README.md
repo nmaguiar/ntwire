@@ -49,4 +49,4 @@ Apply the acceleration override after the standard compose file:
 docker compose -f docker-compose.yml -f compose-acceleration.yaml up --build
 ```
 
-The override uses explicit `required` mode. See [Linux acceleration](../../docs/LINUX-ACCELERATION.md) for permissions, diagnostics and fallback.
+The override uses explicit `required` mode. For a standalone container, use the `docker run` example with its explicit capability and volume settings. [Docker CLI](../../docs/LINUX-ACCELERATION.md#docker-cli) · [Compose verification and rollback](../../docs/LINUX-ACCELERATION.md#docker-compose)

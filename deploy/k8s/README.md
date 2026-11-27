@@ -49,4 +49,4 @@ For production TLS, OIDC, relay, and NetworkPolicy design, see
 
 ### Kernel backend evaluation on Linux nodes
 
-Use `kubectl apply -k deploy/k8s-acceleration` from the repository root for the explicit kernel backend overlay. Verify node support for WireGuard, nftables and namespace creation under the runtime's seccomp policy. See [Linux acceleration](../../docs/LINUX-ACCELERATION.md).
+Use `kubectl apply -k deploy/k8s-acceleration` from the repository root for the explicit kernel backend overlay. Verify node support for WireGuard, nftables and namespace creation under the runtime's seccomp policy. The acceleration guide also covers deployment verification, rollback and equivalent Helm values. [Kustomize](../../docs/LINUX-ACCELERATION.md#kubernetes-with-kustomize) · [Helm](../../docs/LINUX-ACCELERATION.md#kubernetes-with-helm)

@@ -26,6 +26,7 @@ type DestinationPolicy struct {
 
 type DataPlanePrincipal struct {
 	peerLifetime     string
+	flowLifetime     context.Context
 	Method, Identity string
 	TunnelIP         netip.Addr
 	Tunnels          map[string]bool

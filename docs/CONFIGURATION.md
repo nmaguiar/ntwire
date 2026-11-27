@@ -107,6 +107,159 @@ aliases. A pinned mode fails clearly when the server cannot provide it instead
 of silently falling back. `--websocket` remains a compatibility alias for
 `--transport wss`; it cannot be combined with a different `--transport` mode.
 
+### Adaptive carrier pilot
+
+Set `transport.adaptive: true` on the server and restart it to allow
+adaptive sessions. Clients now offer adaptive capabilities in a standard
+`ntwire connect https://server.example.com` over verified HTTPS. Existing
+servers without adaptive support or servers whose optional adaptive lane
+quota is full can negotiate their existing WireGuard carriers. Explicit
+legacy transport and path options still take precedence.
+
+Use `ntwire connect --adaptive-carrier=false https://server.example.com` for
+a single connection, or save `adaptive_carrier: false` in client settings for
+a persistent opt-out. GUI profiles expose the same control under Advanced.
+When the verified adaptive WebSocket upgrade is unavailable, the client
+tries the permitted adaptive bootstrap carriers. If those are also
+unreachable, the client can authenticate once more for a legacy WireGuard
+session. Denials, invalid control replies and required capabilities fence
+that retry.
+
+`transport.adaptive_max_lanes` caps peers per adaptive parent, including
+the anchor. Zero or one keeps the single-lane default. With
+`transport.adaptive: true`, setting two through eight opts into the
+multi-lane pilot after a server restart. Start with two when qualifying a
+deployment. Each connection begins on one lane and can try one new lane at
+a time under sustained concurrent demand and WSS queue pressure. An
+advertised UDP or QUIC standby still permits a trial while WSS is active.
+Keeping each new lane requires improved aggregate delivery across the
+parent at similar offered load. Child lanes share the parent's grants and
+local listeners. Each child has its own carrier; native UDP and QUIC
+require negotiation and separate path qualification for that peer.
+
+Set the cap to one and restart to roll back to one lane. The restart can
+interrupt active sockets. Existing client settings and WireGuard
+credentials continue to work. Older ntwire peers and official WireGuard
+clients use the capabilities they already support.
+
+To qualify a direct UDP standby, set `transport.adaptive_udp_port` to a
+separate UDP port and expose that port on the server. Its advertised host
+comes from `network.advertised_endpoint`. The port must differ from both
+legacy WireGuard listen ports. Change the setting with a server restart.
+The client probes after application traffic and continues using the WSS
+primary. It skips the standby when an outbound proxy or direct-upgrade
+restriction applies, the advertised family is excluded, or the local
+socket cannot disable fragmentation. `ntwire transport -v` shows a qualified
+standby and its most recent qualification RTT.
+
+Set `transport.adaptive_udp_alt_port` to expose a second adaptive UDP
+candidate on the same advertised IP. It requires `adaptive_udp_port` and
+a restart. Use a distinct port from adaptive primary UDP, both legacy
+WireGuard listeners, and QUIC. This listener is independent of
+`listen.wireguard_alt`. A peer negotiates the alternate capability
+automatically when adaptive mode and direct carriers are permitted.
+
+`relay.adaptive_udp: true` enables the adaptive relay UDP qualification
+pilot on servers with `relay.enabled` and `transport.adaptive`. Restart
+the server to enable its separate UDP socket. The pilot accepts a literal
+IP address on the relay's shared client endpoint and uses the same IP for
+the allocated server-facing port. Allow outbound UDP to those ports.
+With adaptive carriers enabled, the client qualifies a relay after lane
+traffic begins. A qualified relay can recover a lane after WebSocket
+loss. The client skips relay UDP when an outbound proxy or direct-upgrade
+restriction applies. [Relay qualification protocol](PROTOCOL.md#adaptive-relay-udp-qualification)
+
+`relay.performance_routing: true` opts into measured relay routing on
+servers with adaptive UDP relay enabled. Each negotiated lane can hold
+two qualified relay paths on distinct configured members. A new client
+automatically tries one path at a time under demand. The client prefers
+comparable direct paths and can select an authorized relay with sustained
+better delivery. A server's effective policy and tunnel grants apply on
+every carrier.
+
+Use `relay.performance_max_allocations_per_relay` (1–32, default 16) to
+limit pending and active performance allocations per configured member.
+The total adaptive relay budget is 32 allocations per server.
+`disable_performance_routing: true` on an entry in `relay.endpoints`
+excludes that member from this pilot. Set `performance_routing: false`
+and restart to roll back. Older peers and the existing preferred relay
+use their existing limits and selection rules.
+
+`transport.adaptive_tunnel_mtu` optionally sets a fixed MTU from 1,280 to
+1,420 bytes on the adaptive server device. The default is 1,420. The server
+negotiates this value before creating a client lane and keeps it through
+renewal. Clients that lack adaptive MTU support or request a different
+explicit MTU use the legacy WireGuard path when available. Changing the
+server setting requires a restart.
+
+To pilot direct QUIC DATAGRAM, set `transport.quic_listen: ":8443"` and
+expose UDP 8443 on the server. Use the server's verified TLS certificate
+and configure `network.advertised_endpoint` for the reachable host. The
+QUIC port must differ from the ordinary WireGuard, alternate WireGuard
+and adaptive UDP ports. The server accepts a literal bind address or a
+wildcard bind. An opted-in client tries WSS first. If WSS succeeds, the
+client can qualify QUIC in the background. If the upgrade is unavailable,
+the client can qualify QUIC before opening local listeners. Explicit
+authentication and authorization denials stop startup. With coordinated
+selection, a qualified QUIC standby can take over after WSS disconnects
+while the HTTPS control origin is still reachable. A recovered WSS
+connection joins the same lane as a standby and can take over when QUIC
+closes. A client with continuing forwarded traffic retries a transient
+QUIC qualification failure with bounded backoff. The client honors its
+IP family, direct-upgrade and proxy settings.
+Use `ntwire transport -v` to see the active carrier, qualified path
+limits, available carrier RTT samples, and recent switches.
+
+QUIC adds overhead beyond native UDP. For an opt-in Ethernet-MTU pilot,
+start with `transport.adaptive_tunnel_mtu: 1280` and test both directions.
+The path must carry the lane's largest encrypted datagram in each
+direction before the client switches. If the size check fails, the lane
+continues on WSS. These settings require a server restart.
+
+To roll back only QUIC, remove `transport.quic_listen` and restart. To
+disable the adaptive pilot, turn off the client opt-in and remove its
+server settings before restart. Remove settings added by newer releases
+before starting an older server with strict YAML validation.
+
+### HTTP carrier pilots
+
+The optional HTTP carriers extend adaptive bootstrap when WSS is unavailable.
+Set either or both on an adaptive server and restart.
+
+```yaml
+transport:
+  adaptive: true
+  adaptive_http2: true
+  h3_carrier_listen: ":9443"
+  adaptive_tunnel_mtu: 1280
+```
+
+`adaptive_http2` uses the existing HTTPS origin and requires HTTP/2 on the
+server side of any load balancer. The route requires full-duplex streaming
+without request buffering. It uses the same proxy settings as HTTPS control.
+An HTTP/2 carrier shares its outer TCP connection's loss and flow control.
+
+`h3_carrier_listen` opens a dedicated UDP port at the configured
+`network.advertised_endpoint` host. Use the server's verified TLS certificate.
+The port must differ from raw QUIC, native WireGuard and adaptive UDP ports.
+The client requires permitted UDP, compatible IP family and a complete
+encrypted datagram in both directions. Start at a fixed lane MTU of 1,280
+when testing on an Ethernet path. Use the mode reported by `ntwire transport -v`
+to verify selection.
+
+A client using adaptive carriers tries WSS, then configured raw QUIC,
+then HTTP/3 and HTTP/2 when available. These HTTP pilots attach the
+initial lane only. An active HTTP carrier stays selected for that lane.
+If it is lost, the ordinary control renewal and reconnect cycle rebuilds
+the transport. Active application streams can close during that recovery.
+Authentication or authorization denial stops alternate startup.
+
+Unset `h3_carrier_listen` or set `adaptive_http2: false` and restart to
+disable a pilot. Before downgrading to a strict older YAML parser, remove
+the new keys. Existing WireGuard ports, credentials and grants stay usable.
+
+### Legacy transport selection
+
 `auto` can switch only after the server and client negotiate multipath. On a
 server with both UDP and WebSocket endpoints, `transport.multipath: true`
 (the default) negotiates `multipath-v3` and bootstraps over WSS. Direct UDP is
@@ -125,7 +278,8 @@ Retired v1/v2 peers use the legacy single-path data plane.
 `transport.multipath: false` to force legacy single-path behavior.
 
 The opt-in transport keys are all off by default. `transport.promotion`
-takes effect for sessions created after a configuration reload. `transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
+takes effect for sessions created after a configuration reload.
+`transport.metrics`, `transport.mtu_aware`, `listen.wireguard_alt`,
 `listen.tcp`, and `relay.tcp` are read at startup and need a restart. The
 matching client opt-ins are listed in
 [CLIENT.md](CLIENT.md#opt-in-transport-settings).
@@ -619,6 +773,8 @@ requests built to include one; prefer fingerprints for SSH grants.
 
 ## Hot reload
 
+Linux backend settings are applied at startup. `acceleration.mode: required` selects kernel WireGuard for the legacy device or fails startup. On Linux, `auto` with `acceleration.allow_auto: true` tries kernel setup and allows userspace fallback after clean teardown. `--acceleration=off` overrides YAML mode and selects the portable backend. [Linux acceleration](LINUX-ACCELERATION.md)
+
 The server watches the configuration file's directory (and, when set, the
 authorized-keys directory). Writing, replacing, or renaming the file reloads
 runtime configuration; sending `SIGHUP` does the same. Atomic projected-volume
@@ -899,6 +1055,7 @@ browser instance in its own local user-data directory.
 
 ### Smart Proxy direct and ASN settings
 
+- `smart_proxy.egress.selection: adaptive` opts a group into performance-aware routing. `smart_proxy.failover.warm_service` defaults to false and requires Adaptive. Other strategies and their saved options continue to work. Use `sticky-fastest` with `routing.affinity_scope: group`.
 - Under `smart_proxy.routing`, `rules[].action` accepts `proxy`, `direct`, and `deny`. A rule can contain `asns` with positive 32-bit ASN numbers. Only proxy rules can name `members`. Existing member rules and `deny: true` remain valid.
 - `unmatched` can be `allow` (or `proxy`), `direct`, or `deny`. Omitting it preserves automatic behavior. A direct route to private space requires an explicit private CIDR in the matching rule.
 - `routing.asn.enabled` defaults to inferring use from ASN rules. Setting it to `false` with ASN rules is invalid. `routing.asn.on_unknown` accepts `deny`. `hostname_resolution` defaults to `disabled`. The `local` and `remote` modes require a `hosts` or `suffixes` scope. Remote mode also requires `resolver_member` referencing an explicitly approved member.

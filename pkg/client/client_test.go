@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
@@ -775,13 +776,13 @@ func TestStatusRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCountingWriterUpdatesTunnelStatsWhileStreaming(t *testing.T) {
+func TestCountedCopyUpdatesTunnelStats(t *testing.T) {
 	tunnel := &localTunnel{}
 	var outgoing, incoming bytes.Buffer
-	if _, err := (countingWriter{w: &outgoing, counter: &tunnel.toTunnel}).Write([]byte("request")); err != nil {
+	if _, err := localproxy.CopyCounted(&outgoing, strings.NewReader("request"), &tunnel.toTunnel); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (countingWriter{w: &incoming, counter: &tunnel.fromTunnel}).Write([]byte("response")); err != nil {
+	if _, err := localproxy.CopyCounted(&incoming, strings.NewReader("response"), &tunnel.fromTunnel); err != nil {
 		t.Fatal(err)
 	}
 	got := tunnel.stats()

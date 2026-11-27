@@ -7,6 +7,8 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ntwire ./cmd/ntwir
     mkdir /out/state
 
 FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /src/LICENSE-QUIC-GO /usr/share/licenses/ntwire/LICENSE-QUIC-GO
+COPY --from=build /src/LICENSE-QPACK /usr/share/licenses/ntwire/LICENSE-QPACK
 ENV HOME=/home/nonroot
 COPY --from=build /out/ntwire /ntwire
 COPY --chown=nonroot:nonroot --from=build /out/state /home/nonroot/.ntwire

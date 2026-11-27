@@ -172,3 +172,25 @@ func TestSmartProxyAPISavesAutomaticUnmatchedPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSmartProxyAPISavesAdaptiveGroup(t *testing.T) {
+	s := newTestServer(t)
+	t.Cleanup(s.mgr.Close)
+	const path = "/api/smart-proxy"
+	cfg := egressrouter.Config{
+		Egress: egressrouter.Membership{Selection: "sticky-fastest"},
+		Groups: map[string]egressrouter.Config{
+			"bulk": {Listen: "127.0.0.1:7123", Egress: egressrouter.Membership{Selection: "adaptive"},
+				Failover: egressrouter.Failover{WarmService: true}},
+		},
+	}
+	for _, result := range []egressrouter.Config{
+		decode[egressrouter.Config](t, s.do(t, http.MethodPut, path, cfg)),
+		decode[egressrouter.Config](t, s.get(t, path)),
+	} {
+		if result.Egress.Selection != "sticky-fastest" || result.Failover.WarmService ||
+			result.Groups["bulk"].Egress.Selection != "adaptive" || !result.Groups["bulk"].Failover.WarmService {
+			t.Fatalf("group settings did not round-trip: %+v", result)
+		}
+	}
+}

@@ -49,6 +49,20 @@ func ClientCommand() Command {
 		{Name: "tunnel", Usage: "egress tunnel name", TakesValue: true},
 	}
 	subcmds = append(subcmds,
+		Command{Name: "benchmark", Summary: "measure ntwire using a disposable local fixture", Flags: []Flag{
+			{Name: "fixture", Usage: "benchmark fixture", TakesValue: true, Choices: []string{"loopback"}},
+			{Name: "transport", Usage: "requested transport", TakesValue: true, Choices: []string{"direct", "direct-udp", "wss", "multipath"}},
+			{Name: "compare-transports", Usage: "run all applicable local transports"},
+			{Name: "workload", Usage: "benchmark workload", TakesValue: true, Choices: []string{"interactive", "bulk", "mixed", "setup", "udp", "socks5", "http-connect"}},
+			{Name: "bulk-rate-mbps", Usage: "limit bulk writes per worker in Mbit/s", TakesValue: true},
+			{Name: "connections", Usage: "parallel workers", TakesValue: true},
+			{Name: "duration", Usage: "measured duration", TakesValue: true},
+			{Name: "warmup", Usage: "warm-up duration", TakesValue: true},
+			{Name: "max-bytes", Usage: "echo bytes per direction and interval", TakesValue: true},
+			{Name: "sample-wss", Usage: "sample WSS queue residence"},
+			{Name: "profiles", Usage: "new directory for pprof profiles", TakesValue: true, IsFilePath: true},
+			{Name: "json", Usage: "emit JSON"},
+		}},
 		Command{Name: "proxy", Summary: "run the aggregate SOCKS5/HTTP proxy", Flags: proxyFlags,
 			Subcommands: []Command{
 				{Name: "status", Summary: "show router status", Flags: proxyFlags},
@@ -78,7 +92,7 @@ func ClientCommand() Command {
 		Command{
 			Name:       "help",
 			Summary:    "show help for a command",
-			ArgChoices: []string{"cert", "keygen", "connect", "list", "proxy", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
+			ArgChoices: []string{"cert", "keygen", "connect", "benchmark", "list", "proxy", "status", "disconnect", "port", "browser", "logout", "update", "completion", "version"},
 		},
 	)
 

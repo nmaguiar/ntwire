@@ -27,6 +27,8 @@ type memberHealth struct {
 	generation   string
 	measurements
 	lastProbe      time.Time
+	lastWarm       time.Time
+	warmDemand     time.Time
 	healthWindow   outcomeWindow
 	passiveWindow  outcomeWindow
 	consecutive    int
@@ -37,6 +39,7 @@ type memberHealth struct {
 	active         atomic.Int64
 	routed         atomic.Uint64
 	sent, received atomic.Uint64
+	transfer       transferEstimate
 }
 type affinity struct {
 	id                                    MemberID
@@ -130,10 +133,15 @@ func (r *Router) rankDecision(state *routeState, dst Destination, decision Decis
 	now := r.now()
 	memberIDs := decision.Members
 	strategy := state.config.Egress.Selection
-	measured := strategy == "sticky-fastest" || strategy == "fastest-healthy" || strategy == "destination-aware"
+	adaptive := strategy == "adaptive"
+	measured := strategy == "sticky-fastest" || strategy == "fastest-healthy" || strategy == "destination-aware" || adaptive
 	filtered := candidates[:0]
 	inputs := make([]RankedCandidate, 0, len(candidates))
 	byID := make(map[MemberID]ranked, len(candidates))
+	var profile transferProfile
+	if adaptive {
+		profile = state.adaptiveProfile(now, decision, dst, candidates, r.excluded)
+	}
 	for _, c := range candidates {
 		id := c.ID()
 		if c.Dialer == nil || r.excluded[id] || len(memberIDs) > 0 && !slices.Contains(memberIDs, id) {
@@ -162,6 +170,10 @@ func (r *Router) rankDecision(state *routeState, dst Destination, decision Decis
 					latency += time.Duration(float64(timeout) * float64(count-successes) / float64(count))
 				}
 			}
+		}
+		if adaptive {
+			latency = state.adaptiveScore(now, c, h, dst, profile, latency, hasScore)
+			hasScore = true
 		}
 		filtered = append(filtered, c)
 		inputs = append(inputs, RankedCandidate{Member: c.Member, Score: latency, Measured: hasScore})

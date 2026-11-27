@@ -25,6 +25,8 @@ type Status struct {
 	ASNFailures        uint64            `json:"asn_lookups_failed,omitempty"`
 	RaceAttempts       uint64            `json:"race_preparations,omitempty"`
 	RaceBackups        uint64            `json:"race_backup_wins,omitempty"`
+	WarmReservations   int64             `json:"warm_service_reservations,omitempty"`
+	WarmHits           uint64            `json:"warm_service_hits,omitempty"`
 	Groups             map[string]Status `json:"groups,omitempty"`
 	PACListen          string            `json:"pac_listen,omitempty"`
 	Selected           *MemberID         `json:"last_selected,omitempty"`
@@ -78,6 +80,7 @@ func (r *Router) Status() Status {
 	defer r.mu.Unlock()
 	status := Status{Enabled: state.config.Enabled, Listen: state.config.Listen, Selection: state.config.Egress.Selection,
 		RaceAttempts: r.raceAttempts.Load(), RaceBackups: r.raceBackups.Load(), Active: r.active.Load(), Failovers: r.failovers.Load(), Recovered: r.recovered.Load()}
+	status.WarmReservations, status.WarmHits = r.warming.Load(), r.warmHits.Load()
 	effective := state.admission.status(int(status.Active), &processBudget, r.now())
 	status.Limits = &effective
 	status.ASNDatabase = state.asn.status(r.now())

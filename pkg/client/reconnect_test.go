@@ -236,6 +236,21 @@ func newReconnectFixture(t testing.TB) *reconnectFixture {
 
 func (f *reconnectFixture) startServer(cidr string, port int, udp, multipath bool) *server.Server {
 	f.t.Helper()
+	return f.startServerWithTransport(cidr, port, udp, server.TransportConfig{Multipath: &multipath})
+}
+
+func (f *reconnectFixture) startServerWithTransport(cidr string, port int, udp bool, transport server.TransportConfig) *server.Server {
+	f.t.Helper()
+	s := server.New(f.serverConfig(cidr, port, udp, transport), slog.New(slog.DiscardHandler))
+	if err := s.StartDataPlane(); err != nil {
+		f.t.Fatal(err)
+	}
+	f.t.Cleanup(s.Close)
+	return s
+}
+
+func (f *reconnectFixture) serverConfig(cidr string, port int, udp bool, transport server.TransportConfig) server.Config {
+	f.t.Helper()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		f.t.Fatal(err)
@@ -248,17 +263,12 @@ func (f *reconnectFixture) startServer(cidr string, port int, udp, multipath boo
 	if udp {
 		cfg.Network.AdvertisedEndpoint = address
 	}
-	cfg.Transport.Multipath = &multipath
+	cfg.Transport = transport
 	cfg.Tunnels = []server.TunnelConfig{
 		{Name: "tcp", Target: f.tcpTarget, VirtualPort: port, Allow: []string{"*"}},
 		{Name: "udp", Target: f.udpTarget, VirtualPort: port + 1, Protocol: "udp", Allow: []string{"*"}},
 	}
-	s := server.New(cfg, slog.New(slog.DiscardHandler))
-	if err := s.StartDataPlane(); err != nil {
-		f.t.Fatal(err)
-	}
-	f.t.Cleanup(s.Close)
-	return s
+	return cfg
 }
 
 func (f *reconnectFixture) connect() *Connection {

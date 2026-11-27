@@ -24,7 +24,7 @@ type builtinSelector struct {
 }
 
 func (s builtinSelector) Rank(_ time.Time, _ Destination, candidates []RankedCandidate) []MemberID {
-	measured := s.strategy == "sticky-fastest" || s.strategy == "fastest-healthy" || s.strategy == "destination-aware"
+	measured := s.strategy == "sticky-fastest" || s.strategy == "fastest-healthy" || s.strategy == "destination-aware" || s.strategy == "adaptive"
 	sort.SliceStable(candidates, func(i, j int) bool {
 		a, b := candidates[i], candidates[j]
 		if measured {

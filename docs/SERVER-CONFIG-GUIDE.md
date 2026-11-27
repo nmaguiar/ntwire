@@ -103,6 +103,7 @@ transport:
 
 acceleration:
   mode: auto                              # auto, off, or required. Restart to change.
+  allow_auto: false                       # consent to kernel setup in auto on Linux
   ebpf: false                             # opt in to aggregate Linux kernel packet counters
 
 # Named reusable egress policies. A tunnel and a native peer can each name
@@ -310,6 +311,10 @@ audit:
     "acceleration": {
       "additionalProperties": false,
       "properties": {
+        "allow_auto": {
+          "default": false,
+          "type": "boolean"
+        },
         "ebpf": {
           "default": false,
           "type": "boolean"
@@ -682,6 +687,9 @@ audit:
     "relay": {
       "additionalProperties": false,
       "properties": {
+        "adaptive_udp": {
+          "type": "boolean"
+        },
         "advertise_direct": {
           "type": "boolean"
         },
@@ -695,6 +703,9 @@ audit:
           "items": {
             "additionalProperties": false,
             "properties": {
+              "disable_performance_routing": {
+                "type": "boolean"
+              },
               "fingerprint": {
                 "type": "string"
               },
@@ -723,6 +734,12 @@ audit:
         },
         "name": {
           "type": "string"
+        },
+        "performance_max_allocations_per_relay": {
+          "type": "integer"
+        },
+        "performance_routing": {
+          "type": "boolean"
         },
         "reconnect_max": {
           "format": "duration",
@@ -771,6 +788,24 @@ audit:
     "transport": {
       "additionalProperties": false,
       "properties": {
+        "adaptive": {
+          "type": "boolean"
+        },
+        "adaptive_http2": {
+          "type": "boolean"
+        },
+        "adaptive_max_lanes": {
+          "type": "integer"
+        },
+        "adaptive_tunnel_mtu": {
+          "type": "integer"
+        },
+        "adaptive_udp_alt_port": {
+          "type": "integer"
+        },
+        "adaptive_udp_port": {
+          "type": "integer"
+        },
         "force": {
           "default": "auto",
           "enum": [
@@ -779,6 +814,9 @@ audit:
             "udp-relay",
             "direct-udp"
           ],
+          "type": "string"
+        },
+        "h3_carrier_listen": {
           "type": "string"
         },
         "metrics": {
@@ -792,6 +830,9 @@ audit:
         },
         "promotion": {
           "type": "boolean"
+        },
+        "quic_listen": {
+          "type": "string"
         }
       },
       "type": "object"

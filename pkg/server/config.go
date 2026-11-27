@@ -82,6 +82,26 @@ type Config struct {
 // TransportConfig is the server transport: block. Every field added after
 // multipath/force is opt-in and defaults to the pre-existing behavior.
 type TransportConfig struct {
+	// Adaptive enables the separate managed carrier pilot at startup.
+	Adaptive bool `yaml:"adaptive,omitempty"`
+	// AdaptiveHTTP2 enables the authenticated HTTP/2 stream carrier.
+	AdaptiveHTTP2 bool `yaml:"adaptive_http2,omitempty"`
+	// AdaptiveMaxLanes enables child peers under an adaptive parent.
+	AdaptiveMaxLanes int `yaml:"adaptive_max_lanes,omitempty"`
+	// AdaptiveUDPPort opts into direct UDP proof on a separate socket.
+	AdaptiveUDPPort int `yaml:"adaptive_udp_port,omitempty"`
+	// AdaptiveUDPAltPort opens a second dedicated adaptive UDP listener.
+	AdaptiveUDPAltPort int `yaml:"adaptive_udp_alt_port,omitempty"`
+	// AdaptiveTunnelMTU applies to the dedicated shared adaptive netstack.
+	AdaptiveTunnelMTU int `yaml:"adaptive_tunnel_mtu,omitempty"`
+	// QUICListen opts into QUIC DATAGRAM on a dedicated UDP socket.
+	QUICListen string `yaml:"quic_listen,omitempty"`
+	// HTTP3Listen opts into the adaptive HTTP/3 CONNECT-UDP carrier on a dedicated UDP socket.
+	HTTP3Listen string `yaml:"h3_carrier_listen,omitempty"`
+	// QUICSendWait enables experimental admission in controlled fixtures.
+	QUICSendWait *time.Duration `yaml:"-" json:"-"`
+	// SampleWSS is an in-process diagnostic option for controlled fixtures.
+	SampleWSS bool `yaml:"-" json:"-"`
 	// Multipath controls the scheduler when both WebSocket and UDP legs
 	// are available. Nil is enabled for backward-compatible defaults;
 	// set false only to retain the legacy one-leg data plane.
@@ -171,6 +191,10 @@ type RelayConfig struct {
 	// one, so cmd/ntwire-server enables it unconditionally whenever the
 	// relay itself offers it (RelayRegisterResponse.UDPRelayAddr != "").
 	AdvertiseDirect bool `yaml:"advertise_direct"`
+	// AdaptiveUDP enables lane-scoped UDP relay qualification.
+	AdaptiveUDP                       bool `yaml:"adaptive_udp,omitempty"`
+	PerformanceRouting                bool `yaml:"performance_routing,omitempty"`
+	PerformanceMaxAllocationsPerRelay int  `yaml:"performance_max_allocations_per_relay,omitempty"`
 	// Multipath overrides v3's bounded reactive-duplication budget.
 	Multipath MultipathConfig `yaml:"multipath"`
 }
@@ -184,8 +208,9 @@ type MultipathConfig struct {
 // TLS pin is deliberately per endpoint: an HA pool commonly uses distinct
 // certificates even though clients enter through one shared wildcard name.
 type RelayEndpoint struct {
-	URL         string `yaml:"url"`
-	Fingerprint string `yaml:"fingerprint"`
+	URL                       string `yaml:"url"`
+	Fingerprint               string `yaml:"fingerprint"`
+	DisablePerformanceRouting bool   `yaml:"disable_performance_routing,omitempty"`
 }
 type OIDCConfig struct {
 	Issuers []OIDCIssuerConfig `yaml:"issuers"`
@@ -478,6 +503,7 @@ transport:
 
 acceleration:
   mode: auto                              # auto, off, or required. Restart to change.
+  allow_auto: false                       # consent to kernel setup in auto on Linux
   ebpf: false                             # opt in to aggregate Linux kernel packet counters
 
 # Named reusable egress policies. A tunnel and a native peer can each name
@@ -704,13 +730,14 @@ func serverGuide() configguide.Guide {
 		SchemaOverrides: map[string]map[string]any{
 			"listen.https": {"default": ":8443"}, "listen.wireguard": {"default": ":51820"},
 			"auth.session_ttl": {"default": "15m"}, "authorizer.timeout": {"default": "5s"},
-			"network.tunnel_cidr": {"default": "100.64.0.0/16"},
-			"transport.force":     {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
-			"acceleration.mode":   {"enum": []string{"auto", "off", "required"}, "default": "auto"},
-			"acceleration.ebpf":   {"default": false},
-			"log.format":          {"enum": []string{"text", "json"}, "default": "text"},
-			"log.level":           {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
-			"tunnels":             {"minItems": 0},
+			"network.tunnel_cidr":     {"default": "100.64.0.0/16"},
+			"transport.force":         {"enum": []string{"auto", "wss", "udp-relay", "direct-udp"}, "default": "auto"},
+			"acceleration.mode":       {"enum": []string{"auto", "off", "required"}, "default": "auto"},
+			"acceleration.allow_auto": {"default": false},
+			"acceleration.ebpf":       {"default": false},
+			"log.format":              {"enum": []string{"text", "json"}, "default": "text"},
+			"log.level":               {"enum": []string{"debug", "info", "warn", "error"}, "default": "info"},
+			"tunnels":                 {"minItems": 0},
 		},
 	}
 }
@@ -1023,10 +1050,16 @@ func ParseConfig(b []byte, stateDir string) (Config, error) {
 	if err != nil {
 		return c, fmt.Errorf("transport.force: %w", err)
 	}
+	if force != "" && c.Transport.Adaptive {
+		return c, fmt.Errorf("transport.adaptive requires automatic transport selection")
+	}
 	if force != "" && !c.MultipathEnabled() {
 		return c, fmt.Errorf("transport.force requires transport.multipath")
 	}
 	c.Transport.Force = force
+	if err := validateAdaptiveCarrierConfig(c); err != nil {
+		return c, err
+	}
 	prefix, _ := netip.ParsePrefix(c.Network.TunnelCIDR)
 	if c.Relay.Enabled {
 		if c.Relay.Name == "" || c.Relay.IdentityFile == "" {
@@ -1313,4 +1346,70 @@ func (t TunnelConfig) egressClass() string {
 		return ""
 	}
 	return t.EgressClass
+}
+
+func validateAdaptiveCarrierConfig(c Config) error {
+	if c.Transport.AdaptiveHTTP2 && !c.Transport.Adaptive {
+		return fmt.Errorf("transport.adaptive_http2 requires transport.adaptive")
+	}
+	if c.Relay.AdaptiveUDP && (!c.Relay.Enabled || !c.Transport.Adaptive) {
+		return fmt.Errorf("relay.adaptive_udp requires relay.enabled and transport.adaptive")
+	}
+	if c.Relay.PerformanceRouting && !c.Relay.AdaptiveUDP {
+		return fmt.Errorf("relay.performance_routing requires relay.adaptive_udp")
+	}
+	if n := c.Relay.PerformanceMaxAllocationsPerRelay; n < 0 || n > adaptiveRelaySlots {
+		return fmt.Errorf("relay.performance_max_allocations_per_relay must be between 0 and %d", adaptiveRelaySlots)
+	}
+	if lanes := c.Transport.AdaptiveMaxLanes; lanes < 0 || lanes > protocol.MaxAdaptiveLanes || (lanes > 1 && !c.Transport.Adaptive) {
+		return fmt.Errorf("transport.adaptive_max_lanes must be between 0 and %d and requires transport.adaptive for child lanes", protocol.MaxAdaptiveLanes)
+	}
+	if mtu := c.Transport.AdaptiveTunnelMTU; mtu != 0 && (!c.Transport.Adaptive || mtu < wstransport.MinTunnelMTU || mtu > wstransport.DefaultTunnelMTU) {
+		return fmt.Errorf("transport.adaptive_tunnel_mtu requires transport.adaptive and a value from %d to %d", wstransport.MinTunnelMTU, wstransport.DefaultTunnelMTU)
+	}
+	port, alternate := c.Transport.AdaptiveUDPPort, c.Transport.AdaptiveUDPAltPort
+	if alternate != 0 && (port == 0 || alternate < 1 || alternate > 65535 || alternate == port) {
+		return fmt.Errorf("transport.adaptive_udp_alt_port requires a distinct UDP port and transport.adaptive_udp_port")
+	}
+	for _, listener := range []struct{ field, listen, other string }{
+		{"quic_listen", c.Transport.QUICListen, c.Transport.HTTP3Listen},
+		{"h3_carrier_listen", c.Transport.HTTP3Listen, c.Transport.QUICListen},
+	} {
+		if listener.listen == "" {
+			continue
+		}
+		listen := listener.listen
+		host, rawPort, splitErr := net.SplitHostPort(listen)
+		ip, ipErr := netip.ParseAddr(host)
+		quicPort, portErr := strconv.Atoi(rawPort)
+		if !c.Transport.Adaptive || c.Network.AdvertisedEndpoint == "" || splitErr != nil || portErr != nil || quicPort < 1 || quicPort > 65535 || (host != "" && (ipErr != nil || ip.Zone() != "")) {
+			return fmt.Errorf("transport.%s requires a literal UDP bind address or :port with a nonzero port, transport.adaptive and network.advertised_endpoint", listener.field)
+		}
+		for _, address := range []string{c.Listen.WireGuard, c.Listen.WireGuardAlt} {
+			if existing, err := portOf(address); err == nil && existing == quicPort {
+				return fmt.Errorf("transport.%s must differ from the legacy WireGuard UDP ports", listener.field)
+			}
+		}
+		if quicPort == port {
+			return fmt.Errorf("transport.%s must differ from transport.adaptive_udp_port", listener.field)
+		}
+		if quicPort == alternate {
+			return fmt.Errorf("transport.%s must differ from transport.adaptive_udp_alt_port", listener.field)
+		}
+		if other, err := portOf(listener.other); err == nil && other == quicPort {
+			return fmt.Errorf("QUIC and HTTP/3 carrier UDP ports must differ")
+		}
+	}
+	if port == 0 {
+		return nil
+	}
+	if port < 0 || port > 65535 || !c.Transport.Adaptive || c.Network.AdvertisedEndpoint == "" {
+		return fmt.Errorf("transport.adaptive_udp_port requires a valid UDP port, transport.adaptive and network.advertised_endpoint")
+	}
+	for _, address := range []string{c.Listen.WireGuard, c.Listen.WireGuardAlt} {
+		if existing, err := portOf(address); err == nil && (existing == port || (alternate != 0 && existing == alternate)) {
+			return fmt.Errorf("adaptive UDP ports must differ from the legacy WireGuard ports")
+		}
+	}
+	return nil
 }

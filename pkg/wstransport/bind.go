@@ -1,9 +1,11 @@
 package wstransport
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/rand"
 	"net"
@@ -35,14 +37,18 @@ type Bind struct {
 	// lookup stuck on a since-vanished interface) cannot block the retry loop
 	// from ever observing Close.
 	dialTimeout time.Duration
-	// writeTimeout bounds both waiting for the peer's single writer slot and
-	// writing a complete WireGuard batch. A timeout tears down the carrier so
-	// the existing redial path can replace it.
+	// writeTimeout bounds writing a dequeued WireGuard batch, including time
+	// waiting for the WebSocket's write lock. A timeout retires that carrier.
 	writeTimeout time.Duration
 	// Client-side native WebSocket ping/pong detects silent carrier loss.
 	pingInterval, pingTimeout time.Duration
+	rttRequests               chan struct{} // configured before opening a client bind
 	// noRedial disables the automatic reconnect entirely -- see DisableRedial.
 	noRedial bool
+	// The adaptive client can keep its receive loop open after an
+	// unavailable initial upgrade while another carrier qualifies.
+	deferInitialDial func(status int, err error) bool
+	initialDialErr   error
 
 	callbacksMu     sync.Mutex // orders peer replacement and lifecycle publication
 	mu              sync.Mutex
@@ -51,6 +57,7 @@ type Bind struct {
 	packets         chan packet
 	peers           map[string]*peer
 	header          http.Header
+	readLimit       int64
 	OnPeerConnected func(string, conn.Endpoint)
 	// OnPeerDisconnected mirrors OnPeerConnected for lifecycle consumers.
 	// Callbacks run outside Bind's state mutex and must not retain credentials.
@@ -63,7 +70,8 @@ type Bind struct {
 	OnWriteFailure func(string, conn.Endpoint)
 
 	// Dropped counts batches discarded because a peer's queue was full.
-	Dropped atomic.Uint64
+	Dropped     atomic.Uint64
+	performance atomic.Pointer[queuePerformance]
 }
 
 const (
@@ -85,15 +93,23 @@ type peer struct {
 	ws       *websocket.Conn
 	endpoint endpoint
 	done     chan struct{}
+	stop     chan struct{}
+	stopOnce sync.Once
+	bindDone <-chan struct{}
+	incoming chan<- packet
 	// out is the bounded outbound queue drained by a single writer goroutine
 	// (Bind.writeLoop), which is what serializes writes to ws.
 	out         chan [][]byte
+	sampled     *sampledPeerQueue
 	overflow    atomic.Int32
+	pingRTT     atomic.Int64
 	failureOnce sync.Once
 }
 type endpoint struct {
 	id      string
 	address netip.AddrPort
+	carrier *carrierInstance
+	pinned  bool
 }
 
 // Hybrid keeps UDP as the primary transport and adds WebSocket receive and
@@ -235,6 +251,18 @@ func NewClient(url string, client *http.Client, header http.Header) *Bind {
 	return &Bind{url: url, client: client, header: header, redialMin: redialMinDefault, redialMax: redialMaxDefault, dialTimeout: dialTimeoutDefault, writeTimeout: writeTimeoutDefault, pingInterval: pingIntervalDefault, pingTimeout: pingTimeoutDefault}
 }
 
+// SetDatagramReadLimit applies a carrier-specific ciphertext maximum at the
+// WebSocket framing layer. Call it before opening the bind.
+func (b *Bind) SetDatagramReadLimit(n int64) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.open || n < 1 || n > maxDatagramSize {
+		return errors.New("invalid WebSocket datagram read limit")
+	}
+	b.readLimit = n
+	return nil
+}
+
 // SetHeader replaces the headers used for the client's WebSocket dial (both
 // the initial Open and every subsequent redial attempt). It exists because
 // the Authorization bearer token Open originally dialed with is only valid
@@ -278,9 +306,53 @@ func (b *Bind) SetRedialBackoff(min, max, dialTimeout time.Duration) {
 // WebSocket connections. The id is usually the ntwire session ID.
 func NewServer() *Bind { return &Bind{writeTimeout: writeTimeoutDefault} }
 
-func newPeer(id string, ws *websocket.Conn, ep endpoint) *peer {
-	p := &peer{id: id, ws: ws, endpoint: ep, done: make(chan struct{}), out: make(chan [][]byte, peerQueueDepth)}
+func newPeer(id string, ws *websocket.Conn, ep endpoint, recorder *queuePerformance) *peer {
+	ep.carrier = &carrierInstance{}
+	p := &peer{id: id, ws: ws, endpoint: ep, done: make(chan struct{}), stop: make(chan struct{})}
+	if recorder == nil {
+		p.out = make(chan [][]byte, peerQueueDepth)
+	} else {
+		p.sampled = &sampledPeerQueue{out: make(chan queuedBatch, peerQueueDepth), recorder: recorder}
+	}
 	return p
+}
+
+func (p *peer) stopIO() {
+	p.stopOnce.Do(func() { close(p.stop) })
+}
+
+func (p *peer) nextBatch() (wssQueueBatch, bool) {
+	if p.sampled != nil {
+		return p.sampled.next(p.stop)
+	}
+	select {
+	case <-p.stop:
+		return wssQueueBatch{}, false
+	case batch := <-p.out:
+		return wssQueueBatch{datagrams: batch}, true
+	}
+}
+
+type queueResult uint8
+
+const (
+	queueAccepted queueResult = iota
+	queueClosed
+	queueFull
+)
+
+func (p *peer) enqueue(batch [][]byte) queueResult {
+	if p.sampled != nil {
+		return p.sampled.enqueue(batch, p.stop)
+	}
+	select {
+	case <-p.stop:
+		return queueClosed
+	case p.out <- batch:
+		return queueAccepted
+	default:
+		return queueFull
+	}
 }
 
 // writeLoop is the only writer of p.ws. A stalled write is bounded by
@@ -293,25 +365,46 @@ func (b *Bind) writeLoop(p *peer) {
 	if writeTimeout <= 0 {
 		writeTimeout = writeTimeoutDefault
 	}
+	// A write timeout retires this writer and carrier. Use one cancellation
+	// context for their lifetime, and arm the timer only while writing a batch.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	recorder := b.performance.Load()
+	var deadline *time.Timer
 	for {
-		select {
-		case <-p.done:
+		batch, ok := p.nextBatch()
+		if !ok {
 			return
-		case bufs := <-p.out:
-			ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
-			var err error
-			for _, buf := range bufs {
-				if err = p.ws.Write(ctx, websocket.MessageBinary, buf); err != nil {
-					break
-				}
+		}
+		if deadline == nil {
+			deadline = time.AfterFunc(writeTimeout, cancel)
+		} else {
+			deadline.Reset(writeTimeout)
+		}
+		var err error
+		var writeStart time.Time
+		for _, buf := range batch.datagrams {
+			if batch.sampledAt != 0 && writeStart.IsZero() {
+				writeStart = time.Now()
 			}
-			cancel()
-			if err != nil {
-				slog.Warn("WireGuard WebSocket write failed", "peer", p.id, "error", err)
-				b.reportWriteFailure(p)
-				p.ws.CloseNow()
-				return
+			if err = p.ws.Write(ctx, websocket.MessageBinary, buf); err != nil {
+				break
 			}
+		}
+		if !deadline.Stop() {
+			// The callback may already be scheduled even when the write just
+			// finished. Never reuse this context or rearm that timer afterward.
+			err = context.DeadlineExceeded
+		}
+		if !writeStart.IsZero() {
+			recorder.recordWrite(time.Since(writeStart))
+		}
+		if err != nil {
+			p.stopIO()
+			slog.Warn("WireGuard WebSocket write failed", "peer", p.id, "error", err)
+			b.reportWriteFailure(p)
+			p.ws.CloseNow()
+			return
 		}
 	}
 }
@@ -332,6 +425,33 @@ func (b *Bind) reportWriteFailure(p *peer) {
 	})
 }
 
+// AllowDeferredInitialDial permits a disconnected client bind when allow
+// classifies its initial dial as unavailable. Configure it before Open.
+func (b *Bind) AllowDeferredInitialDial(allow func(status int, err error) bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.deferInitialDial = allow
+}
+
+func (b *Bind) InitialDialError() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.initialDialErr
+}
+
+// RetryDeferredDial starts the usual backoff loop once for this bind opening.
+func (b *Bind) RetryDeferredDial() {
+	b.mu.Lock()
+	if !b.open || b.noRedial || b.initialDialErr == nil {
+		b.mu.Unlock()
+		return
+	}
+	b.initialDialErr = nil
+	done := b.done
+	b.mu.Unlock()
+	go b.redial(done)
+}
+
 func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.callbacksMu.Lock()
 	defer b.callbacksMu.Unlock()
@@ -344,18 +464,32 @@ func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 	b.packets, b.peers = make(chan packet, conn.IdealBatchSize), map[string]*peer{}
 	var connected *peer
 	var onConnected func(string, conn.Endpoint)
+	b.initialDialErr = nil
 	if b.url != "" {
-		ws, _, err := websocket.Dial(context.Background(), b.url, &websocket.DialOptions{HTTPClient: b.client, HTTPHeader: b.header})
+		ws, response, err := websocket.Dial(context.Background(), b.url, &websocket.DialOptions{HTTPClient: b.client, HTTPHeader: b.header})
 		if err != nil {
-			close(b.done)
-			b.open = false
-			b.mu.Unlock()
-			return nil, 0, err
+			status := 0
+			if response != nil {
+				status = response.StatusCode
+			}
+			if b.deferInitialDial == nil || !b.deferInitialDial(status, err) {
+				close(b.done)
+				b.open = false
+				b.mu.Unlock()
+				return nil, 0, err
+			}
+			b.initialDialErr = err
+		} else {
+			if b.readLimit > 0 {
+				ws.SetReadLimit(b.readLimit)
+			}
+			p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(b.url)}, b.performance.Load())
+			p.bindDone, p.incoming = b.done, b.packets
+			b.peers[p.id] = p
+			connected, onConnected = p, b.OnPeerConnected
 		}
-		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(b.url)})
-		b.peers[p.id] = p
-		connected, onConnected = p, b.OnPeerConnected
 	}
+	receive := receivePacketQueue(b.done, b.packets)
 	b.mu.Unlock()
 	if connected != nil {
 		if onConnected != nil {
@@ -363,34 +497,52 @@ func (b *Bind) Open(_ uint16) ([]conn.ReceiveFunc, uint16, error) {
 		}
 		go b.read(connected)
 	}
-	return []conn.ReceiveFunc{b.receive}, 0, nil
+	return []conn.ReceiveFunc{receive}, 0, nil
 }
 
-func (b *Bind) receive(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
-	select {
-	case <-b.done:
-		return 0, net.ErrClosed
-	case first := <-b.packets:
-		sizes[0] = copy(bufs[0], first.data)
-		eps[0] = first.endpoint
-		n := 1
-		for n < len(bufs) {
-			select {
-			case p := <-b.packets:
-				sizes[n] = copy(bufs[n], p.data)
-				eps[n] = p.endpoint
-				n++
-			default:
-				return n, nil
-			}
+func receivePacketQueue(done <-chan struct{}, packets <-chan packet) conn.ReceiveFunc {
+	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		select {
+		case <-done:
+			return 0, net.ErrClosed
+		default:
 		}
-		return n, nil
+		select {
+		case <-done:
+			return 0, net.ErrClosed
+		case first := <-packets:
+			sizes[0] = copy(bufs[0], first.data)
+			eps[0] = first.endpoint
+			n := 1
+			for n < len(bufs) {
+				select {
+				case p := <-packets:
+					sizes[n] = copy(bufs[n], p.data)
+					eps[n] = p.endpoint
+					n++
+				default:
+					return n, nil
+				}
+			}
+			return n, nil
+		}
 	}
 }
 
 func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) error {
+	return b.serveHTTP(w, r, id, nil)
+}
+
+// ServeCarrier upgrades first and then acquires the admission guard. The
+// guard serializes publication against session renewal and revocation. It
+// must release its resources in the completion callback.
+func (b *Bind) ServeCarrier(w http.ResponseWriter, r *http.Request, id string, admit func(conn.Endpoint) (complete func(bool), err error)) error {
+	return b.serveHTTP(w, r, id, admit)
+}
+
+func (b *Bind) serveHTTP(w http.ResponseWriter, r *http.Request, id string, admit func(conn.Endpoint) (func(bool), error)) error {
 	b.mu.Lock()
-	ready := b.open
+	ready, generation, limit := b.open, b.done, b.readLimit
 	b.mu.Unlock()
 	if !ready {
 		return errors.New("WebSocket transport is not ready")
@@ -399,28 +551,53 @@ func (b *Bind) ServeHTTP(w http.ResponseWriter, r *http.Request, id string) erro
 	if err != nil {
 		return err
 	}
-	p := newPeer(id, ws, endpoint{id: id, address: endpointAddress(r.RemoteAddr)})
+	if limit > 0 {
+		ws.SetReadLimit(limit)
+	}
+	p := newPeer(id, ws, endpoint{id: id, address: endpointAddress(r.RemoteAddr)}, b.performance.Load())
+	var complete func(bool)
+	if admit != nil {
+		ep := p.endpoint
+		ep.pinned = true
+		complete, err = admit(ep)
+		if err != nil {
+			_ = ws.CloseNow()
+			return err
+		}
+	}
 	b.callbacksMu.Lock()
 	b.mu.Lock()
-	if !b.open {
+	if !b.open || b.done != generation {
 		// Closed between the readiness check above and here -- b.peers is
 		// nil now, so writing into it would panic. A client racing its own
 		// redial against Close (see redial) is exactly the case that made
 		// this window wide enough to hit in practice.
 		b.mu.Unlock()
 		b.callbacksMu.Unlock()
+		if complete != nil {
+			complete(false)
+		}
 		_ = ws.Close(websocket.StatusServiceRestart, "closing")
 		return errors.New("WebSocket transport is not ready")
 	}
 	if old := b.peers[id]; old != nil {
-		_ = old.ws.Close(websocket.StatusNormalClosure, "replaced")
+		old.stopIO()
+		if complete == nil {
+			_ = old.ws.Close(websocket.StatusNormalClosure, "replaced")
+		} else {
+			_ = old.ws.CloseNow()
+		}
 	}
+	p.bindDone, p.incoming = b.done, b.packets
 	b.peers[id] = p
 	b.mu.Unlock()
 	if b.OnPeerConnected != nil {
 		b.OnPeerConnected(id, p.endpoint)
 	}
 	b.callbacksMu.Unlock()
+	if complete != nil {
+		complete(true)
+	}
 	slog.Debug("WireGuard WebSocket peer connected", "peer", id, "remote", r.RemoteAddr)
 	go b.read(p)
 	// Keep the HTTP upgrade handler alive for the WebSocket's lifetime. This
@@ -440,6 +617,7 @@ func (b *Bind) read(p *peer) {
 		go b.keepalive(ctx, p)
 	}
 	defer func() {
+		p.stopIO()
 		b.callbacksMu.Lock()
 		removed := b.remove(p)
 		// A new connection with the same stable peer id may already have
@@ -459,29 +637,67 @@ func (b *Bind) read(p *peer) {
 		noRedial := b.noRedial
 		b.mu.Unlock()
 		if removed && b.url != "" && !noRedial {
-			go b.redial()
+			go b.redial(p.bindDone)
 		}
 	}()
+	// Ordinary WireGuard datagrams fit here. A larger message can allocate
+	// additional storage for that message without growing the scratch space.
+	var scratch [2048]byte
 	for {
-		typ, data, err := p.ws.Read(context.Background())
+		data, err := readWSSDatagram(p.ws, scratch[:])
 		if err != nil {
 			slog.Debug("WireGuard WebSocket read failed", "peer", p.id, "error", err)
 			return
 		}
-		if typ != websocket.MessageBinary {
+		if data == nil {
 			continue
 		}
-		data, ok := Accept(data)
-		if !ok {
-			continue
-		}
-		copyData := append([]byte(nil), data...)
 		select {
-		case <-b.done:
+		case <-p.bindDone:
 			return
-		case b.packets <- packet{copyData, p.endpoint}:
+		case <-p.stop:
+			return
+		case p.incoming <- packet{data, p.endpoint}:
 		}
 	}
+}
+
+func readWSSDatagram(ws *websocket.Conn, scratch []byte) ([]byte, error) {
+	typ, reader, err := ws.Reader(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	if typ != websocket.MessageBinary {
+		// The next Reader can only start after this message is drained.
+		_, err := io.Copy(io.Discard, reader)
+		return nil, err
+	}
+	for used := 0; used < len(scratch); {
+		n, err := reader.Read(scratch[used:])
+		used += n
+		if err == io.EOF {
+			data, ok := Accept(scratch[:used])
+			if !ok {
+				return nil, nil
+			}
+			// The inbound queue may still own this frame during the next read.
+			return bytes.Clone(data), nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	tail, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if len(scratch)+len(tail) > maxDatagramSize {
+		return nil, nil
+	}
+	data := make([]byte, len(scratch)+len(tail))
+	copy(data, scratch)
+	copy(data[len(scratch):], tail)
+	return data, nil
 }
 
 // keepalive detects silent network loss even when no WireGuard packets are
@@ -499,23 +715,94 @@ func (b *Bind) keepalive(ctx context.Context, p *peer) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	var lastProbe time.Time
 	for {
+		sample := false
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-b.rttRequests:
+			sample = true
+		}
+		if sample && p.writeBacklogged() {
+			continue
+		}
+		if b.rttRequests != nil && time.Since(lastProbe) < 2*time.Second {
+			continue
 		}
 		pingCtx, cancel := context.WithTimeout(ctx, timeout)
+		started := time.Now()
+		lastProbe = started
 		err := p.ws.Ping(pingCtx)
 		cancel()
 		if err != nil {
+			if sample {
+				continue
+			}
 			if ctx.Err() == nil {
 				slog.Debug("WireGuard WebSocket heartbeat failed", "peer", p.id, "error", err)
+				p.stopIO()
 				_ = p.ws.CloseNow()
 			}
 			return
 		}
+		p.pingRTT.Store(int64(time.Since(started)))
 	}
+}
+
+// EnableDemandRTT prepares the client heartbeat loop to accept a bounded
+// measurement request during forwarding. Call before opening the bind.
+func (b *Bind) EnableDemandRTT() {
+	b.rttRequests = make(chan struct{}, 1)
+}
+
+// RequestPeerRTT wakes the existing heartbeat loop with at most one
+// pending request.
+func (b *Bind) RequestPeerRTT() {
+	select {
+	case b.rttRequests <- struct{}{}:
+	default:
+	}
+}
+
+// PeerBacklogged provides a coarse pressure signal without enabling latency
+// instrumentation or acquiring a queue writer's lock.
+func (b *Bind) PeerBacklogged(id string) bool {
+	pressured, connected := b.PeerQueuePressure(id)
+	return !connected || pressured
+}
+
+// PeerQueuePressure distinguishes a live send queue from an absent peer.
+func (b *Bind) PeerQueuePressure(id string) (pressured, connected bool) {
+	b.mu.Lock()
+	p := b.peers[id]
+	b.mu.Unlock()
+	return p != nil && p.writeBacklogged(), p != nil
+}
+
+func (p *peer) writeBacklogged() bool {
+	if p.overflow.Load() > 0 {
+		return true
+	}
+	switch {
+	case p.sampled != nil:
+		return len(p.sampled.out) > cap(p.sampled.out)/8
+	default:
+		return len(p.out) > cap(p.out)/8
+	}
+}
+
+// PeerRTT is the most recent successful WebSocket heartbeat RTT for the
+// current peer incarnation. It is zero before a heartbeat completes.
+func (b *Bind) PeerRTT(id string) time.Duration {
+	b.mu.Lock()
+	p := b.peers[id]
+	b.mu.Unlock()
+	if p == nil {
+		return 0
+	}
+	return time.Duration(p.pingRTT.Load())
 }
 
 func (b *Bind) remove(p *peer) bool {
@@ -538,9 +825,8 @@ func (b *Bind) remove(p *peer) bool {
 // route by the stable endpoint{id:"remote"} value, resolved through
 // b.peers["remote"] at Send time, so a fresh peer object under the same id
 // is immediately usable with no re-registration.
-func (b *Bind) redial() {
+func (b *Bind) redial(done <-chan struct{}) {
 	b.mu.Lock()
-	done := b.done
 	backoff := b.redialMin
 	b.mu.Unlock()
 	for attempt := 0; ; attempt++ {
@@ -569,7 +855,7 @@ func (b *Bind) redial() {
 		}
 		b.mu.Lock()
 		url, client, header := b.url, b.client, b.header
-		dialTimeout := b.dialTimeout
+		dialTimeout, limit := b.dialTimeout, b.readLimit
 		b.mu.Unlock()
 		dialCtx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 		ws, _, err := websocket.Dial(dialCtx, url, &websocket.DialOptions{HTTPClient: client, HTTPHeader: header})
@@ -578,7 +864,10 @@ func (b *Bind) redial() {
 			slog.Debug("WireGuard WebSocket redial failed", "error", err)
 			continue
 		}
-		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(url)})
+		if limit > 0 {
+			ws.SetReadLimit(limit)
+		}
+		p := newPeer("remote", ws, endpoint{id: "remote", address: endpointAddress(url)}, b.performance.Load())
 		b.callbacksMu.Lock()
 		b.mu.Lock()
 		if !b.open || b.done != done {
@@ -588,6 +877,7 @@ func (b *Bind) redial() {
 			_ = ws.Close(websocket.StatusNormalClosure, "closing")
 			return
 		}
+		p.bindDone, p.incoming = b.done, b.packets
 		b.peers[p.id] = p
 		b.mu.Unlock()
 		if b.OnPeerConnected != nil {
@@ -608,6 +898,7 @@ func (b *Bind) CloseSession(id string) {
 	delete(b.peers, id)
 	b.mu.Unlock()
 	if p != nil {
+		p.stopIO()
 		// Close waits for the peer's close handshake; never hold the caller
 		// (often under server locks) behind an unresponsive carrier.
 		go func() { _ = p.ws.Close(websocket.StatusPolicyViolation, "session closed") }()
@@ -626,6 +917,7 @@ func (b *Bind) Close() error {
 	b.peers = nil
 	b.mu.Unlock()
 	for _, p := range peers {
+		p.stopIO()
 		_ = p.ws.Close(websocket.StatusNormalClosure, "closed")
 	}
 	return nil
@@ -640,31 +932,33 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	b.mu.Lock()
 	p := b.peers[e.id]
 	b.mu.Unlock()
-	if p == nil {
+	if p == nil || (e.pinned && e.carrier != p.endpoint.carrier) {
 		return fmt.Errorf("WebSocket peer is not connected")
 	}
-	// wireguard-go reuses bufs after Send returns, so the batch is copied.
-	batch := make([][]byte, 0, len(bufs))
-	for _, buf := range bufs {
-		if ValidDatagram(buf) {
-			batch = append(batch, append([]byte(nil), buf...))
+	var batch [][]byte
+	if len(bufs) == 1 {
+		if ValidDatagram(bufs[0]) {
+			batch = [][]byte{append([]byte(nil), bufs[0]...)}
 		}
+	} else {
+		batch = copyWSSBatch(bufs)
 	}
 	if len(batch) == 0 {
 		return nil
 	}
-	select {
-	case <-p.done:
+	switch p.enqueue(batch) {
+	case queueClosed:
 		return fmt.Errorf("WebSocket peer is not connected")
-	case p.out <- batch:
+	case queueAccepted:
 		p.overflow.Store(0)
-	default:
+	case queueFull:
 		b.Dropped.Add(1)
 		if p.overflow.Add(1) == overflowFailureThreshold {
 			slog.Warn("WireGuard WebSocket carrier is not draining; dropping", "peer", p.id)
 			// Closing wakes read's disconnect/redial path even if the
 			// writer subsequently drains. Keep Send independent of callbacks.
 			go func() {
+				p.stopIO()
 				b.reportWriteFailure(p)
 				_ = p.ws.CloseNow()
 			}()
@@ -672,6 +966,40 @@ func (b *Bind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	}
 	return nil
 }
+
+func copyWSSBatch(bufs [][]byte) [][]byte {
+	// Larger calls outside WireGuard's batch contract keep per-datagram copies.
+	if len(bufs) > conn.IdealBatchSize {
+		batch := make([][]byte, 0, len(bufs))
+		for _, buf := range bufs {
+			if ValidDatagram(buf) {
+				batch = append(batch, append([]byte(nil), buf...))
+			}
+		}
+		return batch
+	}
+	var count, size int
+	for _, buf := range bufs {
+		if ValidDatagram(buf) {
+			count++
+			size += len(buf)
+		}
+	}
+	if count == 0 {
+		return nil
+	}
+	batch := make([][]byte, 0, count)
+	storage := make([]byte, size)
+	for _, buf := range bufs {
+		if ValidDatagram(buf) {
+			n := copy(storage, buf)
+			batch = append(batch, storage[:n:n])
+			storage = storage[n:]
+		}
+	}
+	return batch
+}
+
 func (b *Bind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	b.mu.Lock()
 	_, ok := b.peers["remote"]

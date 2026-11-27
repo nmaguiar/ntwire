@@ -338,6 +338,28 @@ already-open TCP stream; callers must retry idempotent operations. The client
 first falls back between direct UDP, UDP via relay, and WebSocket relay, then
 re-authenticates through another resolved relay address when necessary.
 
+With the adaptive carrier pilot enabled, a negotiated session can list
+short-lived candidates for its own lanes. Candidates reflect the configured
+pool members with live UDP registrations. Listing the opaque candidate IDs
+leaves the selected path in place. [Relay discovery protocol](PROTOCOL.md#adaptive-relay-discovery)
+
+Servers can opt into UDP relay qualification with `relay.adaptive_udp`.
+The server allocates on the selected registration and verifies full-size
+datagrams in both directions before admitting the standby. [Relay qualification protocol](PROTOCOL.md#adaptive-relay-udp-qualification)
+
+An adaptive client can move the existing lane to a qualified relay on
+WebSocket loss. Session renewal can keep the active UDP allocation on
+the same registered relay. The client reconciles back to a qualified
+WebSocket when the relay registration disappears.
+The client checks a healthy selected relay every five seconds and checks
+once per second after a missed reply to confirm a loss.
+
+With adaptive forwarding feedback, a qualified UDP relay can also take part
+in a trial while the origin WSS or QUIC path is healthy. The client retains
+the UDP relay only after measuring a sustained advantage. A comparable
+origin path wins when tested against the UDP relay. The configured origin
+may itself be reached through an existing TLS relay. [Performance trials](PERFORMANCE.md#sustained-carrier-observations)
+
 ### Kubernetes relay replicas
 
 Run relay replicas as separate failure domains (different nodes/zones where
@@ -452,6 +474,7 @@ listen:
 limits:
   udp_relay_idle_timeout: 60s              # default; reclaims a session no client/server has kept alive
   max_udp_relay_sessions_per_server: 64     # default; independent of the pool-wide port count
+  udp_relay_bytes_per_second: 0             # zero omits a relay-wide cap; directional limit
 ```
 
 The relay allocates one dedicated UDP port from `udp_relay_ports` per active
@@ -466,6 +489,14 @@ datagrams by a token-locked source address once a session is bound, not by
 port — a client's NAT only ever needs to reach one address.
 
 The per-server session limit also applies to simultaneous allocation requests.
+When `limits.udp_relay_bytes_per_second` is positive, it caps the shared
+UDP relay tier independently in each direction. The relay drops excess
+datagrams after checking the existing token-bound routes. Bind exchanges
+can continue during pressure. Use the ceiling to limit one relay's
+bandwidth and operating cost alongside its pooled-port and per-server
+allocation limits. It covers UDP relay forwarding across all tenants
+on that relay. The native WireGuard listener has its existing limits.
+
 Rebinding replaces the previous client address in the forwarding index, and
 release removes that index entry atomically with the session so a concurrent
 keepalive cannot restore a released session.

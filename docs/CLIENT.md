@@ -17,7 +17,8 @@ For proxy-side hostname resolution with curl, use `--proxy socks5h://127.0.0.1:1
 | `ntwire list [-i key \| --sso] [--json] URL` | Authenticates once and prints server grants. Without `-i` or `identity_file`, it uses `~/.ntwire/id_ed25519` if present, then the first conventional key in `~/.ssh`, or falls back to SSO when advertised. `--json` is machine-readable. Do not add a trailing `/` to `URL`. |
 | `ntwire connect [-i key \| --sso] URL [--port name=15432] [--websocket] [--bind address]` | Starts local listeners, renews the session, and prints a token-protected status URL. A tunnel's `local_port`/`local_host` are preferred when available; otherwise a free port and `127.0.0.1` are used. `--port name=local-port` or `--port name=host:local-port` is a client-side override. `--websocket` selects the fallback transport; `--bind` is advanced and changes the exposure of the listener. |
 | `ntwire status [--json]` | Shows the running connection's tunnels, transport, and expiry. |
-| `ntwire transport [-v] [auto\|wss\|udp-relay\|direct-udp]` | Shows the active transport and multipath candidates, or switches the live mode. `-v` also shows each UDP candidate's confirmed datagram MTU, why the session did not start on direct UDP, and the bounded transport switch history (time, from → to, reason). Without `-v` the output is unchanged. |
+| `ntwire benchmark [--compare-transports] [--json]` | Measures a disposable loopback fixture. See [Performance benchmarks](PERFORMANCE.md). |
+| `ntwire transport [-v] [auto\|wss\|udp-relay\|direct-udp]` | Shows the active transport and multipath candidates, or switches the live mode. `-v` also shows confirmed UDP datagram limits, the startup reason, bounded switch history, and lane state and flow counts when multi-lane is negotiated. |
 | `ntwire disconnect` | Stops the connection in this state directory. |
 | `ntwire port name=15432` | Replaces a running tunnel's local listener; the status UI offers the same action. |
 | `ntwire logout URL` | Clears cached SSO credentials for a server. |
@@ -232,6 +233,11 @@ public material, never the private key or passphrase.
 
 ## Opt-in transport settings
 
+A standard connection over verified HTTPS offers adaptive WireGuard
+carriers to servers that enable them. Use `--adaptive-carrier=false` or
+`adaptive_carrier: false` in the client configuration to keep legacy
+negotiation. Explicit transport and legacy path options still take precedence.
+
 These `ntwire connect` flags are all off by default; leaving them unset keeps
 the existing transport behavior. Each one is also an **Advanced** setting in the
 ntwire-gui profile editor and in the `ntwire connect` local settings page, and
@@ -257,3 +263,5 @@ curl --proxy http://127.0.0.1:1080 https://public.example.net/
 ```
 
 Both proxy commands submit the destination to the same group policy. See [Smart Egress Proxy](SMART-EGRESS-PROXY.md) for direct LAN, ASN, DNS, and mixed-version examples.
+
+Set `egress.selection: adaptive` per group to use passive transfer and setup measurements on eligible tunnels. The current client and local attachment can supply additional lane and queue measurements. Members without those measurements remain eligible using observed proxy setup and transfers. For downgrade, restore the previous group strategy and remove `failover.warm_service` before starting the older router.

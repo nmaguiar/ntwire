@@ -13,6 +13,7 @@ import (
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/client"
 	"github.com/nmaguiar/ntwire/pkg/egressrouter"
+	"gopkg.in/yaml.v3"
 )
 
 // Profile is one saved server connection. It holds everything
@@ -65,7 +66,23 @@ type Profile struct {
 	// TunnelMTU is the opt-in --tunnel-mtu setting; see client.Options.TunnelMTU.
 	TunnelMTU string `yaml:"tunnel_mtu,omitempty"`
 	// Promote is the opt-in --promote setting; see client.Options.Promote.
-	Promote bool `yaml:"promote,omitempty"`
+	Promote         bool `yaml:"promote,omitempty"`
+	AdaptiveCarrier bool `yaml:"adaptive_carrier"`
+}
+
+// DefaultProfile returns the connection defaults for new and imported profiles.
+func DefaultProfile() Profile {
+	return Profile{AdaptiveCarrier: client.DefaultSettings().AdaptiveCarrier}
+}
+
+func (p *Profile) UnmarshalYAML(node *yaml.Node) error {
+	type plain Profile
+	next := plain(DefaultProfile())
+	if err := node.Decode(&next); err != nil {
+		return err
+	}
+	*p = Profile(next)
+	return nil
 }
 
 // Settings holds ntwire-gui's own app-wide preferences, as opposed to any

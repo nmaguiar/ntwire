@@ -62,4 +62,6 @@ scoped RBAC separately. See `deploy/k8s/relay-discovery-rbac.yaml` and
 metrics, reflector, UDP-relay, or dedicated tenant ports explicitly, and keep
 the Service, selected configuration, load balancer, and firewall in agreement.
 
+For kernel WireGuard on Linux nodes, merge the server acceleration and container security settings into your values file. [Helm acceleration values](../../../docs/LINUX-ACCELERATION.md#kubernetes-with-helm)
+
 See [docs/DEPLOYMENT.md](../../../docs/DEPLOYMENT.md) for operating guidance.

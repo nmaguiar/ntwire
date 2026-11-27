@@ -24,8 +24,135 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
+func BenchmarkWebSocketBindSendCopy(b *testing.B) {
+	for _, count := range []int{1, 2, 16, 64} {
+		b.Run(fmt.Sprint(count), func(b *testing.B) {
+			p := newPeer("peer", nil, endpoint{id: "peer"}, nil)
+			bind := &Bind{peers: map[string]*peer{p.id: p}}
+			batch := make([][]byte, count)
+			for i := range batch {
+				batch[i] = make([]byte, 1440)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(count * 1440))
+			for b.Loop() {
+				if err := bind.Send(batch, p.endpoint); err != nil {
+					b.Fatal(err)
+				}
+				if got := <-p.out; len(got) != count {
+					b.Fatalf("copied %d datagrams, want %d", len(got), count)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkWebSocketBindReceive includes a loopback write from a raw WebSocket
+// client and delivery into the bind caller's receive buffer.
+func BenchmarkWebSocketBindReceive(b *testing.B) {
+	for _, size := range []int{32, 1420, 16 << 10} {
+		b.Run(fmt.Sprint(size), func(b *testing.B) {
+			server := NewServer()
+			fns, _, err := server.Open(0)
+			if err != nil {
+				b.Fatal(err)
+			}
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = server.ServeHTTP(w, r, "session")
+			})
+			l, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				_ = server.Close()
+				b.Skipf("loopback listeners unavailable: %v", err)
+			}
+			h := &httptest.Server{Listener: l, Config: &http.Server{Handler: handler}}
+			h.Start()
+			b.Cleanup(func() {
+				_ = server.Close()
+				h.Close()
+			})
+			ctx, cancel := context.WithTimeout(b.Context(), 30*time.Second)
+			defer cancel()
+			watchdog := time.AfterFunc(30*time.Second, func() { _ = server.Close() })
+			defer watchdog.Stop()
+			peer, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(h.URL, "http"), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer peer.CloseNow()
+			payload := make([]byte, size)
+			bufs := [][]byte{make([]byte, size)}
+			sizes, eps := make([]int, 1), make([]conn.Endpoint, 1)
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			for b.Loop() {
+				if err := peer.Write(ctx, websocket.MessageBinary, payload); err != nil {
+					b.Fatal(err)
+				}
+				if n, err := fns[0](bufs, sizes, eps); err != nil || n != 1 || sizes[0] != size {
+					b.Fatalf("received %d datagrams of size %d, error %v", n, sizes[0], err)
+				}
+			}
+		})
+	}
+}
+
+func TestWebSocketBindSend_BatchOwnsSeparateDatagrams(t *testing.T) {
+	for _, name := range []string{"ordinary", "sampled"} {
+		t.Run(name, func(t *testing.T) {
+			var recorder *queuePerformance
+			if name == "sampled" {
+				recorder = &queuePerformance{started: time.Now()}
+			}
+			p := newPeer("peer", nil, endpoint{id: "peer"}, recorder)
+			bind := &Bind{peers: map[string]*peer{p.id: p}}
+			first := bytes.Repeat([]byte{0x41}, 32)
+			second := bytes.Repeat([]byte{0x42}, 1440)
+			if err := bind.Send([][]byte{first, nil, second, make([]byte, 65536)}, p.endpoint); err != nil {
+				t.Fatal(err)
+			}
+			clear(first)
+			clear(second)
+			queued := len(p.out)
+			if p.sampled != nil {
+				queued = len(p.sampled.out)
+			}
+			if queued != 1 {
+				t.Fatalf("queued batches = %d, want 1", queued)
+			}
+			queuedBatch, ok := p.nextBatch()
+			got := queuedBatch.datagrams
+			if !ok || len(got) != 2 || !bytes.Equal(got[0], bytes.Repeat([]byte{0x41}, 32)) ||
+				!bytes.Equal(got[1], bytes.Repeat([]byte{0x42}, 1440)) {
+				t.Fatal("writer did not receive independent copies of the two valid datagrams in order")
+			}
+			if cap(got[0]) != len(got[0]) || cap(got[1]) != len(got[1]) {
+				t.Fatal("a queued datagram can grow into the rest of the batch")
+			}
+		})
+	}
+}
+
+func TestPeerQueuePressure_RequiresConnectedPeer(t *testing.T) {
+	p := &peer{out: make(chan [][]byte, 8)}
+	b := &Bind{peers: map[string]*peer{"live": p}}
+	if pressured, connected := b.PeerQueuePressure("missing"); pressured || connected || !b.PeerBacklogged("missing") {
+		t.Fatal("missing peer was mistaken for a pressured queue")
+	}
+	if pressured, connected := b.PeerQueuePressure("live"); pressured || !connected {
+		t.Fatal("empty queue was mistaken for a pressured queue")
+	}
+	p.out <- nil
+	p.out <- nil
+	if pressured, connected := b.PeerQueuePressure("live"); !pressured || !connected {
+		t.Fatal("queued writer pressure was not observed")
+	}
+}
+
 func TestWebSocketBindRoundTrip(t *testing.T) {
 	server := NewServer()
+	server.EnableQueuePerformance()
+	server.writeTimeout = 250 * time.Millisecond
 	serverFns, _, err := server.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -44,6 +171,7 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	h.Start()
 	defer h.Close()
 	client := NewClient("ws"+h.URL[len("http"):], h.Client(), nil)
+	client.EnableQueuePerformance()
 	clientFns, _, err := client.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -60,12 +188,67 @@ func TestWebSocketBindRoundTrip(t *testing.T) {
 	if n, err := serverFns[0](serverBuf, serverSizes, serverEP); err != nil || n != 1 || serverSizes[0] != 16 {
 		t.Fatalf("server receive: n=%d err=%v size=%d", n, err, serverSizes[0])
 	}
-	if err = server.Send([][]byte{serverBuf[0][:serverSizes[0]]}, serverEP[0]); err != nil {
+	server.mu.Lock()
+	ws := server.peers["session"].ws
+	server.mu.Unlock()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	if err := ws.Write(ctx, websocket.MessageText, bytes.Repeat([]byte("ignored"), 400)); err != nil {
 		t.Fatal(err)
 	}
-	clientBuf, clientSizes, clientEP := [][]byte{make([]byte, 64)}, make([]int, 1), make([]conn.Endpoint, 1)
-	if n, err := clientFns[0](clientBuf, clientSizes, clientEP); err != nil || n != 1 || clientSizes[0] != 16 {
-		t.Fatalf("client receive: n=%d err=%v size=%d", n, err, clientSizes[0])
+	if err := ws.Write(ctx, websocket.MessageBinary, []byte("short")); err != nil {
+		t.Fatal(err)
+	}
+	reply := [][]byte{serverBuf[0][:serverSizes[0]]}
+	for i, size := range []int{32, 1420, 2048, 16 << 10, 32 << 10, 128} {
+		reply = append(reply, bytes.Repeat([]byte{byte(i + 1)}, size))
+	}
+	if err = server.Send(reply, serverEP[0]); err != nil {
+		t.Fatal(err)
+	}
+	// Let the reader process the entire burst before consuming the first
+	// datagram. No queued payload may alias later reads' scratch space.
+	for len(client.packets) < len(reply) {
+		if ctx.Err() != nil {
+			t.Fatal("client did not queue all reply datagrams")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	clientBuf, clientSizes, clientEP := [][]byte{make([]byte, 32<<10)}, make([]int, 1), make([]conn.Endpoint, 1)
+	timeout := time.AfterFunc(5*time.Second, func() { _ = client.Close() })
+	defer timeout.Stop()
+	receiveReply := func(want []byte) {
+		t.Helper()
+		if n, err := clientFns[0](clientBuf, clientSizes, clientEP); err != nil || n != 1 || !bytes.Equal(clientBuf[0][:clientSizes[0]], want) {
+			t.Fatalf("client receive: n=%d err=%v size=%d, want %d-byte datagram", n, err, clientSizes[0], len(want))
+		}
+	}
+	for _, want := range reply {
+		receiveReply(want)
+	}
+	// A completed batch's deadline must not close an idle carrier or cancel
+	// its next write.
+	time.Sleep(2 * server.writeTimeout)
+	last := bytes.Repeat([]byte{0x81}, 96)
+	if err := server.Send([][]byte{last}, serverEP[0]); err != nil {
+		t.Fatal(err)
+	}
+	receiveReply(last)
+	for _, bind := range []*Bind{client, server} {
+		for {
+			stats := bind.QueuePerformance()
+			var sampled uint64
+			for _, n := range stats.WriteDuration {
+				sampled += n
+			}
+			if sampled != 0 {
+				break
+			}
+			if ctx.Err() != nil {
+				t.Fatalf("missing timing for first WebSocket write: %+v", stats)
+			}
+			time.Sleep(time.Millisecond)
+		}
 	}
 }
 
@@ -116,13 +299,19 @@ func TestWebSocketBindSend_NonReadingPeerNeverBlocks(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("5000 Sends took %s against a non-reading peer, want non-blocking", elapsed)
 	}
-	select {
-	case id := <-disconnected:
-		if id != "remote" {
-			t.Fatalf("OnPeerDisconnected id = %q", id)
+	timeout := time.NewTimer(3 * time.Second)
+	defer timeout.Stop()
+waitForDisconnect:
+	for {
+		select {
+		case id := <-disconnected:
+			if id != "remote" {
+				t.Fatalf("OnPeerDisconnected id = %q", id)
+			}
+			break waitForDisconnect
+		case <-timeout.C:
+			t.Fatal("OnPeerDisconnected was not called for a wedged carrier")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("OnPeerDisconnected was not called for a wedged carrier")
 	}
 	if client.Dropped.Load() == 0 {
 		t.Fatal("expected overflow drops to be counted")
@@ -699,8 +888,9 @@ func TestServerReplacesStaleClientPeerOnRedial(t *testing.T) {
 	// directly, standing in for read()'s defer after the interface vanished.
 	client.mu.Lock()
 	delete(client.peers, "remote")
+	generation := client.done
 	client.mu.Unlock()
-	client.redial()
+	client.redial(generation)
 
 	client.mu.Lock()
 	_, reconnected := client.peers["remote"]
@@ -828,8 +1018,8 @@ func TestClientBindRedialsSilentCarrier(t *testing.T) {
 
 func TestWebSocketBindWriteFailure_IgnoresReplacedPeer(t *testing.T) {
 	b := NewServer()
-	old := newPeer("session", nil, endpoint{id: "session"})
-	replacement := newPeer("session", nil, endpoint{id: "session"})
+	old := newPeer("session", nil, endpoint{id: "session"}, nil)
+	replacement := newPeer("session", nil, endpoint{id: "session"}, nil)
 	b.peers = map[string]*peer{"session": replacement}
 	calls := 0
 	b.OnWriteFailure = func(string, conn.Endpoint) {

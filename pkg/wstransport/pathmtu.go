@@ -65,9 +65,21 @@ func DecodePathMTUAck(b []byte) (PathMTUProbe, bool) {
 // opts into a smaller one.
 const DefaultTunnelMTU = 1420
 
+// MinTunnelMTU preserves the minimum IPv6 link MTU.
+const MinTunnelMTU = 1280
+
 // wireGuardTransportOverhead is the per-packet WireGuard transport header
 // and authentication tag added to an inner IP packet (16 + 16 bytes).
 const wireGuardTransportOverhead = 32
+
+// MaxWireGuardDatagram returns the complete ciphertext size for an inner
+// IP packet up to the configured tunnel MTU. WireGuard pads up to that MTU.
+func MaxWireGuardDatagram(tunnelMTU int) int {
+	if tunnelMTU <= 0 {
+		tunnelMTU = DefaultTunnelMTU
+	}
+	return tunnelMTU + wireGuardTransportOverhead
+}
 
 // MTU states reported in PathStatus.MTUState by an MTU-aware bind. Without
 // MultipathOptions.MTUAware the field stays empty.
@@ -96,11 +108,7 @@ func newMTUPolicy(opts MultipathOptions) *mtuPolicy {
 	if !opts.MTUAware {
 		return nil
 	}
-	tunnel := opts.TunnelMTU
-	if tunnel <= 0 {
-		tunnel = DefaultTunnelMTU
-	}
-	required := uint16(tunnel + wireGuardTransportOverhead)
+	required := uint16(MaxWireGuardDatagram(opts.TunnelMTU))
 	if required < minPathMTUProbe {
 		required = minPathMTUProbe
 	}

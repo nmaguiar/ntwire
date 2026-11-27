@@ -53,20 +53,21 @@ func CheckNumericDomain(dst Destination, supported bool) error {
 }
 
 type Candidate struct {
-	DestinationBinding bool          `json:"destination_binding,omitempty"`
-	Preparation        bool          `json:"preparation,omitempty"`
-	UDP                bool          `json:"udp_associate,omitempty"`
-	NumericDomain      bool          `json:"numeric_domain,omitempty"`
-	Dialer             Egress        `json:"-"`
-	Generation         string        `json:"generation,omitempty"`
-	Reason             string        `json:"reason,omitempty"`
-	Transport          string        `json:"transport,omitempty"`
-	RTT                time.Duration `json:"carrier_rtt,omitempty"`
-	Loss               float64       `json:"carrier_loss,omitempty"`
-	ControlMillis      uint64        `json:"control_latency_millis,omitempty"`
-	Reconnections      uint64        `json:"reconnections,omitempty"`
-	LocalAddress       string        `json:"local_address,omitempty"`
-	ControlProxy       string        `json:"-"`
+	DestinationBinding bool             `json:"destination_binding,omitempty"`
+	Preparation        bool             `json:"preparation,omitempty"`
+	UDP                bool             `json:"udp_associate,omitempty"`
+	NumericDomain      bool             `json:"numeric_domain,omitempty"`
+	Dialer             Egress           `json:"-"`
+	Generation         string           `json:"generation,omitempty"`
+	Reason             string           `json:"reason,omitempty"`
+	Transport          string           `json:"transport,omitempty"`
+	RTT                time.Duration    `json:"carrier_rtt,omitempty"`
+	Loss               float64          `json:"carrier_loss,omitempty"`
+	ControlMillis      uint64           `json:"control_latency_millis,omitempty"`
+	Reconnections      uint64           `json:"reconnections,omitempty"`
+	LocalAddress       string           `json:"local_address,omitempty"`
+	ControlProxy       string           `json:"-"`
+	Performance        *PathPerformance `json:"performance,omitempty"`
 }
 type Source func(Member) Candidate
 
@@ -102,6 +103,8 @@ type Router struct {
 	recovered     atomic.Uint64
 	raceAttempts  atomic.Uint64
 	raceBackups   atomic.Uint64
+	warming       atomic.Int64
+	warmHits      atomic.Uint64
 }
 
 type routeState struct {
@@ -114,6 +117,9 @@ type routeState struct {
 	affinity     map[string]affinity
 	sequence     uint64
 	destinations map[observationKey]destinationObservation
+	asnTransfers map[asnTransferKey]transferEstimate
+	transfers    transferEstimate
+	warm         map[MemberID]*warmService
 }
 
 func New(source Source) *Router { return NewWithSelector(source, nil) }
@@ -391,14 +397,15 @@ func httpError(w http.ResponseWriter, err error) {
 type routedConn struct {
 	destination Destination
 	net.Conn
-	member     Member
-	generation string
-	health     *memberHealth
-	direct     *directTraffic
-	state      *routeState
-	asn        *asnData
-	bound      bool
-	once       sync.Once
+	member      Member
+	generation  string
+	health      *memberHealth
+	direct      *directTraffic
+	state       *routeState
+	asn         *asnData
+	bound       bool
+	once        sync.Once
+	performance *routedFlowPerformance
 }
 
 func (c *routedConn) Read(p []byte) (int, error) {
@@ -407,6 +414,9 @@ func (c *routedConn) Read(p []byte) (int, error) {
 		c.direct.received.Add(uint64(n))
 	} else {
 		c.health.received.Add(uint64(n))
+	}
+	if n > 0 && c.performance != nil {
+		c.performance.down.note(n)
 	}
 	return n, err
 }
@@ -417,6 +427,9 @@ func (c *routedConn) Write(p []byte) (int, error) {
 	} else {
 		c.health.sent.Add(uint64(n))
 	}
+	if n > 0 && c.performance != nil {
+		c.performance.up.note(n)
+	}
 	return n, err
 }
 func (c *routedConn) CloseWrite() error { return localproxy.CloseWrite(c.Conn) }
@@ -426,6 +439,9 @@ func (c *routedConn) Close() error {
 			c.direct.active.Add(-1)
 		} else {
 			c.health.active.Add(-1)
+		}
+		if c.performance != nil {
+			c.performance.finish(c)
 		}
 	})
 	return c.Conn.Close()
@@ -528,7 +544,7 @@ func (r *Router) dialDestination(ctx context.Context, dst Destination) (conn net
 	attempt := 0
 	var last error = &Failure{Class: "unavailable"}
 	var prepared preparation
-	if state.config.Failover.Racing && limit >= 2 && len(ordered) >= 2 && r.canRace(state, ordered[:2]) &&
+	if state.config.Failover.Racing && limit >= 2 && len(ordered) >= 2 && !r.warmReady(state, ordered[0]) && r.canRace(state, ordered[:2]) &&
 		r.acquireSetup() != nil {
 		winner, launched, failures := r.raceService(ctx, state, ordered[:2])
 		r.attempts.Add(-1)
@@ -572,14 +588,20 @@ func (r *Router) dialDestination(ctx context.Context, dst Destination) (conn net
 			r.failovers.Add(1)
 		}
 		attempt++
-		var elapsed time.Duration
-		var deadline time.Time
-		if prepared.stream != nil && prepared.candidate.ID() == candidate.ID() {
-			candidate.Dialer = prepared.stream
-			elapsed = prepared.elapsed
-			deadline = prepared.deadline
+		service := prepared
+		warm := false
+		if service.stream == nil || service.candidate.ID() != candidate.ID() {
+			service = r.takeWarm(state, candidate)
+			warm = service.stream != nil
 		}
-		conn, f := r.try(ctx, state, candidate, h, dst, false, halfOpen, elapsed, deadline)
+		chosen := candidate
+		if service.stream != nil {
+			chosen.Dialer = service.stream
+		}
+		conn, f := r.try(ctx, state, chosen, h, dst, false, halfOpen, service.elapsed, service.deadline)
+		if warm {
+			_ = service.stream.Close()
+		}
 		if f != nil {
 			last = f
 			if !f.Retry {
@@ -617,7 +639,9 @@ func (r *Router) dialDestination(ctx context.Context, dst Destination) (conn net
 		r.remember(state, dst, candidate.ID())
 		h.routed.Add(1)
 		h.active.Add(1)
-		return &routedConn{Conn: conn, destination: dst, member: candidate.Member, generation: candidate.Generation, health: h, state: state, asn: snapshot}, nil
+		r.startWarm(state, candidate, h)
+		return r.trackRoutedFlow(&routedConn{Conn: conn, destination: dst, member: candidate.Member,
+			generation: candidate.Generation, health: h, state: state, asn: snapshot}, dst.IP()), nil
 	}
 	if ctx.Err() != nil {
 		return nil, &Failure{Class: "timeout", Code: 6}

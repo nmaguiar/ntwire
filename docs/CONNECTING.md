@@ -28,6 +28,15 @@ through `ntwire-relay` is orthogonal to which kind of client it is: the
 relay only ever forwards opaque bytes, and never terminates the client's TLS
 or WireGuard session (see [SECURITY.md#the-relays-trust-model](SECURITY.md#the-relays-trust-model)).
 
+A standard ntwire connection over verified HTTPS offers adaptive carriers
+when the server operator has enabled the adaptive plane. The pilot keeps the same listeners and
+WireGuard lane when it redials WSS or switches to a qualified optional
+QUIC DATAGRAM carrier. An unavailable WSS upgrade can also use an
+operator-enabled HTTP/3 or HTTP/2 carrier for the same WireGuard protection.
+Check the active mode with `ntwire transport -v`.
+[Adaptive carrier configuration](CONFIGURATION.md#adaptive-carrier-pilot)
+· [HTTP carrier pilots](CONFIGURATION.md#http-carrier-pilots)
+
 ## Generating a WireGuard key pair for an official client
 
 **This whole section is optional**, and only relevant to scenarios
@@ -122,6 +131,16 @@ above, and that file is meant to be deleted from the server once transferred.
 > With the second port, clients that pass `--udp-alt` (or enable **Try
 > alternate UDP port** in ntwire-gui) retry direct UDP on 443 only when 51820
 > fails. Open 443/udp in the firewall either way.
+
+Adaptive mode can qualify a separate alternate port automatically when the
+server enables it. It uses the same WireGuard lane across carrier switches.
+See the [adaptive carrier settings](CONFIGURATION.md#adaptive-carrier-pilot)
+for the opt-in and listener requirements.
+
+With the multi-lane pilot enabled at the server, the same command can
+place new flows on other peers in the logical connection. View the
+lane carrier, readiness, and active flows with `ntwire transport -v` or
+expand **WireGuard lanes** on the connection dashboard.
 
 > **Tip:** Generate shell completion for your environment (`bash`, `zsh`, `fish`, `powershell`):
 > `source <(ntwire completion zsh)` or `ntwire completion bash > /etc/bash_completion.d/ntwire`

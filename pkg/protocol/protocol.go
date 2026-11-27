@@ -255,8 +255,9 @@ type AuthResponse struct {
 	// Multipath is set only by relay-mode servers that implement the stable
 	// candidate transport. Older peers omit it, keeping the legacy endpoint
 	// upgrade ladder wire-compatible.
-	Multipath             bool     `json:"multipath,omitempty"`
-	TransportCapabilities []string `json:"transport_capabilities,omitempty"`
+	Adaptive              *AdaptiveSession `json:"adaptive,omitempty"`
+	Multipath             bool             `json:"multipath,omitempty"`
+	TransportCapabilities []string         `json:"transport_capabilities,omitempty"`
 	// RequiredTransportCapabilities lists capabilities the server mandates
 	// for this session (e.g. it refuses to fall back below multipath-v3).
 	// A client that cannot honor one of these should treat the session as

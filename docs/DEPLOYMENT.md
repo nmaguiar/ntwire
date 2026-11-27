@@ -85,6 +85,8 @@ It starts `ntwire-server` from `deploy/docker/Dockerfile` using
 tunnel forwards to. `ojob tasks.yaml op=compose-up` runs the same thing; use
 `op=compose-down` when finished.
 
+For a Linux server with kernel WireGuard, use the acceleration override for Compose or the standalone `docker run` example. [Docker CLI](LINUX-ACCELERATION.md#docker-cli) · [Docker Compose](LINUX-ACCELERATION.md#docker-compose)
+
 ### Interacting with a running server container or pod
 
 When `ntwire-server` is running in a Docker container (e.g. named `ntwire-server`) or Kubernetes pod, you can execute server management commands, view status and metrics, print WireGuard QR codes, list tunnels, and reload configuration without stopping the container.
@@ -299,6 +301,8 @@ docker build -f deploy/docker/Dockerfile.client -t ntwire-client .
 [RELAY.md](RELAY.md) for how to configure a relay and point a server at it.
 
 ## Kubernetes
+
+The standard Docker and Kubernetes deployments use the portable backend. To evaluate kernel WireGuard on Linux nodes, use the Kustomize overlay or merge the acceleration settings into your Helm values. Both examples include startup verification and rollback. [Kustomize acceleration](LINUX-ACCELERATION.md#kubernetes-with-kustomize) · [Helm acceleration](LINUX-ACCELERATION.md#kubernetes-with-helm)
 
 Manifests under `deploy/k8s` mount config and keys and expose both protocols:
 
@@ -553,6 +557,53 @@ set `settings.update_checks_disabled: true` in `gui.yaml`. Package-managed clien
 should use their package manager. Server/relay binaries and containers continue
 to use operator-managed deployment upgrades. See [UPDATES.md](UPDATES.md).
 
+## Optional QUIC DATAGRAM pilot
+
+For opted-in adaptive servers, expose the configured `transport.quic_listen`
+port as UDP alongside HTTPS and the existing WireGuard ports. In Docker use
+a separate UDP port mapping. In Kubernetes add a UDP Service port and keep
+HTTPS control and QUIC traffic on the same server instance for each session.
+Each server instance resolves the single-use lane tickets it issues. The listener uses the server
+TLS certificate manager. Keep the control name present in the served
+certificate or use the client's existing explicit trust pin. No extra
+capabilities or host tuning are required. [Pilot settings](CONFIGURATION.md#adaptive-carrier-pilot)
+
+Expose `transport.adaptive_udp_port` and, when configured,
+`transport.adaptive_udp_alt_port` as separate UDP port mappings. Route both
+to the same server instance that serves the session's HTTPS control
+requests. Preserve the official WireGuard listeners and legacy mappings
+for clients that use them.
+
+### Optional HTTP carrier pilots
+
+HTTP/2 uses the existing HTTPS service. For a reverse proxy or ingress,
+preserve HTTP/2 to the server and disable buffering for the duplex
+`/v1/transport/lanes/{lane}/http2` route. TLS pass-through can preserve
+those properties. Verify with a client whose WSS upgrade is unavailable.
+
+For HTTP/3, publish the dedicated UDP listener alongside HTTPS. For
+`transport.h3_carrier_listen: ":9443"`, add
+`-p 9443:9443/udp` to `docker run`, add `"9443:9443/udp"` to the Compose
+server's port list, or add a `protocol: UDP` Service port with
+`port: 9443` and `targetPort: 9443` to Kubernetes. Route the HTTP/3 listener
+and HTTPS control session to the same server instance. Keep the existing
+WireGuard UDP port mappings. This carrier is independent of the Apple
+Network Relay gateway. [Pilot settings](CONFIGURATION.md#http-carrier-pilots)
+
+### Performance-aware relay pilot
+
+Upgrade the server and the ntwire clients before enabling
+`relay.performance_routing`. Permit the existing UDP relay ports between
+each registered relay, its clients, and the server. Server-side bearer and
+allocation state stays pinned to the instance that issued it. The relay
+allocation wire format works with existing ntwire-relay binaries.
+
+To use the optional relay byte ceiling, upgrade that relay before adding
+`limits.udp_relay_bytes_per_second`. For rollback, disable server
+performance routing and restart. Before downgrading a binary with a
+strict YAML schema, remove the new relay keys it cannot parse. Existing
+WireGuard credentials and configured relay endpoints remain valid.
+
 ## Optional TCP tuning for the WebSocket carrier (Linux)
 
 The WSS carrier (`/v1/wg`) carries WireGuard over TCP, so packet loss on long or
@@ -565,7 +616,7 @@ changes nothing unless configured:
 listen:
   tcp:
     congestion: bbr          # TCP_CONGESTION; needs the tcp_bbr kernel module
-    notsent_lowat: 131072    # TCP_NOTSENT_LOWAT; bounds kernel send-queue latency
+    notsent_lowat: 131072    # TCP_NOTSENT_LOWAT; threshold for unsent TCP data
 relay:
   tcp:
     congestion: bbr
@@ -582,3 +633,8 @@ In containers the module must be loaded on the host; the per-socket option needs
 no extra capability. If the kernel rejects a value, or on a non-Linux host,
 ntwire logs one warning and keeps serving untuned sockets. Check what took effect
 with `ss -ti` (look for `bbr` and `notsent_lowat`).
+
+The [Phase 1 results](PERFORMANCE.md#phase-1-no-go-decisions) document
+the WSS send-buffer comparisons. A smaller threshold can make socket
+writes wait earlier and reduce throughput on a higher-RTT path. Use zero to restore the system default for new
+connections after restarting the listener.

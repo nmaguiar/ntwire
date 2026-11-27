@@ -320,7 +320,7 @@ func (s *Server) sessionForTunnelIP(ip string) (Session, bool) {
 	return Session{}, false
 }
 
-func (s *Server) startWebPortal(d *dataPlane) error {
+func (s *Server) startWebPortal(d *dataPlane, hostFallback bool) error {
 	addr := s.Config.Portal.Web.Listen
 	var ln net.Listener
 	var err error
@@ -334,7 +334,7 @@ func (s *Server) startWebPortal(d *dataPlane) error {
 	}
 	if ln == nil && err == nil {
 		ln, err = d.stack.Listen("tcp", addr)
-		if err != nil {
+		if err != nil && hostFallback {
 			ln, err = net.Listen("tcp", addr)
 		}
 	}

@@ -6,6 +6,7 @@ const strategyHelp = {
   'sticky-fastest': 'Keep using the same healthy tunnel until another is consistently faster.',
   'fastest-healthy': 'Use the healthy tunnel with the fastest measured setup.',
   'destination-aware': 'Use recent measurements for the requested destination when available.',
+  adaptive: 'Estimate completion time using recent setup, transfer rates, and tunnel load. The exit IP can change between connections.',
   priority: 'Try higher-priority tunnels first. List order breaks ties.',
   'round-robin': 'Rotate new connections through healthy tunnels.'
 };
@@ -16,6 +17,8 @@ const strategyGuide = [
     'Speed matters most and sites do not care which exit IP you use.'],
   ['destination-aware', 'Destination aware', 'Like fastest healthy, but ranks tunnels by how they performed for the specific site and port requested.',
     'Tunnels behave differently per site, for example one is fast for a CDN but blocked by another service.'],
+  ['adaptive', 'Adaptive', 'Uses recent setup, transfer rates, and tunnel load to rank new connections.',
+    'Mixed short requests and large transfers across tunnels with different speeds.'],
   ['priority', 'Priority', 'Always uses the highest-priority tunnel that is healthy. Speed is ignored. List order breaks ties.',
     'A preferred exit with backups, or predictable routing for cost or policy reasons.'],
   ['round-robin', 'Round robin', 'Rotates new connections through the healthy tunnels in turn.',
@@ -167,6 +170,9 @@ function buildRequest(draft, controls, unapproved) {
     if (group.routing?.udp_associate && !protocols.includes('socks5')) fail('UDP requires SOCKS5.');
     if (group.routing?.affinity_scope === 'group' && group.egress.selection !== 'sticky-fastest') {
       fail('Whole-group tunnel preference requires Sticky fastest.');
+    }
+    if (group.failover?.warm_service && group.egress.selection !== 'adaptive') {
+      fail('Keeping a service connection ready requires Adaptive routing.');
     }
     const members = group.egress.members || [];
     const enrollments = group.egress.enroll || [];
@@ -798,6 +804,8 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
 
   function strategyDetails() {
     updateText(field('strategy-help'), strategyHelp[group().egress.selection ?? 'sticky-fastest'] || '');
+    const warm = controls.find(control => control.dataset.smartField === 'failover.warm_service');
+    if (warm) warm.disabled = group().egress.selection !== 'adaptive' && !warm.checked;
   }
 
   function prepareConfig(config) {
@@ -981,7 +989,7 @@ export function createSmartProxy({api, dashboardURL, exportURL, getProfiles}) {
         renderResolverMembers();
       }
       if (path === 'limits.auto') renderGroup();
-      if (path === 'egress.selection') strategyDetails();
+      if (path === 'egress.selection' || path === 'failover.warm_service') strategyDetails();
       edited();
     });
   }

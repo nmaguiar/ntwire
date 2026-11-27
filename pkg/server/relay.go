@@ -447,7 +447,20 @@ func (a *RelayAgent) failPendingAllocs() {
 // /v1/udp-relay HTTP handler, via udpRelay.sessionFor) treats that exactly
 // like PunchResponse's empty case, not a hard failure.
 func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr string, err error) {
+	return a.allocateUDPSession(ctx, nil)
+}
+
+func (a *RelayAgent) controlConnection() *websocket.Conn {
+	a.wsMu.Lock()
+	defer a.wsMu.Unlock()
+	return a.ws
+}
+
+func (a *RelayAgent) allocateUDPSession(ctx context.Context, expected *websocket.Conn) (token, serverAddr string, err error) {
 	defer func() {
+		if expected != nil {
+			return // adaptive trials must not affect legacy preferred-relay scoring
+		}
 		switch {
 		case token != "" && serverAddr != "":
 			a.allocSuccess.Add(1)
@@ -460,10 +473,8 @@ func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr 
 			a.allocFailure.Add(1)
 		}
 	}()
-	a.wsMu.Lock()
-	ws := a.ws
-	a.wsMu.Unlock()
-	if ws == nil {
+	ws := a.controlConnection()
+	if ws == nil || (expected != nil && ws != expected) {
 		return "", "", nil
 	}
 
@@ -486,6 +497,10 @@ func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr 
 		return "", "", err
 	}
 	a.wsMu.Lock()
+	if a.ws != ws {
+		a.wsMu.Unlock()
+		return "", "", nil
+	}
 	writeErr := ws.Write(ctx, websocket.MessageText, b)
 	a.wsMu.Unlock()
 	if writeErr != nil {
@@ -507,10 +522,12 @@ func (a *RelayAgent) AllocateUDPSession(ctx context.Context) (token, serverAddr 
 // UDP-relay session is done. If there is no live control connection, this is
 // a silent no-op: the relay's own idle timeout is the backstop.
 func (a *RelayAgent) ReleaseUDPSession(token string) {
-	a.wsMu.Lock()
-	ws := a.ws
-	a.wsMu.Unlock()
-	if ws == nil {
+	a.releaseUDPSession(token, nil)
+}
+
+func (a *RelayAgent) releaseUDPSession(token string, expected *websocket.Conn) {
+	ws := a.controlConnection()
+	if ws == nil || (expected != nil && ws != expected) {
 		return
 	}
 	b, err := json.Marshal(protocol.RelayUDPRelease{Type: "udp_release", Token: token})
@@ -520,7 +537,9 @@ func (a *RelayAgent) ReleaseUDPSession(token string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	a.wsMu.Lock()
-	_ = ws.Write(ctx, websocket.MessageText, b)
+	if a.ws == ws {
+		_ = ws.Write(ctx, websocket.MessageText, b)
+	}
 	a.wsMu.Unlock()
 }
 

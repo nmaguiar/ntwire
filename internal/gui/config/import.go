@@ -66,6 +66,7 @@ func ImportFromCLI(cfg *Config, cliConfigPath string) (bool, error) {
 		SSO:               settings.SSO,
 		Provider:          settings.Provider,
 		CollectExec:       settings.CollectExec,
+		AdaptiveCarrier:   settings.AdaptiveCarrier,
 	})
 	return true, nil
 }

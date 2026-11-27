@@ -22,6 +22,8 @@ Policies support legacy SOCKS fields (`filters`, `domain_filters`, `asn_filters`
 
 Existing `tunnels[].socks` filtering remains compatible and is evaluated first; a generic policy is an extra restriction. ASN data is held in a server-wide index rather than one updater per SOCKS tunnel.
 
+Smart Proxy's Adaptive strategy ranks the members permitted by the current routing rule. An optional warm connection reaches only that member's virtual SOCKS service. The server still evaluates the actual destination when the request is submitted and dials the authorized address. See [Smart Egress Proxy](SMART-EGRESS-PROXY.md#advanced-routing).
+
 ## Composing with native WireGuard peer policies
 
 A native WireGuard peer (see [NATIVE-WIREGUARD.md](NATIVE-WIREGUARD.md)) can

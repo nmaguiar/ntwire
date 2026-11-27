@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"net/netip"
+	"slices"
 	"sync"
 	"time"
 
@@ -30,17 +32,27 @@ type Session struct {
 	PathMTU bool
 	// Promote is true only when this session negotiated
 	// CapabilityPathPromoteV1.
-	Promote    bool
-	ClientInfo protocol.ClientInfo
-	Expires    time.Time
+	Promote      bool
+	Adaptive     *protocol.AdaptiveSession
+	flowLifetime context.Context
+	children     []sessionLane // immutable once stored in Sessions
+	ClientInfo   protocol.ClientInfo
+	Expires      time.Time
 }
 
 // Expired sessions remain until Reap transfers them to the resource cleanup owner.
 // Lookups must reject them without discarding the cleanup record.
 type Sessions struct {
-	mu      sync.Mutex
-	byToken map[string]Session
-	byIP    map[string]sessionPrincipal
+	mu        sync.Mutex
+	byToken   map[string]Session
+	byIP      map[string]sessionPrincipal
+	byKey     map[string]string // anchor key to bearer
+	childKeys map[string]string // child key to parent bearer
+}
+
+type sessionLane struct {
+	id, key, ip  string
+	flowLifetime context.Context
 }
 
 type sessionPrincipal struct {
@@ -49,7 +61,8 @@ type sessionPrincipal struct {
 }
 
 func NewSessions() *Sessions {
-	return &Sessions{byToken: map[string]Session{}, byIP: map[string]sessionPrincipal{}}
+	return &Sessions{byToken: map[string]Session{}, byIP: map[string]sessionPrincipal{},
+		byKey: map[string]string{}, childKeys: map[string]string{}}
 }
 func token() string {
 	b := make([]byte, 32)
@@ -74,6 +87,8 @@ type CreateParams struct {
 	Multipath                    bool
 	PathMTU                      bool
 	Promote                      bool
+	Adaptive                     *protocol.AdaptiveSession
+	FlowLifetime                 context.Context
 	ClientInfo                   protocol.ClientInfo
 	TTL                          time.Duration
 }
@@ -89,7 +104,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 		Method: p.Method, Identity: p.Identity, Fingerprint: p.Fingerprint,
 		Issuer: p.Issuer, Groups: p.Groups, OIDCIssuer: p.OIDCIssuer, OIDCSubject: p.OIDCSubject,
 		WireGuardPublicKey: p.WireGuardPublicKey, TunnelIP: p.TunnelIP,
-		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
+		Tunnels: p.Tunnels, LatencyMillis: p.LatencyMillis, Reconnections: p.Reconnections, Multipath: p.Multipath, PathMTU: p.PathMTU, Promote: p.Promote, Adaptive: p.Adaptive, flowLifetime: p.FlowLifetime, ClientInfo: p.ClientInfo, Expires: time.Now().Add(p.TTL),
 	}
 	v.peerLifetime = v.ID
 	s.storeLocked(v)
@@ -98,7 +113,7 @@ func (s *Sessions) Create(p CreateParams) Session {
 
 // renew rotates control credentials and updates the grants without exposing a
 // gap in IP ownership to the data plane.
-func (s *Sessions) renew(oldToken string, tunnels []protocol.Tunnel, ttl time.Duration, info protocol.ClientInfo) (Session, bool) {
+func (s *Sessions) renew(oldToken string, tunnels []protocol.Tunnel, ttl time.Duration, info protocol.ClientInfo, resetFlows func(*Session)) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	v, ok := s.byToken[oldToken]
@@ -107,6 +122,15 @@ func (s *Sessions) renew(oldToken string, tunnels []protocol.Tunnel, ttl time.Du
 	}
 	s.deleteLocked(v)
 	v.ID, v.Token = token(), token()
+	if v.Adaptive != nil {
+		info := *v.Adaptive
+		info.AuthGeneration++
+		v.Adaptive = &info
+	}
+	if resetFlows != nil && !slices.Equal(v.Tunnels, tunnels) {
+		v.children = slices.Clone(v.children)
+		resetFlows(&v)
+	}
 	v.Tunnels, v.Expires = tunnels, time.Now().Add(ttl)
 	v.LatencyMillis, v.Reconnections, v.ClientInfo = info.LatencyMillis, info.Reconnections, info
 	s.storeLocked(v)
@@ -115,16 +139,88 @@ func (s *Sessions) renew(oldToken string, tunnels []protocol.Tunnel, ttl time.Du
 
 func (s *Sessions) storeLocked(v Session) {
 	s.byToken[v.Token] = v
-	if v.TunnelIP != "" {
-		addr, _ := netip.ParseAddr(v.TunnelIP)
-		grants := make(map[string]bool, len(v.Tunnels))
-		for _, t := range v.Tunnels {
-			grants[t.Name] = true
-		}
-		s.byIP[v.TunnelIP] = sessionPrincipal{token: v.Token, principal: DataPlanePrincipal{
-			peerLifetime: v.peerLifetime, Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
-		}}
+	if v.WireGuardPublicKey != "" {
+		s.byKey[v.WireGuardPublicKey] = v.Token
 	}
+	if v.TunnelIP == "" {
+		return
+	}
+	grants := make(map[string]bool, len(v.Tunnels))
+	for _, t := range v.Tunnels {
+		grants[t.Name] = true
+	}
+	s.storePrincipal(v, v.TunnelIP, v.peerLifetime, v.flowLifetime, grants)
+	for _, child := range v.children {
+		s.childKeys[child.key] = v.Token
+		s.storePrincipal(v, child.ip, child.id, child.flowLifetime, grants)
+	}
+}
+
+func (s *Sessions) storePrincipal(v Session, ip, lifetime string, ctx context.Context, grants map[string]bool) {
+	addr, _ := netip.ParseAddr(ip)
+	s.byIP[ip] = sessionPrincipal{token: v.Token, principal: DataPlanePrincipal{
+		peerLifetime: lifetime, flowLifetime: ctx, Method: v.Method, Identity: v.Identity, TunnelIP: addr, Tunnels: grants,
+	}}
+}
+
+// trackChild publishes the child to both data-plane indexes after the
+// backend is ready. The caller serializes provisioning with operationMu.
+func (s *Sessions) trackChild(token string, generation uint64, child sessionLane) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.byToken[token]
+	if !ok || v.Adaptive == nil || v.Adaptive.AuthGeneration != generation || !time.Now().Before(v.Expires) ||
+		s.byIP[child.ip].token != "" || s.byKey[child.key] != "" || s.childKeys[child.key] != "" {
+		return false
+	}
+	v.children = append(slices.Clone(v.children), child)
+	s.byToken[token], s.childKeys[child.key] = v, token
+	s.storePrincipal(v, child.ip, child.id, child.flowLifetime, s.byIP[v.TunnelIP].principal.Tunnels)
+	return true
+}
+
+func (s *Sessions) forgetChild(v Session, laneID string) (sessionLane, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.byToken[v.Token]
+	if !ok {
+		return sessionLane{}, false
+	}
+	for i, child := range current.children {
+		if child.id == laneID {
+			current.children = slices.Delete(slices.Clone(current.children), i, i+1)
+			s.byToken[v.Token] = current
+			delete(s.childKeys, child.key)
+			delete(s.byIP, child.ip)
+			return child, true
+		}
+	}
+	return sessionLane{}, false
+}
+
+func (s *Sessions) childKeyInUse(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.childKeys[key] != ""
+}
+
+func (s *Sessions) childCount(owner Session) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, v := range s.byToken {
+		if v.Method != owner.Method {
+			continue
+		}
+		same := v.Identity == owner.Identity
+		if v.Method == "oidc" {
+			same = v.OIDCIssuer == owner.OIDCIssuer && v.OIDCSubject == owner.OIDCSubject
+		}
+		if same {
+			n += len(v.children)
+		}
+	}
+	return n
 }
 
 // FindWireGuardPublicKey returns the live session using a WireGuard peer.
@@ -135,18 +231,9 @@ func (s *Sessions) FindWireGuardPublicKey(key string) (Session, bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
-	for _, v := range s.byToken {
-		if now.After(v.Expires) {
-			continue
-		}
-		existing := v.WireGuardPublicKey
-		if canonical, err := wgnet.CanonicalPublicKey(existing); err == nil {
-			existing = canonical
-		}
-		if key != "" && existing == key {
-			return v, true
-		}
+	v, ok := s.byToken[s.byKey[key]]
+	if ok && time.Now().Before(v.Expires) {
+		return v, true
 	}
 	return Session{}, false
 }
@@ -200,6 +287,13 @@ func (s *Sessions) deleteLocked(v Session) {
 	delete(s.byToken, v.Token)
 	if s.byIP[v.TunnelIP].token == v.Token {
 		delete(s.byIP, v.TunnelIP)
+	}
+	if s.byKey[v.WireGuardPublicKey] == v.Token {
+		delete(s.byKey, v.WireGuardPublicKey)
+	}
+	for _, child := range v.children {
+		delete(s.byIP, child.ip)
+		delete(s.childKeys, child.key)
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -158,15 +157,15 @@ func TestListenRejectsNonTCPNetwork(t *testing.T) {
 // known endpoint), then proves a TCP byte stream survives an actual
 // WireGuard handshake and netstack forward end to end.
 func TestStackRoundTripsTCPThroughWireGuardPeers(t *testing.T) {
-	serverPort := freeUDPPort(t)
 	serverIP := netip.MustParseAddr("100.65.0.1")
 	clientIP := netip.MustParseAddr("100.65.0.2")
 
-	server, err := New(Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	server, err := New(Config{Addresses: []netip.Addr{serverIP}})
 	if err != nil {
 		t.Fatalf("server New() = %v", err)
 	}
 	defer server.Close()
+	serverPort := stackListenPort(t, server)
 	client, err := New(Config{Addresses: []netip.Addr{clientIP}})
 	if err != nil {
 		t.Fatalf("client New() = %v", err)
@@ -260,15 +259,15 @@ func TestUpdateEndpointRejectsInvalidPublicKey(t *testing.T) {
 // the two calls pkg/client's opportunistic direct-UDP upgrade depends on for
 // seeding a candidate and detecting whether it needs to revert.
 func TestLastHandshakeAfterRoundTripAndUpdateEndpoint(t *testing.T) {
-	serverPort := freeUDPPort(t)
 	serverIP := netip.MustParseAddr("100.65.0.1")
 	clientIP := netip.MustParseAddr("100.65.0.2")
 
-	server, err := New(Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	server, err := New(Config{Addresses: []netip.Addr{serverIP}})
 	if err != nil {
 		t.Fatalf("server New() = %v", err)
 	}
 	defer server.Close()
+	serverPort := stackListenPort(t, server)
 	client, err := New(Config{Addresses: []netip.Addr{clientIP}})
 	if err != nil {
 		t.Fatalf("client New() = %v", err)
@@ -384,15 +383,15 @@ func TestPeerEndpointTracksSeededValue(t *testing.T) {
 // and after an UpdateEndpoint call, reusing
 // TestStackRoundTripsTCPThroughWireGuardPeers' two-Stack fixture.
 func TestUpdateEndpointPreservesAllowedIPs(t *testing.T) {
-	serverPort := freeUDPPort(t)
 	serverIP := netip.MustParseAddr("100.65.0.1")
 	clientIP := netip.MustParseAddr("100.65.0.2")
 
-	server, err := New(Config{Addresses: []netip.Addr{serverIP}, ListenPort: serverPort})
+	server, err := New(Config{Addresses: []netip.Addr{serverIP}})
 	if err != nil {
 		t.Fatalf("server New() = %v", err)
 	}
 	defer server.Close()
+	serverPort := stackListenPort(t, server)
 	client, err := New(Config{Addresses: []netip.Addr{clientIP}})
 	if err != nil {
 		t.Fatalf("client New() = %v", err)
@@ -480,15 +479,22 @@ func mustDecodeKey(t *testing.T, encoded string) []byte {
 	return raw
 }
 
-// freeUDPPort finds a currently-unused UDP port by briefly binding to
-// 127.0.0.1:0 and releasing it, so a Stack under test can be given a fixed,
-// known ListenPort for its peer to dial back to.
-func freeUDPPort(t *testing.T) int {
+// Read the port after the bind owns the socket so parallel fixtures cannot
+// take it between reservation and startup.
+func stackListenPort(t *testing.T, s *Stack) int {
 	t.Helper()
-	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	state, err := s.device.IpcGet()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
-	return c.LocalAddr().(*net.UDPAddr).Port
+	for line := range strings.Lines(state) {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "listen_port="); ok {
+			port, err := strconv.ParseUint(value, 10, 16)
+			if err == nil && port != 0 {
+				return int(port)
+			}
+		}
+	}
+	t.Fatal("WireGuard stack did not report an active UDP port")
+	return 0
 }

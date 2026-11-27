@@ -303,6 +303,7 @@ details.advanced > fieldset{margin-top:.5rem}
                     <option value="sticky-fastest">Sticky fastest</option>
                     <option value="fastest-healthy">Fastest healthy</option>
                     <option value="destination-aware">Destination aware</option>
+                    <option value="adaptive">Adaptive</option>
                     <option value="priority">Priority</option>
                     <option value="round-robin">Round robin</option>
                   </select>
@@ -404,6 +405,7 @@ details.advanced > fieldset{margin-top:.5rem}
             <div class="smart-block">
               <label class="toggle"><input type="checkbox" data-smart-field="failover.enabled" data-default="true"> Try another tunnel when connection setup fails</label>
               <label class="toggle"><input type="checkbox" data-smart-field="failover.racing"> Start preparing a backup TCP connection before the first attempt finishes</label>
+              <label class="toggle"><input type="checkbox" data-smart-field="failover.warm_service"> Keep a service connection ready after recent successful requests</label>
               <div class="smart-fields">
                 <label>Maximum attempts <input type="number" min="1" max="64" data-smart-field="failover.max_attempts" data-default="3"></label>
                 <label>Per-attempt timeout (seconds) <input type="number" step="any" min="0.001" max="60" data-smart-field="failover.attempt_timeout" data-unit="seconds" data-default="3"></label>
@@ -1111,7 +1113,7 @@ function fieldControl(f, value, profile) {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.name = f.field;
-    input.checked = !!value;
+    input.checked = value ?? !!f.defaultOn;
     label.append(input, f.label);
     return label;
   }

@@ -61,6 +61,7 @@ type Server struct {
 	relayLifecycleMu sync.Mutex // serializes relay replacement and shutdown
 	log              *slog.Logger
 	data             *dataPlane
+	adaptive         *adaptiveServerPlane
 	rates            *authlimit.SourceLimiter
 	adminRates       *authlimit.SourceLimiter
 	tunnelStats      sync.Map // map[string]*serverTunnelStats, keyed by tunnel IP and name
@@ -73,6 +74,7 @@ type Server struct {
 	transportSwitches  atomic.Pointer[transportSwitchCounters]
 	direct             *directUDP
 	udpr               atomic.Pointer[udpRelay]
+	relayPool          atomic.Pointer[RelayPool]
 	nativeRelayMu      sync.Mutex
 	nativeRelayStop    chan struct{}
 	nativePeerLifetime string // guarded by mu and rotated when native peers are rebuilt
@@ -134,6 +136,21 @@ func (s *Server) Handler() http.Handler {
 	m.HandleFunc("POST /v1/renew", s.renew)
 	m.HandleFunc("POST /v1/disconnect", s.disconnect)
 	m.HandleFunc("GET /v1/wg", s.websocket)
+	m.HandleFunc("GET /v1/transport/lanes/{lane}/candidates", s.carrierCandidates)
+	m.HandleFunc("GET /v1/transport/lanes/{lane}/relay-candidates", s.carrierRelayCandidates)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/relay/prepare", s.carrierRelayPrepare)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/relay/qualify", s.carrierRelayQualify)
+	m.HandleFunc("GET /v1/transport/lanes/{lane}/performance", s.carrierPerformance)
+	m.HandleFunc("PUT /v1/transport/lanes/{lane}/primary", s.carrierPrimary)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/attach", s.carrierAttach)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/http2", s.carrierHTTP2)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/udp/prepare", s.carrierUDPPrepare)
+	m.HandleFunc("POST /v1/transport/lanes/{lane}/udp/qualify", s.carrierUDPQualify)
+	m.HandleFunc("GET "+protocol.CarrierWSSPath, s.carrierWebSocket)
+	m.HandleFunc("GET /v1/transport/lanes/{lane}/wg", s.carrierWebSocket)
+	m.HandleFunc("GET /v1/session/lanes", s.listLanes)
+	m.HandleFunc("POST /v1/session/lanes", s.createLane)
+	m.HandleFunc("DELETE /v1/session/lanes/{lane}", s.retireLane)
 	m.HandleFunc("POST /v1/punch", s.punch)
 	m.HandleFunc("POST /v1/transport/direct", s.registerDirectTransport)
 	m.HandleFunc("POST /v1/transport/primary", s.promoteTransport)
@@ -452,25 +469,65 @@ func (s *Server) statsFor(ip, name string) *serverTunnelStats {
 	v, _ := s.tunnelStats.LoadOrStore(statsKey(ip, name), &serverTunnelStats{})
 	return v.(*serverTunnelStats)
 }
-func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) info(w http.ResponseWriter, r *http.Request) {
 	caps := []string{"tcp"}
-	if s.Config.Relay.Enabled {
+	s.mu.Lock()
+	adaptive := s.adaptive != nil
+	adaptiveUDP := adaptive && s.adaptive.udp != nil
+	adaptiveUDPAlt := adaptive && s.adaptive.alternateUDP != nil
+	adaptiveQUIC := adaptive && s.adaptive.quic != nil
+	adaptiveHTTP2 := adaptive && s.adaptive.http2 != nil
+	adaptiveHTTP3 := adaptive && s.adaptive.http3 != nil
+	multiLane := adaptive && s.adaptive.maxLanes > 1
+	config := s.Config
+	s.mu.Unlock()
+	if adaptive && r.TLS != nil {
+		caps = append(caps, protocol.CapabilityAdaptiveCarrierV1, protocol.CapabilityAdaptiveMTUV1, protocol.CapabilityAdaptivePerformanceV1)
+		if config.Relay.PerformanceRouting && s.relayPool.Load() != nil {
+			caps = append(caps, protocol.CapabilityRelayPerformanceV1)
+		}
+		if adaptiveUDP {
+			caps = append(caps, protocol.CapabilityAdaptiveUDPV1, protocol.CapabilityAdaptiveUDPSelectV1)
+		}
+		if adaptiveUDPAlt {
+			caps = append(caps, protocol.CapabilityAdaptiveUDPAltV1)
+		}
+		if adaptiveQUIC {
+			caps = append(caps, protocol.CapabilityQUICDatagramV1)
+		}
+		if adaptiveHTTP3 {
+			caps = append(caps, protocol.CapabilityMASQUECarrierV1)
+		}
+		if adaptiveHTTP2 {
+			caps = append(caps, protocol.CapabilityHTTP2CarrierV1)
+		}
+		if adaptiveUDP || adaptiveQUIC {
+			caps = append(caps, protocol.CapabilityAdaptivePathSelectV1)
+		}
+		if multiLane {
+			caps = append(caps, protocol.CapabilityMultiLaneV1)
+			if adaptiveUDP || adaptiveQUIC {
+				caps = append(caps, protocol.CapabilityLaneCarriersV1)
+			}
+		}
+	}
+	if config.Relay.Enabled {
 		caps = append(caps, "multipath")
 	}
 	var issuers []protocol.OIDCIssuerInfo
-	if s.Config.Auth.AuthorizedKeysDir != "" {
+	if config.Auth.AuthorizedKeysDir != "" {
 		caps = append(caps, "ssh-auth")
 	}
-	if len(s.Config.Auth.OIDC.Issuers) > 0 {
+	if len(config.Auth.OIDC.Issuers) > 0 {
 		caps = append(caps, "oidc-auth")
-		for _, iss := range s.Config.Auth.OIDC.Issuers {
+		for _, iss := range config.Auth.OIDC.Issuers {
 			issuers = append(issuers, protocol.OIDCIssuerInfo{Name: iss.Name, Issuer: iss.Issuer, ClientID: iss.ClientID, Scopes: iss.Scopes, GroupsClaim: iss.GroupsClaim})
 		}
 	}
 	info := protocol.InfoResponse{Version: protocol.Version, Capabilities: caps, OIDCIssuers: issuers}
-	if s.Config.MASQUE.Enabled {
+	if config.MASQUE.Enabled {
 		info.Capabilities = append(info.Capabilities, protocol.CapabilityMASQUERelayV1)
-		info.MASQUE = &protocol.MASQUEInfo{HTTP2URL: s.Config.MASQUE.HTTP2URL, HTTP3URL: s.Config.MASQUE.HTTP3URL, MatchDomains: append([]string(nil), s.Config.MASQUE.MatchDomains...)}
+		info.MASQUE = &protocol.MASQUEInfo{HTTP2URL: config.MASQUE.HTTP2URL, HTTP3URL: config.MASQUE.HTTP3URL, MatchDomains: append([]string(nil), config.MASQUE.MatchDomains...)}
 	}
 	write(w, http.StatusOK, info)
 }
@@ -480,16 +537,52 @@ func (s *Server) info(w http.ResponseWriter, _ *http.Request) {
 // not just relay.enabled, so a required capability fails during authentication
 // instead of producing a session that later fails in the data plane.
 func (s *Server) transportCapabilitiesAvailable() []string {
+	var caps []string
+	if s.adaptive != nil {
+		caps = append(caps, protocol.CapabilityAdaptiveCarrierV1, protocol.CapabilityAdaptiveMTUV1, protocol.CapabilityAdaptivePerformanceV1)
+		if s.adaptive.udp != nil {
+			caps = append(caps, protocol.CapabilityAdaptiveUDPV1, protocol.CapabilityAdaptiveUDPSelectV1)
+		}
+		if s.adaptive.alternateUDP != nil {
+			caps = append(caps, protocol.CapabilityAdaptiveUDPAltV1)
+		}
+		if s.adaptive.quic != nil {
+			caps = append(caps, protocol.CapabilityQUICDatagramV1)
+		}
+		if s.adaptive.http3 != nil {
+			caps = append(caps, protocol.CapabilityMASQUECarrierV1)
+		}
+		if s.adaptive.http2 != nil {
+			caps = append(caps, protocol.CapabilityHTTP2CarrierV1)
+		}
+		if s.adaptive.maxLanes > 1 {
+			caps = append(caps, protocol.CapabilityMultiLaneV1)
+			if s.adaptive.udp != nil || s.adaptive.quic != nil {
+				caps = append(caps, protocol.CapabilityLaneCarriersV1)
+			}
+		}
+		if s.relayPool.Load() != nil {
+			caps = append(caps, protocol.CapabilityAdaptiveRelayCatalogV1)
+			if s.adaptive.relayUDP != nil {
+				caps = append(caps, protocol.CapabilityAdaptiveRelayUDPV1, protocol.CapabilityAdaptiveRelaySelectV1)
+				if s.Config.Relay.PerformanceRouting {
+					caps = append(caps, protocol.CapabilityRelayPerformanceV1)
+				}
+			}
+		}
+		if s.adaptive.udp != nil || s.adaptive.quic != nil || protocol.HasCapability(caps, protocol.CapabilityAdaptiveRelaySelectV1) {
+			caps = append(caps, protocol.CapabilityAdaptivePathSelectV1)
+		}
+	}
 	if s.Config.MultipathEnabled() && s.data != nil && s.data.multipath != nil && s.multipathAlternateAvailable() {
 		// v1/v2 are deliberately retired. A peer either negotiates the complete
 		// v3 contract or stays on the legacy single-path data plane.
-		caps := []string{protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1}
+		caps = append(caps, protocol.CapabilityMultipathV3, protocol.CapabilityPathMTUV1)
 		if s.Config.Transport.Promotion {
 			caps = append(caps, protocol.CapabilityPathPromoteV1)
 		}
-		return caps
 	}
-	return nil
+	return caps
 }
 
 // multipathAlternateAvailable prevents v3 from adding health/control traffic
@@ -579,7 +672,7 @@ func (s *Server) auth(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "ssh", Fingerprint: fp, Comment: comment})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "ssh", Identity: fp, Fingerprint: fp, Comment: comment,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, RequiredTransportCapabilities: a.RequiredTransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -635,7 +728,7 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 	grants := s.grants(grantSubject{Method: "oidc", Email: identity.Email, Domain: identity.Domain, Groups: identity.Groups})
 	succeeded = s.establishSession(w, r, sessionRequest{
 		Method: "oidc", Identity: identity.Email, Issuer: identity.IssuerName, Groups: identity.Groups, OIDCIssuer: identity.Issuer, OIDCSubject: identity.Subject,
-		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
+		WireGuardPublicKey: a.WireGuardPublicKey, Info: a.Info, TransportCapabilities: a.TransportCapabilities, RequiredTransportCapabilities: a.RequiredTransportCapabilities, QueryOnly: a.QueryOnly, TunnelMTU: a.TunnelMTU,
 	}, grants)
 }
 
@@ -643,16 +736,17 @@ func (s *Server) authOIDC(w http.ResponseWriter, r *http.Request) {
 // once a request has already been authenticated (SSH signature verified, or
 // OIDC ID token verified).
 type sessionRequest struct {
-	Method                  string
-	Identity                string
-	Fingerprint             string   // ssh only
-	Comment                 string   // ssh only
-	Issuer                  string   // oidc configured alias
-	OIDCIssuer, OIDCSubject string   // verified oidc quota identity
-	Groups                  []string // oidc only
-	WireGuardPublicKey      string
-	Info                    protocol.ClientInfo
-	TransportCapabilities   []string
+	Method                        string
+	Identity                      string
+	Fingerprint                   string   // ssh only
+	Comment                       string   // ssh only
+	Issuer                        string   // oidc configured alias
+	OIDCIssuer, OIDCSubject       string   // verified oidc quota identity
+	Groups                        []string // oidc only
+	WireGuardPublicKey            string
+	Info                          protocol.ClientInfo
+	TransportCapabilities         []string
+	RequiredTransportCapabilities []string
 	// QueryOnly: see protocol.AuthRequest.QueryOnly.
 	QueryOnly bool
 	// TunnelMTU: see protocol.AuthRequest.TunnelMTU.
@@ -696,6 +790,35 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	// Authentication holds operationMu. Retire expired peers before reusing
 	// a WireGuard key, so the reaper cannot later remove its replacement.
 	s.reapSessionsLocked()
+	negotiated := protocol.IntersectCapabilities(req.TransportCapabilities, s.transportCapabilitiesAvailable())
+	adaptive := s.negotiateAdaptiveTransport(r.TLS != nil, req, negotiated)
+	legacyMultipath := protocol.HasCapability(negotiated, protocol.CapabilityMultipathV3)
+	if adaptive != nil && s.adaptive.full() {
+		legacyCaps := transportCapabilities(legacyMultipath,
+			protocol.HasCapability(negotiated, protocol.CapabilityPathMTUV1),
+			protocol.HasCapability(negotiated, protocol.CapabilityPathPromoteV1))
+		canonical, keyErr := wgnet.CanonicalPublicKey(req.WireGuardPublicKey)
+		old, _ := s.sessions.FindWireGuardPublicKey(canonical)
+		if keyErr == nil && old.Adaptive == nil && protocol.ValidateRequiredCapabilities(legacyCaps, req.RequiredTransportCapabilities) == nil {
+			adaptive = nil
+		}
+	}
+	useAdaptive := adaptive != nil
+	multipath := !useAdaptive && legacyMultipath
+	pathMTU := multipath && protocol.HasCapability(negotiated, protocol.CapabilityPathMTUV1)
+	promote := multipath && protocol.HasCapability(negotiated, protocol.CapabilityPathPromoteV1)
+	caps := transportCapabilities(multipath, pathMTU, promote)
+	if useAdaptive {
+		caps = adaptive.Capabilities()
+	} else {
+		for _, capability := range []string{protocol.CapabilityAdaptiveCarrierV1, protocol.CapabilityAdaptiveUDPV1, protocol.CapabilityAdaptiveUDPSelectV1, protocol.CapabilityAdaptiveUDPAltV1, protocol.CapabilityAdaptiveMTUV1, protocol.CapabilityAdaptivePerformanceV1, protocol.CapabilityQUICDatagramV1, protocol.CapabilityHTTP2CarrierV1, protocol.CapabilityMASQUECarrierV1, protocol.CapabilityAdaptivePathSelectV1, protocol.CapabilityMultiLaneV1, protocol.CapabilityLaneCarriersV1, protocol.CapabilityRelayPerformanceV1} {
+			if protocol.HasCapability(req.RequiredTransportCapabilities, capability) {
+				fail(w, 400, protocol.ErrorUnsupportedCapability, "adaptive carrier cannot be negotiated")
+				return false
+			}
+		}
+	}
+	var flowLifetime context.Context
 	tunnelIP := ""
 	serverKey := ""
 	serverTunnelIP := ""
@@ -710,6 +833,10 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 			return false
 		}
 		req.WireGuardPublicKey = canonical
+		if s.sessions.childKeyInUse(canonical) || (s.adaptive != nil && s.adaptive.isQuarantinedKey(canonical)) {
+			fail(w, 403, protocol.ErrorNotAllowed, "wireguard key belongs to a child or retired peer")
+			return false
+		}
 		if s.Config.NativeWireGuard.Enabled {
 			for _, peer := range s.Config.NativeWireGuard.Peers {
 				key, _ := wgnet.CanonicalPublicKey(peer.PublicKey)
@@ -724,9 +851,20 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 				fail(w, 403, protocol.ErrorNotAllowed, "wireguard key belongs to another principal")
 				return false
 			}
+			if useAdaptive && old.Adaptive == nil && s.adaptive.full() {
+				fail(w, 429, protocol.ErrorNoCapacity, "adaptive carrier capacity reached")
+				return false
+			}
 			tunnelIP = old.TunnelIP
 			s.sessions.Delete(old.Token)
+			if old.Adaptive != nil || useAdaptive {
+				s.dropSession(old)
+			}
 		} else {
+			if useAdaptive && s.adaptive.full() {
+				fail(w, 429, protocol.ErrorNoCapacity, "adaptive carrier capacity reached")
+				return false
+			}
 			// A session may have expired since the first reap above.
 			s.reapSessionsLocked()
 			tunnelIP, err = s.allocateIP()
@@ -735,24 +873,28 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 				return false
 			}
 		}
-		if err = s.addPeer(req.WireGuardPublicKey, tunnelIP); err != nil {
-			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "invalid wireguard key")
+		if s.adaptive != nil && s.adaptive.isQuarantinedKey(canonical) {
+			fail(w, 503, protocol.ErrorNoCapacity, "wireguard peer cleanup incomplete")
 			return false
 		}
-		serverKey = s.data.stack.PublicKey()
+		if useAdaptive {
+			flowLifetime, err = s.adaptive.add(adaptive, req.WireGuardPublicKey, tunnelIP)
+			serverKey = s.adaptive.data.stack.PublicKey()
+		} else {
+			err = s.addPeer(req.WireGuardPublicKey, tunnelIP)
+			serverKey = s.data.stack.PublicKey()
+		}
+		if err != nil {
+			fail(w, 400, protocol.ErrorInvalidWireGuardKey, "could not register wireguard peer")
+			return false
+		}
 		serverTunnelIP = s.data.serverIP.String()
 	}
-	negotiatedTransport := protocol.IntersectCapabilities(req.TransportCapabilities, s.transportCapabilitiesAvailable())
-	multipathV3 := protocol.HasCapability(negotiatedTransport, protocol.CapabilityMultipathV3)
-	pathMTU := protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathMTUV1)
-	multipath := multipathV3
-	pathMTU = multipath && pathMTU
-	promote := multipath && protocol.HasCapability(negotiatedTransport, protocol.CapabilityPathPromoteV1)
 	session := s.sessions.Create(CreateParams{
 		Method: req.Method, Identity: req.Identity, Fingerprint: req.Fingerprint, Issuer: req.Issuer, Groups: req.Groups, OIDCIssuer: req.OIDCIssuer, OIDCSubject: req.OIDCSubject,
 		WireGuardPublicKey: req.WireGuardPublicKey, TunnelIP: tunnelIP, Tunnels: v, TTL: ttl,
 		LatencyMillis: req.Info.LatencyMillis, Reconnections: req.Info.Reconnections,
-		Multipath: multipath, PathMTU: pathMTU, Promote: promote, ClientInfo: req.Info,
+		Multipath: multipath, PathMTU: pathMTU, Promote: promote, Adaptive: adaptive, FlowLifetime: flowLifetime, ClientInfo: req.Info,
 	})
 	if multipath && pathMTU && s.data != nil && s.data.multipath != nil {
 		// Out-of-range values are ignored by SetPeerTunnelMTU, so a client
@@ -764,8 +906,13 @@ func (s *Server) establishSession(w http.ResponseWriter, r *http.Request, req se
 	s.observe("authentication_success", session.Method)
 	s.observe("session_created", session.Method)
 	s.audit("auth_allowed", session, "", 0)
-	udpEndpoint := s.advertisedUDPEndpoint()
-	write(w, 200, protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: udpEndpoint, UDPAlt: s.alternateUDPEndpoint(udpEndpoint), WebSocket: websocketURL(r), Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: transportCapabilities(multipath, pathMTU, promote)})
+	response := protocol.AuthResponse{SessionID: session.ID, Token: session.Token, TunnelIP: tunnelIP, ServerTunnelIP: serverTunnelIP, ServerPublicKey: serverKey, TTLSeconds: int(ttl.Seconds()), Tunnels: v, Identity: session.Identity, Method: session.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: multipath, TransportCapabilities: caps, Adaptive: adaptive}
+	if !useAdaptive {
+		response.UDP = s.advertisedUDPEndpoint()
+		response.UDPAlt = s.alternateUDPEndpoint(response.UDP)
+		response.WebSocket = websocketURL(r)
+	}
+	write(w, 200, response)
 	return true
 }
 
@@ -868,6 +1015,10 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid session", http.StatusUnauthorized)
 		return
 	}
+	if v.Adaptive != nil {
+		http.NotFound(w, r)
+		return
+	}
 	// Keyed by WireGuardPublicKey, not session ID: the key is stable across a
 	// renewal (which mints a new session ID) so the fallback connection the
 	// client opened once at Connect time keeps working after renewal instead
@@ -888,6 +1039,10 @@ func (s *Server) punch(w http.ResponseWriter, r *http.Request) {
 	sess, ok := s.sessions.Get(token)
 	if !ok {
 		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
+		return
+	}
+	if sess.Adaptive != nil {
+		http.NotFound(w, r)
 		return
 	}
 	s.mu.Lock()
@@ -987,7 +1142,7 @@ func (s *Server) udpRelayHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := s.udpr.Load()
-	if u == nil || sess.WireGuardPublicKey == "" {
+	if u == nil || sess.Adaptive != nil || sess.WireGuardPublicKey == "" {
 		http.Error(w, "udp relay tier not available", http.StatusNotFound)
 		return
 	}
@@ -1045,19 +1200,32 @@ func (s *Server) renew(w http.ResponseWriter, r *http.Request) {
 	// device peer and the WebSocket fallback connection are keyed by that
 	// public key (not the session ID/token that just changed), so they stay
 	// valid across renewal without being torn down and reopened.
-	n, ok := s.sessions.renew(t, v, ttl, body.Info)
+	n, ok := s.sessions.renew(t, v, ttl, body.Info, s.adaptive.resetFlows)
 	if !ok {
 		fail(w, 401, protocol.ErrorInvalidRequest, "invalid session")
 		return
 	}
-	if old.WireGuardPublicKey != "" {
+	if old.Adaptive == nil && old.WireGuardPublicKey != "" {
 		_ = s.addPeer(old.WireGuardPublicKey, old.TunnelIP)
 	}
 	s.log.Debug("session renewed", "old_session", old.ID, "session", n.ID, "identity", n.Identity, "tunnels", tunnelNames(v), "ttl_seconds", int(ttl.Seconds()))
 	s.observe("session_renewed", n.Method)
 	s.audit("session_renewed", n, "", 0)
-	renewUDP := s.advertisedUDPEndpoint()
-	write(w, 200, protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, UDP: renewUDP, UDPAlt: s.alternateUDPEndpoint(renewUDP), Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU, n.Promote)})
+	response := protocol.AuthResponse{SessionID: n.ID, Token: n.Token, TTLSeconds: int(ttl.Seconds()), Tunnels: v, Identity: n.Identity, Method: n.Method, ServerName: s.Config.Listen.Name, PortalEnabled: s.Config.Portal.Enabled, Multipath: n.Multipath, TransportCapabilities: transportCapabilities(n.Multipath, n.PathMTU, n.Promote)}
+	if n.Adaptive == nil {
+		response.UDP = s.advertisedUDPEndpoint()
+		response.UDPAlt = s.alternateUDPEndpoint(response.UDP)
+	} else {
+		response.Adaptive = s.adaptive.renew(n)
+		if response.Adaptive == nil {
+			s.sessions.Delete(n.Token)
+			s.dropSession(n)
+			fail(w, 503, protocol.ErrorNoCapacity, "adaptive carrier unavailable")
+			return
+		}
+		response.TransportCapabilities = n.Adaptive.Capabilities()
+	}
+	write(w, 200, response)
 }
 func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 	s.operationMu.Lock()
@@ -1269,6 +1437,14 @@ func (s *Server) Reload(c Config) {
 	c.Network.WireGuardPrivateKeyFile = s.Config.Network.WireGuardPrivateKeyFile
 	c.Transport.Metrics = s.Config.Transport.Metrics
 	c.Transport.MTUAware = s.Config.Transport.MTUAware
+	c.Transport.Adaptive = s.Config.Transport.Adaptive
+	c.Transport.AdaptiveMaxLanes = s.Config.Transport.AdaptiveMaxLanes
+	c.Transport.AdaptiveUDPPort = s.Config.Transport.AdaptiveUDPPort
+	c.Transport.AdaptiveUDPAltPort = s.Config.Transport.AdaptiveUDPAltPort
+	c.Transport.AdaptiveTunnelMTU = s.Config.Transport.AdaptiveTunnelMTU
+	c.Transport.QUICListen = s.Config.Transport.QUICListen
+	c.Transport.AdaptiveHTTP2 = s.Config.Transport.AdaptiveHTTP2
+	c.Transport.HTTP3Listen = s.Config.Transport.HTTP3Listen
 	c.Acceleration.override = s.Config.Acceleration.override
 	if s.Config.Acceleration.effective() != c.Acceleration.effective() {
 		s.log.Info("acceleration configuration changes require restart")
@@ -1298,10 +1474,8 @@ func (s *Server) Reload(c Config) {
 		for _, session := range s.sessions.All() {
 			for _, peer := range c.NativeWireGuard.Peers {
 				key, _ := wgnet.CanonicalPublicKey(peer.PublicKey)
-				sessionKey, _ := wgnet.CanonicalPublicKey(session.WireGuardPublicKey)
 				ip, _ := netip.ParseAddr(peer.TunnelIP)
-				sessionIP, _ := netip.ParseAddr(session.TunnelIP)
-				if (key != "" && key == sessionKey) || (ip.IsValid() && ip.Unmap() == sessionIP.Unmap()) {
+				if sessionConflictsNative(session, key, ip) {
 					s.sessions.Delete(session.Token)
 					s.dropSession(session)
 					break

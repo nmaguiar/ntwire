@@ -228,6 +228,41 @@ function multipathSection(s){if(!s.paths||!s.paths.length)return null;const card
 // Built as nodes, not markup: path names travel over the wire, and script in
 // this origin can reach the local control API.
 const nameCell=document.createElement('td'),strong=document.createElement('strong');strong.textContent=pathText(p.name);nameCell.append(strong);const kindCell=document.createElement('td');kindCell.textContent=pathText(p.kind);const statusCell=document.createElement('td'),badge=document.createElement('span');badge.className='path-badge'+(p.primary?' primary':'')+(p.forced?' forced':'');badge.textContent=statusText;statusCell.append(badge);const rttCell=document.createElement('td');rttCell.textContent=rtt;const lossCell=document.createElement('td');lossCell.textContent=loss;tr.append(nameCell,kindCell,statusCell,rttCell,lossCell);tbody.append(tr)});table.append(tbody);const btnGroup=document.createElement('div');btnGroup.className='transport-btn-group';const btnLabel=document.createElement('span');btnLabel.className='btn-label';btnLabel.textContent='Forced Mode:';btnGroup.append(btnLabel);const modes=[{id:'auto',label:'Automatic (Sticky failover)'},{id:'direct-udp',label:'Direct UDP'},{id:'udp-relay',label:'UDP Relay'},{id:'wss',label:'WebSocket'}];const currentForced=s.forced||'';modes.forEach(m=>{const b=document.createElement('button');b.type='button';b.className='transport-btn';const isActive=(m.id==='auto'&&!currentForced)||(m.id===currentForced);b.classList.toggle('active',isActive);b.textContent=m.label;b.addEventListener('click',async()=>{b.disabled=true;setMessage(`Switching transport to ${m.label}…`,'info',0);try{const target=m.id==='auto'?'':m.id;const r=await fetch('/transport',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({transport:target})});if(!r.ok)throw Error(await r.text());setMessage(m.id==='auto'?'Switched to automatic transport selection.':`Forced transport to ${m.id}.`,'ok');await refresh()}catch(err){setMessage('Could not switch transport: '+err.message,'err')}finally{b.disabled=false}});btnGroup.append(b)});body.append(desc,table,btnGroup);card.append(head,body);return card}
-async function refresh(){clearTimeout(retryTimer);try{const [r,ri,rh]=await Promise.all([fetch('/status'),fetch('/instructions').catch(()=>null),fetch('/history').catch(()=>null)]);if(!r.ok)throw Error();await readInstructions(ri);await readHistory(rh);const s=await r.json();hideReconnectBanner();setSettingsURL(s.settings_url);setPortalEnabled(s.portal_enabled);const healthSamples=statusHistory.samples.map(hs=>({latency:hs.latency_millis||0,time:Date.parse(hs.time),connectionType:hs.connection_type||'unknown',connected:hs.connected}));const health=document.querySelector('#health');health.replaceChildren(generalStatsSection(s.tunnels,healthSamples,s.reconnections||0));const transportSection=document.querySelector('#transport-section');const mpNode=multipathSection(s);if(mpNode){transportSection.replaceChildren(mpNode)}else{transportSection.replaceChildren()}state.textContent=s.connected?'Connected':'Disconnected';state.classList.toggle('connected',!!s.connected);let connTypeText=s.connection_type||'Transport unavailable';if(s.forced){connTypeText+=s.forced_effective?` [forced: ${s.forced}]`:` [forced: ${s.forced}, fallback active]`;}transport.textContent=connTypeText;title.textContent=s.server_name||'ntwire';document.querySelector('#server').textContent=s.server;document.title=s.server_name?`ntwire · ${s.server_name}`:'ntwire status';tunnelList.replaceChildren();if(!s.tunnels.length){tunnelList.className='empty';tunnelList.textContent='No tunnels are available for this session.';return}tunnelList.className='';const list=document.createElement('ul');list.className='grid';s.tunnels.forEach(t=>list.append(item(t,trafficSeries(statusHistory.samples,t.name))));tunnelList.append(list)}catch{state.textContent='Unavailable';state.classList.remove('connected');transport.textContent='Transport unavailable';tunnelList.className='empty';tunnelList.textContent='Connection status is unavailable.';showReconnectBanner()}finally{scheduleRefresh()}}
+function laneSection(s){
+  if(!s.lanes?.length)return null;
+  const card=document.createElement('details'),head=document.createElement('summary'),chevron=document.createElement('span'),body=document.createElement('div');
+  card.className='stats-toggle';
+  card.open=transportExpanded;
+  card.addEventListener('toggle',()=>setTransportExpanded(card.open));
+  head.className='stats-toggle-head';
+  chevron.className='chevron';
+  head.append('WireGuard lanes',chevron);
+  body.className='stats-toggle-body';
+  if(s.lane_scaling?.reason){
+    const reason=document.createElement('p');
+    reason.className='desc';
+    reason.textContent=s.lane_scaling.reason;
+    body.append(reason);
+  }
+  const labels={'wss':'WSS','direct-udp':'Direct UDP','alternate-udp':'Alternate UDP','quic-datagram':'QUIC DATAGRAM','relay-udp':'Relay UDP'};
+  const table=document.createElement('table'),header=table.createTHead().insertRow(),rows=table.createTBody();
+  table.className='transport-table';
+  for(const name of ['Lane','Carrier','Status','Active flows']){
+    const th=document.createElement('th');
+    th.scope='col';
+    th.textContent=name;
+    header.append(th);
+  }
+  for(const [i,lane] of s.lanes.entries()){
+    const row=rows.insertRow();
+    for(const value of [lane.anchor?'Anchor':'Child '+i,labels[lane.carrier]||pathText(lane.carrier),lane.state,lane.active_flows]){
+      row.insertCell().textContent=pathText(value);
+    }
+  }
+  body.append(table);
+  card.append(head,body);
+  return card;
+}
+async function refresh(){clearTimeout(retryTimer);try{const [r,ri,rh]=await Promise.all([fetch('/status'),fetch('/instructions').catch(()=>null),fetch('/history').catch(()=>null)]);if(!r.ok)throw Error();await readInstructions(ri);await readHistory(rh);const s=await r.json();hideReconnectBanner();setSettingsURL(s.settings_url);setPortalEnabled(s.portal_enabled);const healthSamples=statusHistory.samples.map(hs=>({latency:hs.latency_millis||0,time:Date.parse(hs.time),connectionType:hs.connection_type||'unknown',connected:hs.connected}));const health=document.querySelector('#health');health.replaceChildren(generalStatsSection(s.tunnels,healthSamples,s.reconnections||0));const transportSection=document.querySelector('#transport-section');const mpNode=laneSection(s)||multipathSection(s);if(mpNode){transportSection.replaceChildren(mpNode)}else{transportSection.replaceChildren()}state.textContent=s.connected?'Connected':'Disconnected';state.classList.toggle('connected',!!s.connected);let connTypeText=s.connection_type||'Transport unavailable';if(s.forced){connTypeText+=s.forced_effective?` [forced: ${s.forced}]`:` [forced: ${s.forced}, fallback active]`;}transport.textContent=connTypeText;title.textContent=s.server_name||'ntwire';document.querySelector('#server').textContent=s.server;document.title=s.server_name?`ntwire · ${s.server_name}`:'ntwire status';tunnelList.replaceChildren();if(!s.tunnels.length){tunnelList.className='empty';tunnelList.textContent='No tunnels are available for this session.';return}tunnelList.className='';const list=document.createElement('ul');list.className='grid';s.tunnels.forEach(t=>list.append(item(t,trafficSeries(statusHistory.samples,t.name))));tunnelList.append(list)}catch{state.textContent='Unavailable';state.classList.remove('connected');transport.textContent='Transport unavailable';tunnelList.className='empty';tunnelList.textContent='Connection status is unavailable.';showReconnectBanner()}finally{scheduleRefresh()}}
 refresh();
 </script>

@@ -67,6 +67,7 @@ func (p *destinationOffer) ConnectAddress(ctx context.Context, ip netip.Addr) (n
 		_ = conn.Close()
 		return nil, err
 	}
+	conn.Conn = trackAdaptiveTraffic(conn.Conn, conn.traffic)
 	return conn, nil
 }
 

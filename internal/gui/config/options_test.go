@@ -2,8 +2,32 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
+
+func TestProfileAdaptiveDefaultAndRollback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gui.yaml")
+	if err := os.WriteFile(path, []byte("profiles:\n  - name: existing\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := cfg.Profiles[0].ToClientOptions("test-status.json", "", "")
+	if err != nil || !o.AdaptiveCarrier || !o.AdaptiveFallback {
+		t.Fatalf("profile without saved control did not negotiate automatically: %v", err)
+	}
+	cfg.Profiles[0].AdaptiveCarrier = false
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil || cfg.Profiles[0].AdaptiveCarrier {
+		t.Fatalf("profile opt-out did not persist: %v", err)
+	}
+}
 
 func TestToClientOptionsRejectsEmptyStatusFile(t *testing.T) {
 	p := Profile{Name: "home-lab", Server: "https://home.example:8443"}

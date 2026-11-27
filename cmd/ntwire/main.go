@@ -33,6 +33,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -67,6 +68,11 @@ func main() {
 		}
 	case "connect":
 		connect(os.Args[2:], u)
+	case "benchmark":
+		if err := benchmarkCmd(os.Args[2:], u); err != nil {
+			u.Errorf("%v", err)
+			os.Exit(1)
+		}
 	case "status":
 		status(os.Args[2:], u)
 	case "disconnect":
@@ -94,6 +100,8 @@ func main() {
 				_ = proxyCommand([]string{"-h"}, u)
 			case "connect":
 				connect([]string{"-h"}, u)
+			case "benchmark":
+				_ = benchmarkCmd([]string{"-h"}, u)
 			case "list":
 				list([]string{"-h"}, u)
 			case "status":
@@ -142,6 +150,7 @@ func usage(u *ui.UI) {
 			{Name: "cert", Summary: "inspect a presented TLS certificate without trusting it"},
 			{Name: "keygen", Summary: "create an SSH identity"},
 			{Name: "connect", Summary: "connect tunnels"},
+			{Name: "benchmark", Summary: "measure ntwire using a disposable local fixture"},
 			{Name: "proxy", Summary: "run the Smart Egress Proxy with tunnel, direct, and ASN routing"},
 			{Name: "list", Summary: "show allowed tunnels"},
 			{Name: "status", Summary: "show the running connection"},
@@ -338,6 +347,15 @@ func transportCmd(args []string, u *ui.UI) {
 			}
 		} else {
 			u.Info("Transport mode: automatic")
+		}
+		if details && info.AdaptiveCarrier {
+			u.Info("Adaptive carrier pilot, path epoch %d", info.PathEpoch)
+			if info.TunnelMTU != 0 {
+				u.Info("Tunnel MTU %d bytes", info.TunnelMTU)
+			}
+			if info.UDPQualified {
+				u.Info("Direct UDP standby qualified, probe RTT %s", info.UDPProbeRTT.Round(time.Microsecond))
+			}
 		}
 		if len(info.Paths) > 0 {
 			fmt.Fprintln(u.Out)
@@ -656,6 +674,102 @@ func printTransportDetails(u *ui.UI, info client.TransportInfo) {
 		fmt.Fprintln(u.Out)
 		u.Info("Startup transport reason: %s", info.Reason)
 	}
+	if len(info.QualifiedPaths) > 0 {
+		fmt.Fprintln(u.Out)
+		u.Info("Qualified adaptive paths")
+		for _, path := range info.QualifiedPaths {
+			role := "standby"
+			if path.Primary {
+				role = "primary"
+			}
+			line := fmt.Sprintf("  %s (%s), ciphertext limit %d B send and %d B receive", path.Name, role, path.SendMax, path.ReceiveMax)
+			if path.RTT > 0 {
+				line += fmt.Sprintf(", carrier RTT %s", path.RTT.Round(time.Microsecond))
+			}
+			u.Info("%s", line)
+		}
+	}
+	if perf := info.AdaptivePerformance; perf != nil {
+		fmt.Fprintln(u.Out)
+		u.Info("Recent adaptive forwarding performance")
+		if perf.FeedbackStatus != "" {
+			u.Info("  Feedback %s", perf.FeedbackStatus)
+		}
+		if trial := perf.Trial; trial != nil {
+			u.Info("  Carrier trial %s to %s, %s", trial.Incumbent, trial.Candidate, trial.State)
+			if trial.Reason != "" {
+				u.Info("  Trial reason %s", trial.Reason)
+			}
+		}
+		if perf.UploadWindows > 0 {
+			u.Info("  Upload %.2f Mbps delivered across %d active windows", perf.ObservedUploadBPS/1e6, perf.UploadWindows)
+		}
+		if perf.DownloadWindows > 0 {
+			u.Info("  Download %.2f Mbps delivered across %d active windows", perf.ObservedDownloadBPS/1e6, perf.DownloadWindows)
+		}
+		if evidence := perf.Capacity; evidence != nil {
+			if up := evidence.Upload; up != nil && up.Pressure {
+				u.Info("  Sustained upload pressure, observed delivery floor %.2f Mbps", up.ObservedFloorBPS/1e6)
+			}
+			if down := evidence.Download; down != nil && down.Pressure {
+				u.Info("  Sustained download pressure, observed delivery floor %.2f Mbps", down.ObservedFloorBPS/1e6)
+			}
+		}
+		if shared := perf.SharedCapacity; shared != nil {
+			u.Info("  Shared forwarding observations across %d lanes", shared.Lanes)
+			if up := shared.Upload; up != nil {
+				u.Info("  Shared upload minimum observed %.2f Mbps", up.ObservedFloorBPS/1e6)
+				if up.Pressure {
+					u.Info("  Sustained shared upload delivery pressure")
+				}
+			}
+			if down := shared.Download; down != nil {
+				u.Info("  Shared download minimum observed %.2f Mbps", down.ObservedFloorBPS/1e6)
+				if down.Pressure {
+					u.Info("  Sustained shared download delivery pressure")
+				}
+			}
+		}
+		if decision := perf.Decision; decision != nil {
+			if decision.WouldSwitch {
+				u.Info("  Recent comparison favors %s across %d windows", decision.Candidate, decision.ComparableWindows)
+			} else {
+				u.Info("  Recent comparison reason %s", decision.Reason)
+			}
+		}
+	}
+	if len(info.Lanes) != 0 {
+		fmt.Fprintln(u.Out)
+		u.Info("WireGuard lanes")
+		for i, lane := range info.Lanes {
+			label := fmt.Sprintf("Child %d", i)
+			if lane.Anchor {
+				label = "Anchor"
+			}
+			carrier := ""
+			if lane.Carrier != "" {
+				carrier = " over " + lane.Carrier
+			}
+			u.Info("  %s %s%s, %d active flows", label, lane.State, carrier, lane.ActiveFlows)
+			if lane.RelayMember != "" {
+				u.Info("    Relay member %s", lane.RelayMember)
+			}
+			if lane.RelayStandbys > 0 {
+				u.Info("    Qualified relay standbys %d", lane.RelayStandbys)
+			}
+			if lane.RelayDecision != "" {
+				u.Info("    Path comparison %s", lane.RelayDecision)
+			}
+		}
+	}
+	if scale := info.LaneScaling; scale != nil {
+		u.Info("  Scaling %s (%s)", scale.State, scale.Reason)
+	}
+	if info.QUIC != nil {
+		fmt.Fprintln(u.Out)
+		u.Info("QUIC datagrams sent %d, received %d, send queue drops %d, receive queue drops %d",
+			info.QUIC.Sent, info.QUIC.Received, info.QUIC.SendDrops, info.QUIC.ReceiveDrops)
+	}
 	fmt.Fprintln(u.Out)
 	if len(info.Events) == 0 {
 		u.Info("No transport switches recorded")
@@ -672,7 +786,11 @@ func switchEventLine(e wstransport.SwitchEvent) string {
 	if from == "" {
 		from = "-"
 	}
-	return fmt.Sprintf("  %s  %s -> %s (%s)", e.At.Local().Format("2006-01-02 15:04:05"), from, e.To, e.Reason)
+	to := e.To
+	if to == "" {
+		to = "unavailable"
+	}
+	return fmt.Sprintf("  %s  %s -> %s (%s)", e.At.Local().Format("2006-01-02 15:04:05"), from, to, e.Reason)
 }
 
 // listColumns is factored out of list() so a test can render the exact
@@ -934,7 +1052,8 @@ func connect(args []string, u *ui.UI) {
 		BrowserProfilesDir: storage.ProfilesDir,
 		BrowserProfiles:    storage.TunnelProfiles,
 		BrowserExecutable:  fs.Str("browser-executable"),
-		UDPAlt:             udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote,
+		UDPAlt:             udpAlt, MTUAware: mtuAware, TunnelMTU: tunnelMTU, Promote: promote, AdaptiveCarrier: fs.BoolVal("adaptive-carrier"),
+		AdaptiveFallback: true,
 	}
 	o.Logger = clientLogger(verbose, u.ErrCaps)
 	o.StatusFile = fs.Str("status-file")

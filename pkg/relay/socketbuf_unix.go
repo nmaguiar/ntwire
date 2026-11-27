@@ -19,11 +19,13 @@ func socketBufferBytes(pc net.PacketConn) (read, write int, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
-	err = raw.Control(func(fd uintptr) {
+	if controlErr := raw.Control(func(fd uintptr) {
 		read, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_RCVBUF)
 		if err == nil {
 			write, err = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_SNDBUF)
 		}
-	})
+	}); controlErr != nil {
+		return 0, 0, controlErr
+	}
 	return read, write, err
 }

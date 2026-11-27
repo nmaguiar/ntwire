@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -17,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 	"github.com/nmaguiar/ntwire/pkg/socks"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
@@ -50,7 +50,9 @@ type tunnelListener struct {
 }
 
 type udpFlow struct {
-	conn *net.UDPConn
+	conn         *net.UDPConn
+	peerLifetime string
+	lifetime     context.Context
 }
 
 // socksRuntime is the live embedded-SOCKS-proxy state for one tunnel.
@@ -203,12 +205,16 @@ func (s *Server) startDataPlane(newStack func(wgnet.Config) (serverStack, error)
 		return err
 	}
 	ws := wstransport.NewHybrid(s.log)
+	udp, _ := ws.UDP.(*wstransport.FilterBind).Unwrap().(*wstransport.UDPBind)
+	if s.Config.Transport.SampleWSS {
+		ws.WebSocket.EnableQueuePerformance()
+	}
 	if s.Config.Listen.WireGuardAlt != "" {
 		alt, err := portOf(s.Config.Listen.WireGuardAlt)
 		if err != nil {
 			return err
 		}
-		if udp, ok := ws.UDP.(*wstransport.FilterBind).Unwrap().(*wstransport.UDPBind); ok {
+		if udp != nil {
 			udp.SetAltPort(uint16(alt))
 			s.log.Info("alternate WireGuard UDP port enabled", "port", alt)
 		}
@@ -278,18 +284,12 @@ func (s *Server) startDataPlane(newStack func(wgnet.Config) (serverStack, error)
 	}
 	st, err := newStack(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}, ListenPort: port, Bind: bind})
 	if err != nil {
-		if closeErr := bind.Close(); closeErr != nil {
-			return errors.Join(err, errAccelerationCleanup, closeErr)
-		}
-		return err
+		return dataPlaneStartupError(err, bind.Close())
 	}
 	d := &dataPlane{stack: st, serverIP: serverIP, stop: make(chan struct{}), stopASN: make(chan struct{}), ws: ws, multipath: multipath, listeners: map[string]*tunnelListener{}}
 	s.data = d
 	fail := func(err error) error {
-		if closeErr := s.closeDataPlane(); closeErr != nil {
-			return errors.Join(err, errAccelerationCleanup, closeErr)
-		}
-		return err
+		return dataPlaneStartupError(err, s.closeDataPlane())
 	}
 	if err := s.installNativePeers(); err != nil {
 		return fail(err)
@@ -305,8 +305,14 @@ func (s *Server) startDataPlane(newStack func(wgnet.Config) (serverStack, error)
 		}
 	}
 	if s.Config.Portal.Enabled && s.Config.Portal.Web.Enabled && s.Config.Portal.Web.Listen != "" {
-		if err := s.startWebPortal(d); err != nil {
+		if err := s.startWebPortal(d, true); err != nil {
 			s.log.Warn("in-tunnel web portal startup failed", "error", err)
+		}
+	}
+	if s.Config.Transport.Adaptive {
+		s.adaptive, err = s.startAdaptiveServerPlane(wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{serverIP}})
+		if err != nil {
+			return fail(fmt.Errorf("start adaptive carrier data plane: %w", err))
 		}
 	}
 	if staged, ok := st.(interface{ activate() error }); ok {
@@ -555,10 +561,16 @@ func (s *Server) closeTunnelListener(tl *tunnelListener) {
 // changed tunnel keeps proxying to its original target until it closes;
 // only new connections observe the new target.
 func (s *Server) reloadTunnels(newTunnels []TunnelConfig) {
-	if s.data == nil {
+	s.reloadPlaneTunnels(s.data, newTunnels)
+	if s.adaptive != nil {
+		s.reloadPlaneTunnels(s.adaptive.data, newTunnels)
+	}
+}
+
+func (s *Server) reloadPlaneTunnels(d *dataPlane, newTunnels []TunnelConfig) {
+	if d == nil {
 		return
 	}
-	d := s.data
 	wanted := make(map[string]TunnelConfig, len(newTunnels))
 	for _, t := range newTunnels {
 		wanted[t.Name] = t
@@ -602,14 +614,13 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 	}
 	flows := map[string]*udpFlow{}
 	var mu sync.Mutex
-	closeFlow := func(key string) {
+	closeFlow := func(key string, f *udpFlow) {
 		mu.Lock()
-		f := flows[key]
-		delete(flows, key)
-		mu.Unlock()
-		if f != nil {
-			_ = f.conn.Close()
+		if flows[key] == f {
+			delete(flows, key)
 		}
+		mu.Unlock()
+		_ = f.conn.Close()
 	}
 	defer func() {
 		mu.Lock()
@@ -636,12 +647,16 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 		mu.Lock()
 		f := flows[key]
 		mu.Unlock()
+		if f != nil && (f.lifetime != nil || principal.flowLifetime != nil) && f.peerLifetime != principal.peerLifetime {
+			closeFlow(key, f)
+			f = nil
+		}
 		if f == nil {
 			out, err := s.dialFixedUDP(principal, t)
 			if err != nil {
 				continue
 			}
-			f = &udpFlow{conn: out}
+			f = &udpFlow{conn: out, peerLifetime: principal.peerLifetime, lifetime: principal.flowLifetime}
 			mu.Lock()
 			flows[key] = f
 			mu.Unlock()
@@ -650,7 +665,11 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 			stats.active.Add(1)
 			go func(key string, src net.Addr, f *udpFlow, stats *serverTunnelStats) {
 				defer stats.active.Add(-1)
-				defer closeFlow(key)
+				defer closeFlow(key, f)
+				if f.lifetime != nil {
+					stop := context.AfterFunc(f.lifetime, func() { _ = f.conn.Close() })
+					defer stop()
+				}
 				b := make([]byte, 65535)
 				for {
 					_ = f.conn.SetReadDeadline(time.Now().Add(idle))
@@ -665,6 +684,9 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 				}
 			}(key, src, f, stats)
 		}
+		if f.lifetime != nil && f.lifetime.Err() != nil {
+			continue
+		}
 		_ = f.conn.SetReadDeadline(time.Now().Add(idle))
 		if n, err = f.conn.Write(buf[:n]); err == nil {
 			s.statsFor(host, t.Name).toTarget.Add(uint64(n))
@@ -673,6 +695,7 @@ func (s *Server) proxyUDP(tl *tunnelListener, pc net.PacketConn) {
 }
 
 func (s *Server) dialFixedUDP(principal DataPlanePrincipal, t TunnelConfig) (*net.UDPConn, error) {
+	ctx := principalFlowContext(principal)
 	host, portText, err := net.SplitHostPort(t.Target)
 	if err != nil {
 		return nil, err
@@ -686,13 +709,13 @@ func (s *Server) dialFixedUDP(principal DataPlanePrincipal, t TunnelConfig) (*ne
 	if ip, e := netip.ParseAddr(host); e == nil {
 		ips = []netip.Addr{ip}
 	} else {
-		ips, err = net.DefaultResolver.LookupNetIP(context.Background(), "ip", host)
+		ips, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		if err != nil {
 			return nil, err
 		}
 	}
 	for _, ip := range ips {
-		if !s.destinationAllowed(context.Background(), principal, t, host, ip, port, "udp") {
+		if ctx.Err() != nil || !s.destinationAllowed(ctx, principal, t, host, ip, port, "udp") {
 			continue
 		}
 		c, e := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(netip.AddrPortFrom(ip.Unmap(), port)))
@@ -723,6 +746,10 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 	}
 	flows := map[destinationKey]flow{}
 	ownerIP := principal.TunnelIP.String()
+	// The TCP association has already registered this forwarding counter.
+	// Keep that lifetime's pointer instead of recreating a deleted entry.
+	entry, _ := s.tunnelStats.Load(statsKey(ownerIP, t.Name))
+	stats, _ := entry.(*serverTunnelStats)
 	currentOwner := func() (DataPlanePrincipal, TunnelConfig, bool) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -816,14 +843,20 @@ func (s *Server) proxySocksUDP(pc net.PacketConn, principal DataPlanePrincipal, 
 						return
 					}
 					frame := socksUDPFrame(f.c.RemoteAddr().(*net.UDPAddr).AddrPort(), rb[:n])
-					if _, e = pc.WriteTo(frame, src); e != nil {
+					written, err := pc.WriteTo(frame, src)
+					if err != nil {
 						return
+					}
+					if stats != nil {
+						stats.fromTarget.Add(uint64(written))
 					}
 				}
 			}(key, f, src)
 		}
 		_ = f.c.SetReadDeadline(time.Now().Add(idle))
-		_, _ = f.c.Write(b[offset:n])
+		if _, err := f.c.Write(b[offset:n]); err == nil && stats != nil {
+			stats.toTarget.Add(uint64(n))
+		}
 	}
 }
 
@@ -839,16 +872,27 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	if !ok || !principal.Tunnels[t.Name] {
 		return
 	}
+	if principal.flowLifetime != nil {
+		if principal.flowLifetime.Err() != nil {
+			return
+		}
+		stop := context.AfterFunc(principal.flowLifetime, func() { _ = in.Close() })
+		defer stop()
+	}
 	if t.IsSocks() {
 		s.proxySocks(tl, principal, host, in)
 		return
 	}
-	out, err := s.dialFixedTarget(principal, t)
+	out, err := s.dialFixedTargetContext(principalFlowContext(principal), principal, t)
 	if err != nil {
 		s.log.Debug("tunnel target dial failed", "tunnel", t.Name, "target", t.Target, "error", err)
 		return
 	}
 	defer out.Close()
+	if principal.flowLifetime != nil {
+		stop := context.AfterFunc(principal.flowLifetime, func() { _ = out.Close() })
+		defer stop()
+	}
 	started := time.Now()
 	s.log.Debug("tunnel connection opened", "tunnel", t.Name, "client", host)
 	stats := s.statsFor(host, t.Name)
@@ -856,8 +900,7 @@ func (s *Server) proxy(tl *tunnelListener, in net.Conn) {
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	go copyToTarget(out, in, &stats.toTarget)
-	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
+	localproxy.RelayCounted(in, out, &stats.toTarget, &stats.fromTarget)
 	s.log.Debug("tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
@@ -884,7 +927,7 @@ func (s *Server) proxySocks(tl *tunnelListener, principal DataPlanePrincipal, ho
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	tl.socks.server.ServeConn(context.WithValue(context.Background(), principalContextKey{}, principal), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
+	tl.socks.server.ServeConn(context.WithValue(principalFlowContext(principal), principalContextKey{}, principal), countingConn{Conn: in, toTarget: &stats.toTarget, fromTarget: &stats.fromTarget})
 	s.log.Debug("socks tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
@@ -897,52 +940,36 @@ func (s *Server) proxyTransparentSocks(t TunnelConfig, principal DataPlanePrinci
 	if err != nil {
 		return
 	}
-	out, err := s.dialTarget(principal, t, u.Host)
+	out, err := s.dialTargetContext(principalFlowContext(principal), principal, t, u.Host)
 	if err != nil {
 		s.log.Debug("transparent SOCKS upstream dial failed", "tunnel", t.Name, "target", u.Host, "error", err)
 		return
 	}
 	defer out.Close()
+	if principal.flowLifetime != nil {
+		stop := context.AfterFunc(principal.flowLifetime, func() { _ = out.Close() })
+		defer stop()
+	}
 	started := time.Now()
 	stats := s.statsFor(host, t.Name)
 	stats.connections.Add(1)
 	stats.active.Add(1)
 	defer stats.active.Add(-1)
 	toStart, fromStart := stats.toTarget.Load(), stats.fromTarget.Load()
-	go copyToTarget(out, in, &stats.toTarget)
-	io.Copy(countingWriter{w: in, counter: &stats.fromTarget}, out)
+	localproxy.RelayCounted(in, out, &stats.toTarget, &stats.fromTarget)
 	s.log.Debug("transparent SOCKS tunnel connection closed", "tunnel", t.Name, "client", host,
 		"bytes_to_target", stats.toTarget.Load()-toStart, "bytes_from_target", stats.fromTarget.Load()-fromStart, "duration", time.Since(started))
 }
 
-type countingWriter struct {
-	w       io.Writer
-	counter *atomic.Uint64
-}
-
-// Propagate client EOF to the target while preserving its ability to send a
-// response. On copy failure, close both ends to unblock the reverse copy.
-func copyToTarget(out, in net.Conn, counter *atomic.Uint64) {
-	_, err := io.Copy(countingWriter{w: out, counter: counter}, in)
-	if err == nil {
-		if cw, ok := out.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
-			return
-		}
+func principalFlowContext(principal DataPlanePrincipal) context.Context {
+	if principal.flowLifetime != nil {
+		return principal.flowLifetime
 	}
-	_ = out.Close()
-	_ = in.Close()
+	return context.Background()
 }
 
-func (w countingWriter) Write(p []byte) (int, error) {
-	n, err := w.w.Write(p)
-	if n > 0 {
-		w.counter.Add(uint64(n))
-	}
-	return n, err
-}
-
-// countingConn wraps a net.Conn to tally bytes the same way countingWriter
-// does for the fixed-target proxy path: Read (bytes from the SOCKS client,
+// countingConn tallies bytes for the embedded SOCKS handler. Read (bytes
+// from the SOCKS client,
 // ultimately relayed to its requested destination) counts as toTarget,
 // Write (bytes relayed back to the client) counts as fromTarget.
 //
@@ -996,6 +1023,9 @@ func (s *Server) principalForIP(ip string) (DataPlanePrincipal, bool) {
 }
 
 func (s *Server) principalForIPLocked(ip string) (DataPlanePrincipal, bool) {
+	if s.adaptive != nil && s.adaptive.isQuarantinedIP(ip) {
+		return DataPlanePrincipal{}, false
+	}
 	if principal, ok := s.sessions.principalForIP(ip); ok {
 		return principal, true
 	}
@@ -1093,6 +1123,18 @@ func (s *Server) allocateIP() (string, error) {
 		if ip, err := netip.ParseAddr(session.TunnelIP); err == nil {
 			used[ip.Unmap()] = true
 		}
+		for _, child := range session.children {
+			if ip, err := netip.ParseAddr(child.ip); err == nil {
+				used[ip.Unmap()] = true
+			}
+		}
+	}
+	if s.adaptive != nil {
+		for address := range s.adaptive.retired {
+			if ip, err := netip.ParseAddr(address); err == nil {
+				used[ip.Unmap()] = true
+			}
+		}
 	}
 	// At most len(used) consecutive candidates can be occupied. This bounds
 	// the scan even for IPv6, without restricting allocation to a 16-bit pool.
@@ -1112,6 +1154,10 @@ func (s *Server) addPeer(key, ip string) error {
 	if s.data == nil {
 		return nil
 	}
+	return addDataPlanePeer(s.data, key, ip, "")
+}
+
+func addDataPlanePeer(d *dataPlane, key, ip, endpoint string) error {
 	addr, err := netip.ParseAddr(ip)
 	if err != nil {
 		return err
@@ -1120,7 +1166,11 @@ func (s *Server) addPeer(key, ip string) error {
 	if addr.Is6() {
 		mask = "/128"
 	}
-	return s.data.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: ip + mask})
+	address := ip + mask
+	if endpoint != "" {
+		address += "@" + endpoint
+	}
+	return d.stack.AddPeer(wgnet.Endpoint{PublicKey: key, Address: address})
 }
 func (s *Server) dropSession(v Session) {
 	// Cancel and serialize relay allocations before removing their endpoints.
@@ -1128,8 +1178,15 @@ func (s *Server) dropSession(v Session) {
 		u.release(v.WireGuardPublicKey)
 	}
 
-	for _, tunnel := range v.Tunnels {
-		s.tunnelStats.Delete(statsKey(v.TunnelIP, tunnel.Name))
+	s.clearLaneStats(v.Tunnels, v.TunnelIP)
+	if v.Adaptive != nil {
+		for _, child := range v.children {
+			s.clearLaneStats(v.Tunnels, child.ip)
+		}
+		if s.adaptive != nil {
+			s.adaptive.remove(v)
+		}
+		return
 	}
 	if s.data != nil && v.WireGuardPublicKey != "" {
 		_ = s.data.stack.RemovePeer(v.WireGuardPublicKey)
@@ -1177,6 +1234,8 @@ func (s *Server) reapSessionsLocked() {
 		s.observe("session_expired", v.Method)
 		s.audit("session_expired", v, "", 0)
 	}
+	s.reapUnconfirmedLanes(time.Now())
+	s.reapRelayAllocations(time.Now())
 }
 func (s *Server) Close() {
 	if err := s.closeDataPlane(); err != nil {
@@ -1195,14 +1254,22 @@ func (s *Server) closeDataPlane() error {
 	direct := s.direct
 	s.direct = nil
 	d := s.data
-	s.data = nil
+	adaptive := s.adaptive
+	s.data, s.adaptive = nil, nil
+	if adaptive != nil {
+		for _, v := range s.sessions.All() {
+			if v.Adaptive != nil {
+				s.sessions.Delete(v.Token)
+			}
+		}
+		for _, lane := range adaptive.lanes {
+			adaptive.retireRelayAllocations(lane)
+		}
+	}
 	s.mu.Unlock()
 	s.operationMu.Unlock()
 	if direct != nil {
 		close(direct.stop)
-	}
-	if d == nil {
-		return nil
 	}
 	s.nativeRelayMu.Lock()
 	if s.nativeRelayStop != nil {
@@ -1210,6 +1277,19 @@ func (s *Server) closeDataPlane() error {
 		s.nativeRelayStop = nil
 	}
 	s.nativeRelayMu.Unlock()
+	if adaptive != nil {
+		for _, lane := range adaptive.lanes {
+			lane.cancel()
+		}
+		return errors.Join(s.closePlane(adaptive.data), adaptive.quic.close(), adaptive.http3.close(), s.closePlane(d))
+	}
+	return s.closePlane(d)
+}
+
+func (s *Server) closePlane(d *dataPlane) error {
+	if d == nil {
+		return nil
+	}
 	close(d.stop)
 	close(d.stopASN)
 	d.mu.Lock()

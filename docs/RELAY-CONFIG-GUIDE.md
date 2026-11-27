@@ -219,6 +219,9 @@ log:
           "minimum": 1,
           "type": "integer"
         },
+        "udp_relay_bytes_per_second": {
+          "type": "integer"
+        },
         "udp_relay_idle_timeout": {
           "default": "60s",
           "format": "duration",

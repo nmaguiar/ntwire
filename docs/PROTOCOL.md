@@ -26,6 +26,17 @@ The reference server serves HTTPS.
 | `POST /v1/renew` | Bearer token | Replacement session and grants |
 | `POST /v1/disconnect` | Bearer token | Deletes a session |
 | `GET /v1/wg` | Bearer token | WireGuard datagrams over binary WebSocket messages |
+| `GET /v1/transport/lanes/{lane}/candidates` | Current adaptive session bearer over TLS | Lane candidate snapshot and path epoch |
+| `GET /v1/transport/lanes/{lane}/performance` | Current adaptive session bearer over TLS | Negotiated forwarding counters for the active lane |
+| `PUT /v1/transport/lanes/{lane}/primary` | Current adaptive session bearer over TLS | Compare-and-swap selection of a qualified stream carrier |
+| `POST /v1/transport/lanes/{lane}/attach` | Current adaptive session bearer over TLS | Single-use ticket for an offered carrier |
+| `POST /v1/transport/lanes/{lane}/udp/prepare` | Current adaptive session bearer over TLS | Short-lived proof offer for the dedicated UDP candidate |
+| `POST /v1/transport/lanes/{lane}/udp/qualify` | Current adaptive session bearer over TLS | Publish a proven UDP standby |
+| `GET /v1/transport/wg` | Current adaptive session bearer and `X-Ntwire-Attach-Ticket` over TLS | Upgrade to a lane-bound WebSocket |
+| `GET /v1/session/lanes` | Current negotiated multi-lane bearer over TLS | Anchor and child lane descriptors |
+| `POST /v1/session/lanes` | Current negotiated multi-lane bearer over TLS | Reserve a child WireGuard peer and virtual address |
+| `DELETE /v1/session/lanes/{lane}` | Current negotiated multi-lane bearer over TLS | Retire an owned child peer |
+| `GET /v1/transport/lanes/{lane}/wg` | Current adaptive session bearer and `X-Ntwire-Attach-Ticket` over TLS | Upgrade to the specified child lane's WebSocket |
 | `POST /v1/punch` | Bearer token | Candidate exchange for the opportunistic direct-UDP upgrade; `404` unless `relay.advertise_direct` is enabled |
 | `POST /v1/transport/direct` | Bearer token | Registers a reflected direct-UDP client candidate for a negotiated multipath session |
 | `POST /v1/transport/primary` | Bearer token | Opt-in (`path-promote-v1`): commits a healthy candidate as the session's primary carrier; `404` unless negotiated |
@@ -759,3 +770,475 @@ A native SOCKS tunnel with `socks.allow_destination_binding: true` advertises `e
 On a capable virtual TCP stream, the client negotiates SOCKS5 and sends private command `0x80` with the original domain-form hostname and port. The server independently resolves and authorizes it under the current grant. A normal successful SOCKS5 reply is followed by one byte of count and up to eight 16-byte addresses in offer order. IPv4 is encoded in IPv4-mapped form. The client sends one zero-based selection byte on that same stream. After checking the grant and destination policy again, the server dials that exact address and emits the final SOCKS5 reply. Application bytes start after the final success reply. An abandoned, expired, or invalid selection closes the stream without a destination connection. Offers are single-use. The extension does not apply to transparent or chained SOCKS, or to SOCKS UDP destination binding.
 
 The authenticated local attachment protocol supports an optional `offer_destination` operation. Its initial success includes the bounded addresses, followed by one selected address frame and the final response on the same TLS stream. Unknown capabilities leave ordinary egress available. A client that requires hostname ASN binding fails that classification when support is missing.
+
+## Adaptive carrier pilot
+
+`pkg/wstransport.AdaptiveBind` is the isolated data path for the adaptive
+carrier experiment. It accepts only locally qualified routes. A physical
+source is scoped to its carrier socket group. An alternate UDP listener uses
+a separate socket group. An authenticated WebSocket path is pinned to one
+connection instance, so reconnecting with the same session label requires a
+new qualification. The WireGuard device sees one stable lane endpoint
+throughout a switch.
+
+The local controller commits one outbound route against the lane's current
+epoch. The previous route may receive for up to two seconds, within its
+qualification lifetime. Closing the bind discards physical qualifications
+and advances the epoch. Reopening preserves the logical lane handle.
+An already admitted send is retired before a new socket generation opens.
+
+### Negotiation and attachment
+
+An opted-in client can offer `adaptive-carrier-v1` alongside legacy
+capabilities. An opted-in server selects it only over TLS and when it can
+satisfy the requested transport restrictions. The response selects the
+adaptive capability and omits the legacy UDP and WebSocket endpoints and
+legacy multipath flags. It includes an `adaptive` object with `parent_id`,
+`anchor_lane_id`, `auth_generation` (initially 1), and `path_epoch`
+(initially 0). The identifiers are opaque 128-bit base64url strings without
+padding. Ordinary and official WireGuard clients keep their existing
+negotiation and device. The pilot shares a separate userspace WireGuard
+device among up to 128 adaptive peers. Each parent starts with one pinned
+anchor peer.
+
+When both ends support `adaptive-mtu-v1`, the adaptive object includes
+`tunnel_mtu` in the range 1,280–1,420. Both ends configure that value before
+opening the lane and keep it through renewal. A server configured with a
+reduced adaptive MTU uses legacy WireGuard for clients without the capability
+or with a conflicting explicit MTU, subject to required capabilities.
+
+The authenticated candidate response repeats the adaptive object fields at
+the top level and includes `candidates` and, once attached,
+`selected_candidate_id`. The pilot offers `wss` and may also offer `direct-udp` and `quic-datagram`. The client
+uses the authenticated epoch for its first attach and fetches current
+candidate state before redial. An attach
+request carries `request_id` (a canonical 128-bit base64url ID),
+`auth_generation`, `expected_path_epoch`, and `candidate_id`. The server
+accepts one JSON object up to 8 KiB with no unknown fields. A successful
+response supplies `attach_ticket`, `expires_in_ms`, and `datagram_max`.
+Tickets expire after 15 seconds or at session expiry, whichever comes first.
+The same request reuses an available ticket. A pending ticket, burst rate,
+or exhausted 32-request budget can return `429`. The server retains
+request IDs for 60 seconds within a generation. Stale generation or path
+epoch and consumed request IDs return `409`, invalid or expired credentials
+return `401`, and unavailable lane or candidate IDs return `404`.
+
+The WebSocket upgrade presents the bearer and ticket in headers. It cannot
+be redirected by the ntwire client. The server consumes the ticket once and
+checks the current session generation again after the upgrade and before
+publishing the replacement path. Each binary message carries one complete
+WireGuard datagram up to 1,500 bytes. A replacement increments the path
+epoch and pins the lane to the new WebSocket incarnation. Renewal rotates
+the bearer and authorization generation, invalidates pending tickets, and
+extends the current route without replacing the WireGuard peer. Disconnect,
+expiration, and policy revocation remove the peer and cancel its forwarding
+lifetime.
+
+### Multi-lane pilot
+
+An adaptive client can offer `multilane-v1`. The server binds it to the
+parent when the configured cap allows child peers, returns `max_lanes`
+in the adaptive object, and preserves it through ordinary renewal. The cap
+includes the anchor and is at most eight. A child inherits the parent's
+tunnel grants, policies, bearer, and expiration. Its descriptor contains
+the adaptive object, `tunnel_ip`, `server_tunnel_ip`, `server_public_key`,
+`ttl_seconds`, and `state`. Inside a child descriptor, `child: true`
+identifies the child and the existing `anchor_lane_id` field carries its
+lane identifier. The list response includes `parent_id`,
+`auth_generation`, and the `lanes` list.
+
+The separate optional `lane-carriers-v1` capability allows eligible
+child peers to use the parent's negotiated native UDP, alternate UDP or
+QUIC DATAGRAM candidates. It requires `multilane-v1`, adaptive primary
+selection, and an eligible datagram carrier. The parent response echoes
+`lane_carriers: true`. Child descriptors carry eligible endpoint fields
+and no new parent capability. Without this extension, clients keep the
+existing WSS and negotiated relay behavior for children. UDP proofs and
+QUIC attach tickets authorize an individual lane and generation. Reusing
+the parent's path proof or a sibling's ticket cannot qualify a child.
+
+Create and delete accept a single JSON object up to 4 KiB with no unknown
+fields. Both require a canonical `request_id` and the current
+`auth_generation`. Only creation includes `wireguard_public_key`.
+Successful creation returns the descriptor with HTTP 200. An exact retry
+can retrieve it during the bounded one-minute request history. Retirement
+returns HTTP 204, including retries with the same ID during that window.
+Stale or conflicting operations return HTTP 409. Invalid credentials
+return HTTP 401, and a lane outside the authenticated parent returns HTTP
+404. Quota or request-budget exhaustion returns HTTP 429. The anchor
+remains part of the parent lifetime.
+
+The client normally completes the ticket exchange on a child-specific
+WebSocket. An eligible QUIC child can bootstrap through its own QUIC
+attach if the upgrade is unavailable. The client proves peer ownership
+with an ordinary WireGuard handshake. The
+descriptor progresses through `creating`, `qualifying`, and `ready`.
+The server reaps unconfirmed children. The client stops admissions when
+a child starts draining and sends DELETE after its last flow lease closes.
+Session revocation removes the anchor and all children. Renewal keeps the
+peers when the current grants are unchanged and invalidates older control
+requests. Changes to effective grants can close existing flows for the
+parent.
+
+### Adaptive relay discovery
+
+The optional `adaptive-relay-catalog-v1` capability identifies the read-only
+relay catalog on an adaptive server with a configured relay pool. The
+server echoes `relay_catalog: true` in the negotiated adaptive object.
+Child lanes inherit this capability through their parent.
+
+`GET /v1/transport/lanes/{lane}/relay-candidates` requires TLS and the
+current parent bearer. It returns `lane_id`, `auth_generation`,
+`expires_in_ms`, and a `candidates` array with up to eight opaque
+128-bit identifiers. Entries come from configured live registrations
+that offer UDP relay service, in pool order. A snapshot can be reused
+for up to 15 seconds within the same lane and authorization generation.
+Registration changes replace the snapshot. Renewal rotates the bearer
+and retires the previous identifiers. The empty catalog expires in
+zero milliseconds.
+
+The response is private and uses `Cache-Control: no-store`. The endpoint
+returns 401 for missing TLS or invalid credentials and 404 for an
+unowned lane or a session without the capability. The catalog contains
+only candidate IDs. Qualification, allocation, and promotion have
+separate authorization boundaries.
+
+### Adaptive relay UDP qualification
+
+`adaptive-relay-udp-v1` requires relay discovery and the server's
+`relay.adaptive_udp` opt-in. The negotiated adaptive object carries
+`relay_udp: true` on the parent and its child lanes. Both operations
+below require TLS, the current parent bearer, the current authorization
+generation and the lane's current path epoch.
+
+`POST /v1/transport/lanes/{lane}/relay/prepare` takes the carrier
+attach request with a live relay catalog ID in `candidate_id`. The
+existing WireGuard peer must have authenticated within the last three
+minutes. The server allocates on that relay's current registered control
+connection. The reply contains `relay_addr` and an opaque `bind_token`,
+along with the UDP offer fields `offer_id`, `proof_key`, `datagram_max`
+and `expires_in_ms`. The offer ID differs from the catalog ID. Repeating
+the same request returns the pending proof credential. A competing
+allocation receives 429. Stale authorization, epoch, or registration
+receives 409, and relay allocation failure receives 503.
+
+The client binds its leg with the existing `FrameRelayBind`. The
+server binds its leg on a separate adaptive UDP socket and admits
+proofs only from that allocation's server-facing tuple. The ordinary
+full-size bidirectional UDP proof rides inside the token-bound relay.
+The proof key expires with the offer and the bind token applies to the
+relay allocation. Keep both credentials out of diagnostics.
+
+After proof, `POST /v1/transport/lanes/{lane}/relay/qualify` repeats the
+prepare request and returns the UDP qualification status. Its
+`candidate_id` is the offer ID and the qualification lasts up to
+30 seconds. This installs a standby route. Expiry, renewal, revocation,
+lane removal and registration loss retire provisional allocations.
+The server permits one allocation per lane and 32 pending or active
+allocations in total.
+
+`relay-performance-v1` builds on relay selection and adaptive forwarding
+feedback. The server echoes `relay_performance: true` only after the
+client offers the capability and the operator enables performance
+routing. The catalog adds a `members` array parallel to `candidates`.
+The entries identify the current registered members with opaque
+128-bit values for lane-local candidate rotation. Prepare still takes
+the scoped catalog ID. Member IDs convey no allocation authority.
+
+With the capability, a lane may hold up to two allocations on distinct
+configured relay members and distinct client-facing UDP tuples. Each
+allocation has its own proof key, path ID, token, quota reservation and
+registration lifetime. A third pending or active allocation, or a
+full member budget, receives 429. A second allocation on an already
+attached member or client-facing tuple receives 409. Generation, epoch
+and registration checks also apply to both paths. A lane commits one
+primary. Demotion keeps the old qualified path for up to 30 seconds so
+the client can restore it after an inconclusive trial. Renewal preserves
+only the selected live allocation and invalidates pending and standby
+state. A lost relay registration can recover via a qualified WebSocket
+or, when that socket is unavailable, via the lane's qualified relay
+standby. The client reconciles the server's authenticated selection.
+
+The relay still uses the original registration, allocation, bind and
+UDP forwarding wire formats. A server can use a mixed relay fleet
+with those operations. Clients without the optional capability retain
+the original one-allocation behavior.
+
+`adaptive-relay-select-v1` extends the coordinated `/primary` operation
+to a qualified relay offer ID. It requires `adaptive-relay-udp-v1` and
+`adaptive-path-select-v1`. Selection checks that the registration and
+qualification are still live. The selected lease lasts through the
+current session expiry and can follow an authenticated renewal on the
+same registration. Both legs refresh their binding, and revocation
+retires the lease. A lost registration returns the server to its
+qualified WebSocket when available. The client rechecks the selected
+path through authenticated control and reconciles the same lane.
+
+One client worker per parent qualifies relay standbys for its lanes
+after nonempty encrypted WireGuard traffic. It uses the existing
+coordinated selection for WebSocket failure recovery. Clients with
+performance feedback can also try a qualified relay on the anchor lane
+while a direct WebSocket or QUIC path is healthy. The comparison uses
+fresh delivery windows and small ICMP echoes addressed to the server's
+tunnel IP through the same WireGuard peer. These echoes need no new wire
+message or target connection. Relay bind acknowledgements measure only
+reachability to the relay.
+
+### Forwarding feedback
+
+Both adaptive participants can negotiate `adaptive-performance-v1`.
+The authenticated adaptive object carries `performance: true`. The
+lane's `/performance` resource requires the current bearer over TLS.
+It returns the authorization generation, committed primary and path
+epoch, elapsed microseconds since lane creation, bytes received at the
+server forwarding boundary, and bytes that boundary offered toward the
+client. The response aggregates only the currently granted tunnels and
+includes protocol framing where applicable. It carries no destination
+names, tunnel names, addresses, or per-flow identifiers.
+An anchor that negotiated `multilane-v1` and uses WSS may also report
+`wss_backlogged: true` for a live pressured server send queue. Missing
+or false means there is no such pressure signal in that response.
+
+The server accepts at most one request per second per lane and returns
+`429` with a one-second retry interval when throttled. A path change
+during the snapshot returns `409`. Responses use `Cache-Control: no-store`.
+Missing negotiation, unknown lanes, and revoked credentials use the
+existing lane admission checks.
+
+The client polls every five seconds during sustained traffic and pairs
+peer counters with local forwarding counters. It discards windows with
+a changed path, authorization generation, counter reset, or inconsistent
+elapsed time. Completed windows may survive bearer rotation when the
+forwarding grants are unchanged. A direction with no offered bytes is
+omitted. Feedback values grant no tunnel or destination access.
+
+The automatic WSS lane pilot takes another lane's feedback only during
+its trial. It combines counters for the same authenticated parent and
+discards measurement windows across a path, generation, or lane set
+change. The comparisons use total delivery at both forwarding
+boundaries. Each underlying congestion controller still governs its
+own socket on the shared link.
+
+### Coordinated stream carrier selection
+
+A QUIC-capable adaptive session can also negotiate
+`adaptive-path-select-v1`. The authenticated adaptive object then carries
+`path_select: true`. Either qualified stream carrier can be selected
+with `PUT /v1/transport/lanes/{lane_id}/primary` over the same HTTPS
+control connection. It uses the attach operation's strictly decoded
+JSON envelope and shared 32-request replay budget. Only `wss` and
+`quic-datagram` are eligible for this operation.
+
+The client opens a receive-only window of at most two seconds for the
+qualified candidate before sending the request. The server compares the
+bearer generation and expected path epoch with its live state. It
+commits a live qualified route and returns `selected_candidate_id` and
+`path_epoch`. The old route remains available for receive for up to two
+seconds. The client confirms the server's committed epoch before sending
+over the new route. If the reply is lost, the client can confirm the
+selection with the authenticated candidate resource within its
+six-second control budget, even after receive overlap expires.
+
+The most recent identical successful request can return its previous
+result while that result is current. Reusing a request ID with different
+fields fails. Invalid credentials return `401`, unavailable or
+unnegotiated resources return `404`, and stale state or unqualified
+paths return `409`. The request budget can return `429`. Renewal
+fences old requests. Selection changes the carrier for the existing
+WireGuard peer and preserves its authorization.
+
+Adaptive clients with negotiated feedback and selection can trial a
+qualified WSS or QUIC alternate under sustained demand. The measurement
+worker owns the decision. It waits for a stable incumbent, compares
+delivery at similar offered load, and keeps the candidate only when
+the confidence and improvement gates pass. It attempts to restore
+the incumbent if demand ends, evidence is inconclusive, or the
+improvement is too small. Each trial shares the lane's existing
+traffic and control request budgets.
+
+An observed WSS disconnect can trigger immediate selection of a
+qualified QUIC standby through the same authenticated operation.
+Recovery still requires a reachable HTTPS control origin and follows
+the existing lane and epoch checks. A returning WebSocket can attach
+as a standby after recovery. If QUIC qualification fails transiently or a
+standby is lost, a client with sustained forwarding demand can qualify
+an authorized QUIC standby again. One worker owns qualification and
+spaces retries with jittered backoff. Idle lanes do not retry. An
+explicit authorization denial stops retrying. Peers that did not
+negotiate coordinated selection use their existing recovery behavior.
+
+### HTTP carrier bootstrap
+
+`http2-carrier-v1` and `masque-carrier-v1` are independent optional extensions
+of `adaptive-carrier-v1`. The negotiated anchor advertises
+`http2_carrier: true` and/or `h3_carrier` as an IP address and port.
+HTTP/3 requires the adaptive MTU extension. The corresponding candidate
+IDs are `http2-framed` and `h3-connect-udp`. Retain the lane's existing
+key, tunnel address and grants. A client tries these candidates when the
+WSS upgrade is unavailable and an earlier permitted bootstrap option
+fails without a denial. New endpoints do not negotiate with child or
+native peers.
+
+Request the selected candidate through the existing authenticated
+`/v1/transport/lanes/{lane}/attach` operation with the current generation,
+epoch and request ID. The server returns a 15-second one-use ticket that
+expires earlier if the session does. Each HTTP candidate has a separate
+pending ticket slot. Both compete for one live attachment on the lane.
+The server rechecks the owner, generation and epoch when installing the
+route. Renewal clears pending tickets and extends a live route. Revocation
+removes the receive binding and closes the carrier.
+
+- HTTP/2 uses `POST /v1/transport/lanes/{lane}/http2` on the verified HTTPS
+  origin with the current bearer, `X-Ntwire-Attach-Ticket`, and
+  `Content-Type: application/vnd.ntwire.wg-datagrams`. TLS must negotiate
+  `h2`. A 200 reply with the same media type starts a full-duplex stream.
+  Each direction uses a big-endian 16-bit length followed by one full
+  encrypted WireGuard datagram. Length is 1–1,500 bytes, checked before
+  allocation. Partial records, empty lengths and oversized lengths close
+  the attachment. Writes are bounded and use the existing packet queue limits.
+- HTTP/3 uses RFC 9298 Extended CONNECT with `:protocol=connect-udp`,
+  `Capsule-Protocol: ?1`, and the exact target
+  `/.well-known/masque/udp/wireguard.invalid/51820/`. This reserved target
+  maps to the authorized lane on the local adaptive bind. The server
+  performs no DNS lookup or UDP target dial. Send the lane ID in
+  `Ntwire-Carrier-Lane` and the one-use ticket in `X-Ntwire-Attach-Ticket`.
+  Use one request per verified TLS connection and discard unregistered
+  datagram contexts. After the 200 response, send one encrypted-size
+  probe containing the SHA-256 digest of the ticket followed by zero
+  padding. The server bounds the probe to the lane's maximum ciphertext
+  length and echoes it once. The client checks an exact match before
+  admitting WireGuard traffic. Context ID zero prefixes every HTTP
+  Datagram. Capsule-only paths are outside this pilot. Early data is
+  disabled. [HTTP Datagrams](https://www.rfc-editor.org/rfc/rfc9297.html)
+  · [CONNECT-UDP](https://www.rfc-editor.org/rfc/rfc9298.html)
+
+Ordinary WireGuard authenticates all application datagrams. The HTTP
+carriers are startup alternatives and use the existing lane lifetime.
+The existing multipath wire formats and the Apple Network Relay
+application gateway retain their separate contracts.
+
+### QUIC DATAGRAM carrier
+
+The optional `quic-datagram-v1` capability requires an adaptive session
+with an agreed tunnel MTU. The authenticated adaptive object includes
+`quic_udp` with the dedicated literal address and port. The client
+attempts WSS first. An opted-in client that can use direct UDP can
+qualify QUIC in the background if WSS opens. When the WSS upgrade is
+unavailable, it can instead qualify QUIC before admitting application
+flows, including when the server has yet to commit a primary path.
+A WSS authentication or authorization denial aborts startup.
+
+The client fetches the authoritative candidate state and requests an
+attach ticket for `quic-datagram` using the current bearer, generation,
+and server path epoch. Once QUIC is committed, a returning WSS carrier
+can attach as a standby. WebSocket retries reuse the attach request ID
+within its generation and epoch. A returning standby can replace a stale
+pending ticket by requesting one for the current epoch.
+
+The connection uses TLS 1.3 and ALPN `ntwire-wg-dgram/1`. The client uses
+its established HTTPS certificate trust configuration and server name.
+The server uses its configured TLS certificate manager and requires QUIC
+source-address validation for new unvalidated clients. Attach and
+application data require completed handshake and DATAGRAM negotiation in
+both directions. Each connection has one client-opened bidirectional
+control stream with a bounded receive window. The QUIC configuration
+disables 0-RTT. The attach exchange has these fixed-size records.
+
+| Direction / channel | Bytes | Fields |
+|---|---:|---|
+| Client → server / control | 81 | Version byte 1, lane ID (16 raw bytes), single-use attach ticket (32 raw bytes), client nonce (32 bytes) |
+| Server → client / control | 35 | Ready byte 1, maximum encrypted datagram length (big-endian u16), server nonce (32 bytes) |
+| Client → server / DATAGRAM | Negotiated maximum | Client nonce followed by zeroes |
+| Server → client / DATAGRAM | Negotiated maximum | Server nonce followed by zeroes |
+| Client → server / control | 32 | Server nonce confirmation |
+| Server → client / control | 1 | Committed byte 2 or qualified standby byte 3, then stream FIN |
+
+The server validates the ticket before sending its proof. It checks the
+current session, bearer generation and expected path epoch before
+publishing the route. With `adaptive-path-select-v1` and an existing
+primary, byte 3 denotes a standby. A trial can select it through the
+coordinated operation. Cold startup and peers without the extension use
+byte 2 and commit during the proof exchange. The client publishes the
+route after verifying the result and checking the local generation
+and epoch. Failure during attach closes the QUIC connection. Active carrier failure retires
+that connection's route and reselects an available qualified WSS standby.
+Renewal keeps a committed QUIC path and invalidates pending tickets.
+Disconnect and revocation close the associated QUIC connection and
+remove its WireGuard peer.
+
+The size proof must fit the maximum complete ciphertext produced at the
+fixed lane MTU in both directions. That is 1,312 bytes for a 1,280-byte
+lane or 1,452 bytes for a 1,420-byte lane. QUIC's connection MTU discovery
+can limit the payload below these values. After commit, one RFC 9221
+DATAGRAM payload holds one complete encrypted WireGuard datagram.
+WireGuard uses its normal authentication and replay checks. The pilot
+limits each carrier to one lane. Sustained performance scoring is
+a separate rollout gate. [QUIC DATAGRAM](https://www.rfc-editor.org/rfc/rfc9221.html)
+
+### Direct UDP proof
+
+The experimental proof codec carries a reachability challenge. The
+candidate owner provisions a separate 32-byte proof key and a scope with
+parent, lane, and candidate identifiers, an authentication generation, and
+an expected path epoch. The proof codec uses the following layout.
+
+| Bytes | Field |
+|---|---|
+| 4 | ASCII `NTA` followed by version byte 1 |
+| 1 | Operation with probe 1 or ACK 2 |
+| 1 | Direction with upload 1 or download 2 |
+| 16 | Candidate identifier |
+| 16 | Challenge nonce |
+| 2 | Big-endian challenged datagram size |
+| Variable | Authenticated zero padding on a probe |
+| 16 | First 16 bytes of HMAC-SHA-256 |
+
+A probe occupies exactly the challenged UDP payload size, from 64 through
+1,500 bytes. An ACK occupies exactly 56 bytes and echoes the size field.
+The MAC covers the domain string `ntwire/adaptive-carrier/proof-v1`
+followed by a zero byte, the 16-byte parent and lane identifiers, the
+big-endian 64-bit generation and epoch, and all frame bytes before the tag.
+The sender accepts at most one correct ACK within five seconds from the
+same observed local port and remote address and port. Verification includes
+the nonce, challenged size, and direction. Loss or elapsed time provide
+measurement input to the controller.
+
+`adaptive-udp-v1` is an optional capability within `adaptive-carrier-v1`.
+A server with a dedicated adaptive UDP listener includes its configured
+literal `direct_udp` address in the authenticated adaptive object. A client
+with a compatible address family and direct-routing policy may qualify that
+candidate after it observes application demand. Direct UDP qualification alone leaves the primary selection in place.
+
+On both sides opting into `adaptive-udp-alt-v1`, the authenticated response
+adds `alternate_udp`, a different port on the primary listener's advertised
+IP. It requires `adaptive-udp-select-v1`. The candidates response lists
+`alternate-udp` alongside `direct-udp`. The alternate owns a separate
+UDP socket, proof registry and qualified endpoint. Older adaptive peers
+receive only the direct candidate.
+
+Both UDP operations use the attach request body with `candidate_id` set to
+`direct-udp` or the negotiated `alternate-udp`. Prepare requires a recent completed WireGuard handshake on the
+existing lane as proof of peer key possession. The response includes a
+random `offer_id`, a separate 32-byte `proof_key` (base64url without padding),
+`datagram_max` and `expires_in_ms`. At most one offer per lane is live for up
+to 15 seconds. The server shares the lane's bounded HTTPS replay window with
+WebSocket attachment requests. Retries of a pending request return the same
+offer. The client and server bind proofs to the authenticated generation and
+path epoch.
+
+The first full-size upload probe returns its shorter ACK. A second upload
+probe with a distinct nonce from the same observed tuple returns a full-size
+server download challenge instead of an ACK. The client's short download ACK
+completes the proof. This exchange bounds each UDP reply by the size of the
+request that triggered it. The dedicated sockets disable IP fragmentation.
+The pilot proves the whole ciphertext datagram in each direction. It tests
+1,452 bytes at the default 1,420-byte WireGuard MTU and 1,312 bytes at a
+negotiated 1,280-byte tunnel MTU.
+
+Qualify checks the same request ID, current generation and epoch, both UDP
+directions, and the size. It returns `candidate_id`, `datagram_max` and
+`expires_in_ms`. The standby expires after 30 seconds or at session expiry,
+whichever comes first. Only the selected carrier and its bounded receive
+overlap can deliver application datagrams. Renewal invalidates pending
+offers and standby proofs. Legacy relay paths keep their existing opaque
+packet forwarding protocol.
