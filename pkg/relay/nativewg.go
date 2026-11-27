@@ -109,7 +109,7 @@ func validWGPacket(b []byte) (typ uint32, receiver uint32, ok bool) {
 func (n *nativeWGRelay) serve() {
 	buf := make([]byte, wstransport.MaxRelayDatagram+64)
 	for {
-		size, addr, err := n.conn.ReadFrom(buf)
+		size, from, err := readRelayPacket(n.conn, buf)
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -123,12 +123,10 @@ func (n *nativeWGRelay) serve() {
 			n.log.Error("native WireGuard relay reader stopped", "error", err)
 			return
 		}
-		from, ok := addrPort(addr)
-		if !ok {
-			continue
+		if from.IsValid() {
+			// handle forwards synchronously and never retains the datagram.
+			n.handle(buf[:size], from)
 		}
-		b := append([]byte(nil), buf[:size]...)
-		n.handle(b, from)
 	}
 }
 func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
@@ -163,7 +161,7 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 				// Server traffic is activity too: keep the route alive.
 				route.expires = time.Now().Add(nativeWGRouteTTL)
 				n.indices[receiver] = route
-				_, _ = n.conn.WriteTo(b, net.UDPAddrFromAddrPort(route.client))
+				_, _ = writeRelayPacket(n.conn, b, route.client)
 			}
 			return
 		}
@@ -205,7 +203,7 @@ func (n *nativeWGRelay) handle(b []byte, from netip.AddrPort) {
 			n.indices[clientIdx] = route
 		}
 	}
-	_, _ = n.conn.WriteTo(b, net.UDPAddrFromAddrPort(server))
+	_, _ = writeRelayPacket(n.conn, b, server)
 }
 
 // recordPair remembers serverIdx -> clientIdx in a bounded FIFO. Called with

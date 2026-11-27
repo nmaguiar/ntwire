@@ -5,6 +5,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ntwire-server ./cmd/ntwire-server
 FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /src/LICENSE-QUIC-GO /usr/share/licenses/ntwire/LICENSE-QUIC-GO
+COPY --from=build /src/LICENSE-QPACK /usr/share/licenses/ntwire/LICENSE-QPACK
 COPY --from=build /out/ntwire-server /ntwire-server
 USER nonroot:nonroot
 ENV NTWIRE_LOG_FORMAT=json

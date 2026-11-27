@@ -38,6 +38,7 @@ var profileField = map[string]string{
 	"ip-version":         "IPVersion",
 	"transport":          "Transport",
 	"promote":            "Promote",
+	"adaptive-carrier":   "AdaptiveCarrier",
 	"tunnel-mtu":         "TunnelMTU",
 	"mtu-aware":          "MTUAware",
 	"browser-executable": "BrowserExecutable",
@@ -47,14 +48,15 @@ var profileField = map[string]string{
 
 // schemaField is one generated form field, as served by GET /api/schema.
 type schemaField struct {
-	Name     string `json:"name"`
-	Field    string `json:"field"`
-	Kind     string `json:"kind"`
-	Label    string `json:"label"`
-	Help     string `json:"help,omitempty"`
-	Group    string `json:"group"`
-	Widget   string `json:"widget"`
-	Advanced bool   `json:"advanced"`
+	Name      string `json:"name"`
+	Field     string `json:"field"`
+	Kind      string `json:"kind"`
+	Label     string `json:"label"`
+	Help      string `json:"help,omitempty"`
+	Group     string `json:"group"`
+	Widget    string `json:"widget"`
+	Advanced  bool   `json:"advanced"`
+	DefaultOn bool   `json:"defaultOn,omitempty"`
 }
 
 // profileSchema is the settings form's field list, derived from
@@ -69,6 +71,7 @@ func profileSchema() []schemaField {
 		out[i] = schemaField{
 			Name: f.Name, Field: f.ConfigField, Kind: f.Kind,
 			Label: f.Label, Help: f.Help, Group: f.Group, Widget: f.Widget, Advanced: f.Advanced,
+			DefaultOn: f.DefaultOn,
 		}
 	}
 	return out

@@ -132,7 +132,7 @@ func (c *Connection) EgressCandidate(member egressrouter.Member) egressrouter.Ca
 	}
 	state := c.State()
 	candidate := egressrouter.Candidate{DestinationBinding: grant.destinationBinding, UDP: grant.udp, NumericDomain: grant.numericDomain, Preparation: true, Dialer: grant, Generation: grant.generation, Transport: string(state.Transport.Mode),
-		ControlMillis: state.LatencyMillis, Reconnections: state.Reconnections}
+		ControlMillis: state.LatencyMillis, Reconnections: state.Reconnections, Performance: c.egressPathPerformance(grant)}
 	for _, p := range state.Transport.Paths {
 		if p.Primary || string(p.Kind) == string(state.Transport.Mode) {
 			candidate.RTT, candidate.Loss = p.RTT, p.Loss
@@ -164,6 +164,11 @@ func (g *egressGrant) valid() error {
 	c := g.owner
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return g.validLocked()
+}
+
+func (g *egressGrant) validLocked() error {
+	c := g.owner
 	if c.closed || c.Stack == nil {
 		return &egressrouter.Failure{Class: "transport", Retry: true}
 	}
@@ -183,6 +188,16 @@ func (g *egressGrant) valid() error {
 	return nil
 }
 
+func (g *egressGrant) acquireLane() (flowLane, error) {
+	c := g.owner
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := g.validLocked(); err != nil {
+		return flowLane{}, err
+	}
+	return c.acquireFlowLaneLocked(), nil
+}
+
 func (g *egressGrant) DialDestination(ctx context.Context, dst egressrouter.Destination) (net.Conn, error) {
 	if err := egressrouter.CheckNumericDomain(dst, g.numericDomain); err != nil {
 		return nil, err
@@ -198,7 +213,8 @@ func (g *egressGrant) DialDestination(ctx context.Context, dst egressrouter.Dest
 // Prepare opens only the virtual TCP service. No SOCKS request or destination
 // is sent until the router commits to this candidate.
 func (g *egressGrant) Prepare(ctx context.Context) (egressrouter.PreparedEgress, error) {
-	if err := g.valid(); err != nil {
+	lane, err := g.acquireLane()
+	if err != nil {
 		return nil, err
 	}
 	setup, cancel := context.WithCancel(ctx)
@@ -206,7 +222,7 @@ func (g *egressGrant) Prepare(ctx context.Context) (egressrouter.PreparedEgress,
 	stopSetup := context.AfterFunc(g.lifetime, cancel)
 	defer stopSetup()
 	started := time.Now()
-	conn, err := g.stack.DialContext(setup, "tcp", g.target.String())
+	conn, err := lane.dialOwned(setup, "tcp", g.target.String())
 	if err != nil {
 		if invalid := g.valid(); invalid != nil {
 			return nil, invalid
@@ -217,7 +233,8 @@ func (g *egressGrant) Prepare(ctx context.Context) (egressrouter.PreparedEgress,
 		return nil, &egressrouter.Failure{Class: "transport", Stage: "virtual_service", Retry: true}
 	}
 	stop := context.AfterFunc(g.lifetime, func() { _ = conn.Close() })
-	return &preparedGrant{grant: g, conn: &grantConn{Conn: conn, stop: stop, timing: egressrouter.SetupTiming{Service: time.Since(started)}}}, nil
+	return &preparedGrant{grant: g, conn: &grantConn{Conn: conn, stop: stop, traffic: lane.traffic(),
+		timing: egressrouter.SetupTiming{Service: time.Since(started)}}}, nil
 }
 
 type preparedGrant struct {
@@ -298,6 +315,7 @@ func (p *preparedGrant) DialDestination(ctx context.Context, dst egressrouter.De
 		return nil, err
 	}
 	conn := p.conn
+	conn.Conn = trackAdaptiveTraffic(conn.Conn, conn.traffic)
 	conn.timing.SOCKS = time.Since(started)
 	p.conn = nil
 	return conn, nil
@@ -311,8 +329,9 @@ func isEgressTimeout(ctx context.Context, err error) bool {
 type grantConn struct {
 	timing egressrouter.SetupTiming
 	net.Conn
-	once sync.Once
-	stop func() bool
+	once    sync.Once
+	stop    func() bool
+	traffic *adaptiveTraffic
 }
 
 func (c *grantConn) Close() error      { c.once.Do(func() { c.stop() }); return c.Conn.Close() }
@@ -326,14 +345,21 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 	if !g.udp {
 		return nil, &egressrouter.Failure{Class: "udp_unsupported", Code: 7, Retry: true}
 	}
-	if err := g.valid(); err != nil {
+	lane, err := g.acquireLane()
+	if err != nil {
 		return nil, err
 	}
+	committed := false
+	defer func() {
+		if !committed {
+			lane.release()
+		}
+	}()
 	setup, cancel := context.WithCancel(ctx)
 	defer cancel()
 	stopSetup := context.AfterFunc(g.lifetime, cancel)
 	defer stopSetup()
-	control, err := g.stack.DialContext(setup, "tcp", g.target.String())
+	control, err := lane.stack.DialContext(setup, "tcp", g.target.String())
 	if err != nil {
 		if invalid := g.valid(); invalid != nil {
 			return nil, invalid
@@ -344,7 +370,6 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 		return nil, &egressrouter.Failure{Class: "transport", Stage: "virtual_service", Retry: true}
 	}
 	stopControl := context.AfterFunc(g.lifetime, func() { _ = control.Close() })
-	committed := false
 	defer func() {
 		if !committed {
 			stopControl()
@@ -373,7 +398,7 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 		return nil, &egressrouter.Failure{Class: "invalid_udp_relay", Stage: "udp_associate"}
 	}
 	target := netip.AddrPortFrom(virtual, relay.Port())
-	udp, err := g.stack.DialContext(setup, "udp", target.String())
+	udp, err := lane.stack.DialContext(setup, "udp", target.String())
 	if err != nil {
 		return nil, &egressrouter.Failure{Class: "udp_associate_failed"}
 	}
@@ -381,7 +406,7 @@ func (g *egressGrant) AssociateUDP(ctx context.Context) (net.Conn, error) {
 		_ = udp.Close()
 		return nil, &egressrouter.Failure{Class: "authorization", Code: 2, Stage: "udp_associate"}
 	}
-	association := &udpAssociation{Conn: udp, control: control, stop: stopControl}
+	association := &udpAssociation{Conn: trackAdaptiveTraffic(udp, lane.traffic()), control: control, stop: stopControl, lane: lane}
 	go func() {
 		_, _ = io.Copy(io.Discard, control)
 		_ = association.Close()
@@ -395,10 +420,16 @@ type udpAssociation struct {
 	control net.Conn
 	stop    func() bool
 	once    sync.Once
+	lane    flowLane
 }
 
 func (c *udpAssociation) Close() error {
-	c.once.Do(func() { c.stop(); _ = c.control.Close(); _ = c.Conn.Close() })
+	c.once.Do(func() {
+		c.stop()
+		_ = c.control.Close()
+		_ = c.Conn.Close()
+		c.lane.release()
+	})
 	return nil
 }
 

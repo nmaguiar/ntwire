@@ -6,8 +6,10 @@ import (
 	"log/slog"
 	"net"
 	"reflect"
+	"strconv"
 	"sync"
 
+	"github.com/coder/websocket"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
@@ -57,9 +59,66 @@ func (p *RelayPool) nativeSet() []NativeAssociation {
 }
 
 type relayPoolMember struct {
-	agent      *RelayAgent
-	registered bool
-	response   protocol.RelayRegisterResponse
+	agent                  *RelayAgent
+	registered             bool
+	response               protocol.RelayRegisterResponse
+	udp                    *relayUDPRegistration
+	performanceDisabled    bool
+	performanceAllocations int // includes pending work and retired registrations, under pool.mu
+}
+
+// Each successful registration has its own identity, including when a relay
+// reconnects with the same endpoint. A catalog offer binds to this identity.
+type relayUDPRegistration struct {
+	agent         *RelayAgent
+	addr          string
+	pool          *RelayPool
+	owner         *relayPoolMember
+	ws            *websocket.Conn
+	performanceID string
+}
+
+func (r *relayUDPRegistration) current() bool {
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	return r.owner.udp == r
+}
+
+const relayCatalogLimit = protocol.MaxRelayCandidates
+
+func (p *RelayPool) udpRegistrations(performance bool) []*relayUDPRegistration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return nil
+	}
+	var registrations []*relayUDPRegistration
+	for _, member := range p.members {
+		if member.udp == nil || (performance && (member.performanceDisabled || member.udp.performanceID == "")) {
+			continue
+		}
+		registrations = append(registrations, member.udp)
+		if len(registrations) == relayCatalogLimit {
+			break
+		}
+	}
+	return registrations
+}
+
+func (r *relayUDPRegistration) reservePerformance(limit int) bool {
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	if r.owner.udp != r || r.owner.performanceDisabled || r.owner.performanceAllocations >= limit {
+		return false
+	}
+	r.owner.performanceAllocations++
+	return true
+}
+
+func (r *relayUDPRegistration) releasePerformance() {
+	r.pool.mu.Lock()
+	defer r.pool.mu.Unlock()
+	r.owner.performanceAllocations--
 }
 
 // score ranks a registered member for preferred selection: lower is better.
@@ -110,7 +169,7 @@ func NewRelayPool(cfg RelayConfig, log *slog.Logger) (*RelayPool, error) {
 			_ = p.Close()
 			return nil, err
 		}
-		member := &relayPoolMember{agent: a}
+		member := &relayPoolMember{agent: a, performanceDisabled: endpoint.DisablePerformanceRouting}
 		a.OnRegistration = func(resp protocol.RelayRegisterResponse) {
 			p.update(member, true, resp)
 		}
@@ -155,6 +214,10 @@ func (p *RelayPool) Run(ctx context.Context) {
 }
 
 func (p *RelayPool) update(member *relayPoolMember, registered bool, response protocol.RelayRegisterResponse) {
+	var control *websocket.Conn
+	if registered {
+		control = member.agent.controlConnection()
+	}
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -171,6 +234,16 @@ func (p *RelayPool) update(member *relayPoolMember, registered bool, response pr
 	oldSet := p.nativeSet()
 	oldPreferred := p.preferred
 	member.registered, member.response = registered, response
+	member.udp = nil
+	if registered {
+		addr := response.UDPRelayAddr
+		host, port, err := net.SplitHostPort(addr)
+		number, portErr := strconv.ParseUint(port, 10, 16)
+		if err == nil && host != "" && portErr == nil && number != 0 {
+			id, _ := randomRequestID()
+			member.udp = &relayUDPRegistration{agent: member.agent, addr: addr, pool: p, owner: member, ws: control, performanceID: id}
+		}
+	}
 	preferred := p.choosePreferred(oldPreferred)
 	p.preferred = preferred
 	newSet := p.nativeSet()
@@ -282,6 +355,7 @@ func (p *RelayPool) Close() error {
 	p.preferred = nil
 	for _, member := range p.members {
 		member.registered = false
+		member.udp = nil
 	}
 	onReflect, onUDP, onNative := p.OnReflectAddr, p.OnUDPRelayAddr, p.OnNativeWireGuard
 	onSet := p.OnNativeWireGuardSet

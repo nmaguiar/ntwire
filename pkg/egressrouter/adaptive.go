@@ -124,6 +124,16 @@ func (a *admission) take(counter *atomic.Int64, setup bool, now time.Time) bool 
 	return claim(counter, a.current.Connections)
 }
 
+func (a *admission) takeSpareSetup(counter *atomic.Int64, now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.ceilings.Auto {
+		a.adjust(now)
+	}
+	// Keep at least half of the available setup slots for live requests.
+	return counter.Load() == 1 && claim(counter, a.current.ConcurrentAttempts/2)
+}
+
 func (a *admission) observe(start time.Time, err error) {
 	if !a.ceilings.Auto {
 		return

@@ -2,21 +2,24 @@ package server
 
 import (
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 )
 
 func TestSessionsExpireAndCount(t *testing.T) {
-	s := NewSessions()
-	s.Create(CreateParams{Method: "ssh", Identity: "fp", Fingerprint: "fp", WireGuardPublicKey: "wg", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "a"}}, TTL: time.Millisecond})
-	if s.CountIdentity("ssh", "fp", "", "") != 1 {
-		t.Fatal("count")
-	}
-	time.Sleep(2 * time.Millisecond)
-	if len(s.Reap()) != 1 {
-		t.Fatal("reap")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		s := NewSessions()
+		s.Create(CreateParams{Method: "ssh", Identity: "fp", Fingerprint: "fp", WireGuardPublicKey: "wg", TunnelIP: "100.64.0.2", Tunnels: []protocol.Tunnel{{Name: "a"}}, TTL: time.Millisecond})
+		if got := s.CountIdentity("ssh", "fp", "", ""); got != 1 {
+			t.Fatalf("live session count = %d, want 1", got)
+		}
+		time.Sleep(2 * time.Millisecond)
+		if got := len(s.Reap()); got != 1 {
+			t.Fatalf("reaped session count = %d, want 1", got)
+		}
+	})
 }
 
 func TestSessionsDeleteByID(t *testing.T) {
@@ -95,7 +98,7 @@ func TestSessionRenewalPreservesCurrentPeerLifetime(t *testing.T) {
 	params := CreateParams{TunnelIP: "100.64.0.2", Identity: "test", Method: "ssh", TTL: time.Minute}
 	original := s.Create(params)
 	owner, _ := s.principalForIP(params.TunnelIP)
-	renewed, ok := s.renew(original.Token, []protocol.Tunnel{{Name: "current"}}, time.Minute, protocol.ClientInfo{})
+	renewed, ok := s.renew(original.Token, []protocol.Tunnel{{Name: "current"}}, time.Minute, protocol.ClientInfo{}, nil)
 	if !ok || renewed.ID == original.ID || renewed.Token == original.Token {
 		t.Fatal("renewal did not rotate the control-plane credentials")
 	}
@@ -106,7 +109,7 @@ func TestSessionRenewalPreservesCurrentPeerLifetime(t *testing.T) {
 		t.Fatal("renewal lost the peer lifetime or the new grants")
 	}
 	s.Create(params)
-	if _, ok := s.renew(renewed.Token, nil, time.Minute, protocol.ClientInfo{}); ok {
+	if _, ok := s.renew(renewed.Token, nil, time.Minute, protocol.ClientInfo{}, nil); ok {
 		t.Fatal("a superseded token regained IP ownership by renewing")
 	}
 	if p, ok := s.principalForIP(params.TunnelIP); !ok || p.peerLifetime == owner.peerLifetime {

@@ -327,6 +327,7 @@ func (r *Relay) Start() error {
 	}
 	if udpRelayLn != nil {
 		dr := newDatagramRelay(udpSessions, udpRelayLn, r.cfg.Limits.MaxNewConnsPerMinute, r.log)
+		dr.setBandwidthLimit(r.cfg.Limits.UDPRelayBytesPerSecond)
 		go udpSessions.runIdleSweep(udpSweepStop, r.cfg.Limits.UDPRelayIdleTimeout)
 		go dr.serveClientLeg()
 		for port, pc := range udpRelayPool {

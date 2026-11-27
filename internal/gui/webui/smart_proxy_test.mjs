@@ -287,6 +287,6 @@ test('Direct TCP and UDP traffic contribute once to the aggregate', () => {
 
 test('Strategy guide covers every selection strategy the backend accepts', () => {
   assert.deepEqual(strategyGuide.map(([value]) => value).sort(),
-    ['destination-aware', 'fastest-healthy', 'priority', 'round-robin', 'sticky-fastest']);
+    ['adaptive', 'destination-aware', 'fastest-healthy', 'priority', 'round-robin', 'sticky-fastest']);
   for (const entry of strategyGuide) assert.ok(entry.every(text => text.length > 0));
 });

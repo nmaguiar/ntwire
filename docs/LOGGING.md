@@ -154,6 +154,13 @@ step above. Because the JSON already uses `@timestamp`/`@version`, no
 additional `[FILTER] modify` step is needed to reshape fields for
 Logstash-compatible consumers.
 
+## Benchmark diagnostics
+
+`ntwire benchmark --json` reports local throughput, response latency and
+process resources. Add `--sample-wss` for client and server queue samples.
+These measurements use a disposable fixture and do not require debug logging.
+See [Performance benchmarks](PERFORMANCE.md).
+
 ## Terminal colors and symbols
 
 `ntwire`, `ntwire-relay`, and `ntwire-server` colorize interactive text

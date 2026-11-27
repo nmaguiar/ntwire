@@ -244,6 +244,13 @@ var registry = []Option{
 		Help: "Leave empty for 1420. Lower it (for example 1380) on links with extra encapsulation such as PPPoE or another VPN, so full-size tunnel packets fit. With MTU-aware path selection, the required probe size follows this value.",
 	},
 	{
+		Name: "adaptive-carrier", Kind: KindBool, Usage: "automatically negotiate adaptive WireGuard carriers",
+		Bind:    []Binding{{Command: "connect"}},
+		Default: boolDefault(func(s client.Settings) bool { return s.AdaptiveCarrier }),
+		Label:   "Adaptive WireGuard carriers", Group: "🛠️ Advanced", Widget: WidgetToggle, Advanced: true,
+		Help: "On by default for verified HTTPS when the server allows it. Forced and legacy transport options take precedence.",
+	},
+	{
 		Name: "promote", Kind: KindBool, Usage: "move a healthy session from WebSocket to a proven faster UDP path, coordinated with the server",
 		Bind:    []Binding{{Command: "connect"}},
 		Default: boolDefault(func(s client.Settings) bool { return s.Promote }),
@@ -365,6 +372,7 @@ type Field struct {
 	Group       string
 	Widget      string
 	Advanced    bool
+	DefaultOn   bool
 }
 
 func kindName(k Kind) string {
@@ -396,6 +404,7 @@ func Fields(command string, fieldMap map[string]string) []Field {
 		out = append(out, Field{
 			Name: o.Name, ConfigField: field, Kind: kindName(o.Kind),
 			Label: o.Label, Help: o.Help, Group: o.Group, Widget: string(o.Widget), Advanced: o.Advanced,
+			DefaultOn: o.Kind == KindBool && o.Default != nil && o.Default(Defaults{Settings: client.DefaultSettings()}) == "true",
 		})
 	}
 	return out

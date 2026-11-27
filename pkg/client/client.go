@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 	"github.com/nmaguiar/ntwire/pkg/browseropen"
 	"github.com/nmaguiar/ntwire/pkg/buildinfo"
 	"github.com/nmaguiar/ntwire/pkg/client/webui"
@@ -133,6 +134,21 @@ type Options struct {
 	NoWebUI          bool
 	StatusFile       string
 	UseWebSocket     bool
+	// AdaptiveCarrier offers the negotiated carrier engine.
+	AdaptiveCarrier bool
+	// AdaptiveFallback allows one fresh legacy WireGuard session if the
+	// authenticated adaptive carrier cannot be reached.
+	AdaptiveFallback bool
+	// AdaptiveQUICDiagnostic selects a qualified QUIC path immediately for
+	// controlled transport comparisons. Normal connections use demand trials.
+	AdaptiveQUICDiagnostic bool
+	// QUICSendWait enables experimental admission in controlled fixtures.
+	QUICSendWait *time.Duration
+	// renewInterval is set by tests that drive renewal explicitly.
+	renewInterval     time.Duration
+	quicRetryInterval time.Duration // tests with a controlled transient attach failure
+	// SampleWSS enables diagnostic queue sampling for controlled benchmarks.
+	SampleWSS bool
 
 	// NoDirectUpgrade disables the opportunistic upgrade ladder
 	// (directupgrade.go) that a WebSocket-fallback session otherwise
@@ -851,12 +867,121 @@ func transportCapabilitiesFor(o Options) []string {
 	if o.Promote {
 		caps = append(caps, protocol.CapabilityPathPromoteV1)
 	}
+	if o.AdaptiveCarrier && !o.Insecure && !o.UseWebSocket && !o.Promote && !o.UDPAlt && !o.MTUAware && (o.Transport == "" || o.Transport == "auto") {
+		caps = append(caps, protocol.CapabilityAdaptiveCarrierV1, protocol.CapabilityAdaptiveMTUV1, protocol.CapabilityAdaptivePerformanceV1, protocol.CapabilityMultiLaneV1, protocol.CapabilityHTTP2CarrierV1)
+		if !o.NoDirectUpgrade && o.HTTPSProxy == "" {
+			caps = append(caps, protocol.CapabilityAdaptiveUDPV1, protocol.CapabilityQUICDatagramV1, protocol.CapabilityMASQUECarrierV1,
+				protocol.CapabilityAdaptivePathSelectV1, protocol.CapabilityAdaptiveRelayCatalogV1, protocol.CapabilityAdaptiveRelayUDPV1,
+				protocol.CapabilityAdaptiveRelaySelectV1, protocol.CapabilityAdaptiveUDPSelectV1, protocol.CapabilityAdaptiveUDPAltV1,
+				protocol.CapabilityLaneCarriersV1, protocol.CapabilityRelayPerformanceV1)
+		}
+	}
 	return caps
 }
 
 func validateAuthResponseCapabilities(r protocol.AuthResponse, o Options) error {
-	if err := protocol.ValidateRequiredCapabilities(transportCapabilitiesFor(o), r.RequiredTransportCapabilities); err != nil {
+	offered := transportCapabilitiesFor(o)
+	if err := protocol.ValidateRequiredCapabilities(offered, r.RequiredTransportCapabilities); err != nil {
 		return fmt.Errorf("server requires an unsupported transport capability: %w", err)
+	}
+	adaptive := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveCarrierV1)
+	adaptiveUDP := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveUDPV1)
+	udpSelect := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveUDPSelectV1)
+	udpAlt := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveUDPAltV1)
+	adaptiveMTU := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveMTUV1)
+	adaptiveQUIC := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityQUICDatagramV1)
+	adaptiveHTTP2 := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityHTTP2CarrierV1)
+	adaptiveHTTP3 := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMASQUECarrierV1)
+	adaptivePerformance := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptivePerformanceV1)
+	pathSelect := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptivePathSelectV1)
+	relayCatalog := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveRelayCatalogV1)
+	relayUDP := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveRelayUDPV1)
+	relaySelect := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityAdaptiveRelaySelectV1)
+	relayPerformance := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityRelayPerformanceV1)
+	multiLane := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultiLaneV1)
+	laneCarriers := hasTransportCapability(r.TransportCapabilities, protocol.CapabilityLaneCarriersV1)
+	if (adaptiveUDP || udpSelect || udpAlt || adaptiveMTU || adaptiveQUIC || adaptiveHTTP2 || adaptiveHTTP3 || adaptivePerformance || pathSelect || relayCatalog || relayUDP || relaySelect || relayPerformance || multiLane || laneCarriers) && !adaptive {
+		return fmt.Errorf("adaptive extensions require an adaptive session")
+	}
+	if adaptive != (r.Adaptive != nil) {
+		return fmt.Errorf("inconsistent adaptive carrier negotiation")
+	}
+	if adaptive {
+		if adaptiveHTTP3 != (r.Adaptive.HTTP3 != "") || (adaptiveHTTP3 && (!adaptiveMTU || !hasTransportCapability(offered, protocol.CapabilityMASQUECarrierV1))) {
+			return errors.New("invalid adaptive HTTP/3 carrier negotiation")
+		}
+		if adaptiveHTTP2 != r.Adaptive.HTTP2 || (adaptiveHTTP2 && !hasTransportCapability(offered, protocol.CapabilityHTTP2CarrierV1)) {
+			return fmt.Errorf("inconsistent adaptive HTTP/2 negotiation")
+		}
+		if r.Adaptive.Child || (multiLane && (!hasTransportCapability(offered, protocol.CapabilityMultiLaneV1) ||
+			r.Adaptive.MaxLanes < 2 || r.Adaptive.MaxLanes > protocol.MaxAdaptiveLanes)) ||
+			(!multiLane && r.Adaptive.MaxLanes != 0) {
+			return fmt.Errorf("inconsistent adaptive lane negotiation")
+		}
+		if laneCarriers != r.Adaptive.LaneCarriers || (laneCarriers && (!multiLane || !pathSelect ||
+			(!udpSelect && !adaptiveQUIC) || !hasTransportCapability(offered, protocol.CapabilityLaneCarriersV1))) {
+			return fmt.Errorf("inconsistent child lane carrier negotiation")
+		}
+		if pathSelect != r.Adaptive.PathSelect || (pathSelect && ((!adaptiveQUIC && !relaySelect && !udpSelect) || !hasTransportCapability(offered, protocol.CapabilityAdaptivePathSelectV1))) {
+			return fmt.Errorf("inconsistent adaptive primary selection negotiation")
+		}
+		if relayCatalog != r.Adaptive.RelayCatalog || (relayCatalog && !hasTransportCapability(offered, protocol.CapabilityAdaptiveRelayCatalogV1)) {
+			return fmt.Errorf("inconsistent adaptive relay catalog negotiation")
+		}
+		if relayUDP != r.Adaptive.RelayUDP || (relayUDP && (!relayCatalog || !hasTransportCapability(offered, protocol.CapabilityAdaptiveRelayUDPV1))) {
+			return fmt.Errorf("inconsistent adaptive UDP relay negotiation")
+		}
+		if relaySelect != r.Adaptive.RelaySelect || (relaySelect && (!relayUDP || !pathSelect || !hasTransportCapability(offered, protocol.CapabilityAdaptiveRelaySelectV1))) {
+			return fmt.Errorf("inconsistent adaptive relay selection negotiation")
+		}
+		if relayPerformance != r.Adaptive.RelayPerformance || (relayPerformance &&
+			(!relaySelect || !adaptivePerformance || !hasTransportCapability(offered, protocol.CapabilityRelayPerformanceV1))) {
+			return fmt.Errorf("inconsistent relay performance negotiation")
+		}
+		if adaptiveMTU != (r.Adaptive.TunnelMTU != 0) || (adaptiveMTU && (!hasTransportCapability(offered, protocol.CapabilityAdaptiveMTUV1) ||
+			r.Adaptive.TunnelMTU < wstransport.MinTunnelMTU || r.Adaptive.TunnelMTU > wstransport.DefaultTunnelMTU || (o.TunnelMTU != 0 && o.TunnelMTU != r.Adaptive.TunnelMTU))) {
+			return fmt.Errorf("inconsistent adaptive tunnel MTU negotiation")
+		}
+		if adaptivePerformance != r.Adaptive.Performance || (adaptivePerformance && !hasTransportCapability(offered, protocol.CapabilityAdaptivePerformanceV1)) {
+			return fmt.Errorf("inconsistent adaptive performance negotiation")
+		}
+		if adaptiveUDP != (r.Adaptive.DirectUDP != "") || (adaptiveUDP && !hasTransportCapability(offered, protocol.CapabilityAdaptiveUDPV1)) {
+			return fmt.Errorf("inconsistent adaptive UDP negotiation")
+		}
+		if udpSelect != r.Adaptive.UDPSelect || (udpSelect && (!adaptiveUDP || !adaptivePerformance || !pathSelect || !hasTransportCapability(offered, protocol.CapabilityAdaptiveUDPSelectV1))) {
+			return fmt.Errorf("inconsistent adaptive direct UDP selection negotiation")
+		}
+		if adaptiveUDP {
+			if _, ok := adaptiveUDPAddress(r.Adaptive.DirectUDP); !ok {
+				return fmt.Errorf("invalid adaptive UDP endpoint")
+			}
+		}
+		if udpAlt != (r.Adaptive.AlternateUDP != "") || (udpAlt && (!udpSelect || !hasTransportCapability(offered, protocol.CapabilityAdaptiveUDPAltV1))) {
+			return fmt.Errorf("inconsistent adaptive alternate UDP negotiation")
+		}
+		if udpAlt {
+			primary, _ := adaptiveUDPAddress(r.Adaptive.DirectUDP)
+			alternate, ok := adaptiveUDPAddress(r.Adaptive.AlternateUDP)
+			if !ok || primary.Addr() != alternate.Addr() || primary.Port() == alternate.Port() {
+				return fmt.Errorf("invalid adaptive alternate UDP endpoint")
+			}
+		}
+		if adaptiveQUIC != (r.Adaptive.QUIC != "") || (adaptiveQUIC && (!adaptiveMTU || !hasTransportCapability(offered, protocol.CapabilityQUICDatagramV1))) {
+			return fmt.Errorf("inconsistent adaptive QUIC negotiation")
+		}
+		if adaptiveQUIC {
+			if _, ok := adaptiveUDPAddress(r.Adaptive.QUIC); !ok {
+				return fmt.Errorf("invalid adaptive QUIC endpoint")
+			}
+		}
+		if !hasTransportCapability(offered, protocol.CapabilityAdaptiveCarrierV1) || r.Multipath || r.UDP != "" || r.UDPAlt != "" || r.WebSocket != "" ||
+			hasTransportCapability(r.TransportCapabilities, protocol.CapabilityMultipathV3) ||
+			hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathMTUV1) ||
+			hasTransportCapability(r.TransportCapabilities, protocol.CapabilityPathPromoteV1) ||
+			!protocol.ValidCarrierID(r.Adaptive.ParentID) || !protocol.ValidCarrierID(r.Adaptive.LaneID) ||
+			r.Adaptive.AuthGeneration != 1 || r.Adaptive.PathEpoch != 0 || r.Token == "" || r.TTLSeconds <= 0 {
+			return fmt.Errorf("invalid adaptive carrier response")
+		}
 	}
 	return nil
 }
@@ -1042,33 +1167,36 @@ type Connection struct {
 	egressTimer  *time.Timer
 	egressDenied bool
 
-	Response       protocol.AuthResponse
-	Stack          *wgnet.Stack
-	tunnels        []*localTunnel
-	LocalAddresses []string
-	token, base    string
-	mu             sync.Mutex
-	networkMu      sync.Mutex   // reconnect and listener replacement
-	transportMu    sync.RWMutex // carrier setup versus replacement
-	network        *connectionNetwork
-	networkKey     string
-	dataStop       chan struct{}
-	closed         bool
-	info           protocol.ClientInfo
-	http           *http.Client
-	ports          map[string]int
-	stop           chan struct{}
-	ui             *http.Server
-	UIURL          string
-	statusFile     string
-	keyPath        string
-	bindAddr       string // resolved from options.BindAddress; see resolveBindAddress
-	options        Options
-	method, issuer string // remembers how this session authenticated, for reconnect
-	log            *slog.Logger
-	reconnections  atomic.Uint64
-	latencyMillis  atomic.Uint64
-	transport      atomic.Uint32
+	Response           protocol.AuthResponse
+	Stack              *wgnet.Stack
+	tunnels            []*localTunnel
+	LocalAddresses     []string
+	token, base        string
+	mu                 sync.Mutex
+	networkMu          sync.Mutex   // reconnect and listener replacement
+	transportMu        sync.RWMutex // carrier setup versus replacement
+	network            *connectionNetwork
+	childLanes         map[string]*connectionNetwork
+	laneRosterRevision uint64
+	laneDrainRevision  uint64
+	networkKey         string
+	dataStop           chan struct{}
+	closed             bool
+	info               protocol.ClientInfo
+	http               *http.Client
+	ports              map[string]int
+	stop               chan struct{}
+	ui                 *http.Server
+	UIURL              string
+	statusFile         string
+	keyPath            string
+	bindAddr           string // resolved from options.BindAddress; see resolveBindAddress
+	options            Options
+	method, issuer     string // remembers how this session authenticated, for reconnect
+	log                *slog.Logger
+	reconnections      atomic.Uint64
+	latencyMillis      atomic.Uint64
+	transport          atomic.Uint32
 	// transportReason explains why the initial transport isn't direct UDP
 	// (see selectTransport); empty when it is. Surfaced by TransportReason
 	// so the connect CLI can tell the user why, not just that.
@@ -1132,6 +1260,9 @@ const (
 	// path throughout.
 	transportUDPRelay
 	transportUDPRelayReflector
+	transportQUICDatagram
+	transportHTTP2Framed
+	transportHTTP3ConnectUDP
 )
 
 func (t connectionTransport) String() string {
@@ -1146,6 +1277,12 @@ func (t connectionTransport) String() string {
 		return "UDP via relay"
 	case transportUDPRelayReflector:
 		return "UDP direct via relay reflector"
+	case transportQUICDatagram:
+		return "QUIC DATAGRAM"
+	case transportHTTP3ConnectUDP:
+		return "HTTP/3 CONNECT-UDP"
+	case transportHTTP2Framed:
+		return "HTTP/2 framed"
 	default:
 		return "unknown"
 	}
@@ -1163,6 +1300,9 @@ const (
 	TransportWebSocketRelay    TransportMode = "websocket_relay"
 	TransportUDPRelay          TransportMode = "udp_relay"
 	TransportUDPRelayReflector TransportMode = "udp_relay_reflector"
+	TransportQUICDatagram      TransportMode = "quic_datagram"
+	TransportHTTP3ConnectUDP   TransportMode = "h3_connect_udp"
+	TransportHTTP2Framed       TransportMode = "http2_framed"
 )
 
 func (t connectionTransport) mode() TransportMode {
@@ -1177,6 +1317,12 @@ func (t connectionTransport) mode() TransportMode {
 		return TransportUDPRelay
 	case transportUDPRelayReflector:
 		return TransportUDPRelayReflector
+	case transportQUICDatagram:
+		return TransportQUICDatagram
+	case transportHTTP3ConnectUDP:
+		return TransportHTTP3ConnectUDP
+	case transportHTTP2Framed:
+		return TransportHTTP2Framed
 	default:
 		return TransportUnknown
 	}
@@ -1196,7 +1342,37 @@ func initialTransport(useWS bool, udp string) connectionTransport {
 // human-readable form (e.g. "UDP direct", "WSS"), including any
 // opportunistic direct-UDP upgrade directupgrade.go has since completed.
 func (c *Connection) ConnectionType() string {
-	return connectionTransport(c.transport.Load()).String()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.currentTransportLocked().String()
+}
+
+func (c *Connection) currentTransportLocked() connectionTransport {
+	if c.network != nil && c.network.adaptive != nil {
+		a := c.network.adaptive
+		primary, _, _ := a.bind.LaneState(a.lane)
+		switch primary {
+		case protocol.CarrierDirectUDP, protocol.CarrierAlternateUDP:
+			return transportUDPDirect
+		case protocol.CarrierQUIC:
+			return transportQUICDatagram
+		case protocol.CarrierHTTP3:
+			return transportHTTP3ConnectUDP
+		case protocol.CarrierHTTP2:
+			return transportHTTP2Framed
+		case protocol.CarrierWSS:
+			if _, err := a.ws.CarrierEndpoint("remote"); err != nil {
+				return transportUnknown
+			}
+		case "":
+			return transportUnknown
+		default:
+			if a.relay != nil && a.relay.path(primary).id == primary {
+				return transportUDPRelay
+			}
+		}
+	}
+	return connectionTransport(c.transport.Load())
 }
 
 // TransportReason explains why the connection did not start on direct UDP,
@@ -1258,19 +1434,6 @@ type localTunnel struct {
 	lastDialWarn atomic.Int64
 }
 
-type countingWriter struct {
-	w       io.Writer
-	counter *atomic.Uint64
-}
-
-func (w countingWriter) Write(p []byte) (int, error) {
-	n, err := w.w.Write(p)
-	if n > 0 {
-		w.counter.Add(uint64(n))
-	}
-	return n, err
-}
-
 func (t *localTunnel) stats() TunnelStats {
 	return TunnelStats{BytesToTunnel: t.toTunnel.Load(), BytesFromTunnel: t.fromTunnel.Load(), Connections: t.connections.Load(), Active: t.active.Load()}
 }
@@ -1306,7 +1469,14 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		return nil, err
 	}
 	r := auth.response
-	network, err := newConnectionNetwork(r, key.Private, h, options)
+	network, err := newConnectionNetwork(context.Background(), r, key.Private, url, h, options)
+	if fallback, ok := options.legacyCarrierRetry(r, err); ok {
+		auth, err = authenticateAny(h, url, keyPath, info, key.Public, fallback, auth.method, auth.issuer)
+		if err == nil {
+			r = auth.response
+			network, err = newConnectionNetwork(context.Background(), r, key.Private, url, h, fallback)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1340,7 +1510,20 @@ func ConnectWithOptions(url, keyPath string, info protocol.ClientInfo, options O
 		// direct-upgrade loop then fails) for the auto-selected case, where
 		// the server simply never advertised a UDP endpoint -- the
 		// surprising, often-support-question-worthy one.
-		if !options.UseWebSocket && udpEndpoint == "" {
+		if network.adaptive != nil {
+			switch c.currentTransportLocked() {
+			case transportQUICDatagram:
+				dataTransport = protocol.CarrierQUIC
+				c.transportReason = "WebSocket unavailable at startup, qualified QUIC DATAGRAM"
+			case transportHTTP3ConnectUDP:
+				dataTransport = protocol.CarrierHTTP3
+			case transportHTTP2Framed:
+				dataTransport = protocol.CarrierHTTP2
+				c.transportReason = "WebSocket unavailable at startup, attached HTTP/2 framed carrier"
+			default:
+				c.transportReason = "negotiated adaptive WebSocket carrier"
+			}
+		} else if !options.UseWebSocket && udpEndpoint == "" {
 			c.transportReason = "server did not advertise a direct UDP WireGuard endpoint"
 			if mismatch != "" {
 				c.transportReason = mismatch
@@ -1435,7 +1618,7 @@ type MultipathOptions struct {
 }
 
 // MinTunnelMTU is the smallest accepted Options.TunnelMTU (the IPv6 minimum).
-const MinTunnelMTU = 1280
+const MinTunnelMTU = wstransport.MinTunnelMTU
 
 // ParseTunnelMTU converts the --tunnel-mtu / tunnel_mtu text setting. Empty
 // means the default (0).
@@ -1879,6 +2062,9 @@ func (c *Connection) renewLoop() {
 		if d < time.Second {
 			d = time.Second
 		}
+		if c.options.renewInterval > 0 {
+			d = c.options.renewInterval
+		}
 		t := time.NewTimer(d)
 		select {
 		case <-c.stop:
@@ -1941,7 +2127,14 @@ func (c *Connection) reconnect() error {
 	if err != nil {
 		return err
 	}
-	if err := c.applyReconnectedSession(auth); err != nil {
+	err = c.applyReconnectedSession(auth)
+	if fallback, ok := c.options.legacyCarrierRetry(auth.response, err); ok {
+		auth, err = authenticateAny(c.http, c.base, c.keyPath, info, public, fallback, method, issuer)
+		if err == nil {
+			err = c.applyReconnectedSession(auth)
+		}
+	}
+	if err != nil {
 		return err
 	}
 	c.latencyMillis.Store(uint64(time.Since(started).Milliseconds()))
@@ -1950,9 +2143,18 @@ func (c *Connection) reconnect() error {
 }
 
 func (c *Connection) renew() error {
+	c.networkMu.Lock()
+	defer c.networkMu.Unlock()
 	b, _ := json.Marshal(protocol.RenewRequest{Info: c.connectionInfo()})
 	c.mu.Lock()
 	token := c.token
+	if c.network != nil && c.network.adaptive != nil {
+		a := c.network.adaptive
+		if a.httpBootstrap != "" && !a.bind.HasQualifiedPath(a.lane, a.httpBootstrap) {
+			c.mu.Unlock()
+			return errors.New("HTTP carrier lost; reconnect required")
+		}
+	}
 	c.mu.Unlock()
 	req, err := http.NewRequest(http.MethodPost, c.base+"/v1/renew", bytes.NewReader(b))
 	if err != nil {
@@ -1983,6 +2185,19 @@ func (c *Connection) renew() error {
 	if c.closed {
 		c.mu.Unlock()
 		return fmt.Errorf("connection is closed")
+	}
+	if c.network != nil && c.network.adaptive != nil {
+		if c.token != token {
+			c.mu.Unlock()
+			return fmt.Errorf("session changed during adaptive carrier renewal")
+		}
+		if err := c.network.adaptive.renew(out, c.Response.Tunnels); err != nil {
+			c.mu.Unlock()
+			return err
+		}
+		for _, child := range c.childLanes {
+			child.adaptive.renewChild(out)
+		}
 	}
 	// A renewal reuses the same WireGuard peer and tunnel address, so the
 	// server does not repeat the addressing fields in its response. Carry
@@ -2374,6 +2589,8 @@ type WebStatus struct {
 	Duplication     bool                     `json:"duplication_active,omitempty"`
 	Forced          string                   `json:"forced,omitempty"`
 	ForcedEffective bool                     `json:"forced_effective,omitempty"`
+	Lanes           []LaneStatus             `json:"lanes,omitempty"`
+	LaneScaling     *LaneScalingStatus       `json:"lane_scaling,omitempty"`
 	// RelayUDP is the most recently received UDP-relay hop-telemetry
 	// summary from the server, when this session used that tier -- see
 	// Connection.relayHopStats.
@@ -2479,7 +2696,7 @@ func (c *Connection) State() ConnectionState {
 		}
 		tunnels = append(tunnels, ls)
 	}
-	transport := connectionTransport(c.transport.Load())
+	transport := c.currentTransportLocked()
 	state := ConnectionState{
 		Connected:      c.Stack != nil,
 		Server:         c.base,
@@ -2540,7 +2757,7 @@ func (c *Connection) webStatus() WebStatus {
 		}
 		tunnels = append(tunnels, wt)
 	}
-	status := WebStatus{BrowserProfilesDir: opts.ProfilesDir, Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: connectionTransport(c.transport.Load()).String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), PortalEnabled: c.Response.PortalEnabled, SettingsURL: c.options.SettingsURL}
+	status := WebStatus{BrowserProfilesDir: opts.ProfilesDir, Connected: c.Stack != nil, Server: c.base, ServerName: c.displayName(), ConnectionType: c.currentTransportLocked().String(), Tunnels: tunnels, TTLSeconds: c.Response.TTLSeconds, LatencyMillis: c.latencyMillis.Load(), Reconnections: c.reconnections.Load(), PortalEnabled: c.Response.PortalEnabled, SettingsURL: c.options.SettingsURL}
 	if c.multipath != nil {
 		status.Paths = c.multipath.Paths()
 		primary, _, dup := c.multipath.Scheduler().Select()
@@ -2554,6 +2771,7 @@ func (c *Connection) webStatus() WebStatus {
 		}
 	}
 	status.RelayUDP = c.relayHopStats.Load()
+	status.Lanes, status.LaneScaling = c.laneDiagnosticsLocked()
 	c.mu.Unlock()
 	if browserErr == nil {
 		for i := range tunnels {
@@ -2609,37 +2827,109 @@ func (c *Connection) SetTransport(target string) error {
 
 // TransportInfo describes the live transport configuration and candidate states.
 type TransportInfo struct {
-	Active          string                   `json:"active"`
-	Forced          string                   `json:"forced,omitempty"`
-	ForcedEffective bool                     `json:"forced_effective"`
-	Paths           []wstransport.PathStatus `json:"paths,omitempty"`
+	AdaptiveCarrier     bool                           `json:"adaptive_carrier,omitempty"`
+	PathEpoch           uint64                         `json:"path_epoch,omitempty"`
+	TunnelMTU           int                            `json:"tunnel_mtu,omitempty"`
+	UDPQualified        bool                           `json:"adaptive_udp_qualified,omitempty"`
+	UDPProbeRTT         time.Duration                  `json:"adaptive_udp_probe_rtt,omitempty"`
+	QUIC                *wstransport.QUICStats         `json:"quic,omitempty"`
+	QualifiedPaths      []wstransport.QualifiedCarrier `json:"qualified_paths,omitempty"`
+	AdaptivePerformance *AdaptivePerformance           `json:"adaptive_performance,omitempty"`
+	Active              string                         `json:"active"`
+	Forced              string                         `json:"forced,omitempty"`
+	ForcedEffective     bool                           `json:"forced_effective"`
+	Paths               []wstransport.PathStatus       `json:"paths,omitempty"`
 	// Events and Reason are populated only for a detailed request (GET
 	// /transport?details=1, ntwire transport -v), so the default response
 	// is unchanged.
-	Events []wstransport.SwitchEvent `json:"events,omitempty"`
-	Reason string                    `json:"reason,omitempty"`
+	Events      []wstransport.SwitchEvent `json:"events,omitempty"`
+	Reason      string                    `json:"reason,omitempty"`
+	Lanes       []LaneStatus              `json:"lanes,omitempty"`
+	LaneScaling *LaneScalingStatus        `json:"lane_scaling,omitempty"`
 }
 
 // TransportDetails is TransportInfo plus the switch history and the reason
 // the connection did not start on direct UDP.
 func (c *Connection) TransportDetails() TransportInfo {
-	info := c.TransportInfo()
-	info.Reason = c.TransportReason()
-	c.mu.Lock()
-	multipath := c.multipath
-	c.mu.Unlock()
-	if multipath != nil {
-		info.Events = multipath.Scheduler().SwitchEvents()
-	}
-	return info
+	return c.transportInfo(true)
 }
 
 func (c *Connection) TransportInfo() TransportInfo {
+	return c.transportInfo(false)
+}
+
+func (c *Connection) transportInfo(details bool) TransportInfo {
 	c.mu.Lock()
-	multipath := c.multipath
+	multipath, network, reason := c.multipath, c.network, c.transportReason
+	rosterRevision := c.laneRosterRevision
+	var lanes []LaneStatus
+	var laneScaling *LaneScalingStatus
+	if details {
+		lanes, laneScaling = c.laneDiagnosticsLocked()
+	}
 	c.mu.Unlock()
+	if !details {
+		reason = ""
+	}
+	if network != nil && network.adaptive != nil {
+		a := network.adaptive
+		out := TransportInfo{AdaptiveCarrier: true, Reason: reason, Lanes: lanes, LaneScaling: laneScaling}
+		var primary string
+		if details {
+			primary, out.PathEpoch, out.QualifiedPaths, out.Events = a.bind.LaneDetails(a.lane)
+		} else {
+			primary, out.PathEpoch, _ = a.bind.LaneState(a.lane)
+		}
+		if primary == protocol.CarrierWSS {
+			if _, err := a.ws.CarrierEndpoint("remote"); err != nil {
+				primary = ""
+			}
+		}
+		activePath := primary
+		if primary == "" {
+			primary = "Transport unavailable"
+		}
+		if a.relay != nil && a.relay.path(primary).id == primary {
+			primary = protocol.CarrierRelayUDP
+		}
+		info, _, _ := a.credentials()
+		out.Active, out.TunnelMTU = primary, info.TunnelMTU
+		if a.udp != nil {
+			if qualified, rtt := a.udp.state(); qualified {
+				out.UDPQualified, out.UDPProbeRTT = true, rtt
+			}
+		}
+		if a.quic != nil {
+			stats := a.quic.bind.Stats()
+			out.QUIC = &stats
+		}
+		for i := range out.QualifiedPaths {
+			path := &out.QualifiedPaths[i]
+			path.RTT = a.carrierRTT(info.LaneID, path.Name)
+		}
+		if details && info.Performance {
+			now := time.Now()
+			measured := a.measurements.snapshot(now, info.AuthGeneration)
+			if measured == nil {
+				measured = &AdaptivePerformance{FeedbackStatus: "awaiting forwarding traffic"}
+			}
+			if cap := measured.Capacity; cap != nil && (len(lanes) > 1 || cap.Path != activePath || cap.PathEpoch != out.PathEpoch) {
+				measured.Capacity = nil
+			}
+			if shared := measured.SharedCapacity; shared != nil && (shared.revision != rosterRevision || shared.Lanes != len(lanes) ||
+				shared.anchorPath != activePath || shared.anchorEpoch != out.PathEpoch) {
+				measured.SharedCapacity = nil
+			}
+			if len(measured.Windows) != 0 {
+				decision := scoreAdaptivePaths(now, activePath, out.QualifiedPaths, out.Events, measured.Windows)
+				measured.Decision = &decision
+			}
+			out.AdaptivePerformance = measured
+		}
+		return out
+	}
 	if multipath == nil {
-		return TransportInfo{Active: connectionTransport(c.transport.Load()).String()}
+		return TransportInfo{Active: connectionTransport(c.transport.Load()).String(), Reason: reason}
 	}
 	paths := multipath.Paths()
 	primary, _, _ := multipath.Scheduler().Select()
@@ -2648,12 +2938,11 @@ func (c *Connection) TransportInfo() TransportInfo {
 	if forced != "" && primary == forced {
 		effective = true
 	}
-	return TransportInfo{
-		Active:          primary,
-		Forced:          forced,
-		ForcedEffective: effective,
-		Paths:           paths,
+	info := TransportInfo{Active: primary, Forced: forced, ForcedEffective: effective, Paths: paths, Reason: reason}
+	if details {
+		info.Events = multipath.Scheduler().SwitchEvents()
 	}
+	return info
 }
 
 // historySampleInterval is how often historyLoop records a sample. The
@@ -3139,15 +3428,20 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 			if tunnel.target != "" {
 				destination = tunnel.target
 			}
+			var lane flowLane
+			if !socks {
+				lane = c.acquireFlowLaneLocked()
+			}
 			c.mu.Unlock()
 			if socks {
 				c.forwardMixedProxy(tunnel, in, destination, stack, stop)
 				return
 			}
-			if stack == nil {
+			if lane.stack == nil {
 				return
 			}
-			out, e := stack.DialContext(context.Background(), "tcp", destination)
+			defer lane.release()
+			out, e := lane.stack.DialContext(context.Background(), "tcp", destination)
 			if e != nil {
 				now := time.Now().Unix()
 				last := tunnel.lastDialWarn.Load()
@@ -3159,6 +3453,7 @@ func (c *Connection) forward(tunnel *localTunnel, listener net.Listener, target 
 				return
 			}
 			defer out.Close()
+			out = lane.trackLocal(out)
 			defer c.watchForward(stop, in, out)()
 			tunnel.connections.Add(1)
 			tunnel.active.Add(1)
@@ -3194,7 +3489,7 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 	}
 	type flow struct {
 		conn   net.Conn
-		stack  *wgnet.Stack
+		anchor *wgnet.Stack
 		target string
 	}
 	flows := map[string]flow{}
@@ -3227,18 +3522,20 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 		key := src.String()
 		mu.Lock()
 		f, ok := flows[key]
-		if ok && (f.stack != stack || f.target != destination) {
+		if ok && (f.anchor != stack || f.target != destination) {
 			_ = f.conn.Close()
 			delete(flows, key)
 			ok = false
 		}
 		mu.Unlock()
 		if !ok {
-			out, e := stack.DialContext(context.Background(), "udp", destination)
+			lane := c.acquireFlowLaneFor(stack)
+			out, e := lane.dialOwned(context.Background(), "udp", destination)
 			if e != nil {
 				continue
 			}
-			f = flow{conn: out, stack: stack, target: destination}
+			out = lane.trackLocal(out)
+			f = flow{conn: out, anchor: stack, target: destination}
 			_ = out.SetReadDeadline(time.Now().Add(timeout))
 			mu.Lock()
 			flows[key] = f
@@ -3281,23 +3578,20 @@ func (c *Connection) forwardUDP(tunnel *localTunnel, pc net.PacketConn, target s
 // Applications must never be told the server's virtual-only UDP address.
 func (c *Connection) forwardSocksUDPAssociate(tunnel *localTunnel, in net.Conn, target string) {
 	c.mu.Lock()
-	stack, stop := c.Stack, c.dataStop
+	lane, stop := c.acquireFlowLaneLocked(), c.dataStop
 	if tunnel.target != "" {
 		target = tunnel.target
 	}
 	c.mu.Unlock()
-	c.forwardSocksUDPAssociateOn(tunnel, in, target, stack, stop)
-}
-
-func (c *Connection) forwardSocksUDPAssociateOn(tunnel *localTunnel, in net.Conn, target string, stack *wgnet.Stack, stop chan struct{}) {
+	defer lane.release()
 	tunnel.connections.Add(1)
 	tunnel.active.Add(1)
 	defer tunnel.active.Add(-1)
-	c.forwardSocksStream(tunnel, in, target, stack, stop)
+	c.forwardSocksStream(tunnel, in, target, lane, stop)
 }
 
-func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target string, stack *wgnet.Stack, stop chan struct{}) {
-	if stack == nil {
+func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target string, lane flowLane, stop chan struct{}) {
+	if lane.stack == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), proxySetupTimeout)
@@ -3311,11 +3605,12 @@ func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target
 		case <-ctx.Done():
 		}
 	}()
-	out, err := stack.DialContext(ctx, "tcp", target)
+	out, err := lane.stack.DialContext(ctx, "tcp", target)
 	if err != nil {
 		return
 	}
 	defer out.Close()
+	out = lane.trackLocal(out)
 	defer c.watchForward(stop, in, out)()
 	br := bufio.NewReader(in)
 	first, err := br.ReadByte()
@@ -3323,9 +3618,11 @@ func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target
 		return
 	}
 	if first != 5 {
-		_, _ = out.Write([]byte{first})
-		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
-		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
+		if _, err := out.Write([]byte{first}); err != nil {
+			return
+		}
+		buffered := &localproxy.BufferedConn{Conn: in, Reader: br}
+		localproxy.RelayCounted(buffered, out, &tunnel.toTunnel, &tunnel.fromTunnel)
 		return
 	}
 	n, err := br.ReadByte()
@@ -3392,9 +3689,11 @@ func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target
 	}
 	serverReply := append(rh, rr...)
 	if h[1] != 3 || rh[1] != 0 {
-		_, _ = in.Write(serverReply)
-		go io.Copy(countingWriter{w: out, counter: &tunnel.toTunnel}, br)
-		io.Copy(countingWriter{w: in, counter: &tunnel.fromTunnel}, out)
+		if _, err := in.Write(serverReply); err != nil || rh[1] != 0 {
+			return
+		}
+		buffered := &localproxy.BufferedConn{Conn: in, Reader: br}
+		localproxy.RelayCounted(buffered, out, &tunnel.toTunnel, &tunnel.fromTunnel)
 		return
 	}
 	pc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -3407,11 +3706,12 @@ func (c *Connection) forwardSocksStream(tunnel *localTunnel, in net.Conn, target
 	if !ok {
 		return
 	}
-	uc, err := stack.DialContext(context.Background(), "udp", remote)
+	uc, err := lane.stack.DialContext(context.Background(), "udp", remote)
 	if err != nil {
 		return
 	}
 	defer uc.Close()
+	uc = lane.trackLocal(uc)
 	local := pc.LocalAddr().(*net.UDPAddr)
 	a := local.AddrPort()
 	outReply := socksUDPReply(a)
@@ -3487,6 +3787,8 @@ func (c *Connection) Close() {
 	}
 	h, token, base := c.http, c.token, c.base
 	tunnels, ui, stack := c.tunnels, c.ui, c.Stack
+	children := c.childLanes
+	c.childLanes = nil
 	c.tunnels, c.ui, c.Stack = nil, nil, nil
 	statusFile := c.statusFile
 	if statusFile == "" {
@@ -3507,18 +3809,7 @@ func (c *Connection) Close() {
 	// doing I/O: renewal/reconnect and status readers must be able to observe
 	// shutdown immediately. Bound the request so Close cannot hang forever on
 	// a vanished server.
-	if h != nil && token != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), closeDisconnectTimeout)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/disconnect", nil)
-		if err == nil {
-			req.Header.Set("Authorization", "Bearer "+token)
-			resp, err := h.Do(req)
-			if err == nil && resp != nil {
-				_ = resp.Body.Close()
-			}
-		}
-	}
+	postSessionDisconnect(h, base, token)
 	for _, t := range tunnels {
 		if t.listener != nil {
 			_ = t.listener.Close()
@@ -3535,6 +3826,26 @@ func (c *Connection) Close() {
 	}
 	if stack != nil {
 		_ = stack.Close()
+	}
+	for _, child := range children {
+		_ = child.closeChild()
+	}
+}
+
+func postSessionDisconnect(h *http.Client, base, token string) {
+	if h == nil || token == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), closeDisconnectTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/disconnect", nil)
+	if err != nil {
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := h.Do(req)
+	if err == nil {
+		_ = resp.Body.Close()
 	}
 }
 

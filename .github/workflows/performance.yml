@@ -1,0 +1,157 @@
+name: Performance smoke
+
+on:
+  schedule:
+    - cron: '20 4 * * 2'
+  workflow_dispatch:
+    inputs:
+      linux_peers:
+        description: Run the isolated Linux namespace and kernel WireGuard smoke
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  loopback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - run: go build -o "$RUNNER_TEMP/ntwire-benchmark" ./cmd/ntwire
+      - run: go build -o "$RUNNER_TEMP/ntwire-bench-lab" ./tests/performance/lab
+      - run: python3 -m unittest discover -s tests/performance -p '*_test.py'
+      - run: |
+          python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-benchmark" \
+            --output "$RUNNER_TEMP/ntwire-performance" \
+            --workload interactive --connections 2 \
+            --duration 2s --warmup 1s --repeat 3 --sample-wss --require-progress
+      - run: |
+          python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-benchmark" \
+            --output "$RUNNER_TEMP/ntwire-performance-wss-sampling" \
+            --workload interactive --connections 2 \
+            --duration 2s --warmup 1s --repeat 1 --compare-wss-sampling
+      - run: |
+          python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-bench-lab" \
+            --output "$RUNNER_TEMP/ntwire-performance-lab" \
+            --modes direct-udp native-wireguard-go udp-relay \
+            --workload interactive --connections 2 \
+            --duration 2s --warmup 1s --repeat 3 --require-progress
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ntwire-performance-loopback
+          path: |
+            ${{ runner.temp }}/ntwire-performance/
+            ${{ runner.temp }}/ntwire-performance-wss-sampling/
+            ${{ runner.temp }}/ntwire-performance-lab/
+          if-no-files-found: warn
+
+  portable-proxies:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - shell: bash
+        run: |
+          go build -o "$RUNNER_TEMP/ntwire-benchmark.exe" ./cmd/ntwire
+          for workload in socks5 http-connect; do
+            python tests/performance/run.py \
+              --binary "$RUNNER_TEMP/ntwire-benchmark.exe" \
+              --output "$RUNNER_TEMP/ntwire-performance-$workload" \
+              --modes direct-udp wss --workload "$workload" --connections 2 \
+              --duration 2s --warmup 1s --repeat 1 --require-progress
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ntwire-performance-proxies-${{ matrix.runner }}
+          path: |
+            ${{ runner.temp }}/ntwire-performance-socks5/
+            ${{ runner.temp }}/ntwire-performance-http-connect/
+          if-no-files-found: warn
+
+  linux-peers:
+    if: github.event_name == 'workflow_dispatch' && inputs.linux_peers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - run: go build -o "$RUNNER_TEMP/ntwire-bench-lab" ./tests/performance/lab
+      - name: Verify Linux backend setup, hybrid isolation and restart
+        run: |
+          go test -race -c -o "$RUNNER_TEMP/ntwire-server-kernel.test" ./pkg/server
+          NTWIRE_TEST_RESTRICTED=1 "$RUNNER_TEMP/ntwire-server-kernel.test" -test.run '^TestKernelAcceleration_RestrictedStartup$'
+          sudo unshare --net sh -ec '
+            ip link set lo up
+            GOMAXPROCS=2 NTWIRE_TEST_KERNEL=1 "$1" -test.run "^Test(KernelAcceleration_(IsolationAndLifecycle|BindFailureRollsBack|HybridPeerIsolation|CrashReleasesPublicBind)|DirectMultipath_UDPAltFallback|UDPRelayAllocateEndToEndWithRealRelay|UnchangedWireGuardClient_ThroughRelay_ToNTWireServerWithPortal)$"
+          ' sh "$RUNNER_TEMP/ntwire-server-kernel.test"
+      - name: Verify restricted adaptive carrier MTU
+        run: |
+          go test -c -o "$RUNNER_TEMP/ntwire-client-mtu.test" ./pkg/client
+          sudo unshare --net sh -ec '
+            ip link set lo mtu 1380 up
+            NTWIRE_TEST_LIMITED_UDP_MTU=1 "$1" -test.run "LimitedOuterMTU|HTTP3SmallMTUUsesHTTP2" -test.v
+          ' sh "$RUNNER_TEMP/ntwire-client-mtu.test"
+      - run: |
+          sudo env GOMAXPROCS=2 python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-bench-lab" \
+            --output "$RUNNER_TEMP/ntwire-performance-peers" \
+            --peer-netem 2 0 100 42 4 0 200 43 \
+            --modes direct direct-udp native-wireguard-kernel alternate-udp udp-relay wss multipath \
+            --workload interactive --connections 2 --duration 2s --warmup 1s --repeat 1 --require-progress
+      - run: |
+          sudo env GOMAXPROCS=2 python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-bench-lab" \
+            --output "$RUNNER_TEMP/ntwire-performance-peers-wss" \
+            --peer-netem 2 0 100 42 4 0 200 43 \
+            --compare-wss-sampling --workload interactive --connections 2 --duration 2s --warmup 1s --repeat 1
+      - run: |
+          sudo env GOMAXPROCS=2 python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-bench-lab" \
+            --output "$RUNNER_TEMP/ntwire-performance-recovery" \
+            --peer-netem 2 0 100 42 4 0 200 43 --link-outage-ms 750 \
+            --modes direct-udp wss --workload interactive --connections 1 \
+            --duration 7s --warmup 1s --repeat 1 --require-progress
+      - run: |
+          sudo env GOMAXPROCS=2 python3 tests/performance/run.py \
+            --binary "$RUNNER_TEMP/ntwire-bench-lab" \
+            --output "$RUNNER_TEMP/ntwire-performance-server-backends" \
+            --peer-netem 20 0 100 42 20 0 100 43 --peer-queue-packets 4096 \
+            --modes direct-udp --compare-server-backends --workload mixed --connections 2 \
+            --duration 2s --warmup 1s --repeat 1 --require-progress
+      - if: always()
+        run: |
+          for result in "$RUNNER_TEMP/ntwire-performance-peers" "$RUNNER_TEMP/ntwire-performance-peers-wss" "$RUNNER_TEMP/ntwire-performance-recovery" \
+            "$RUNNER_TEMP/ntwire-performance-server-backends"; do
+            if [ -d "$result" ]; then
+              sudo chown -R "$(id -u):$(id -g)" "$result"
+            fi
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: ntwire-performance-linux-peers
+          path: |
+            ${{ runner.temp }}/ntwire-performance-peers/
+            ${{ runner.temp }}/ntwire-performance-peers-wss/
+            ${{ runner.temp }}/ntwire-performance-recovery/
+            ${{ runner.temp }}/ntwire-performance-server-backends/
+          if-no-files-found: warn

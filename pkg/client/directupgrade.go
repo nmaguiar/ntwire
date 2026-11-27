@@ -922,10 +922,8 @@ func (c *Connection) postUDPRelay() (protocol.UDPRelayResponse, error) {
 	base, token, multipath := c.base, c.token, c.multipath
 	c.mu.Unlock()
 	body := protocol.UDPRelayRequest{}
-	if multipath != nil {
-		if sent, sentPackets, recv, recvPackets := multipath.RelayLegStats(); sent+recv > 0 {
-			body.Stats = &protocol.ClientUDPRelayStats{BytesSent: sent, PacketsSent: sentPackets, BytesReceived: recv, PacketsReceived: recvPackets}
-		}
+	if stats := udpRelayTraffic(multipath); stats.BytesSent+stats.BytesReceived > 0 {
+		body.Stats = &stats
 	}
 	b, _ := json.Marshal(body)
 	req, err := http.NewRequest(http.MethodPost, base+"/v1/udp-relay", bytes.NewReader(b))

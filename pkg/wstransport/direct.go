@@ -114,7 +114,8 @@ func DecodeControlFrame(b []byte) (typ byte, payload []byte, ok bool) {
 // receive/send path or batching (e.g. StdNetBind's recvmmsg use).
 type FilterBind struct {
 	conn.Bind
-	control chan ControlPacket
+	control           chan ControlPacket
+	rawControlHandler func([]byte, conn.Endpoint) bool
 
 	// probeHandler, when set, receives active v3 probe frames directly and
 	// synchronously from the
@@ -155,6 +156,13 @@ func (f *FilterBind) SetProbeHandler(fn func(typ byte, payload []byte, ep conn.E
 // Like SetProbeHandler it must be called before receiving begins.
 func (f *FilterBind) SetControlHandler(fn func(ControlPacket) bool) { f.controlHandler = fn }
 
+// SetRawControlHandler intercepts another fixed control format on an
+// explicitly configured bind. The data is borrowed for the call. Set the
+// handler before opening the bind and return true for consumed frames.
+func (f *FilterBind) SetRawControlHandler(fn func([]byte, conn.Endpoint) bool) {
+	f.rawControlHandler = fn
+}
+
 // Control receives intercepted control frames.
 func (f *FilterBind) Control() <-chan ControlPacket { return f.control }
 
@@ -189,6 +197,9 @@ func (f *FilterBind) wrapReceive(fn conn.ReceiveFunc) conn.ReceiveFunc {
 			out := 0
 			for i := 0; i < n; i++ {
 				b := bufs[i][:sizes[i]]
+				if f.rawControlHandler != nil && f.rawControlHandler(b, eps[i]) {
+					continue
+				}
 				if isControlFrame(b) {
 					f.deliverControl(b, eps[i])
 					continue

@@ -759,3 +759,77 @@ func TestAlternateUDPEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestParseConfigValidatesAdaptiveUDPPort(t *testing.T) {
+	const base = "auth:\n  authorized_keys_dir: keys\nlisten:\n  wireguard: ':51820'\n  wireguard_alt: ':4443'\nnetwork:\n  advertised_endpoint: '127.0.0.1:51820'\ntransport:\n"
+	for _, tt := range []struct {
+		name, suffix string
+		valid        bool
+	}{
+		{"separate port", "  adaptive: true\n  adaptive_udp_port: 32891\n", true},
+		{"two adaptive ports", "  adaptive: true\n  adaptive_udp_port: 32891\n  adaptive_udp_alt_port: 32892\n", true},
+		{"alternate without primary", "  adaptive: true\n  adaptive_udp_alt_port: 32892\n", false},
+		{"adaptive ports collide", "  adaptive: true\n  adaptive_udp_port: 32891\n  adaptive_udp_alt_port: 32891\n", false},
+		{"alternate collides with legacy", "  adaptive: true\n  adaptive_udp_port: 32891\n  adaptive_udp_alt_port: 4443\n", false},
+		{"default disabled", "  adaptive: false\n", true},
+		{"no opt-in", "  adaptive_udp_port: 32891\n", false},
+		{"primary collision", "  adaptive: true\n  adaptive_udp_port: 51820\n", false},
+		{"alternate collision", "  adaptive: true\n  adaptive_udp_port: 4443\n", false},
+		{"port overflow", "  adaptive: true\n  adaptive_udp_port: 65536\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseConfig([]byte(base+tt.suffix), t.TempDir()); (err == nil) != tt.valid {
+				t.Fatalf("adaptive UDP config valid = %v, want %v (error %v)", err == nil, tt.valid, err)
+			}
+		})
+	}
+}
+
+func TestParseConfigValidatesAdaptiveMTU(t *testing.T) {
+	const base = "auth:\n  authorized_keys_dir: keys\ntransport:\n"
+	for _, config := range []string{
+		"  adaptive_tunnel_mtu: 1280\n",
+		"  adaptive: true\n  adaptive_tunnel_mtu: 1279\n",
+		"  adaptive: true\n  adaptive_tunnel_mtu: 1421\n",
+	} {
+		if _, err := ParseConfig([]byte(base+config), t.TempDir()); err == nil {
+			t.Fatalf("invalid adaptive MTU accepted: %s", config)
+		}
+	}
+	if cfg, err := ParseConfig([]byte(base+"  adaptive: true\n  adaptive_tunnel_mtu: 1280\n"), t.TempDir()); err != nil || cfg.Transport.AdaptiveTunnelMTU != 1280 {
+		t.Fatalf("valid adaptive MTU was not loaded: %+v, %v", cfg.Transport, err)
+	}
+}
+
+func TestParseConfigValidatesAdaptiveHTTPAndQUIC(t *testing.T) {
+	const base = "auth:\n  authorized_keys_dir: keys\nlisten:\n  wireguard: ':51820'\n  wireguard_alt: ':4443'\nnetwork:\n  advertised_endpoint: '127.0.0.1:51820'\ntransport:\n"
+	for _, tt := range []struct {
+		name, suffix string
+		valid        bool
+	}{
+		{"default disabled", "  adaptive: false\n", true},
+		{"IPv4", "  adaptive: true\n  quic_listen: '127.0.0.1:8443'\n", true},
+		{"IPv6", "  adaptive: true\n  quic_listen: '[::1]:8443'\n", true},
+		{"wildcard", "  adaptive: true\n  quic_listen: ':8443'\n", true},
+		{"no opt-in", "  quic_listen: ':8443'\n", false},
+		{"primary collision", "  adaptive: true\n  quic_listen: ':51820'\n", false},
+		{"alternate collision", "  adaptive: true\n  quic_listen: ':4443'\n", false},
+		{"adaptive UDP collision", "  adaptive: true\n  quic_listen: ':8443'\n  adaptive_udp_port: 8443\n", false},
+		{"adaptive alternate UDP collision", "  adaptive: true\n  quic_listen: ':8443'\n  adaptive_udp_port: 32891\n  adaptive_udp_alt_port: 8443\n", false},
+		{"host name", "  adaptive: true\n  quic_listen: 'localhost:8443'\n", false},
+		{"bad port", "  adaptive: true\n  quic_listen: ':8443x'\n", false},
+		{"port overflow", "  adaptive: true\n  quic_listen: ':65536'\n", false},
+		{"HTTP/2 opt-in", "  adaptive: true\n  adaptive_http2: true\n", true},
+		{"HTTP/2 without adaptive", "  adaptive_http2: true\n", false},
+		{"HTTP/3 opt-in", "  adaptive: true\n  h3_carrier_listen: ':9443'\n", true},
+		{"HTTP/3 without adaptive", "  h3_carrier_listen: ':9443'\n", false},
+		{"HTTP/3 and WireGuard collision", "  adaptive: true\n  h3_carrier_listen: ':51820'\n", false},
+		{"HTTP/3 and raw QUIC collision", "  adaptive: true\n  quic_listen: ':9443'\n  h3_carrier_listen: ':9443'\n", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := ParseConfig([]byte(base+tt.suffix), t.TempDir()); (err == nil) != tt.valid {
+				t.Fatalf("carrier config valid = %v, want %v (error %v)", err == nil, tt.valid, err)
+			}
+		})
+	}
+}

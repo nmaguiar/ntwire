@@ -97,6 +97,8 @@ type kernelStack struct {
 	failed    bool // only accessed on the namespace worker
 	socketsMu sync.Mutex
 	sockets   map[io.Closer]struct{}
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (s *Server) newKernelStack(c wgnet.Config, config AccelerationConfig) (serverStack, error) {
@@ -134,10 +136,7 @@ func (s *Server) newKernelStack(c wgnet.Config, config AccelerationConfig) (serv
 	}
 	k := &kernelStack{ns: ns, public: key.PublicKey().String(), service: c.Addresses[0], log: s.log, ebpfMode: "disabled", sockets: make(map[io.Closer]struct{})}
 	if err := ns.call(func() error { return k.setup(key, prefix, config.EBPF) }); err != nil {
-		if closeErr := k.Close(); closeErr != nil {
-			return nil, errors.Join(err, errAccelerationCleanup, closeErr)
-		}
-		return nil, err
+		return nil, dataPlaneStartupError(err, k.Close())
 	}
 	k.bridge.bind = c.Bind
 	k.bridge.publicPort = uint16(c.ListenPort)
@@ -279,6 +278,9 @@ func (k *kernelStack) UpdateEndpoint(publicKey, address string) error {
 func (k *kernelStack) peers() ([]wgtypes.Peer, error) {
 	var peers []wgtypes.Peer
 	err := k.ns.call(func() error {
+		if k.failed {
+			return net.ErrClosed
+		}
 		device, err := k.control.Device(kernelInterface)
 		if err == nil {
 			peers = device.Peers
@@ -493,6 +495,9 @@ func (k *kernelStack) writeMetrics(w io.Writer) {
 	var failed, available bool
 	var buckets [2][kernelCounterBuckets]uint64
 	err := k.ns.call(func() error {
+		if k.routes == nil {
+			return net.ErrClosed
+		}
 		failed = k.failed
 		drops, available = k.firewall.drops()
 		if link, err := k.routes.LinkByIndex(k.device.Attrs().Index); err == nil && link.Attrs().Statistics != nil {
@@ -532,6 +537,11 @@ func boolInt(value bool) int {
 }
 
 func (k *kernelStack) Close() error {
+	k.closeOnce.Do(func() { k.closeErr = k.close() })
+	return k.closeErr
+}
+
+func (k *kernelStack) close() error {
 	var err error
 	if k.bridge != nil {
 		err = k.bridge.close()
@@ -546,6 +556,9 @@ func (k *kernelStack) Close() error {
 		}
 	}
 	cleanup := k.ns.call(func() error {
+		// Calls already queued on the namespace thread must see teardown
+		// even before the worker stops accepting calls.
+		k.failed = true
 		if k.ebpf != nil {
 			err = errors.Join(err, k.ebpf.close())
 		}
@@ -560,6 +573,7 @@ func (k *kernelStack) Close() error {
 				err = errors.Join(err, k.routes.LinkDel(k.device))
 			}
 			k.routes.Close()
+			k.routes = nil
 		}
 		return nil
 	})

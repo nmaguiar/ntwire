@@ -1,8 +1,8 @@
 package client
 
 import (
+	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 	"github.com/nmaguiar/ntwire/pkg/protocol"
 	"github.com/nmaguiar/ntwire/pkg/wgnet"
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
@@ -19,6 +20,7 @@ import (
 type connectionNetwork struct {
 	stack                            *wgnet.Stack
 	hybrid                           *wstransport.Hybrid
+	adaptive                         *adaptiveCarrierClient
 	multipath                        *wstransport.MultipathBind
 	clientIP, serverIP               netip.Addr
 	udpEndpoint, mismatch, transport string
@@ -27,10 +29,18 @@ type connectionNetwork struct {
 	udpAlt             string
 	useWS, multipathV3 bool
 	response           protocol.AuthResponse
+	// Flow admission and drain state are protected by Connection.mu.
+	activeFlows       int
+	draining          bool
+	laneScaling       LaneScalingStatus
+	stopCarrierHealth context.CancelFunc // Set once, before publishing a child.
 }
 
 func (n *connectionNetwork) matches(r protocol.AuthResponse) bool {
 	old := n.response
+	if old.Adaptive != nil || r.Adaptive != nil {
+		return false // Fresh authentication creates a new parent and anchor lane.
+	}
 	return old.TunnelIP == r.TunnelIP && old.ServerTunnelIP == r.ServerTunnelIP &&
 		old.ServerPublicKey == r.ServerPublicKey && old.UDP == r.UDP && old.WebSocket == r.WebSocket &&
 		old.Multipath == r.Multipath &&
@@ -64,7 +74,7 @@ func (c *Connection) applyReconnectedSession(auth authResult) error {
 			return fmt.Errorf("connection has no WireGuard key for recovery")
 		}
 		var err error
-		next, err = newConnectionNetwork(auth.response, privateKey, c.http, c.options)
+		next, err = newConnectionNetwork(context.Background(), auth.response, privateKey, c.base, c.http, c.options)
 		if err != nil {
 			return fmt.Errorf("rebuild tunnel: %w", err)
 		}
@@ -84,6 +94,9 @@ func (c *Connection) applyReconnectedSession(auth authResult) error {
 				closeLocalTunnel(lt)
 			}
 			if replaced {
+				if a := next.adaptive; a != nil {
+					postSessionDisconnect(a.control, a.base, auth.response.Token)
+				}
 				_ = next.stack.Close()
 			}
 		}
@@ -112,7 +125,9 @@ func (c *Connection) applyReconnectedSession(auth authResult) error {
 		return fmt.Errorf("connection is closed")
 	}
 	oldStack := c.Stack
+	var oldChildren map[string]*connectionNetwork
 	if replaced {
+		oldChildren, c.childLanes = c.childLanes, nil
 		if c.dataStop != nil {
 			close(c.dataStop)
 		}
@@ -150,6 +165,9 @@ func (c *Connection) applyReconnectedSession(auth authResult) error {
 	}
 	if replaced && oldStack != nil {
 		_ = oldStack.Close()
+	}
+	for _, child := range oldChildren {
+		_ = child.closeChild()
 	}
 	for _, lt := range opened {
 		if lt.protocol == "udp" {
@@ -211,6 +229,21 @@ func (c *Connection) openReconnectedTunnel(grant protocol.Tunnel, old *localTunn
 }
 
 func (c *Connection) startTransportWorkers(n *connectionNetwork, stop chan struct{}) {
+	if n.adaptive != nil && (n.response.Adaptive.Performance || n.adaptive.wssLost != nil) {
+		go c.observeAdaptivePerformance(n, stop)
+	}
+	if a := n.adaptive; a != nil && a.quic != nil {
+		if a.ws.InitialDialError() != nil {
+			a.ws.RetryDeferredDial()
+		}
+		go c.maintainAdaptiveQUIC(n, stop)
+	}
+	if n.adaptive != nil && (n.adaptive.udp != nil || n.adaptive.altUDP != nil) {
+		go c.observeAdaptiveUDP(n, stop)
+	}
+	if n.adaptive != nil && n.adaptive.relay != nil {
+		go c.maintainAdaptiveRelays(n, stop)
+	}
 	if n.multipath != nil && c.options.Promote && hasTransportCapability(n.response.TransportCapabilities, protocol.CapabilityPathPromoteV1) {
 		n.multipath.EnablePromotion(c.postTransportPrimary)
 	}
@@ -250,7 +283,7 @@ func (c *Connection) watchForward(stop chan struct{}, in, out net.Conn) func() {
 }
 
 func copyClientStream(dst, src net.Conn, counter *atomic.Uint64) {
-	_, err := io.Copy(countingWriter{w: dst, counter: counter}, src)
+	_, err := localproxy.CopyCounted(dst, src, counter)
 	if err == nil {
 		if cw, ok := dst.(interface{ CloseWrite() error }); ok && cw.CloseWrite() == nil {
 			return
@@ -260,10 +293,18 @@ func copyClientStream(dst, src net.Conn, counter *atomic.Uint64) {
 	_ = src.Close()
 }
 
-func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Client, options Options) (*connectionNetwork, error) {
+func newConnectionNetwork(ctx context.Context, r protocol.AuthResponse, privateKey, base string, h *http.Client, options Options) (*connectionNetwork, error) {
 	clientIP, err := netip.ParseAddr(r.TunnelIP)
 	if err != nil {
 		return nil, fmt.Errorf("server did not return a tunnel IP: %w", err)
+	}
+	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
+	if err != nil {
+		return nil, err
+	}
+	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger, MTU: options.TunnelMTU}
+	if r.Adaptive != nil {
+		return newAdaptiveConnection(ctx, r, base, stackConfig, h, options, clientIP, serverIP)
 	}
 	// A direct UDP endpoint of the wrong family is treated as if the server
 	// hadn't advertised one at all: selectTransport falls back to WebSocket
@@ -293,11 +334,7 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 	if err != nil {
 		return nil, err
 	}
-	serverIP, err := resolveServerTunnelIP(r.ServerTunnelIP, clientIP)
-	if err != nil {
-		return nil, err
-	}
-	stackConfig := wgnet.Config{PrivateKey: privateKey, Addresses: []netip.Addr{clientIP}, DNSServers: []netip.Addr{serverIP}, IPVersion: options.IPVersion, UDPBufferLogger: options.Logger, MTU: options.TunnelMTU}
+
 	// hybrid is non-nil only in WebSocket-fallback mode; it is what the
 	// opportunistic direct-UDP upgrade (directupgrade.go) uses to
 	// self-reflect, prime, and move the peer's endpoint between transports.
@@ -314,6 +351,9 @@ func newConnectionNetwork(r protocol.AuthResponse, privateKey string, h *http.Cl
 		} else {
 			hybrid = wstransport.NewHybridClient(r.WebSocket, h, http.Header{"Authorization": {"Bearer " + r.Token}}, options.IPVersion, options.Logger)
 			stackConfig.Bind = hybrid
+		}
+		if options.SampleWSS {
+			hybrid.WebSocket.EnableQueuePerformance()
 		}
 	}
 	st, err := wgnet.New(stackConfig)

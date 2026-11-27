@@ -43,6 +43,9 @@ type Config struct {
 	// Bind overrides the default UDP transport. It is used by the WebSocket
 	// fallback while retaining the same WireGuard device and netstack.
 	Bind conn.Bind
+	// PinPeerEndpoints keeps explicit logical endpoints fixed on a
+	// managed-only device. Set this before adding its peers.
+	PinPeerEndpoints bool
 	// IPVersion restricts the default UDP transport (used only when Bind is
 	// nil) to one IP family: "4" or "6". "" (default) leaves it dual-stack.
 	// A caller that supplies its own Bind is responsible for applying this
@@ -99,6 +102,9 @@ func New(c Config) (*Stack, error) {
 		bind = ipfamily.New(wstransport.NewUDPBind(0, c.UDPBufferLogger), c.IPVersion)
 	}
 	d := device.NewDevice(td, bind, device.NewLogger(device.LogLevelSilent, ""))
+	if c.PinPeerEndpoints {
+		d.DisableSomeRoamingForBrokenMobileSemantics()
+	}
 	// ntwire carries WireGuard keys as Base64, while WireGuard's IPC protocol
 	// requires their 32-byte values encoded as hexadecimal.
 	lines := "private_key=" + hex.EncodeToString(raw) + "\n"
@@ -197,6 +203,16 @@ func (s *Stack) UpdateEndpoint(publicKey, addr string) error {
 		return fmt.Errorf("invalid peer public key: %w", err)
 	}
 	return s.device.IpcSet("public_key=" + hex.EncodeToString(public) + "\nendpoint=" + addr + "\n")
+}
+
+// SetPeerKeepalive updates an installed peer. Enabling it schedules a
+// WireGuard keepalive, which can qualify a fresh peer without a target dial.
+func (s *Stack) SetPeerKeepalive(publicKey string, seconds uint16) error {
+	public, err := decodeKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("invalid peer public key: %w", err)
+	}
+	return s.device.IpcSet(fmt.Sprintf("public_key=%x\nupdate_only=true\npersistent_keepalive_interval=%d\n", public, seconds))
 }
 
 // LastHandshake returns the time of the most recent completed WireGuard

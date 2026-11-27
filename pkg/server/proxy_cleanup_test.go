@@ -5,15 +5,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nmaguiar/ntwire/internal/localproxy"
 )
 
-func TestCopyToTargetClosesOnClientEOFWithoutHalfClose(t *testing.T) {
+func TestRelayCountedClosesOnClientEOFWithoutHalfClose(t *testing.T) {
 	in, client := net.Pipe()
 	out, target := net.Pipe()
 	defer target.Close()
 	var count atomic.Uint64
 	done := make(chan struct{})
-	go func() { copyToTarget(out, in, &count); close(done) }()
+	go func() { localproxy.RelayCounted(in, out, &count, nil); close(done) }()
 	_ = client.Close()
 	select {
 	case <-done:

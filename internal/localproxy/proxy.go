@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/socks"
@@ -189,8 +190,14 @@ func HTTPError(w http.ResponseWriter, err error) {
 
 // Relay preserves write half-closes and closes both sides on copy errors.
 func Relay(a, b net.Conn) {
-	copyStream := func(dst, src net.Conn) {
-		if _, err := io.Copy(dst, src); err == nil {
+	RelayCounted(a, b, nil, nil)
+}
+
+// RelayCounted records successfully forwarded bytes in each direction
+// while applying the same half-close and cancellation rules as Relay.
+func RelayCounted(a, b net.Conn, aToB, bToA *atomic.Uint64) {
+	copyStream := func(dst, src net.Conn, counter *atomic.Uint64) {
+		if _, err := CopyCounted(dst, src, counter); err == nil {
 			if err := CloseWrite(dst); err == nil {
 				return
 			}
@@ -199,8 +206,8 @@ func Relay(a, b net.Conn) {
 		_ = src.Close()
 	}
 	done := make(chan struct{})
-	go func() { defer close(done); copyStream(a, b) }()
-	copyStream(b, a)
+	go func() { defer close(done); copyStream(a, b, bToA) }()
+	copyStream(b, a, aToB)
 	<-done
 }
 

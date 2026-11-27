@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nmaguiar/ntwire/pkg/wstransport"
+	"golang.org/x/time/rate"
 )
 
 // readBufSize is sized comfortably above wstransport.MaxRelayDatagram so a
@@ -35,6 +36,18 @@ type datagramRelay struct {
 	clientConn net.PacketConn
 	rate       *rateLimiter // gates bind attempts from unrecognized senders on clientConn only
 	log        *slog.Logger
+	up, down   *rate.Limiter
+}
+
+// Configure before the forwarding goroutines start. The burst admits at
+// least one full datagram and at most about 10 ms at higher rates.
+func (d *datagramRelay) setBandwidthLimit(bytesPerSecond int) {
+	if bytesPerSecond <= 0 {
+		return
+	}
+	burst := max(wstransport.MaxRelayDatagram, bytesPerSecond/100)
+	d.up = rate.NewLimiter(rate.Limit(bytesPerSecond), burst)
+	d.down = rate.NewLimiter(rate.Limit(bytesPerSecond), burst)
 }
 
 func newDatagramRelay(sessions *udpSessionTable, clientConn net.PacketConn, maxNewBindsPerMinute int, log *slog.Logger) *datagramRelay {
@@ -48,14 +61,14 @@ func newDatagramRelay(sessions *udpSessionTable, clientConn net.PacketConn, maxN
 func (d *datagramRelay) serveClientLeg() {
 	buf := make([]byte, readBufSize)
 	for {
-		n, addr, err := d.clientConn.ReadFrom(buf)
+		n, from, err := readRelayPacket(d.clientConn, buf)
 		if err != nil {
 			if d.retryRead(err, "client", 0) {
 				continue
 			}
 			return
 		}
-		if from, ok := addrPort(addr); ok {
+		if from.IsValid() {
 			d.handleClientDatagram(buf[:n], from)
 		}
 	}
@@ -67,7 +80,7 @@ func (d *datagramRelay) serveClientLeg() {
 func (d *datagramRelay) serveServerLeg(pc net.PacketConn, port uint16) {
 	buf := make([]byte, readBufSize)
 	for {
-		n, addr, err := pc.ReadFrom(buf)
+		n, from, err := readRelayPacket(pc, buf)
 		if err != nil {
 			if d.retryRead(err, "server", port) {
 				continue
@@ -77,7 +90,7 @@ func (d *datagramRelay) serveServerLeg(pc net.PacketConn, port uint16) {
 			}
 			return
 		}
-		if from, ok := addrPort(addr); ok {
+		if from.IsValid() {
 			d.handleServerDatagram(port, buf[:n], from)
 		}
 	}
@@ -97,13 +110,28 @@ func (d *datagramRelay) retryRead(err error, leg string, port uint16) bool {
 	return false
 }
 
-func addrPort(addr net.Addr) (netip.AddrPort, bool) {
-	udpAddr, ok := addr.(*net.UDPAddr)
-	if !ok {
-		return netip.AddrPort{}, false
+func readRelayPacket(pc net.PacketConn, b []byte) (int, netip.AddrPort, error) {
+	var from netip.AddrPort
+	var n int
+	var err error
+	if udp, ok := pc.(*net.UDPConn); ok {
+		n, from, err = udp.ReadFromUDPAddrPort(b)
+	} else {
+		var addr net.Addr
+		n, addr, err = pc.ReadFrom(b)
+		if udpAddr, ok := addr.(*net.UDPAddr); ok {
+			from = udpAddr.AddrPort()
+		}
 	}
-	ap := udpAddr.AddrPort()
-	return netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port()), true
+	// Keep mapped IPv4 sources identical to the address used during bind.
+	return n, netip.AddrPortFrom(from.Addr().Unmap(), from.Port()), err
+}
+
+func writeRelayPacket(pc net.PacketConn, b []byte, to netip.AddrPort) (int, error) {
+	if udp, ok := pc.(*net.UDPConn); ok {
+		return udp.WriteToUDPAddrPort(b, to)
+	}
+	return pc.WriteTo(b, net.UDPAddrFromAddrPort(to))
 }
 
 // handleClientDatagram processes one datagram received on the shared
@@ -123,7 +151,7 @@ func (d *datagramRelay) handleClientDatagram(b []byte, from netip.AddrPort) {
 				return // unknown or expired token: no reply, indistinguishable from a dropped packet
 			}
 			ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
-			_, _ = d.clientConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
+			_, _ = writeRelayPacket(d.clientConn, ack, from)
 		case wstransport.FramePathProbe, wstransport.FramePathAck:
 			// The relay never interprets these -- it forwards the opaque
 			// frame between an already-bound session pair under exactly the
@@ -163,7 +191,10 @@ func (d *datagramRelay) forwardFromClient(b []byte, from netip.AddrPort) {
 		return // half-bound session: drop rather than buffer
 	}
 	sess.touch()
-	if n, err := sess.serverConn.WriteTo(b, net.UDPAddrFromAddrPort(serverAddr)); err == nil && n == len(b) {
+	if d.up != nil && !d.up.AllowN(time.Now(), len(b)) {
+		return
+	}
+	if n, err := writeRelayPacket(sess.serverConn, b, serverAddr); err == nil && n == len(b) {
 		sess.serverForwarded(n)
 	}
 }
@@ -189,7 +220,7 @@ func (d *datagramRelay) handleServerDatagram(port uint16, b []byte, from netip.A
 			}
 			d.sessions.BindServer(sess.token, from)
 			ack := wstransport.EncodeControlFrame(wstransport.FrameRelayBindAck, nil)
-			_, _ = sess.serverConn.WriteTo(ack, net.UDPAddrFromAddrPort(from))
+			_, _ = writeRelayPacket(sess.serverConn, ack, from)
 		case wstransport.FramePathProbe, wstransport.FramePathAck:
 			if wstransport.ValidPathControl(typ, payload) {
 				d.forwardFromServer(sess, b, from)
@@ -219,7 +250,10 @@ func (d *datagramRelay) forwardFromServer(sess *udpRelaySession, b []byte, from 
 	}
 	sess.serverReceived(len(b))
 	sess.touch()
-	if n, err := d.clientConn.WriteTo(b, net.UDPAddrFromAddrPort(clientAddr)); err == nil && n == len(b) {
+	if d.down != nil && !d.down.AllowN(time.Now(), len(b)) {
+		return
+	}
+	if n, err := writeRelayPacket(d.clientConn, b, clientAddr); err == nil && n == len(b) {
 		sess.clientForwarded(n)
 	}
 }

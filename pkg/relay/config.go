@@ -94,6 +94,8 @@ type Config struct {
 		// MaxConnsPerServer has to the relay's overall fd/connection
 		// budget.
 		MaxUDPRelaySessionsPerServer int `yaml:"max_udp_relay_sessions_per_server"`
+		// Each direction gets the same relay-wide UDP forwarding ceiling.
+		UDPRelayBytesPerSecond int `yaml:"udp_relay_bytes_per_second,omitempty"`
 	} `yaml:"limits"`
 	Registrations []RegistrationConfig `yaml:"registrations"`
 	Kubernetes    KubernetesConfig     `yaml:"kubernetes"`
@@ -404,6 +406,9 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if c.Limits.MaxUDPRelaySessionsPerServer == 0 {
 		c.Limits.MaxUDPRelaySessionsPerServer = 64
+	}
+	if c.Limits.UDPRelayBytesPerSecond < 0 {
+		return c, fmt.Errorf("limits.udp_relay_bytes_per_second must be nonnegative")
 	}
 	if c.Listen.UDPRelay != "" {
 		if c.Listen.UDPRelayPorts == "" {

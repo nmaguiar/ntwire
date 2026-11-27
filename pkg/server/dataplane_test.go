@@ -704,3 +704,101 @@ func TestReapSessionsExpiresDeterministically(t *testing.T) {
 		t.Fatal("expired session survived deterministic reap")
 	}
 }
+
+func TestProxy_TargetHalfClosePreservesClientUpload(t *testing.T) {
+	for _, transparent := range []bool{false, true} {
+		name := "fixed"
+		if transparent {
+			name = "transparent-socks"
+		}
+		t.Run(name, func(t *testing.T) {
+			target, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer target.Close()
+			type targetResult struct {
+				upload string
+				err    error
+			}
+			finished := make(chan targetResult, 1)
+			go func() {
+				c, err := target.AcceptTCP()
+				if err != nil {
+					finished <- targetResult{err: err}
+					return
+				}
+				defer c.Close()
+				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+				if _, err := io.WriteString(c, "ready"); err != nil {
+					finished <- targetResult{err: err}
+					return
+				}
+				if err := c.CloseWrite(); err != nil {
+					finished <- targetResult{err: err}
+					return
+				}
+				got, err := io.ReadAll(c)
+				finished <- targetResult{upload: string(got), err: err}
+			}()
+
+			tunnel := TunnelConfig{Name: "upload", Target: target.Addr().String(), VirtualPort: 18434, Allow: []string{"*"}}
+			if transparent {
+				tunnel.Target = "socks"
+				tunnel.Socks = &SocksConfig{Transparent: true, Upstream: "socks5h://" + target.Addr().String()}
+			}
+			s, _, _ := newTestServer(t, []TunnelConfig{tunnel})
+			s.Config.Network.TunnelCIDR = "100.64.0.0/16"
+			s.Config.Listen.WireGuard = fmt.Sprintf("127.0.0.1:%d", freeUDPPort(t))
+			if err := startTransportFixture(s); err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			clientIP := netip.MustParseAddr("100.64.0.5")
+			stack, err := wgnet.New(wgnet.Config{Addresses: []netip.Addr{clientIP}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stack.Close()
+			if err := s.addPeer(stack.PublicKey(), clientIP.String()); err != nil {
+				t.Fatal(err)
+			}
+			if err := stack.AddPeer(wgnet.Endpoint{PublicKey: s.data.stack.PublicKey(), Address: "0.0.0.0/0@" + s.Config.Listen.WireGuard}); err != nil {
+				t.Fatal(err)
+			}
+			s.sessions.Create(CreateParams{Method: "ssh", Identity: "id", TunnelIP: clientIP.String(),
+				Tunnels: []protocol.Tunnel{{Name: tunnel.Name}}, TTL: time.Minute})
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			c, err := stack.DialContext(ctx, "tcp", net.JoinHostPort(s.data.serverIP.String(), "18434"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+			ready, err := io.ReadAll(c)
+			if err != nil || string(ready) != "ready" {
+				t.Fatalf("target prefix and FIN = %q, %v", ready, err)
+			}
+			const upload = "client bytes following the target FIN"
+			if _, err = io.WriteString(c, upload); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case result := <-finished:
+				if result.err != nil || result.upload != upload {
+					t.Fatalf("post-FIN upload = %q, %v", result.upload, result.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("target did not receive the upload and client FIN")
+			}
+			stats := s.statsFor(clientIP.String(), tunnel.Name).snapshot()
+			if stats.BytesToTarget != uint64(len(upload)) || stats.BytesFromTarget != uint64(len(ready)) {
+				t.Fatalf("forwarded byte counters: %+v", stats)
+			}
+		})
+	}
+}

@@ -17,7 +17,7 @@ func TestSOCKSUDPAssociationRejectsRetiredPeer(t *testing.T) {
 	}{
 		{"revoked", func(s *Sessions, old Session, _ CreateParams) { s.DeleteByID(old.ID) }, false},
 		{"grant removed on renewal", func(s *Sessions, old Session, _ CreateParams) {
-			s.renew(old.Token, nil, time.Minute, protocol.ClientInfo{})
+			s.renew(old.Token, nil, time.Minute, protocol.ClientInfo{}, nil)
 		}, false},
 		{"replacement with the same identity, address and key", func(s *Sessions, old Session, p CreateParams) {
 			s.Delete(old.Token)

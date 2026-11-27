@@ -14,6 +14,9 @@ const (
 	SwitchCarrierFailure SwitchReason = "carrier_failure"
 	SwitchProbeMisses    SwitchReason = "probe_misses"
 	SwitchPromoted       SwitchReason = "promoted"
+	SwitchQualified      SwitchReason = "qualified"
+	SwitchReconnected    SwitchReason = "reconnected"
+	SwitchRetired        SwitchReason = "retired"
 )
 
 // SwitchEvent is one committed primary change. From is empty for the first

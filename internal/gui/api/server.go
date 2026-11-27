@@ -252,7 +252,7 @@ type profileRequest struct {
 }
 
 func decodeProfileRequest(r *http.Request) (profileRequest, error) {
-	var body profileRequest
+	body := profileRequest{Profile: config.DefaultProfile()}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return profileRequest{}, err
 	}

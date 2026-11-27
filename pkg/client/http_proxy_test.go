@@ -765,3 +765,68 @@ func TestHTTPProxy_ReconnectUsesNewStack(t *testing.T) {
 		t.Fatalf("old/new SOCKS calls: %d/%d", oldCalls.Load(), newCalls.Load())
 	}
 }
+
+func TestLocalSOCKS_TargetHalfClosePreservesUpload(t *testing.T) {
+	f := newReconnectFixture(t)
+	startEgressServer(f, "direct-udp", false, false)
+	client := connectEgress(f, "direct-udp")
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	type targetResult struct {
+		payload string
+		err     error
+	}
+	finished := make(chan targetResult, 1)
+	go func() {
+		c, err := ln.AcceptTCP()
+		if err != nil {
+			finished <- targetResult{err: err}
+			return
+		}
+		defer c.Close()
+		_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+		if _, err := io.WriteString(c, "ready"); err != nil {
+			finished <- targetResult{err: err}
+			return
+		}
+		if err := c.CloseWrite(); err != nil {
+			finished <- targetResult{err: err}
+			return
+		}
+		got, err := io.ReadAll(c)
+		finished <- targetResult{payload: string(got), err: err}
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", client.State().Tunnels[0].LocalAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if err := socks.Connect(ctx, conn, ln.Addr().String()); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	ready, err := io.ReadAll(conn)
+	if err != nil || string(ready) != "ready" {
+		t.Fatalf("target prefix and FIN = %q, %v", ready, err)
+	}
+	const upload = "upload through SOCKS after target FIN"
+	if _, err := io.WriteString(conn, upload); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-finished:
+		if result.err != nil || result.payload != upload {
+			t.Fatalf("post-FIN upload = %q, %v", result.payload, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("target did not receive the upload and client FIN")
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -232,7 +233,7 @@ func TestSmartProxyTwoServers(t *testing.T) {
 	}
 }
 
-func attachTestUDPRelay(f *reconnectFixture, s *server.Server) {
+func startClientTestUDPRelay(f *reconnectFixture, configure ...func(*relay.Config)) (*relay.Relay, func() error) {
 	f.t.Helper()
 	pub, err := os.ReadFile(f.key + ".pub")
 	if err != nil {
@@ -255,6 +256,10 @@ func attachTestUDPRelay(f *reconnectFixture, s *server.Server) {
 	cfg.Limits.MaxConnsPerServer = 256
 	cfg.Limits.MaxNewConnsPerMinute = 1000
 	cfg.Limits.MaxUDPRelaySessionsPerServer = 4
+	cfg.Limits.UDPRelayIdleTimeout = time.Minute
+	for _, apply := range configure {
+		apply(&cfg)
+	}
 	rl, err := relay.New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		f.t.Fatal(err)
@@ -262,7 +267,14 @@ func attachTestUDPRelay(f *reconnectFixture, s *server.Server) {
 	if err = rl.Start(); err != nil {
 		f.t.Fatal(err)
 	}
-	f.t.Cleanup(func() { _ = rl.Close() })
+	stop := sync.OnceValue(rl.Close)
+	f.t.Cleanup(func() { _ = stop() })
+	return rl, stop
+}
+
+func attachTestUDPRelay(f *reconnectFixture, s *server.Server) {
+	f.t.Helper()
+	rl, _ := startClientTestUDPRelay(f)
 	agent, err := server.NewRelayAgent(server.RelayConfig{Enabled: true, URL: "wss://" + rl.AgentsAddr().String(),
 		Name: "home", IdentityFile: f.key, Fingerprint: rl.Fingerprint()}, slog.New(slog.DiscardHandler))
 	if err != nil {
@@ -358,7 +370,7 @@ func testUDPRelayBaseline(t testing.TB, c *Connection, target string) {
 	}
 }
 
-func testEgressInternalDial(t *testing.T, c *Connection, target string) {
+func testEgressInternalDial(t testing.TB, c *Connection, target string) {
 	t.Helper()
 	grant, err := c.SOCKSEgress("internet")
 	if err != nil {

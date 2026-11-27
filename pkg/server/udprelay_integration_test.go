@@ -56,33 +56,8 @@ func startUDPRelayFixture(t testing.TB) (*RelayAgent, string, int) {
 		t.Fatal(err)
 	}
 	pubLine := string(ssh.MarshalAuthorizedKey(pub))
-
-	poolPort := findFreeUDPPortForTest(t)
-
-	relayCfg := relay.Config{Domain: "relay.test", Registrations: []relay.RegistrationConfig{{Name: "home", PublicKey: pubLine}}}
-	relayCfg.Listen.Public = "127.0.0.1:0"
-	relayCfg.Listen.Agents = "127.0.0.1:0"
-	relayCfg.Listen.UDPRelay = "127.0.0.1:0"
-	relayCfg.Listen.UDPRelayPorts = fmt.Sprintf("%d-%d", poolPort, poolPort)
-	relayCfg.TLS.Ephemeral = true
-	relayCfg.Limits.HandshakeTimeout = 5 * time.Second
-	relayCfg.Limits.DialBackTimeout = 3 * time.Second
-	relayCfg.Limits.MaxPendingPerServer = 32
-	relayCfg.Limits.MaxConnsPerServer = 256
-	relayCfg.Limits.MaxNewConnsPerMinute = 1000
-	relayCfg.Limits.MaxUDPRelaySessionsPerServer = 10
-	rl, err := relay.New(relayCfg, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rl.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = rl.Close() })
+	rl, poolPort := startLoopbackUDPRelay(t, pubLine)
 	udpRelayAddr := rl.UDPRelayAddr()
-	if udpRelayAddr == "" {
-		t.Fatal("relay did not bind listen.udp_relay")
-	}
 
 	agentCfg := RelayConfig{Enabled: true, URL: "wss://" + rl.AgentsAddr().String(), Name: "home", IdentityFile: idPath, Fingerprint: rl.Fingerprint()}
 	agent, err := NewRelayAgent(agentCfg, nil)
@@ -96,6 +71,38 @@ func startUDPRelayFixture(t testing.TB) (*RelayAgent, string, int) {
 	time.Sleep(200 * time.Millisecond) // allow registration to complete
 
 	return agent, udpRelayAddr, poolPort
+}
+
+func startLoopbackUDPRelay(t testing.TB, pubLine string) (*relay.Relay, int) {
+	t.Helper()
+	poolPort := findFreeUDPPortForTest(t)
+	relayCfg := relay.Config{Domain: "relay.test", Registrations: []relay.RegistrationConfig{{Name: "home", PublicKey: pubLine}}}
+	relayCfg.Listen.Public = "127.0.0.1:0"
+	relayCfg.Listen.Agents = "127.0.0.1:0"
+	relayCfg.Listen.UDPRelay = "127.0.0.1:0"
+	relayCfg.Listen.UDPRelayPorts = fmt.Sprintf("%d-%d", poolPort, poolPort)
+	relayCfg.TLS.Ephemeral = true
+	relayCfg.Limits.HandshakeTimeout = 5 * time.Second
+	relayCfg.Limits.DialBackTimeout = 3 * time.Second
+	relayCfg.Limits.MaxPendingPerServer = 32
+	relayCfg.Limits.MaxConnsPerServer = 256
+	relayCfg.Limits.MaxNewConnsPerMinute = 1000
+	relayCfg.Limits.MaxUDPRelaySessionsPerServer = 10
+	// In-process config bypasses the YAML loader's idle timeout default.
+	relayCfg.Limits.UDPRelayIdleTimeout = time.Minute
+	rl, err := relay.New(relayCfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rl.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rl.Close() })
+	udpRelayAddr := rl.UDPRelayAddr()
+	if udpRelayAddr == "" {
+		t.Fatal("relay did not bind listen.udp_relay")
+	}
+	return rl, poolPort
 }
 
 // TestUDPRelayAllocateEndToEndWithRealRelay is the full-stack proof that the

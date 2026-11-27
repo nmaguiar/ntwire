@@ -36,13 +36,14 @@ type UDPBufferStatus struct {
 // conn.StdNetBind, it can tune them immediately after opening while retaining
 // batched UDP I/O on Linux.
 type UDPBind struct {
-	mu          sync.Mutex
-	ipv4        *net.UDPConn
-	ipv6        *net.UDPConn
-	requested   int
-	log         *slog.Logger
-	status      []UDPBufferStatus
-	receiveStop chan struct{}
+	mu           sync.Mutex
+	ipv4         *net.UDPConn
+	ipv6         *net.UDPConn
+	requested    int
+	log          *slog.Logger
+	status       []UDPBufferStatus
+	receiveStop  chan struct{}
+	dontFragment bool
 
 	// altPort, when non-zero, opens a second socket pair on that port (for
 	// example 443/udp for networks that only pass QUIC-like traffic). It is
@@ -137,6 +138,27 @@ func NewUDPBind(requested int, log *slog.Logger) *UDPBind {
 	return &UDPBind{requested: requested, log: log}
 }
 
+// NewProbeUDPBind opens a dedicated UDP socket with IP fragmentation
+// disabled. A sized path proof must cross the network as one datagram.
+func NewProbeUDPBind() *UDPBind {
+	b := NewUDPBind(0, nil)
+	b.dontFragment = true
+	return b
+}
+
+func dontFragmentUDP(socket *net.UDPConn, ipv6 bool) error {
+	if socket == nil {
+		return nil
+	}
+	raw, err := socket.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var optErr error
+	err = raw.Control(func(fd uintptr) { optErr = setUDPDontFragment(fd, ipv6) })
+	return errors.Join(err, optErr)
+}
+
 // BufferStatus returns a snapshot of the buffer settings from the most recent
 // successful Open. Inspection errors are included rather than hidden, since a
 // platform may support setting a buffer without exposing its effective value.
@@ -153,6 +175,9 @@ func (b *UDPBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 
+	if b.dontFragment && b.altPort != 0 {
+		return nil, 0, errors.New("use a separate bind for each UDP proof socket")
+	}
 	var tries int
 again:
 	port := int(uport)
@@ -181,6 +206,17 @@ again:
 		return nil, 0, syscall.EAFNOSUPPORT
 	}
 
+	if b.dontFragment {
+		if err := errors.Join(dontFragmentUDP(v4, false), dontFragmentUDP(v6, true)); err != nil {
+			if v4 != nil {
+				_ = v4.Close()
+			}
+			if v6 != nil {
+				_ = v6.Close()
+			}
+			return nil, 0, fmt.Errorf("disable adaptive UDP fragmentation: %w", err)
+		}
+	}
 	b.status = b.status[:0]
 	if v4 != nil {
 		b.recordBufferStatus("ipv4", v4)
@@ -210,7 +246,8 @@ again:
 		if a6 != nil {
 			b.recordBufferStatus("ipv6-alt", a6)
 		}
-		b.alt4, b.alt6 = a4, a6
+		b.alt4 = a4
+		b.alt6 = a6
 	}
 	fns := make([]conn.ReceiveFunc, 0, 4)
 	b.receiveStop = make(chan struct{})
@@ -301,50 +338,78 @@ func (b *UDPBind) recordBufferStatus(socket string, pc *net.UDPConn) {
 	b.log.Info("WireGuard UDP socket buffers configured", "socket", socket, "requested_bytes", status.Requested, "read_buffer_bytes", status.Read, "write_buffer_bytes", status.Write)
 }
 
-func makeUDPReceive(pc interface {
+type udpBatchReader interface {
 	ReadBatch([]ipv6.Message, int) (int, error)
-}, udp *net.UDPConn) conn.ReceiveFunc {
-	batch := makeUDPBatchReceive(pc)
+}
+
+func makeUDPReceive(pc udpBatchReader, udp *net.UDPConn) conn.ReceiveFunc {
+	if runtime.GOOS == "linux" || runtime.GOOS == "android" {
+		return makeUDPBatchReceive(pc)
+	}
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		if len(bufs) == 0 || len(bufs) > conn.IdealBatchSize || len(sizes) < len(bufs) || len(eps) < len(bufs) {
 			return 0, fmt.Errorf("invalid WireGuard UDP receive batch")
 		}
-		if runtime.GOOS != "linux" && runtime.GOOS != "android" {
-			n, _, _, addr, err := udp.ReadMsgUDP(bufs[0], nil)
-			if err != nil {
-				return 0, err
-			}
-			sizes[0] = n
-			eps[0] = udpEndpoint{addr: addr.AddrPort()}
-			return 1, nil
+		n, _, _, addr, err := udp.ReadMsgUDPAddrPort(bufs[0], nil)
+		if err != nil {
+			return 0, err
 		}
-		return batch(bufs, sizes, eps)
+		sizes[0] = n
+		eps[0] = udpEndpoint{addr: addr}
+		return 1, nil
 	}
 }
 
 // Keep batch decoding independent of the platform so its endpoint contract can
 // also be exercised on hosts that use ReadMsgUDP in production.
-func makeUDPBatchReceive(pc interface {
-	ReadBatch([]ipv6.Message, int) (int, error)
-}) conn.ReceiveFunc {
+func makeUDPBatchReceive(pc udpBatchReader) conn.ReceiveFunc {
+	const (
+		minWindow   = 8
+		shrinkAfter = 32
+	)
 	msgs := make([]ipv6.Message, conn.IdealBatchSize)
 	for i := range msgs {
 		msgs[i].Buffers = make(net.Buffers, 1)
 	}
+	// A ReceiveFunc has one serial reader. Prepare fewer descriptors when
+	// reads are sparse, and use the full batch when the socket stays busy.
+	window, sparse := minWindow, 0
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
 		if len(bufs) == 0 || len(bufs) > len(msgs) || len(sizes) < len(bufs) || len(eps) < len(bufs) {
 			return 0, fmt.Errorf("invalid WireGuard UDP receive batch")
 		}
-		for i := range bufs {
+		limit := min(window, len(bufs))
+		for i := range limit {
 			msgs[i].Buffers[0] = bufs[i]
 		}
-		n, err := pc.ReadBatch(msgs[:len(bufs)], 0)
+		n, err := pc.ReadBatch(msgs[:limit], 0)
 		if err != nil {
 			return 0, err
 		}
 		for i := 0; i < n; i++ {
 			sizes[i] = msgs[i].N
 			eps[i] = udpEndpoint{addr: msgs[i].Addr.(*net.UDPAddr).AddrPort()}
+		}
+		// A smaller caller-provided array cannot tell us whether the window
+		// would have filled. Keep the learned size for the next full read.
+		if limit == window {
+			switch {
+			case n == window:
+				window = min(window*2, len(msgs))
+				sparse = 0
+			case window > minWindow && n <= window/4:
+				sparse++
+				if sparse == shrinkAfter {
+					for i := window / 2; i < window; i++ {
+						msgs[i].Buffers[0] = nil
+						msgs[i].Addr = nil
+					}
+					window /= 2
+					sparse = 0
+				}
+			default:
+				sparse = 0
+			}
 		}
 		return n, nil
 	}
@@ -398,48 +463,40 @@ func (b *UDPBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	if len(bufs) == 0 || len(bufs) > b.BatchSize() {
 		return fmt.Errorf("invalid WireGuard UDP send batch")
 	}
-	dst := netip.AddrPortFrom(ep.DstIP(), portFromEndpoint(ep))
+	var dst netip.AddrPort
+	if endpoint, ok := ep.(udpEndpoint); ok {
+		dst = endpoint.addr
+	} else {
+		dst = netip.AddrPortFrom(ep.DstIP(), portFromEndpoint(ep))
+	}
+	isIPv6 := dst.Addr().Is6()
 	b.mu.Lock()
+	if b.receiveStop == nil {
+		b.mu.Unlock()
+		return net.ErrClosed
+	}
 	udp := b.ipv4
-	if ep.DstIP().Is6() {
+	if isIPv6 {
 		udp = b.ipv6
 	}
-	if b.altPort != 0 {
-		if b.isAltPeer(altPeerKey(dst), time.Now()) {
-			if ep.DstIP().Is6() && b.alt6 != nil {
-				udp = b.alt6
-			} else if !ep.DstIP().Is6() && b.alt4 != nil {
-				udp = b.alt4
-			}
+	if b.altPort != 0 && b.isAltPeer(altPeerKey(dst), time.Now()) {
+		if isIPv6 && b.alt6 != nil {
+			udp = b.alt6
+		} else if !isIPv6 && b.alt4 != nil {
+			udp = b.alt4
 		}
 	}
 	b.mu.Unlock()
 	if udp == nil {
 		return syscall.EAFNOSUPPORT
 	}
-	addr := net.UDPAddrFromAddrPort(dst)
-	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
-		for _, buf := range bufs {
-			if _, _, err := udp.WriteMsgUDP(buf, nil, addr); err != nil {
-				return err
-			}
-		}
-		return nil
+	// A single datagram already needs just one write. Avoid packing batch
+	// descriptors even for a full MTU payload.
+	if len(bufs) == 1 {
+		_, err := udp.WriteToUDPAddrPort(bufs[0], dst)
+		return err
 	}
-	msgs := make([]ipv6.Message, len(bufs))
-	for i, buf := range bufs {
-		msgs[i].Buffers = net.Buffers{buf}
-		msgs[i].Addr = addr
-	}
-	pc := ipv6.NewPacketConn(udp)
-	for start := 0; start < len(msgs); {
-		n, err := pc.WriteBatch(msgs[start:], 0)
-		if err != nil {
-			return err
-		}
-		start += n
-	}
-	return nil
+	return sendUDPBatch(udp, bufs, dst)
 }
 
 func (b *UDPBind) ParseEndpoint(s string) (conn.Endpoint, error) {

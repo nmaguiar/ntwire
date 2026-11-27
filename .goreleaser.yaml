@@ -64,15 +64,19 @@ archives:
     ids: [ntwire]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
+    files: [README.md, LICENSE, LICENSE-QUIC-GO, LICENSE-QPACK]
   - id: ntwire-server
     ids: [ntwire-server]
     name_template: "{{ .ProjectName }}-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
+    files: [README.md, LICENSE, LICENSE-QUIC-GO, LICENSE-QPACK]
   - id: ntwire-relay
     ids: [ntwire-relay]
     name_template: "{{ .ProjectName }}-relay_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
+    files: [README.md, LICENSE, LICENSE-QUIC-GO, LICENSE-QPACK]
   - id: ntwire-gui
     ids: [ntwire-gui-linux, ntwire-gui-windows]
     name_template: "{{ .ProjectName }}-gui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides: [{goos: windows, format: zip}]
+    files: [README.md, LICENSE, LICENSE-QUIC-GO, LICENSE-QPACK]

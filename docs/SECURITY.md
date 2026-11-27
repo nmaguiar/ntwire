@@ -8,6 +8,142 @@ type: reference
 
 [Smart Egress Proxy](SMART-EGRESS-PROXY.md#select-the-group) describes the local attachment trust boundary, group policy requirements, and failover rules.
 
+## Adaptive carrier pilot
+
+The adaptive WebSocket carrier uses the authenticated HTTPS control origin
+on servers that enable adaptive sessions. A client may reauthenticate for
+legacy WireGuard once after a confirmed carrier reachability failure. The
+same verified origin, WireGuard key, authentication method and issuer apply
+to the retry. Authorization failures, invalid control replies and unmet
+required capabilities stop the transition.
+Each attach ticket is single-use and scoped to the current bearer, lane,
+generation, and path epoch. The upgraded socket is admitted only after a
+second authorization check. The adaptive device has separate ingress and
+pins peers to lane endpoints, so a legacy UDP or WebSocket packet cannot
+roam an adaptive peer onto that path. WireGuard authenticates and decrypts
+every application packet through the normal device. Tunnel grants and
+destination authorization are evaluated by the existing server forwarding
+handlers. Renewal invalidates pending tickets. Revocation removes the
+adaptive peer and cancels active forwarding for its lifetime. [Protocol](PROTOCOL.md#adaptive-carrier-pilot)
+
+Adaptive native UDP candidates use separate sockets and proof registries.
+The optional alternate port must be negotiated and shares the configured
+advertised IP. Its proof is scoped to that socket, the observed peer tuple,
+the bearer generation, and the lane. A proof accepted on one port cannot
+qualify another. The server and client continue to apply the lane's
+ordinary WireGuard authentication and replay checks.
+
+Child lanes use distinct WireGuard keys and virtual addresses. Only a
+current authenticated parent can reserve or retire its children. Every
+child inherits the parent's tunnel and destination authorization, and
+revoking the parent fences admission and cancels forwarding across all
+its peers. Flow placement uses only qualified lanes in that parent.
+TCP streams, UDP associations, and proxy preparations keep their lane
+for the lifetime of their sockets. Prepare still opens only the granted
+service. Destination submission and denial handling retain the existing
+Smart Proxy rules.
+
+Negotiated datagram candidates give a child a way to qualify another
+carrier for the same peer. Native UDP address proofs and QUIC attach
+tickets are scoped to the child lane and current bearer generation. The
+server rechecks ownership and the expected path epoch before publication.
+Qualification uses the lane's fixed datagram size and ordinary WireGuard
+validation. The client discards a provisional child if it cannot reconcile
+an attempted primary commit. Capacity observations can change placement
+within the authorized parent and carry no routing or grant authority.
+
+The negotiated [relay catalog](PROTOCOL.md#adaptive-relay-discovery)
+requires the current parent bearer and a lane owned by that parent.
+Offers expire within 15 seconds and reference authenticated registrations
+from the server's configured relay pool. Registration changes and session
+renewal retire identifiers. Candidate IDs convey discovery information
+only. The catalog does not open UDP allocations or confer carrier
+selection or destination privileges.
+
+Performance routing admits up to two relay allocations per lane, each
+bound to its own current registration, authorization generation, and UDP
+tuple. A stale registration loses eligibility even if it returns at the
+same address. The process and per-member budgets count pending work,
+including work whose client connection ended before the relay replied.
+Renewal discards standby proofs. Parent revocation fences both allocations
+and their forwarding lifetime. The relay forwards encrypted WireGuard
+datagrams between its two token-bound legs. Path trials compare delivery
+and bounded echoes within the authenticated WireGuard tunnel, whose
+destination is the server's virtual address.
+
+Adaptive UDP relay qualification charges a server slot before contacting
+the selected registration. Publication checks the current lane, bearer
+generation, path epoch and relay registration again. The server pins the
+relay leg to its allocated tuple and requires an authenticated full-size
+proof in each direction. The relay sees the proof frames and, on a
+selected WireGuard carrier, encrypted WireGuard datagrams. The binding
+credential conveys carriage on its allocation. Existing WireGuard and
+tunnel policy continue to control application traffic. [Relay qualification protocol](PROTOCOL.md#adaptive-relay-udp-qualification)
+
+Relay performance trials send small, nonce-matched ICMP echoes through the
+already authenticated WireGuard peer to the server's tunnel address. One
+echo can be outstanding per parent. The client stops probing on idle lanes
+and discards observations across carrier or authorization changes. Eligibility
+and coordinated selection still require a live server-authorized allocation.
+Measurements only rank eligible carriers.
+
+The WSS scale pilot opens at most one automatic child for a parent that
+negotiated multiple lanes and forwarding feedback. Measured queue pressure
+and delivery can change flow placement. Parent, generation, and resource
+checks still control every peer reservation, attachment, and retirement.
+
+Negotiated performance feedback is scoped to the authenticated lane and
+its current tunnel grants. The server rate-limits requests and returns
+aggregate forwarding counts without destinations or identities. The
+client stops polling after traffic goes idle. Trials use only authorized
+and qualified carriers. Live demand is forwarded once on the existing
+WireGuard lane, and RTT sampling uses the existing authenticated
+WebSocket heartbeat or QUIC state. Authorization remains independent
+of the measured values.
+
+The optional direct UDP standby uses a dedicated socket and a short-lived
+proof key bound to the authenticated parent, lane, generation and path
+epoch. A live WireGuard handshake on the existing lane is required before
+the server issues the proof key. Qualification checks the same source
+address and port and a full-size proof in both directions. Each UDP reply
+stays within the requesting datagram's byte budget. The standby remains
+outside application forwarding until selected. [Direct UDP proof](PROTOCOL.md#direct-udp-proof)
+
+The optional QUIC listener uses a separate UDP socket, the same server
+TLS trust as the HTTPS control origin, and one connection per lane.
+Source-address validation bounds pre-authentication amplification. The
+server caps live and handshaking QUIC connections, parallel
+qualifications, stream receive windows and queue depths. It consumes a
+one-use ticket only for its assigned lane and checks authorization again
+at commit. QUIC early data is disabled. The reliable stream carries
+bounded attach control. Application packets remain complete encrypted
+WireGuard datagrams and pass through the existing per-peer authentication,
+replay protection, and destination enforcement. Closing or revoking a
+session tears down its carrier. Certificate mismatch, proxy restrictions,
+and inadequate path MTU prevent QUIC attachment. When the WSS upgrade is
+unavailable, the same verified HTTPS control origin must authorize QUIC
+startup, and the datagram proof must succeed before local listeners
+open. An explicit authentication or authorization denial stops startup.
+[QUIC DATAGRAM carrier](PROTOCOL.md#quic-datagram-carrier)
+
+The optional HTTP carriers add no destination authority. HTTP/2 requires
+verified TLS, negotiated HTTP/2, the session bearer and a single-use lane
+ticket. HTTP/3 requires an authorized ticket from the verified control origin,
+one fixed CONNECT-UDP target and a bounded two-way encrypted-size proof.
+The target resolves to the local WireGuard bind. The listener accepts no
+generic outbound UDP destinations. Attach tickets are tied to the lane,
+generation, candidate, path epoch and expiry. Only full ciphertext datagrams
+reach WireGuard. Per-connection windows, packet queues, header sizes and
+setup deadlines bound resource use. Revocation fences the lane before
+closing the underlying stream. These entry points are separate from the
+Apple Network Relay gateway. [HTTP carrier protocol](PROTOCOL.md#http-carrier-bootstrap)
+
+Coordinated stream selection checks the current bearer, lane owner,
+authorization generation, and expected path epoch. The server accepts
+only live carriers that have qualified for that lane. During the bounded
+receive overlap, both carrier incarnations still feed the same pinned
+WireGuard endpoint and use normal WireGuard verification. [Coordinated selection](PROTOCOL.md#coordinated-stream-carrier-selection)
+
 ## In-tunnel DNS forwarding
 
 DNS forwarding is disabled by default. When enabled, ntwire continues to bind
@@ -847,6 +983,8 @@ use CONNECT without TLS interception.
 
 ### Smart Proxy direct and ASN routing
 
+Adaptive ranking uses advisory load and performance data after ordered routing has approved a candidate set. Recent outcomes and bounded transfer summaries remain in local memory. Exported status excludes requested destinations. Optional warm preparation opens only the granted in-WireGuard SOCKS service. A real request uses the selected preparation once, passes current destination authorization, and retains the existing terminal behavior after policy denial or ambiguous submission. Revocation and config reload invalidate unused preparations. Destination DNS and binding continue through the configured resolution path.
+
 Direct egress requires an explicit rule or unmatched action on a loopback Smart Proxy. A server denial or unavailable route cannot trigger it. The proxy checks local interfaces and blocks loopback, link-local, and protected address ranges. Intentional private access requires an explicit LAN CIDR in the matching direct rule. The proxy resolves an authorized direct hostname with the client resolver, checks every returned address, and dials a chosen numeric address. The OS routing table selects the path and the destination sees the client’s source IP. No ntwire server is present to apply its destination policy.
 
 ASN data classifies routing metadata. It cannot authenticate a destination and a missing result cannot skip an earlier applicable rule. The client downloads only from the configured trusted HTTPS source when an active group uses ASN rules. Its bounded and validated IPv4 snapshot becomes ineligible after the configured maximum age. Explicitly scoped remote classification discloses a hostname to a single approved policy-compatible resolver. The server authorizes both the original hostname and the offered IP, rechecks authorization before relaying, and dials that exact IP. Scoped local classification is a separate explicit DNS disclosure setting.
@@ -856,3 +994,5 @@ Status contains aggregate lookup, traffic and denial counts. It omits requested 
 ## Linux kernel backend
 
 `ntwire-server` can run kernel WireGuard in an anonymous private network namespace. A namespace-local nftables ruleset limits decrypted traffic to the tunnel service address and its active listeners. Forwarding is disabled. The Go authorization and destination-policy checks still run before every target connection. Public control and transport sockets and authorized target dials operate in the original namespace. The standard deployment stays unprivileged, and operators can set `--acceleration=off` to skip kernel setup. See [Linux acceleration](LINUX-ACCELERATION.md) for permissions and operational details.
+
+An explicit `required` selection authorizes kernel setup. Automatic kernel setup on Linux requires `acceleration.allow_auto: true`. A cleanup failure during startup blocks automatic fallback. Legacy and adaptive peers have separate device ownership and retain the same grant checks. Anonymous namespace resources belong to the process and do not require stale host rules or interfaces to be removed after a crash.

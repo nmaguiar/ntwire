@@ -72,6 +72,8 @@ than treating it as a passing GUI validation ([RELEASE.md](RELEASE.md)).
 
 In **Settings**, expand **Smart Proxy** below **Profiles**. Configure and activate individual groups, then turn on **Enable Smart Proxy** to run them and show the tray menu. From the tray you can switch groups, activate them, and open their dashboard or isolated browser. Settings can also export and import group configurations. See the [proxy configuration guide](SMART-EGRESS-PROXY.md).
 
+Choose **Adaptive** under **Routing strategy** to use measured setup time, transfer rates and tunnel load when selecting new connections. In **Failover and health**, you can keep an authorized service connection ready for subsequent requests. Use **Sticky fastest** for whole-group tunnel preference.
+
 **Open isolated browser** prefers SOCKS5 for a group with only direct and deny routes, or when every non-excluded member advertises support for Chromium's numeric IPv4 and IPv6 requests. With both protocols enabled, mixed or disconnected groups use HTTP for new launches. SOCKS5-only groups can open the browser and show a compatibility note when some members lack support. Fully close and reopen the isolated browser to apply a different protocol or local DNS setting. The profile, custom executable and additional Chromium arguments are still taken from your browser settings.
 
 ## Profiles and storage
@@ -110,6 +112,9 @@ sign-in when the server advertises it and otherwise asks the user to choose an
 authorized SSH private key. **Add connection…** in the tray opens the same
 page at any time. A successful connection opens the local dashboard at Portal;
 the dashboard automatically shows its target list if Portal is unavailable.
+On a connection that negotiated the multi-lane pilot, expand **WireGuard
+lanes** on the **Tunnels** tab to see each lane's carrier, state, active
+flows and the latest scaling decision.
 
 The standard browser file chooser does not disclose a selected file's source
 pathname to JavaScript. SSH keys selected in the setup or advanced editor are
@@ -119,11 +124,11 @@ path while keeping the selected key private to their account.
 
 ### Opt-in transport settings
 
-A profile's **🛠️ Advanced** section includes the opt-in transport settings
-described in [CLIENT.md](CLIENT.md#opt-in-transport-settings) (for example
-**Try alternate UDP port**). They are off for new and existing profiles and
-are written to `gui.yaml` only once enabled, so profiles that never use them
-are unchanged.
+A profile's **🛠️ Advanced** section includes the transport controls in
+[CLIENT.md](CLIENT.md#opt-in-transport-settings). **Adaptive WireGuard
+carriers** defaults to on for new profiles and existing profiles with no
+saved value. Turn it off for a profile to keep legacy negotiation.
+Existing controls such as **Try alternate UDP port** remain opt-in.
 
 ## Autostart and single instance
 

@@ -52,6 +52,7 @@ func (m Member) ID() MemberID { return MemberID{m.ProfileID, m.Tunnel} }
 
 type Failover struct {
 	Racing         bool          `yaml:"racing,omitempty" json:"racing,omitempty"`
+	WarmService    bool          `yaml:"warm_service,omitempty" json:"warm_service,omitempty"`
 	RaceDelay      time.Duration `yaml:"race_delay,omitempty" json:"race_delay,omitempty"`
 	Enabled        *bool         `yaml:"enabled,omitempty" json:"enabled,omitempty"`
 	MaxAttempts    int           `yaml:"max_attempts" json:"max_attempts"`
@@ -184,9 +185,12 @@ func (c Config) normalizedGroup() (Config, error) {
 		c.Egress.Selection = "sticky-fastest"
 	}
 	switch c.Egress.Selection {
-	case "priority", "round-robin", "fastest-healthy", "sticky-fastest", "destination-aware":
+	case "priority", "round-robin", "fastest-healthy", "sticky-fastest", "destination-aware", "adaptive":
 	default:
 		return c, errors.New("unknown smart proxy selection strategy")
+	}
+	if c.Failover.WarmService && c.Egress.Selection != "adaptive" {
+		return c, errors.New("warm_service requires adaptive selection")
 	}
 	c.Egress.Members = slices.Clone(c.Egress.Members)
 	c.Health.ProbeTargets = slices.Clone(c.Health.ProbeTargets)
