@@ -52,8 +52,7 @@ func warn(key, msg string, args ...any) {
 }
 
 // control returns a net.ListenConfig/net.Dialer Control hook, or nil when no
-// tuning is requested. Accepted sockets inherit TCP_CONGESTION and
-// TCP_NOTSENT_LOWAT from the listening socket on Linux.
+// tuning is requested.
 func (o Options) control() func(network, address string, c syscall.RawConn) error {
 	if !o.Enabled() {
 		return nil
@@ -78,7 +77,47 @@ func (o Options) control() func(network, address string, c syscall.RawConn) erro
 // equivalent to net.Listen("tcp", addr).
 func Listen(o Options, addr string) (net.Listener, error) {
 	lc := net.ListenConfig{Control: o.control()}
-	return lc.Listen(context.Background(), "tcp", addr)
+	ln, err := lc.Listen(context.Background(), "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	if !o.Enabled() {
+		return ln, nil
+	}
+	return &tunedListener{Listener: ln, control: o.control()}, nil
+}
+
+// tunedListener applies options to accepted sockets as well as the listening
+// socket. Linux does not inherit TCP_NOTSENT_LOWAT to accepted connections.
+type tunedListener struct {
+	net.Listener
+	control func(network, address string, c syscall.RawConn) error
+}
+
+func (l *tunedListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		if raw, err := tcp.SyscallConn(); err != nil {
+			warn("accepted-control", "TCP tuning could not access accepted socket; continuing untuned", "error", err)
+		} else if err := l.control("tcp", "", raw); err != nil {
+			warn("accepted-control", "TCP tuning could not access accepted socket; continuing untuned", "error", err)
+		}
+	}
+	return conn, nil
+}
+
+// SyscallConn preserves the method exposed by net.TCPListener for callers that
+// need to inspect or configure the underlying listening socket.
+func (l *tunedListener) SyscallConn() (syscall.RawConn, error) {
+	if ln, ok := l.Listener.(interface {
+		SyscallConn() (syscall.RawConn, error)
+	}); ok {
+		return ln.SyscallConn()
+	}
+	return nil, fmt.Errorf("underlying TCP listener does not expose SyscallConn")
 }
 
 // DialContext returns a dial function with o applied, suitable for

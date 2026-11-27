@@ -11,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestListen_AcceptedSocketInheritsNotSentLowat(t *testing.T) {
+func TestListen_AppliesNotSentLowatToAcceptedSocket(t *testing.T) {
 	const lowat = 16 << 10
 	ln, err := Listen(Options{NotSentLowat: lowat}, "127.0.0.1:0")
 	if err != nil {
