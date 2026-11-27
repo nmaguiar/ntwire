@@ -1,8 +1,8 @@
 # binary-ntwire-gui-linux-arm64 — linux/arm64
 
-- Scanned: 2026-11-25 10:42 UTC
-- Source commit: `8da483691ed5cb6790120698991047ac93fc4026`
-- Artifact: `sha256:50bd862e2b59e5ee38fa2b0e625f5b01f1e124daa7f50887dc103a8ce0ac801a`
+- Scanned: 2026-11-27 04:45 UTC
+- Source commit: `c269b729a2c6a11bf9feec0dfbafc0ce814628c2`
+- Artifact: `sha256:baa4c9d4e0f8dda7a61103edb0ad6f0ae36678f4048149268df4bc627370e774`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261125100141-8da483691ed5"
+        "version": "v0.0.0-20261127011546-c269b729a2c6"
       },
       {
         "path": "fyne.io/systray",
@@ -67,6 +67,14 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "path": "github.com/kayrus/putty",
         "version": "v1.0.5"
+      },
+      {
+        "path": "github.com/quic-go/qpack",
+        "version": "v0.6.0"
+      },
+      {
+        "path": "github.com/quic-go/quic-go",
+        "version": "v0.66.0"
       },
       {
         "path": "github.com/youmark/pkcs8",
@@ -517,6 +525,833 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     ],
     "database_specific": {
       "url": "https://pkg.go.dev/vuln/GO-2026-4945",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2023-2160",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2023-11-02T21:44:01Z",
+    "aliases": [
+      "CVE-2023-46239",
+      "GHSA-3q6m-v84f-6p9h"
+    ],
+    "summary": "Panic during QUIC handshake in github.com/quic-go/quic-go",
+    "details": "The QUIC handshake can cause a panic when processing a certain sequence of frames. A malicious peer can deliberately trigger this panic.",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.37.0"
+              },
+              {
+                "fixed": "0.37.3"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go"
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-3q6m-v84f-6p9h"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/b6a4725b60f1fe04e8f1ddcc3114e290fcea1617"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2023-2160",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2024-2459",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2024-01-23T17:04:50Z",
+    "aliases": [
+      "CVE-2023-49295",
+      "GHSA-ppxx-5m9h-6vxf"
+    ],
+    "summary": "Denial of service via path validation in github.com/quic-go/quic-go",
+    "details": "Denial of service via path validation in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.37.7"
+              },
+              {
+                "introduced": "0.38.0"
+              },
+              {
+                "fixed": "0.38.2"
+              },
+              {
+                "introduced": "0.39.0"
+              },
+              {
+                "fixed": "0.39.4"
+              },
+              {
+                "introduced": "0.40.0"
+              },
+              {
+                "fixed": "0.40.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {}
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://nvd.nist.gov/vuln/detail/CVE-2023-49295"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/17fc98c2d81dbe685c19702dc694a9d606ac56dc"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/21609ddfeff93668c7625a85eb09f1541fdad965"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/3a9c18bcd27a01c551ac9bf8bd2b4bded77c189a"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/554d543b50b917369fb1394cc5396d928166cf49"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/6cc3d58935426191296171a6c0d1ee965e10534e"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/9aaefe19fc3dc8c8917cc87e6128bb56d9e9e6cc"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/a0ffa757499913f7be69aa78f573a6aee3430ae4"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/d7aa627ebde91cf799ada2a07443faa9b1e5abb8"
+      },
+      {
+        "type": "WEB",
+        "url": "https://seemann.io/posts/2023-12-18-exploiting-quics-path-validation/"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2024-2459",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2024-2682",
+    "modified": "2024-05-20T16:03:47Z",
+    "published": "2024-04-05T16:53:41Z",
+    "aliases": [
+      "CVE-2024-22189",
+      "GHSA-c33x-xqrf-c478"
+    ],
+    "summary": "Denial of service via connection starvation in github.com/quic-go/quic-go",
+    "details": "An attacker can cause its peer to run out of memory by sending a large number of NEW_CONNECTION_ID frames that retire old connection IDs. The receiver is supposed to respond to each retirement frame with a RETIRE_CONNECTION_ID frame. The attacker can prevent the receiver from sending out (the vast majority of) these RETIRE_CONNECTION_ID frames by collapsing the peers congestion window (by selectively acknowledging received packets) and by manipulating the peer's RTT estimate.",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.42.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go",
+              "symbols": [
+                "Dial",
+                "DialAddr",
+                "DialAddrEarly",
+                "DialEarly",
+                "Listen",
+                "ListenAddr",
+                "ListenAddrEarly",
+                "ListenEarly",
+                "Transport.Dial",
+                "Transport.DialEarly",
+                "Transport.Listen",
+                "Transport.ListenEarly",
+                "connIDGenerator.Retire",
+                "connIDGenerator.SetMaxActiveConnIDs",
+                "connIDManager.Add",
+                "connIDManager.Get",
+                "connection.AcceptStream",
+                "connection.AcceptUniStream",
+                "connection.OpenStream",
+                "connection.OpenStreamSync",
+                "connection.OpenUniStream",
+                "connection.OpenUniStreamSync",
+                "connection.run",
+                "framerI.AppendStreamFrames",
+                "framerI.QueueControlFrame",
+                "packetPacker.AppendPacket",
+                "packetPacker.MaybePackProbePacket",
+                "packetPacker.PackAckOnlyPacket",
+                "packetPacker.PackApplicationClose",
+                "packetPacker.PackCoalescedPacket",
+                "packetPacker.PackConnectionClose",
+                "packetPacker.PackMTUProbePacket",
+                "receiveStream.CancelRead",
+                "receiveStream.CloseRemote",
+                "receiveStream.Read",
+                "sendStream.CancelWrite",
+                "streamsMap.AcceptStream",
+                "streamsMap.AcceptUniStream",
+                "streamsMap.DeleteStream",
+                "streamsMap.HandleMaxStreamsFrame",
+                "streamsMap.OpenStream",
+                "streamsMap.OpenStreamSync",
+                "streamsMap.OpenUniStream",
+                "streamsMap.OpenUniStreamSync",
+                "streamsMap.UpdateLimits",
+                "windowUpdateQueue.QueueAll"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/4a99b816ae3ab03ae5449d15aac45147c85ed47a"
+      },
+      {
+        "type": "WEB",
+        "url": "https://seemann.io/posts/2024-03-19-exploiting-quics-connection-id-management"
+      }
+    ],
+    "credits": [
+      {
+        "name": "marten-seemann"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2024-2682",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2024-3302",
+    "modified": "2024-12-12T21:59:58Z",
+    "published": "2024-12-04T16:13:30Z",
+    "aliases": [
+      "CVE-2024-53259",
+      "GHSA-px8v-pp82-rcvr"
+    ],
+    "summary": "ICMP Packet Too Large Injection Attack on Linux in github.com/quic-go/quic-go",
+    "details": "ICMP Packet Too Large Injection Attack on Linux in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.48.2"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go",
+              "goos": [
+                "linux"
+              ],
+              "symbols": [
+                "Dial",
+                "DialAddr",
+                "DialAddrEarly",
+                "DialEarly",
+                "Listen",
+                "ListenAddr",
+                "ListenAddrEarly",
+                "ListenEarly",
+                "StreamError.Error",
+                "Transport.Close",
+                "Transport.Dial",
+                "Transport.DialEarly",
+                "Transport.Listen",
+                "Transport.ListenEarly",
+                "Transport.ReadNonQUICPacket",
+                "Transport.WriteTo",
+                "connIDGenerator.RemoveAll",
+                "connIDGenerator.ReplaceWithClosed",
+                "connIDGenerator.Retire",
+                "connIDGenerator.SetHandshakeComplete",
+                "connIDGenerator.SetMaxActiveConnIDs",
+                "connIDManager.Add",
+                "connIDManager.AddFromPreferredAddress",
+                "connIDManager.Get",
+                "connMultiplexer.RemoveConn",
+                "connection.AcceptStream",
+                "connection.AcceptUniStream",
+                "connection.CloseWithError",
+                "connection.OpenStream",
+                "connection.OpenStreamSync",
+                "connection.OpenUniStream",
+                "connection.OpenUniStreamSync",
+                "cryptoStream.HandleCryptoFrame",
+                "cryptoStreamManager.Drop",
+                "cryptoStreamManager.GetCryptoData",
+                "cryptoStreamManager.HandleCryptoFrame",
+                "datagramQueue.HandleDatagramFrame",
+                "framer.AppendControlFrames",
+                "mtuFinderAckHandler.OnAcked",
+                "oobConn.ReadPacket",
+                "packetHandlerMap.Add",
+                "packetHandlerMap.AddWithConnID",
+                "packetHandlerMap.Close",
+                "packetHandlerMap.GetStatelessResetToken",
+                "packetHandlerMap.Remove",
+                "packetHandlerMap.ReplaceWithClosed",
+                "packetHandlerMap.Retire",
+                "packetPacker.AppendPacket",
+                "packetPacker.MaybePackProbePacket",
+                "packetPacker.PackAckOnlyPacket",
+                "packetPacker.PackApplicationClose",
+                "packetPacker.PackCoalescedPacket",
+                "packetPacker.PackConnectionClose",
+                "packetPacker.PackMTUProbePacket",
+                "packetUnpacker.UnpackLongHeader",
+                "packetUnpacker.UnpackShortHeader",
+                "receiveStream.CancelRead",
+                "receiveStream.Read",
+                "retransmissionQueue.DropPackets",
+                "sconn.Write",
+                "sendQueue.Run",
+                "sendStream.CancelWrite",
+                "sendStream.Close",
+                "sendStream.Write",
+                "setDF",
+                "stream.Close",
+                "streamsMap.AcceptStream",
+                "streamsMap.AcceptUniStream",
+                "streamsMap.DeleteStream",
+                "streamsMap.GetOrOpenReceiveStream",
+                "streamsMap.GetOrOpenSendStream",
+                "streamsMap.OpenStream",
+                "streamsMap.OpenStreamSync",
+                "streamsMap.OpenUniStream",
+                "streamsMap.OpenUniStreamSync"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-px8v-pp82-rcvr"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/ca31dd355cbe5fc6c5807992d9d1149c66c96a50"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/pull/4729"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/quic-go/quic-go/releases/tag/v0.48.2"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://datatracker.ietf.org/doc/draft-seemann-tsvwg-udp-fragmentation/"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2024-3302",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2025-3735",
+    "modified": "2025-06-03T17:28:53Z",
+    "published": "2025-06-03T17:28:53Z",
+    "aliases": [
+      "CVE-2025-29785",
+      "GHSA-j972-j939-p2v3"
+    ],
+    "summary": "Panic in Path Probe Loss Recovery Handling in github.com/quic-go/quic-go",
+    "details": "Panic in Path Probe Loss Recovery Handling in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0.50.0"
+              },
+              {
+                "fixed": "0.50.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go/internal/ackhandler",
+              "symbols": [
+                "sentPacketHandler.OnLossDetectionTimeout",
+                "sentPacketHandler.ReceivedAck",
+                "sentPacketHandler.detectAndRemoveAckedPackets",
+                "sentPacketHandler.detectLostPathProbes"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-j972-j939-p2v3"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/b90058aba5f65f48e0e150c89bbaa21a72dda4de"
+      },
+      {
+        "type": "REPORT",
+        "url": "https://github.com/quic-go/quic-go/issues/4981"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2025-3735",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2025-4017",
+    "modified": "2025-11-05T18:41:07Z",
+    "published": "2025-11-05T18:41:07Z",
+    "aliases": [
+      "CVE-2025-59530",
+      "GHSA-47m2-4cr7-mhcw"
+    ],
+    "summary": "Panic occurs when queuing undecryptable packets after handshake completion in github.com/quic-go/quic-go",
+    "details": "Panic occurs when queuing undecryptable packets after handshake completion in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.49.1"
+              },
+              {
+                "introduced": "0.50.0"
+              },
+              {
+                "fixed": "0.54.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go",
+              "symbols": [
+                "Conn.handleHandshakeConfirmed",
+                "Dial",
+                "DialAddr",
+                "DialAddrEarly",
+                "DialEarly",
+                "Listen",
+                "ListenAddr",
+                "ListenAddrEarly",
+                "ListenEarly",
+                "Transport.Dial",
+                "Transport.DialEarly",
+                "Transport.Listen",
+                "Transport.ListenEarly"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-47m2-4cr7-mhcw"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/bc5bccf10fd02728eef150683eb4dfaa5c0e749c"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/ce7c9ea8834b9d2ed79efa9269467f02c0895d42"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/pull/5354"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/quic-go/quic-go/blob/v0.55.0/connection.go#L2682-L2685"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2025-4017",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2025-4233",
+    "modified": "2025-12-15T20:37:41Z",
+    "published": "2025-12-15T20:37:41Z",
+    "aliases": [
+      "CVE-2025-64702",
+      "GHSA-g754-hx8w-x2g6"
+    ],
+    "summary": "HTTP/3 QPACK Header Expansion DoS in github.com/quic-go/quic-go",
+    "details": "HTTP/3 QPACK Header Expansion DoS in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.57.0"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go/http3",
+              "symbols": [
+                "ClientConn.OpenRequestStream",
+                "ClientConn.RoundTrip",
+                "ConfigureTLSConfig",
+                "Conn.OpenStream",
+                "Conn.OpenStreamSync",
+                "Conn.OpenUniStream",
+                "Conn.OpenUniStreamSync",
+                "Conn.decodeTrailers",
+                "ErrCode.String",
+                "Error.Error",
+                "ListenAndServeQUIC",
+                "ListenAndServeTLS",
+                "ParseCapsule",
+                "RequestStream.CancelRead",
+                "RequestStream.CancelWrite",
+                "RequestStream.Close",
+                "RequestStream.Read",
+                "RequestStream.ReadResponse",
+                "RequestStream.SendRequestHeader",
+                "RequestStream.Write",
+                "Server.Close",
+                "Server.ListenAndServe",
+                "Server.ListenAndServeTLS",
+                "Server.Serve",
+                "Server.ServeListener",
+                "Server.ServeQUICConn",
+                "Server.Shutdown",
+                "Server.handleRequest",
+                "Server.maxHeaderBytes",
+                "Stream.Read",
+                "Stream.Write",
+                "Transport.Close",
+                "Transport.CloseIdleConnections",
+                "Transport.NewClientConn",
+                "Transport.RoundTrip",
+                "Transport.RoundTripOpt",
+                "body.Close",
+                "body.Read",
+                "cancelingReader.Read",
+                "countingByteReader.Read",
+                "countingByteReader.ReadByte",
+                "errConnUnusable.Error",
+                "exactReader.Read",
+                "frameParser.ParseNext",
+                "gzipReader.Close",
+                "gzipReader.Read",
+                "hijackableBody.Close",
+                "hijackableBody.Read",
+                "parseHeaders",
+                "requestFromHeaders",
+                "requestWriter.WriteRequestHeader",
+                "responseWriter.Flush",
+                "responseWriter.FlushError",
+                "responseWriter.HTTPStream",
+                "responseWriter.Write",
+                "responseWriter.WriteHeader",
+                "roundTripperWithCount.Close",
+                "stateTrackingStream.CancelRead",
+                "stateTrackingStream.CancelWrite",
+                "stateTrackingStream.Close",
+                "stateTrackingStream.Read",
+                "stateTrackingStream.Write",
+                "tracingReader.Read",
+                "updateResponseFromHeaders"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-g754-hx8w-x2g6"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/5b2d2129f8315da41e01eff0a847ab38a34e83a8"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2025-4233",
+      "review_status": "REVIEWED"
+    }
+  }
+}
+{
+  "osv": {
+    "schema_version": "1.3.1",
+    "id": "GO-2026-5676",
+    "modified": "2026-07-07T16:52:19Z",
+    "published": "2026-07-07T16:52:19Z",
+    "aliases": [
+      "CVE-2026-40898",
+      "GHSA-vvgj-x9jq-8cj9"
+    ],
+    "summary": "HTTP/3 QPACK Trailer Expansion Memory Exhaustion in github.com/quic-go/quic-go",
+    "details": "HTTP/3 QPACK Trailer Expansion Memory Exhaustion in github.com/quic-go/quic-go",
+    "affected": [
+      {
+        "package": {
+          "name": "github.com/quic-go/quic-go",
+          "ecosystem": "Go"
+        },
+        "ranges": [
+          {
+            "type": "SEMVER",
+            "events": [
+              {
+                "introduced": "0"
+              },
+              {
+                "fixed": "0.59.1"
+              }
+            ]
+          }
+        ],
+        "ecosystem_specific": {
+          "imports": [
+            {
+              "path": "github.com/quic-go/quic-go/http3",
+              "symbols": [
+                "ClientConn.HandleBidirectionalStream",
+                "ClientConn.OpenRequestStream",
+                "ClientConn.RoundTrip",
+                "ConfigureTLSConfig",
+                "ErrCode.String",
+                "Error.Error",
+                "ListenAndServeQUIC",
+                "ListenAndServeTLS",
+                "ParseCapsule",
+                "RawClientConn.HandleUnidirectionalStream",
+                "RawServerConn.HandleRequestStream",
+                "RawServerConn.HandleUnidirectionalStream",
+                "RequestStream.CancelRead",
+                "RequestStream.CancelWrite",
+                "RequestStream.Close",
+                "RequestStream.Read",
+                "RequestStream.ReadResponse",
+                "RequestStream.SendRequestHeader",
+                "RequestStream.Write",
+                "Server.Close",
+                "Server.ListenAndServe",
+                "Server.ListenAndServeTLS",
+                "Server.NewRawServerConn",
+                "Server.Serve",
+                "Server.ServeListener",
+                "Server.ServeQUICConn",
+                "Server.Shutdown",
+                "Stream.Read",
+                "Stream.Write",
+                "Transport.Close",
+                "Transport.CloseIdleConnections",
+                "Transport.NewClientConn",
+                "Transport.NewRawClientConn",
+                "Transport.RoundTrip",
+                "Transport.RoundTripOpt",
+                "body.Close",
+                "body.Read",
+                "cancelingReader.Read",
+                "countingByteReader.Read",
+                "countingByteReader.ReadByte",
+                "decodeTrailers",
+                "errConnUnusable.Error",
+                "exactReader.Read",
+                "frameParser.ParseNext",
+                "gzipReader.Close",
+                "gzipReader.Read",
+                "hijackableBody.Close",
+                "hijackableBody.Read",
+                "parseHeaders",
+                "parseTrailers",
+                "qpackError.Error",
+                "rawConn.OpenUniStream",
+                "rawConn.TrackStream",
+                "requestWriter.WriteRequestHeader",
+                "requestWriter.WriteRequestTrailer",
+                "responseWriter.Flush",
+                "responseWriter.FlushError",
+                "responseWriter.HTTPStream",
+                "responseWriter.Write",
+                "responseWriter.WriteHeader",
+                "roundTripperWithCount.Close",
+                "stateTrackingStream.CancelRead",
+                "stateTrackingStream.CancelWrite",
+                "stateTrackingStream.Close",
+                "stateTrackingStream.Read",
+                "stateTrackingStream.Write",
+                "tracingReader.Read"
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "references": [
+      {
+        "type": "ADVISORY",
+        "url": "https://github.com/quic-go/quic-go/security/advisories/GHSA-vvgj-x9jq-8cj9"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/commit/c56e8c79d1627cc1ed6005b421b4b0adadd83665"
+      },
+      {
+        "type": "FIX",
+        "url": "https://github.com/quic-go/quic-go/pull/5642"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/advisories/GHSA-g754-hx8w-x2g6"
+      },
+      {
+        "type": "WEB",
+        "url": "https://github.com/quic-go/quic-go/releases/tag/v0.59.1"
+      }
+    ],
+    "database_specific": {
+      "url": "https://pkg.go.dev/vuln/GO-2026-5676",
       "review_status": "REVIEWED"
     }
   }
@@ -28970,32 +29805,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/armor"
       }
     ]
@@ -29061,9 +29870,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/clearsign",
-        "function": "org/x/crypto/openpgp/clearsign/*",
-        "receiver": "golang"
+        "package": "golang.org/x/crypto/openpgp"
       }
     ]
   }
@@ -29076,9 +29883,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/errors",
-        "function": "org/x/crypto/openpgp/errors/*",
-        "receiver": "golang"
+        "package": "golang.org/x/crypto/openpgp/packet"
       }
     ]
   }
@@ -29153,6 +29958,36 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/armor",
         "function": "org/x/crypto/openpgp/armor/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/clearsign",
+        "function": "org/x/crypto/openpgp/clearsign/*",
+        "receiver": "golang"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/errors",
+        "function": "org/x/crypto/openpgp/errors/*",
         "receiver": "golang"
       }
     ]
