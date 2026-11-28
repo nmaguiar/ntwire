@@ -145,7 +145,10 @@ and enter the same tag. The workflow checks the release assets and images,
 points `latest` on Docker Hub and GHCR to the existing image digests, marks the
 GitHub release as stable and latest, and refreshes the GitHub Pages download
 manifest and Helm index. GitHub keeps the existing uploaded assets. If a
-registry or Pages step fails, rerun the workflow for the same tag.
+registry step fails, rerun the promotion workflow for the same tag. If only the
+Pages deployment job fails, rerun that job while its artifact is available.
+If the artifact has expired, run **Deploy static content to Pages** from the
+default branch to publish the latest stable release.
 When `NTWIRE_UPDATE_PUBLIC_KEY` is configured, promotion requires both signed
 updater files.
 
