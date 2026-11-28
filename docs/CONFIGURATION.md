@@ -129,7 +129,15 @@ that retry.
 the anchor. Zero or one keeps the single-lane default. With
 `transport.adaptive: true`, setting two through eight opts into the
 multi-lane pilot after a server restart. Start with two when qualifying a
-deployment. Each connection begins on one lane and can try one new lane at
+high-concurrency WSS deployment. This configuration permits one additional lane.
+
+```yaml
+transport:
+  adaptive: true
+  adaptive_max_lanes: 2
+```
+
+Each connection begins on one lane and can try one new lane at
 a time under sustained concurrent demand and WSS queue pressure. An
 advertised UDP or QUIC standby still permits a trial while WSS is active.
 Keeping each new lane requires improved aggregate delivery across the

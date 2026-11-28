@@ -502,7 +502,7 @@ transport:
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
   adaptive : false                        # opt-in: enable the adaptive WireGuard carrier stack (requires force: auto)
   adaptive_http2       : false            # opt-in: enable the authenticated HTTP/2 stream carrier on listen.https when adaptive is true
-  adaptive_max_lanes   : 0                # maximum lanes per adaptive parent (2..8 enables multi-lane scaling; 0 or 1 keeps one lane)
+  adaptive_max_lanes   : 0                # one lane by default (0 or 1); with adaptive enabled, set 2 to trial a second WSS lane under sustained high concurrency (maximum 8)
   adaptive_udp_port    : 0                # dedicated UDP port for adaptive direct-UDP qualification (requires adaptive: true and network.advertised_endpoint)
   adaptive_udp_alt_port: 0                # optional second dedicated UDP port for adaptive direct-UDP qualification (requires adaptive_udp_port)
   adaptive_tunnel_mtu  : 0                # fixed adaptive WireGuard tunnel MTU in 1280..1420 (0 uses 1420; requires adaptive: true)

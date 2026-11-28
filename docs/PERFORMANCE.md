@@ -1080,6 +1080,139 @@ found zero reachable vulnerabilities in the candidate client and server.
 The scanner reported a module-level OpenPGP advisory and the build graph
 contains no OpenPGP package. [Go advisory](https://pkg.go.dev/vuln/GO-2026-5932)
 
+## Single-lane WSS default and restricted-network qualification
+
+### Server default decision, 28 November 2026
+
+Keep `transport.adaptive` opt-in on the server. A verified standard client
+already offers adaptive WireGuard. The candidate below has one WSS lane,
+the default 1,420-byte tunnel MTU and no alternate carriers. A server
+configured for [two lanes under high concurrency](CONFIGURATION.md#adaptive-carrier-pilot)
+is a separate workload.
+
+The lab compared legacy WSS and adaptive WSS on the same build of
+`a33cd78` using Go 1.27.3 on Linux arm64. Each profile had seven
+alternating pairs, separate client and server network namespaces in one
+LinuxKit VM, 100 Mbit/s per direction, a 4,096-packet queue, and
+`GOMAXPROCS=2`. The development host also ran validation jobs.
+The intervals below are paired 95% bootstrap intervals for the median
+relative change.
+
+| Profile | Observed result | Decision |
+|---|---|---|
+| Clean mixed load, 4 ms nominal RTT, two workers, 4 Mbit/s per bulk worker, 12 s | All 14 windows completed on their intended path with zero forwarding failures. Bulk goodput changed −0.55% to +0.56%. Both median p99 values were 12.3 ms, but the p99 interval was 0% to +84% and setup was +0.4% to +21.6%. | Goodput passed. Latency and setup remain inconclusive. |
+| Loaded mixed traffic, 20 ms RTT, 0.1% loss each way, four workers, 8 Mbit/s per bulk worker, 15 s | All seven adaptive runs delivered echoes and reported temporary `Transport unavailable`. All seven failed the continuous-path check. Legacy WSS recorded five forwarding failures across three runs. | No valid paired comparison. Investigate WSS availability under load before widening admission. |
+| 750 ms link outage, 4 ms RTT, one interactive flow, 10 s | All 14 runs resumed on the original socket. Median application response gaps were 848 ms on legacy and 849 ms on adaptive. The paired gap interval was −0.70% to +0.24%. | Recovery passed in this fixture. The p99 and client CPU intervals crossed their limits. |
+
+A separate 90-second pair on the 20 ms, 0.1%-loss link used two workers
+and a 2 Mbit/s cap per bulk worker. Both sessions retained their
+requested path and had zero forwarding failures (4,001 legacy and 3,996
+adaptive echoes). This lighter-load duration check provides one pair.
+
+Reproduce the loaded case on an isolated Linux worker.
+
+~~~sh
+go build -o /tmp/ntwire-bench-lab ./tests/performance/lab
+sudo python3 tests/performance/run.py --binary /tmp/ntwire-bench-lab \
+  --output /tmp/ntwire-wss-loaded --modes wss adaptive-wss --workload mixed \
+  --connections 4 --warmup 2s --duration 15s --bulk-rate-mbps 8 --repeat 7 \
+  --peer-netem 10 0.1 100 42 10 0.1 100 43 --peer-queue-packets 4096 \
+  --require-progress --require-adaptive-wss-qualification
+~~~
+
+For these mixed and interactive profiles, the runner records
+`adaptive_wss_gate` in `summary.json`. The qualification flag makes
+a failed or inconclusive result exit nonzero. Each pair must finish
+its timed window on the requested carrier with zero forwarding failures
+and at least 100 measured interactive replies per run. The case limits
+allow up to 5% less interactive completion rate or bulk goodput, 10%
+higher response p99, 20% higher session setup time and 15% higher client
+CPU per delivered GiB. An outage case must also retain the socket and
+stay within 10% on application response gap. These limits apply to the
+entire paired interval. Before a general server default, repeat on
+independent hosts with sustained traffic and include deployments where
+legacy negotiation currently selects healthy native UDP.
+
+### HTTP/2 when WebSocket upgrades are blocked
+
+The ingress fixtures terminate verified TLS, reject the WebSocket
+upgrade with HTTP 426, then stream HTTP/2 over a second TLS connection
+to the ntwire origin. The tests assert the selected carrier, same-lane
+credential rotation, TCP and UDP echoes on the original sockets, and
+one HTTP/2 stream at the origin. Healthy WSS, authorization denial,
+HTTP/1-only origins, revocation and reconnect are covered by the related
+client tests.
+
+~~~sh
+go test ./pkg/client -run '^TestAdaptiveCarrier_(HTTP2|SingleWSSDefaultOffer)' -count=7
+# With HAProxy on PATH, include its two-hop TLS fixture.
+NTWIRE_TEST_HAPROXY=1 go test ./pkg/client -run '^TestAdaptiveCarrier_HTTP2HAProxyIngress$' -count=7
+# Include four concurrent bulk TCP streams and UDP echoes in the same lane.
+NTWIRE_TEST_HAPROXY=1 NTWIRE_TEST_INGRESS_LOAD=1 go test ./pkg/client \
+  -run '^TestAdaptiveCarrier_(HTTP2HAProxyIngress|HTTP2StreamingIngress|SingleWSSDefaultOffer)' -count=7
+~~~
+
+Seven Linux arm64 functional repetitions passed through HAProxy 3.2 and
+the Go streaming reverse proxy. Across two seven-run Linux mixed-load batches, all four TCP streams
+completed in every run. A UDP echo exceeded its five-second deadline in
+four of 14 HAProxy runs (two in each batch) and five of 14 Go proxy
+runs (three, then two). The single-lane WSS control completed all 14. A separate macOS
+race-instrumented saturation run also timed out on UDP and one TCP
+stream through the Go proxy. Use HTTP/2 as an
+operator-selected fallback for a verified streaming ingress. Loaded UDP
+reliability and the intended deployment's ingress still need qualification.
+
+### Adaptive relay forwarding and bandwidth cost
+
+~~~sh
+NTWIRE_TEST_RELAY_LOAD=1 go test -v ./pkg/client \
+  -run '^TestAdaptiveRelayPerformance_LoadAndForwardedBytes$' -count=1
+go test ./pkg/client -run '^TestAdaptiveRelayPerformance_TrialsAndIndependentLaneRoutes$'
+~~~
+
+The load fixture keeps four TCP connections open across direct WSS and
+two independently registered UDP relays. Relay A has a 2 MiB/s forwarding
+limit. The fixture selects each qualified route explicitly to compare
+like traffic, then shuts down the active relay while the original streams
+carry traffic. It reports one-way echo goodput, application p99, the
+time until all four streams complete a new exchange after shutdown, and
+the recovered carrier. The separate selection test exercises routing
+decisions with controlled performance observations.
+
+Both relay agents supply fresh accounting snapshots. The fixture logs
+relay-to-client and relay-to-server forwarded bytes separately. Divide
+their sum by the verified bidirectional application bytes to estimate
+relay bandwidth per payload byte. Counters cover forwarded UDP bytes
+and can include control traffic. Cloud billing can include additional
+headers, retransmissions on other segments, or different metering units.
+
+A macOS arm64 fixture run on 28 November used four established streams,
+8 KiB verified echoes, and three-second load windows. The relay's
+30-second reports cover the interval surrounding each window.
+
+| Selected path | Goodput per direction | Echo p99 | Relay bytes to client / server | Relay bytes per bidirectional payload byte |
+|---|---:|---:|---:|---:|
+| Direct WSS | 262.52 Mbit/s | 6.84 ms | 0 / 0 | 0 |
+| Capped relay A | 1.44 Mbit/s | 815.17 ms | 642,196 / 666,528 | 1.175 |
+| Uncapped relay B | 96.57 Mbit/s | 23.41 ms | 40,779,860 / 40,927,456 | 1.128 |
+
+After relay B stopped during load, all four original streams completed a
+new echo over WSS within 12.82 seconds. The recovered carrier in this run
+was direct WSS. These throughput and recovery values describe one host
+and the configured relay limit.
+
+For a regional decision, place the client, server/echo target and two
+relays at the intended sites. Compare direct, each relay, and automatic
+selection under the same offered load in alternating order. Record site
+and provider, selected member, timestamped path changes, tail latency,
+validated bytes and both egress legs. Interrupt the selected test relay
+during load and confirm progress on every original stream. Price each
+billed leg using its provider's transfer unit and regional rate, including
+server or client egress where applicable. Reconcile against flow logs or
+usage exports. The loopback fixture establishes forwarding overhead and
+failover behavior. Geographic route quality and actual charges require
+an authorized regional deployment.
+
 ## Programme closeout and release gates
 
 | Phase | Implementation disposition | Evidence required for wider release or defaults |
