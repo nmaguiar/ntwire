@@ -1,8 +1,8 @@
 # binary-ntwire-relay-linux-arm64 — linux/arm64
 
-- Scanned: 2026-11-27 04:45 UTC
-- Source commit: `c269b729a2c6a11bf9feec0dfbafc0ce814628c2`
-- Artifact: `sha256:bd57f8293e45ab23d3078488c6849b46f56bbda53358aaa45d4f6fe7018bddc2`
+- Scanned: 2026-11-28 02:47 UTC
+- Source commit: `c3bf30ecf0e759a6be609716db8c761e165ff5c0`
+- Artifact: `sha256:2693bb153e04e794292b92c103f696c5de9f70f57f55f93020e4411b823c338c`
 - Scanner: govulncheck (binary mode)
 
 CRITICAL: 0 | HIGH: 0 | MEDIUM: 0 | LOW: 0 | UNKNOWN: 1
@@ -38,7 +38,7 @@ Go vulnerability reports do not assign severity here; findings are counted as un
     "modules": [
       {
         "path": "github.com/nmaguiar/ntwire",
-        "version": "v0.0.0-20261127011546-c269b729a2c6"
+        "version": "v0.0.0-20261127044733-c3bf30ecf0e7"
       },
       {
         "path": "github.com/coder/websocket",
@@ -30567,6 +30567,45 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/packet"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
+        "package": "golang.org/x/crypto/openpgp/armor"
+      }
+    ]
+  }
+}
+{
+  "finding": {
+    "osv": "GO-2026-5932",
+    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
+    "trace": [
+      {
+        "module": "golang.org/x/crypto",
+        "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp/clearsign"
       }
     ]
@@ -30619,7 +30658,9 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp"
+        "package": "golang.org/x/crypto/openpgp/packet",
+        "function": "org/x/crypto/openpgp/packet/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -30632,20 +30673,9 @@ Go vulnerability reports do not assign severity here; findings are counted as un
       {
         "module": "golang.org/x/crypto",
         "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor"
+        "package": "golang.org/x/crypto/openpgp/armor",
+        "function": "org/x/crypto/openpgp/armor/*",
+        "receiver": "golang"
       }
     ]
   }
@@ -30720,36 +30750,6 @@ Go vulnerability reports do not assign severity here; findings are counted as un
         "version": "v0.58.0",
         "package": "golang.org/x/crypto/openpgp",
         "function": "org/x/crypto/openpgp/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/packet",
-        "function": "org/x/crypto/openpgp/packet/*",
-        "receiver": "golang"
-      }
-    ]
-  }
-}
-{
-  "finding": {
-    "osv": "GO-2026-5932",
-    "fixed_version": "v0.58.1-0.20261009181718-2f1f834330b2",
-    "trace": [
-      {
-        "module": "golang.org/x/crypto",
-        "version": "v0.58.0",
-        "package": "golang.org/x/crypto/openpgp/armor",
-        "function": "org/x/crypto/openpgp/armor/*",
         "receiver": "golang"
       }
     ]
