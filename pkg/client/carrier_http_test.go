@@ -2,10 +2,13 @@ package client
 
 import (
 	"encoding/pem"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -185,6 +188,115 @@ func TestAdaptiveCarrier_HTTP2ReconnectKeepsListeners(t *testing.T) {
 		t.Fatalf("reconnect did not rebuild the HTTP/2 lane on the same listener: %+v", c.TransportInfo())
 	}
 	newQUICTCPEcho(t, c)("after HTTP/2 reconnect")
+}
+
+// Exercise both TLS hops. The ingress rejects WebSocket upgrades before they
+// reach the origin and streams the HTTP/2 request body while returning data.
+func TestAdaptiveCarrier_HTTP2StreamingIngress(t *testing.T) {
+	f := newReconnectFixture(t)
+	s := f.startServerWithTransport("100.74.8.0/24", 18150, true, server.TransportConfig{Adaptive: true, AdaptiveHTTP2: true})
+	handler := s.Handler()
+	var originStreams, ingressStreams, blocked atomic.Int32
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == protocol.CarrierWSSPath {
+			t.Error("ingress forwarded a blocked WebSocket upgrade")
+		}
+		if strings.HasSuffix(r.URL.Path, "/http2") && r.ProtoMajor == 2 {
+			originStreams.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	origin.EnableHTTP2 = true
+	origin.StartTLS()
+	t.Cleanup(origin.Close)
+	target, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = origin.Client().Transport
+	proxy.FlushInterval = -1
+	ingress := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			blocked.Add(1)
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/http2") && r.ProtoMajor == 2 {
+			ingressStreams.Add(1)
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	ingress.EnableHTTP2 = true
+	ingress.StartTLS()
+	t.Cleanup(ingress.Close)
+	testSingleAdaptiveLane(t, f, ingress.URL, ingress.Certificate().Raw, protocol.CarrierHTTP2)
+	if blocked.Load() == 0 || ingressStreams.Load() != 1 || originStreams.Load() != 1 {
+		t.Fatalf("blocked %d upgrades, observed %d ingress and %d origin HTTP/2 streams", blocked.Load(), ingressStreams.Load(), originStreams.Load())
+	}
+}
+
+func TestAdaptiveCarrier_SingleWSSDefaultOfferAcrossRenewal(t *testing.T) {
+	f := newReconnectFixture(t)
+	s := f.startServerWithTransport("100.74.8.0/24", 18150, false, server.TransportConfig{Adaptive: true})
+	h := httptest.NewTLSServer(s.Handler())
+	t.Cleanup(h.Close)
+	testSingleAdaptiveLane(t, f, h.URL, h.Certificate().Raw, protocol.CarrierWSS)
+}
+
+func testSingleAdaptiveLane(t *testing.T, f *reconnectFixture, endpoint string, certificate []byte, carrier string) {
+	t.Helper()
+	ca := filepath.Join(f.dir, "ingress.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := ConnectWithOptions(endpoint, f.key, protocol.ClientInfo{}, Options{
+		AdaptiveCarrier: DefaultSettings().AdaptiveCarrier, CAFile: ca, NoWebUI: true, NoSystemProxy: true,
+		StatusFile: filepath.Join(f.dir, "single-lane.json"), Logger: slog.New(slog.DiscardHandler), renewInterval: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(c.Close)
+	if info := c.TransportInfo(); !info.AdaptiveCarrier || info.Active != carrier || c.Response.Adaptive.MaxLanes != 0 {
+		t.Fatalf("expected a single %s lane, got %+v", carrier, info)
+	}
+	before, bearer, _ := c.network.adaptive.credentials()
+	tcp := dialLaneTest(t, "tcp", c.LocalAddresses[0])
+	udp := dialLaneTest(t, "udp", c.LocalAddresses[1])
+	payload := strings.Repeat("adaptive-echo", 5000)
+	echoLaneTest(t, tcp, payload)
+	udpRoundTrip(t, udp)
+	if err := c.renew(); err != nil {
+		t.Fatal(err)
+	}
+	echoLaneTest(t, tcp, payload)
+	udpRoundTrip(t, udp)
+	t.Run("concurrent forwarding", func(t *testing.T) {
+		if os.Getenv("NTWIRE_TEST_INGRESS_LOAD") != "1" {
+			t.Skip("set NTWIRE_TEST_INGRESS_LOAD=1 for the mixed TCP/UDP saturation screen")
+		}
+		for i := range 4 {
+			t.Run(fmt.Sprintf("TCP-%d", i), func(t *testing.T) {
+				t.Parallel()
+				stream := dialLaneTest(t, "tcp", c.LocalAddresses[0])
+				for range 16 {
+					echoLaneTest(t, stream, payload)
+				}
+			})
+		}
+		t.Run("UDP", func(t *testing.T) {
+			t.Parallel()
+			for range 16 {
+				udpRoundTrip(t, udp)
+			}
+		})
+	})
+	after, renewed, _ := c.network.adaptive.credentials()
+	if info := c.TransportInfo(); info.Active != carrier || after.MaxLanes != 0 ||
+		after.LaneID != before.LaneID || after.AuthGeneration != before.AuthGeneration+1 || renewed == bearer {
+		t.Fatalf("renewal failed to retain the single %s lane and rotate its credential", carrier)
+	}
 }
 
 func BenchmarkAdaptiveHTTPCarrier(b *testing.B) {

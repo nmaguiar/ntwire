@@ -8,12 +8,35 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from run import (comparable_runs, comparison, host_cpu_per_gib, kernel_backend_gate, main, netem_profile, netem_stats, qdisc_stats,
+from run import (adaptive_wss_gate, comparable_runs, comparison, host_cpu_per_gib, kernel_backend_gate, main, netem_profile, netem_stats, qdisc_stats,
                  sampling_gate, summarize_mode, wss_sampling_exclusion,
                  wss_tcp_samples)
 
 
 class NetemTest(unittest.TestCase):
+    def test_single_lane_gate_requires_matched_successful_windows(self):
+        base = {"selected_paths": ["wss"], "end_reason": "duration", "failures": 0,
+                "ntwire_connect_us": 100, "sample_duration_ms": 10000,
+                "response_latency": {"count": 100, "p99_us": 100}, "process": {"process_cpu_seconds": 1},
+                "echo_bytes_per_direction": 1000, "bulk": {"echo_bps_per_direction": 1000}}
+        trial = {**base, "selected_paths": ["adaptive-wss"]}
+        def verdict(**changes):
+            return adaptive_wss_gate({"wss": [base] * 7, "adaptive-wss": [{**trial, **changes}] * 7}, "mixed", 7)["result"]
+        self.assertEqual(verdict(), "pass")
+        self.assertEqual(verdict(selected_paths=["wss"]), "inconclusive")
+        self.assertEqual(verdict(end_reason="byte_limit"), "inconclusive")
+        self.assertEqual(verdict(failures=1), "failed")
+        self.assertEqual(verdict(ntwire_connect_us=121), "regression")
+        self.assertEqual(verdict(bulk={"echo_bps_per_direction": 949}), "regression")
+        self.assertEqual(verdict(response_latency={"count": 99, "p99_us": 100}), "inconclusive")
+        recovery = {"response_gap_ms": 800, "socket_replaced": False}
+        runs = {"wss": [{**base, "link_recovery": recovery}] * 7,
+                "adaptive-wss": [{**trial, "link_recovery": recovery,
+                                  "selected_paths": ["adaptive-wss", "Transport unavailable", "adaptive-wss"]}] * 7}
+        self.assertEqual(adaptive_wss_gate(runs, "interactive", 7, outage=True)["result"], "pass")
+        runs["adaptive-wss"][1] = None
+        self.assertEqual(adaptive_wss_gate(runs, "interactive", 7, outage=True)["result"], "inconclusive")
+
     def test_kernel_gate_pairs_and_noise(self):
         run = {"echo_bytes_per_direction": 1 << 29, "host_cpu": {
             "busy_ticks": 60, "elapsed_us": 2000000, "idle_baseline_busy_ticks": 5,

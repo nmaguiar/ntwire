@@ -151,13 +151,13 @@ func TestAdaptiveRelay_QualifiesAndPreservesTCPAcrossCarrierFailures(t *testing.
 	}
 }
 
-func newRelayPerformanceFixture(t testing.TB, firstBandwidth int) (*Connection, func() error) {
+func newRelayPerformanceFixture(t testing.TB, firstBandwidth int, observe func(int, protocol.RelayUDPStatsReport)) (*Connection, [2]func() error) {
 	t.Helper()
 	f := newReconnectFixture(t)
 	first, closeFirst := startClientTestUDPRelay(f, func(cfg *relay.Config) {
 		cfg.Limits.UDPRelayBytesPerSecond = firstBandwidth
 	})
-	second, _ := startClientTestUDPRelay(f)
+	second, closeSecond := startClientTestUDPRelay(f)
 	logger := slog.New(slog.DiscardHandler)
 	endpoint := func(r *relay.Relay) server.RelayEndpoint {
 		return server.RelayEndpoint{URL: "wss://" + r.AgentsAddr().String(), Fingerprint: r.Fingerprint()}
@@ -170,6 +170,11 @@ func newRelayPerformanceFixture(t testing.TB, firstBandwidth int) (*Connection, 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = pool.Close() })
+	if observe != nil {
+		for index, agent := range pool.Agents() {
+			agent.OnUDPStats = func(report protocol.RelayUDPStatsReport) { observe(index, report) }
+		}
+	}
 	pool.Run(t.Context())
 	cfg := f.serverConfig("100.76.5.0/24", 18151, false, server.TransportConfig{Adaptive: true, AdaptiveMaxLanes: 2})
 	cfg.Relay = relays
@@ -208,11 +213,11 @@ func newRelayPerformanceFixture(t testing.TB, firstBandwidth int) (*Connection, 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	return c, closeFirst
+	return c, [2]func() error{closeFirst, closeSecond}
 }
 
 func TestAdaptiveRelayPerformance_TrialsAndIndependentLaneRoutes(t *testing.T) {
-	c, closeFirst := newRelayPerformanceFixture(t, 0)
+	c, stopRelays := newRelayPerformanceFixture(t, 0, nil)
 	a := c.network.adaptive
 	info, _, _ := a.credentials()
 	if !info.RelayPerformance || !a.exploration.CompareAndSwap(false, true) {
@@ -306,7 +311,7 @@ func TestAdaptiveRelayPerformance_TrialsAndIndependentLaneRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	echoLaneTest(t, childFlow, "child over relay B")
-	if err := closeFirst(); err != nil {
+	if err := stopRelays[0](); err != nil {
 		t.Fatal(err)
 	}
 	waitCarrier(t, c, protocol.CarrierWSS)
@@ -319,7 +324,7 @@ func TestAdaptiveRelayPerformance_TrialsAndIndependentLaneRoutes(t *testing.T) {
 }
 
 func TestAdaptiveRelayPerformance_MeasuresChildForwarding(t *testing.T) {
-	c, _ := newRelayPerformanceFixture(t, 0)
+	c, _ := newRelayPerformanceFixture(t, 0, nil)
 	parent := c.network
 	parent.adaptive.exploration.Store(true)
 	defer parent.adaptive.exploration.Store(false)
@@ -355,7 +360,7 @@ func TestAdaptiveRelayPerformance_MeasuresChildForwarding(t *testing.T) {
 func BenchmarkAdaptiveRelayPerformance(b *testing.B) {
 	for _, mode := range []string{"direct-wss", "relay-a", "relay-b"} {
 		b.Run(mode, func(b *testing.B) {
-			c, _ := newRelayPerformanceFixture(b, 2<<20)
+			c, _ := newRelayPerformanceFixture(b, 2<<20, nil)
 			a := c.network.adaptive
 			if !a.exploration.CompareAndSwap(false, true) {
 				b.Fatal("test exploration slot is unavailable")

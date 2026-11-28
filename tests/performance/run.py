@@ -218,6 +218,54 @@ def sampling_gate(metrics, margin, expected_pairs, failed_samples=()):
     return "inconclusive"
 
 
+def adaptive_wss_gate(runs, workload, expected_pairs, outage=False):
+    """Assess one single-lane profile against legacy WSS using matched windows."""
+    reference, candidate = runs["wss"], runs["adaptive-wss"]
+    if expected_pairs < 7 or any(len(samples) != expected_pairs for samples in (reference, candidate)):
+        return {"result": "inconclusive", "reason": "requires at least seven complete pairs"}
+    for mode in ("wss", "adaptive-wss"):
+        for run in runs[mode]:
+            if run is None:
+                return {"result": "inconclusive", "reason": f"missing or excluded {mode} measurement"}
+            paths = run["selected_paths"]
+            valid_path = paths == [mode] or (outage and paths and paths[0] == paths[-1] == mode
+                                               and set(paths) <= {mode, "Transport unavailable"})
+            if (not valid_path or run["end_reason"] != "duration"
+                    or run["response_latency"].get("count", 0) < 100):
+                return {"result": "inconclusive", "reason": "incomplete window, unexpected path or fewer than 100 responses"}
+            if run["failures"] or (outage and (run.get("link_recovery") or {}).get("socket_replaced") is not False):
+                return {"result": "failed", "reason": f"{mode} forwarding failed or recovery did not retain its socket"}
+
+    # Limits bound paired changes relative to legacy WSS, including the cost
+    # of the extra authenticated attach exchange during initial setup.
+    limits = [
+        ("interactive_completions_per_second", interactive_completed_per_second, -5),
+        ("response_p99_us", lambda r: r["response_latency"].get("p99_us"), 10),
+        ("session_connect_us", lambda r: r.get("ntwire_connect_us"), 20),
+        ("client_cpu_per_gib", cpu_per_gib, 15),
+    ]
+    if workload == "mixed":
+        limits.append(("bulk_goodput", lambda r: r.get("bulk", {}).get("echo_bps_per_direction"), -5))
+    if outage:
+        limits.append(("recovery_gap_ms", lambda r: r["link_recovery"].get("response_gap_ms"), 10))
+
+    metrics = {}
+    for name, field, limit in limits:
+        delta = comparison(reference, candidate, field)
+        bounds = (delta or {}).get("bootstrap_95_pct")
+        verdict = "inconclusive"
+        if bounds and delta["pairs"] == expected_pairs:
+            low, high = bounds
+            if (limit < 0 and high < limit) or (limit > 0 and low > limit):
+                verdict = "regression"
+            elif (limit < 0 and low >= limit) or (limit > 0 and high <= limit):
+                verdict = "pass"
+        metrics[name] = {"limit_pct": limit, "delta": delta, "result": verdict}
+    verdicts = {value["result"] for value in metrics.values()}
+    overall = next((result for result in ("regression", "inconclusive") if result in verdicts), "pass")
+    return {"result": overall, "metrics": metrics}
+
+
 def kernel_backend_gate(metrics, transport, workload, expected_pairs, failed_samples):
     """Evaluate one paired case. Release qualification still requires all transports."""
     if failed_samples or metrics["different_end_reason_repetitions"]:
@@ -292,6 +340,8 @@ def main():
                                   help="pair userspace and required kernel WireGuard on the isolated server")
     parser.add_argument("--require-kernel-qualification", action="store_true",
                         help="fail unless the paired backend case passes its qualification thresholds")
+    parser.add_argument("--require-adaptive-wss-qualification", action="store_true",
+                        help="require the single-lane WSS profile to meet the paired performance limits")
     parser.add_argument("--require-progress", action="store_true",
                         help="fail if a measured run completes no echoes")
     parser.add_argument("--sampling-margin-pct", type=float,
@@ -320,6 +370,11 @@ def main():
     if args.baseline_binary and (args.compare_wss_sampling or args.compare_quic_admission or
                                  args.compare_server_backends or len(args.modes) != 1):
         parser.error("--baseline-binary requires one mode and cannot be combined with another comparison")
+    if args.require_adaptive_wss_qualification and (
+            args.modes != ["wss", "adaptive-wss"] or not args.peer_netem or args.repeat < 7
+            or args.workload not in ("interactive", "mixed") or args.compare_wss_sampling):
+        parser.error("adaptive WSS qualification requires --modes wss adaptive-wss, --peer-netem, "
+                     "interactive or mixed traffic, and at least seven pairs")
     if args.compare_server_backends and (
             not args.peer_netem or len(args.modes) != 1 or args.modes[0] not in KERNEL_SERVER_MODES):
         parser.error("--compare-server-backends requires --peer-netem and one legacy or native WireGuard mode")
@@ -576,6 +631,11 @@ def main():
         result = kernel_backend_gate(comparisons[modes[1]], modes[0], args.workload, args.repeat, failures)
         summary["kernel_backend_gate"] = {"transport": modes[0], "workload": args.workload, "result": result}
         if args.require_kernel_qualification and result != "pass":
+            status = 1
+    if modes == ["wss", "adaptive-wss"] and args.peer_netem and args.workload in ("interactive", "mixed"):
+        gate = adaptive_wss_gate(runs, args.workload, args.repeat, args.link_outage_ms is not None)
+        summary["adaptive_wss_gate"] = gate
+        if args.require_adaptive_wss_qualification and gate["result"] != "pass":
             status = 1
     if args.sampling_margin_pct is not None:
         gate = sampling_gate(comparisons["wss-sampled"], args.sampling_margin_pct, args.repeat, failures)
