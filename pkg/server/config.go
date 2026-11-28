@@ -500,6 +500,14 @@ transport:
   metrics  : false                        # opt-in: add ntwire_transport_switches_total and ntwire_sessions_by_path to the metrics listener; read at data-plane start
   mtu_aware: false                        # opt-in: retry lost MTU probes, probe the full tunnel-packet size, and rank MTU-limited UDP paths after others on failover
   promotion: false                        # opt-in (experimental): let clients that pass --promote move a healthy session from WSS to a proven UDP path (path-promote-v1)
+  adaptive : false                        # opt-in: enable the adaptive WireGuard carrier stack (requires force: auto)
+  adaptive_http2       : false            # opt-in: enable the authenticated HTTP/2 stream carrier on listen.https when adaptive is true
+  adaptive_max_lanes   : 0                # maximum lanes per adaptive parent (2..8 enables multi-lane scaling; 0 or 1 keeps one lane)
+  adaptive_udp_port    : 0                # dedicated UDP port for adaptive direct-UDP qualification (requires adaptive: true and network.advertised_endpoint)
+  adaptive_udp_alt_port: 0                # optional second dedicated UDP port for adaptive direct-UDP qualification (requires adaptive_udp_port)
+  adaptive_tunnel_mtu  : 0                # fixed adaptive WireGuard tunnel MTU in 1280..1420 (0 uses 1420; requires adaptive: true)
+  quic_listen          : ""               # optional UDP bind address or :port for the adaptive QUIC DATAGRAM carrier (requires adaptive: true and network.advertised_endpoint)
+  h3_carrier_listen    : ""               # optional UDP bind address or :port for the adaptive HTTP/3 CONNECT-UDP carrier (requires adaptive: true and network.advertised_endpoint)
 
 acceleration:
   mode: auto                              # auto, off, or required. Restart to change.
@@ -565,6 +573,7 @@ relay:
   # endpoints:
   # - url        : "wss://relay-a.example.com:8444"
   #   fingerprint: "SHA256:..."
+  #   disable_performance_routing: false     # exclude this member from relay.performance_routing
   # - url        : "wss://relay-b.example.com:8444"
   #   fingerprint: "SHA256:..."
   reconnect_min  : 1s                      # initial backoff after a dropped control connection; default: 1s
@@ -574,6 +583,9 @@ relay:
   reconnect_max  : 1m                      # backoff ceiling; default: 1m
   advertise_direct: false                  # opt into self-reflecting off the relay's listen.reflect UDP endpoint and offering the result to clients over /v1/punch, so a client that can NAT hole-punch bypasses the relay's data plane entirely; requires the relay to have listen.reflect configured. See docs/RELAY.md. Leave false to keep this server's real address hidden, which is otherwise relay mode's whole point.
   direct_clients : false                   # also bind listen.https for direct ntwire clients; default false so relay mode does not expose an inbound listener unexpectedly. The TLS certificate must cover the direct hostname.
+  adaptive_udp   : false                   # opt-in: enable adaptive lane-scoped UDP relay qualification (requires relay.enabled and transport.adaptive)
+  performance_routing: false               # opt-in: enable measured multi-relay performance routing (requires relay.adaptive_udp)
+  performance_max_allocations_per_relay: 0 # cap pending and active performance allocations per relay member (1..32; 0 uses default 16)
   # multipath      : overrides v3's bounded reactive-duplication budget.
   # multipath      :
   #   duplicate_rate_bytes_per_sec: 262144    # cap reactive duplication toward a healthy alternate while the incumbent degrades
@@ -614,9 +626,12 @@ tunnels:
 - name: reports                          # unique identifier shown to clients
   target: reports.internal:8080          # host:port the server proxies to after traffic reaches its virtual port
   description: Reporting service         # optional free-text description shown to clients
+  protocol: tcp                          # fixed-target protocol: tcp (default) or udp
+  udp_idle_timeout: 2m                   # idle timeout for protocol: udp flows; 0 uses the default
   virtual_port: 18080                    # required port exposed inside the WireGuard tunnel; 1 through 65535
   local_port: 58080                      # preferred client loopback port; 0 chooses any free port, and an occupied value falls back to one
   local_host: ""                           # optional preferred loopback address (e.g. "127.70.0.1"), letting distinct tunnels share a memorable port without colliding; must be 127.0.0.0/8 or ::1, and the client falls back to 127.0.0.1 if it can't be bound (on macOS this needs an "ifconfig lo0 alias" first; Linux binds it out of the box). Empty means 127.0.0.1.
+  destination_policy: ""                   # optional named policy from destination_policies
   docs_url: ""                             # optional absolute http(s) link offered as "See more" beside the instructions below
   instructions: |                          # optional Markdown shown in the client status UI, expanded there as a Go template
     Fetch a report through the tunnel:
